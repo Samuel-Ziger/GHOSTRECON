@@ -1,0 +1,630 @@
+import 'dotenv/config';
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { fetchCrtShSubdomains } from './modules/subdomains.js';
+import { resolves } from './modules/dns.js';
+import { probeHttp, mapPool } from './modules/probe.js';
+import { fetchWaybackUrls, filterInterestingUrls, extractJsUrls } from './modules/wayback.js';
+import { extractParamsFromUrls } from './modules/params.js';
+import { analyzeJsUrl } from './modules/js-analyzer.js';
+import { scanSecrets } from './modules/secrets.js';
+import { githubCodeSearch } from './modules/github.js';
+import { buildDorks } from './modules/dorks.js';
+import { scoreEndpointPath, scoreParamName } from './modules/scoring.js';
+import { correlate } from './modules/correlation.js';
+import { suggestVectors, buildExploitChecklist } from './modules/intelligence.js';
+import { applyPrioritizationV2, topHighProbability } from './modules/prioritization.js';
+import { extractCveHintsFromTechStrings } from './modules/cve-hints.js';
+import { limits } from './config.js';
+import {
+  saveRun,
+  listRuns,
+  getRunById,
+  listIntelForTarget,
+  intelCountForTarget,
+  storageLabel,
+} from './modules/db.js';
+import { googleCseSearch, urlMatchesTarget } from './modules/google-cse.js';
+import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.join(__dirname, '..');
+
+const app = express();
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
+app.use(express.json({ limit: '200kb' }));
+
+function isValidDomain(d) {
+  return /^[a-zA-Z0-9][a-zA-Z0-9-.]+\.[a-zA-Z]{2,}$/.test(d);
+}
+
+function normDomain(d) {
+  return d.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+}
+
+async function runPipeline(ctx) {
+  const { domain, exactMatch, modules, emit, kaliMode = false } = ctx;
+  const domainStr = exactMatch ? `"${domain}"` : domain;
+  const findings = [];
+  const stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
+
+  const addFinding = (f, statKey) => {
+    if (statKey) stats[statKey] = (stats[statKey] || 0) + 1;
+    findings.push(f);
+    if (f.prio === 'high') stats.high += 1;
+    emit({ type: 'finding', finding: f });
+    emit({ type: 'stats', stats: { ...stats } });
+  };
+
+  const log = (msg, level = 'info') => emit({ type: 'log', msg, level });
+  const pipe = (name, state) => emit({ type: 'pipe', name, state });
+  const progress = (p) => emit({ type: 'progress', pct: p });
+
+  let subdomainsAlive = [];
+  const probedHosts = new Set();
+
+  log(`Alvo: ${domain} | Módulos: ${modules.join(', ')}`, 'info');
+  log(exactMatch ? 'Modo: exact match (aspas nos dorks)' : 'Modo: broad match', 'info');
+
+  // ── INPUT ─────────────────────────────────────
+  pipe('input', 'active');
+  progress(5);
+  pipe('input', 'done');
+
+  // ── SUBDOMAINS ──────────────────────────────
+  let allSubs = [];
+  if (modules.includes('subdomains')) {
+    pipe('subdomains', 'active');
+    progress(12);
+    log('Consultando crt.sh (Certificate Transparency)...', 'info');
+    try {
+      allSubs = await fetchCrtShSubdomains(domain);
+      log(`${allSubs.length} nomes únicos em CT logs`, 'success');
+    } catch (e) {
+      log(`crt.sh: ${e.message}`, 'warn');
+    }
+    const capped = allSubs.filter((s) => s !== domain).slice(0, 150);
+    log(`Resolvendo DNS (máx. ${capped.length} hosts)...`, 'info');
+    for (const host of capped) {
+      const r = await resolves(host);
+      if (r.ok) {
+        log(`✓ ${host} → ${r.records.slice(0, 2).join(', ')}`, 'success');
+        const { score, prio } = { score: 52, prio: 'med' };
+        addFinding(
+          {
+            type: 'subdomain',
+            prio,
+            score,
+            value: host,
+            meta: `DNS: ${r.records.join(', ')}`,
+            url: `https://${host}`,
+          },
+          'subs',
+        );
+        subdomainsAlive.push(host);
+        probedHosts.add(host);
+      } else {
+        log(`✗ ${host} (sem A/AAAA)`, 'warn');
+      }
+    }
+    pipe('subdomains', 'done');
+  } else {
+    log('Subdomain discovery desativado', 'info');
+    pipe('subdomains', 'done');
+  }
+
+  // ── ALIVE / PROBE ───────────────────────────
+  pipe('alive', 'active');
+  progress(28);
+  const hostsToProbe = [domain, ...new Set(subdomainsAlive)].slice(0, 80);
+  const urlsToProbe = [];
+  for (const h of hostsToProbe) {
+    urlsToProbe.push(`https://${h}/`, `http://${h}/`);
+  }
+  log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
+
+  const probeResults = await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
+    const r = await probeHttp(u);
+    return { u, r };
+  });
+
+  const seenTech = new Set();
+  for (const { r } of probeResults) {
+    if (!r.ok) continue;
+    const host = new URL(r.url).hostname;
+    if (r.status > 0 && r.status < 500) {
+      log(`ALIVE ${r.url} → ${r.status} ${r.title ? `"${r.title.slice(0, 60)}"` : ''}`, 'success');
+      for (const t of r.tech || []) {
+        const tk = `${host}::${t}`;
+        if (seenTech.has(tk)) continue;
+        seenTech.add(tk);
+        addFinding({
+          type: 'tech',
+          prio: 'low',
+          score: 28,
+          value: t,
+          meta: `Detectado em ${host}`,
+        });
+      }
+    }
+  }
+  pipe('alive', 'done');
+  progress(40);
+
+  // ── WAYBACK / URLS ──────────────────────────
+  let waybackUrls = [];
+  pipe('urls', 'active');
+  if (modules.includes('wayback')) {
+    log('Coletando URLs do Wayback Machine (CDX)...', 'info');
+    try {
+      waybackUrls = await fetchWaybackUrls(domain);
+      log(`${waybackUrls.length} URLs únicas (200) no escopo *.${domain}`, 'success');
+    } catch (e) {
+      log(`Wayback: ${e.message}`, 'warn');
+    }
+  } else {
+    log('Wayback desativado', 'info');
+  }
+
+  const interesting = filterInterestingUrls(waybackUrls);
+  log(`${interesting.length} URLs marcadas como interessantes (filtro heurístico)`, 'info');
+
+  const seenEp = new Set();
+  for (const rawUrl of interesting.slice(0, 400)) {
+    let pathname = '/';
+    try {
+      pathname = new URL(rawUrl).pathname;
+    } catch {
+      continue;
+    }
+    const { score, prio } = scoreEndpointPath(pathname);
+    if (seenEp.has(rawUrl)) continue;
+    seenEp.add(rawUrl);
+    addFinding(
+      {
+        type: 'endpoint',
+        prio,
+        score,
+        value: rawUrl,
+        meta: `Score ${score}/100 • Wayback`,
+        url: rawUrl,
+      },
+      'endpoints',
+    );
+  }
+  pipe('urls', 'done');
+  progress(52);
+
+  // ── PARAMS ──────────────────────────────────
+  pipe('params', 'active');
+  const paramRows = extractParamsFromUrls(waybackUrls.length ? waybackUrls : interesting);
+  for (const { name, count } of paramRows.slice(0, 60)) {
+    const { score, prio } = scoreParamName(name);
+    const vuln =
+      ['redirect', 'url', 'file', 'path', 'callback'].includes(name.toLowerCase()) ? ' → Open Redirect/SSRF?' : '';
+    addFinding(
+      {
+        type: 'param',
+        prio,
+        score,
+        value: `?${name}=`,
+        meta: `~${count} ocorrências em URLs${vuln}`,
+      },
+      'params',
+    );
+  }
+  log(`${paramRows.length} nomes de parâmetros distintos (amostra Wayback)`, 'success');
+  pipe('params', 'done');
+  progress(60);
+
+  // ── JS ANALYSIS ─────────────────────────────
+  pipe('js', 'active');
+  const jsList = extractJsUrls(waybackUrls.length ? waybackUrls : [], 120).slice(0, limits.maxJsFetch);
+  log(`Analisando ${jsList.length} arquivos JS (passivo)...`, 'info');
+  for (const jsUrl of jsList) {
+    const a = await analyzeJsUrl(jsUrl);
+    if (!a.ok) {
+      log(`JS skip: ${jsUrl} (${a.error || a.status})`, 'warn');
+      continue;
+    }
+    for (const ep of a.endpoints.slice(0, 25)) {
+      const { score, prio } = scoreEndpointPath(ep);
+      addFinding(
+        {
+          type: 'js',
+          prio: prio === 'low' ? 'med' : prio,
+          score: Math.max(score, 55),
+          value: ep,
+          meta: `Extraído de ${jsUrl}`,
+          url: jsUrl,
+        },
+        'endpoints',
+      );
+    }
+    const sec = scanSecrets(a.body || '');
+    for (const s of sec) {
+      addFinding(
+        {
+          type: 'secret',
+          prio: 'high',
+          score: 92,
+          value: `[${s.kind}] ${s.masked}`,
+          meta: `Possível segredo em JS (verificar falso positivo)`,
+          url: jsUrl,
+        },
+        'secrets',
+      );
+    }
+  }
+  pipe('js', 'done');
+  progress(72);
+
+  // ── DORKS (URLs apenas) ─────────────────────
+  pipe('dorks', 'active');
+  const dorks = buildDorks(domainStr, modules);
+  for (const d of dorks) {
+    emit({
+      type: 'dork',
+      googleUrl: d.googleUrl,
+      query: d.query,
+      mod: d.mod,
+      prio: d.prio,
+    });
+    addFinding(
+      {
+        type: 'dork',
+        prio: d.prio,
+        score: d.prio === 'high' ? 68 : 55,
+        value: d.query,
+        meta: `Categoria: ${d.mod}`,
+        url: d.googleUrl,
+      },
+      'dorks',
+    );
+  }
+  log(`${dorks.length} dorks gerados (abertura no browser com fila configurável)`, 'success');
+
+  if (modules.includes('google_cse')) {
+    const gKey = process.env.GOOGLE_CSE_KEY;
+    const gCx = process.env.GOOGLE_CSE_CX;
+    if (!gKey || !gCx) {
+      log(
+        'Google CSE desativado: defina GOOGLE_CSE_KEY e GOOGLE_CSE_CX (Programmable Search Engine) para descobrir URLs reais via API.',
+        'warn',
+      );
+    } else if (dorks.length === 0) {
+      log('Google CSE: nenhum dork gerado — ative categorias de dork na sidebar.', 'warn');
+    } else {
+      log(
+        `Google Custom Search: até ${limits.googleCseMaxQueries} queries neste run (quota diária típica 100 grátis).`,
+        'info',
+      );
+      const seenG = new Set();
+      const slice = dorks.slice(0, limits.googleCseMaxQueries);
+      for (let i = 0; i < slice.length; i++) {
+        const d = slice[i];
+        if (i > 0) await sleep(limits.googleCseDelayMs);
+        try {
+          const items = await googleCseSearch(d.query, gKey, gCx);
+          for (const it of items) {
+            if (!urlMatchesTarget(it.link, domain)) continue;
+            if (seenG.has(it.link)) continue;
+            seenG.add(it.link);
+            let pathname = '/';
+            try {
+              pathname = new URL(it.link).pathname;
+            } catch {
+              continue;
+            }
+            const { score, prio } = scoreEndpointPath(pathname);
+            addFinding(
+              {
+                type: 'endpoint',
+                prio,
+                score: Math.max(score, 62),
+                value: it.link,
+                meta: `Google CSE • ${d.mod} • ${it.title ? it.title.slice(0, 60) : d.query.slice(0, 60)}`,
+                url: it.link,
+              },
+              'endpoints',
+            );
+            log(`CSE → ${it.link}`, 'find');
+          }
+        } catch (e) {
+          log(`CSE [${d.mod}]: ${e.message}`, 'warn');
+        }
+      }
+      log(`${seenG.size} URL(s) no alvo descoberta(s) via Google CSE`, seenG.size ? 'success' : 'info');
+    }
+  }
+
+  pipe('dorks', 'done');
+  progress(82);
+
+  // ── GITHUB API (opcional) ───────────────────
+  pipe('secrets', 'active');
+  if (modules.includes('github')) {
+    log('GitHub Code Search (API pública, rate limit)...', 'info');
+    const gh = await githubCodeSearch(domain, process.env.GITHUB_TOKEN);
+    if (gh.ok && gh.items?.length) {
+      for (const it of gh.items) {
+        addFinding(
+          {
+            type: 'secret',
+            prio: 'high',
+            score: 78,
+            value: `${it.repo || ''}/${it.path || ''}`,
+            meta: 'Resultado GitHub Code Search — revisar manualmente',
+            url: it.html_url,
+          },
+          'secrets',
+        );
+      }
+      log(`${gh.items.length} resultados GitHub (total estimado ${gh.total})`, 'warn');
+    } else {
+      log(gh.note || 'Sem resultados GitHub ou limite atingido', 'info');
+    }
+  }
+  if (modules.includes('pastebin')) {
+    log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
+  }
+  pipe('secrets', 'done');
+
+  // ── KALI: nmap / searchsploit / ffuf / nuclei ──
+  if (kaliMode) {
+    pipe('kali', 'active');
+    progress(86);
+    const cap = await getKaliCapabilities();
+    if (cap.kali) {
+      await runKaliAggressiveScan({ domain, subdomainsAlive, cap, log, addFinding });
+    } else {
+      log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
+    }
+    pipe('kali', 'done');
+  } else {
+    emit({ type: 'pipe', name: 'kali', state: 'skip' });
+  }
+
+  progress(90);
+
+  // ── PRIORIZAÇÃO V2 + CVE hints + CORRELATION + INTEL ──
+  pipe('score', 'active');
+  progress(93);
+  log('═══ Priorização v2 (composite + HIGH PROBABILITY) ═══', 'section');
+  applyPrioritizationV2(findings);
+  stats.high = findings.filter((f) => f.prio === 'high').length;
+  emit({ type: 'stats', stats: { ...stats } });
+  emit({ type: 'findings_rescore', findings });
+
+  const techStrs = findings.filter((f) => f.type === 'tech').map((f) => f.value);
+  const cveHints = extractCveHintsFromTechStrings(techStrs);
+  if (cveHints.length) {
+    log('═══ Versões detectadas → lookup CVE (manual) ═══', 'section');
+    for (const h of cveHints) {
+      const label = `${h.product}${h.version ? ` ${h.version}` : ''}`;
+      log(`🔎 ${label} — NVD: ${h.nvdUrl}`, 'info');
+      log(`   OSV: ${h.osvUrl}`, 'info');
+    }
+  }
+
+  const hpt = topHighProbability(findings, 8);
+  if (hpt.length) {
+    log(`═══ HIGH PROBABILITY TARGET (${hpt.length}) ═══`, 'section');
+    for (const t of hpt) {
+      const w = (t.priorityWhy || []).slice(0, 3).join('; ');
+      log(`🎯 [${t.compositeScore}] ${t.type}: ${String(t.value).slice(0, 100)}${w ? ` — ${w}` : ''}`, 'warn');
+    }
+    emit({
+      type: 'priority_pass',
+      top: hpt.map((f) => ({
+        value: f.value,
+        type: f.type,
+        compositeScore: f.compositeScore,
+        attackTier: f.attackTier,
+        why: f.priorityWhy || [],
+      })),
+    });
+  }
+
+  progress(96);
+  const corr = correlate({
+    subdomainsAlive,
+    endpoints: findings.filter((f) => f.type === 'endpoint').map((f) => f.value),
+    params: paramRows,
+  });
+  log('═══ Correlação ═══', 'section');
+  log(corr.summary, 'info');
+  if (corr.riskyParams.length) {
+    log(`Parâmetros de risco presentes: ${corr.riskyParams.join(', ')}`, 'warn');
+  }
+
+  log('═══ Workflow de testes (checklist) ═══', 'section');
+  const checklist = buildExploitChecklist(findings);
+  for (const c of checklist) {
+    emit({ type: 'intel', line: `☐ CHECKLIST: ${c}` });
+  }
+
+  const hints = suggestVectors({ findings, selectedMods: modules });
+  for (const h of hints) {
+    emit({ type: 'intel', line: h });
+  }
+  pipe('score', 'done');
+  progress(100);
+
+  const modulesForDb = kaliMode ? [...modules, '__kali_scan__'] : modules;
+  const saved = await saveRun({
+    target: domain,
+    exactMatch,
+    modules: modulesForDb,
+    stats: { ...stats },
+    findings,
+    correlation: corr,
+  });
+  let runId = null;
+  let intelMerge = null;
+  if (saved != null) {
+    runId = saved.runId;
+    intelMerge = saved.intelMerge;
+    log(`Recon gravado — run #${runId} → ${storageLabel()}`, 'success');
+    if (intelMerge?.newArtifacts > 0) {
+      log(
+        `Corpus do alvo: +${intelMerge.newArtifacts} artefacto(s) novo(s) na base; ${intelMerge.alreadyKnown} já existiam; total único para ${domain}: ${intelMerge.totalKnownForTarget}`,
+        'success',
+      );
+    } else if (findings.length > 0 && intelMerge) {
+      log(
+        `Corpus do alvo: sem linhas novas (todos os ${intelMerge.alreadyKnown} achados deste run já estavam na base). Total único: ${intelMerge.totalKnownForTarget}`,
+        'info',
+      );
+    }
+  } else {
+    log(`Não foi possível gravar na base (${storageLabel()}) — ver consola do servidor`, 'warn');
+  }
+
+  emit({
+    type: 'done',
+    target: domain,
+    findings,
+    stats,
+    correlation: corr,
+    runId,
+    intelMerge,
+    kaliMode: Boolean(kaliMode),
+    storage: storageLabel(),
+  });
+}
+
+app.post('/api/recon/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  const send = (obj) => {
+    res.write(`${JSON.stringify(obj)}\n`);
+  };
+
+  const domainRaw = req.body?.domain;
+  const modules = Array.isArray(req.body?.modules) ? req.body.modules : [];
+  const exactMatch = Boolean(req.body?.exactMatch);
+  const kaliMode = Boolean(req.body?.kaliMode);
+
+  if (!domainRaw || !isValidDomain(normDomain(domainRaw))) {
+    send({ type: 'error', message: 'Domínio inválido' });
+    res.end();
+    return;
+  }
+
+  const domain = normDomain(domainRaw);
+
+  try {
+    await runPipeline({
+      domain,
+      exactMatch,
+      modules,
+      emit: send,
+      kaliMode,
+    });
+  } catch (e) {
+    send({ type: 'error', message: e?.message || String(e) });
+  }
+  res.end();
+});
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'ghostrecon' });
+});
+
+app.get('/api/capabilities', async (_req, res) => {
+  try {
+    const cap = await getKaliCapabilities();
+    res.json(cap);
+  } catch (e) {
+    res.status(500).json({ kali: false, message: e.message, tools: {} });
+  }
+});
+
+app.get('/api/runs', async (req, res) => {
+  const lim = Number(req.query.limit) || 50;
+  try {
+    const runs = await listRuns(lim);
+    res.json({ runs });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+app.get('/api/runs/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: 'id inválido' });
+    return;
+  }
+  try {
+    const run = await getRunById(id);
+    if (!run) {
+      res.status(404).json({ error: 'run não encontrado' });
+      return;
+    }
+    res.json(run);
+  } catch (e) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+/** Corpus deduplicado por alvo (`bounty_intel` — SQLite ou Supabase). */
+app.get('/api/intel/:target', async (req, res) => {
+  const t = String(req.params.target || '')
+    .trim()
+    .toLowerCase();
+  if (!t || !/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(t)) {
+    res.status(400).json({ error: 'domínio inválido' });
+    return;
+  }
+  try {
+    const [totalUnique, items] = await Promise.all([
+      intelCountForTarget(t),
+      listIntelForTarget(t, 500),
+    ]);
+    res.json({
+      target: t,
+      totalUnique,
+      items,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+app.use(express.static(ROOT, { index: false }));
+app.get('/', (_req, res) => {
+  res.sendFile(path.join(ROOT, 'index.html'));
+});
+
+const PORT = Number(process.env.PORT) || 3847;
+const server = app.listen(PORT, () => {
+  console.log(`GHOSTRECON → http://127.0.0.1:${PORT}`);
+});
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `[GHOSTRECON] Porta ${PORT} em uso. Encerre a instância anterior (ex.: netstat -ano | findstr :${PORT}) ou defina PORT=3850 antes de npm start.`,
+    );
+  } else {
+    console.error('[GHOSTRECON]', err.message);
+  }
+  process.exit(1);
+});
