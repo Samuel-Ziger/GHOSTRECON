@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { fingerprintFinding, norm } from './db-common.js';
+import { fingerprintFinding, findingsForRunsTable, norm } from './db-common.js';
 
 let client = null;
 
@@ -153,7 +153,7 @@ export async function saveRun({ target, exactMatch, modules, stats, findings, co
     if (runErr) throw runErr;
     const runId = Number(runRow.id);
 
-    const rows = findings.map((f) => ({
+    const rows = findingsForRunsTable(t, findings).map((f) => ({
       run_id: runId,
       type: f.type,
       prio: f.prio,

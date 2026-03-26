@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { fingerprintFinding } from './db-common.js';
+import { findingsForRunsTable, fingerprintFinding } from './db-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..', '..');
@@ -164,7 +164,7 @@ export function saveRun({ target, exactMatch, modules, stats, findings, correlat
         });
       }
     });
-    insertAll(findings);
+    insertAll(findingsForRunsTable(target, findings));
 
     const intelMerge = mergeIntelForTarget(target, runId, findings);
 
