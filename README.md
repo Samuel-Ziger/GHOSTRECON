@@ -1,6 +1,6 @@
 # GHOSTRECON
 
-Framework **passivo** de OSINT / recon para bug bounty: subdomínios (crt.sh + opcional **VirusTotal**), DNS, HTTP probing com **análise de cabeçalhos de segurança** e **inspeção TLS** (certificado), Wayback (CDX) + **Common Crawl**, **robots.txt / sitemap.xml** nos hosts vivos, **RDAP** (registo de domínio), extração de parâmetros, análise heurística de JS, detecção de possíveis secrets, geração de Google Dorks (URLs de busca + abertura em abas), **opcionalmente descoberta de URLs via Google Programmable Search (Custom Search JSON API)**, gravação em **Supabase (Postgres)** ou **SQLite** (`data/bugbounty.db`: histórico de runs + corpus **deduplicado** por alvo), **comparação entre runs** (API), **webhook** e **rate limit** opcionais na API, correlação e sugestões de vetores. Interface web dark/red team em `index.html`.
+Framework **passivo** de OSINT / recon para bug bounty: subdomínios (crt.sh + opcional **VirusTotal**), **enriquecimento DNS** (MX/TXT, SPF/DMARC e TXT de verificação), HTTP probing com **análise de cabeçalhos de segurança** e **inspeção TLS** (certificado), descoberta **`.well-known`** (`security.txt`, **OIDC** `openid-configuration`), Wayback (CDX) + **Common Crawl**, **robots.txt / sitemap.xml** nos hosts vivos, **RDAP** (registo de domínio), extração de parâmetros, análise heurística de JS, detecção de possíveis secrets, geração de Google Dorks (URLs de busca + abertura em abas), **opcionalmente descoberta de URLs via Google Programmable Search (Custom Search JSON API)**. Em **Kali** (modo ativo opcional): **subfinder** / **amass** (enum de subdomínios), **whois**, **wpscan** (só se o passivo indicar WordPress), além de nmap/ffuf/nuclei/searchsploit. Gravação em **Supabase (Postgres)** ou **SQLite** (`data/bugbounty.db`: histórico de runs + corpus **deduplicado** por alvo), **comparação entre runs** (API), **webhook** e **rate limit** opcionais na API, correlação e sugestões de vetores. Interface web dark/red team em `index.html`.
 
 ## Requisitos
 
@@ -14,8 +14,7 @@ npm start
 npm test   # testes mínimos (ex.: cabeçalhos de segurança)
 ```
 
-Abra **http://127.0.0.1:3847** (porta alterável com `PORT=3000 npm start`).$env:PORT=3847
- Stop-Process -Id 21460 -Force
+Abra **http://127.0.0.1:3847** (porta alterável com `PORT` no `.env` ou na linha de comando, por exemplo `PORT=3000 npm start` em Linux/macOS; no PowerShell: `$env:PORT=3847; npm start`).
 
 > A UI chama `POST /api/recon/stream`. Abrir só o arquivo `index.html` no disco **não** executa o pipeline — é necessário o servidor.
 
@@ -38,6 +37,11 @@ Abra **http://127.0.0.1:3847** (porta alterável com `PORT=3000 npm start`).$env
 | `GHOSTRECON_RL_MAX` | Máx. recons por IP por janela (predef. `12`; `0` = desligado) |
 | `GHOSTRECON_RL_WINDOW_MS` | Janela do rate limit em ms (predef. `60000`) |
 | `GHOSTRECON_CC_CDX_API` | URL do índice CDX Common Crawl (opcional; senão usa `collinfo.json`) |
+| `GHOSTRECON_WPSCAN_DETECTION_MODE` | Modo do [WPScan](https://github.com/wpscannerteam/wpscan) em JSON (predef. `mixed`) — só no **Modo Kali** e quando o passivo indicar WordPress |
+| `GHOSTRECON_WPSCAN_TIMEOUT_MS` | Timeout do `wpscan` em ms (predef. `240000`) |
+| `GHOSTRECON_WHOIS_SUBDOMAINS_MAX` | Quantidade extra de subdomínios (além do domínio raiz) a consultar com `whois` no Kali (senão usa `whoisSubdomainsMax` em `server/config.js`) |
+| `GHOSTRECON_SUBFINDER_TIMEOUT_MS` | Timeout do `subfinder` em ms (predef. `180000`) — módulo **subfinder** + **Modo Kali** |
+| `GHOSTRECON_AMASS_TIMEOUT_MS` | Timeout do `amass enum -passive` em ms (predef. `240000`) — módulo **amass** + **Modo Kali** |
 
 ### Supabase
 
@@ -87,21 +91,39 @@ API: `GET /api/intel/:target` — lista o corpus deduplicado para o domínio.
 
 > Se tinhas `data/ghostrecon.db`, o novo ficheiro é outro; usa `GHOSTRECON_DB=.../ghostrecon.db` para continuar na base antiga, ou copia/mescla manualmente.
 
+### Módulos OSINT adicionais (UI)
+
+Na secção **OSINT Sources** podes ativar:
+
+- **DNS TXT/MX (SPF/DMARC)** (`dns_enrichment`) — MX, SPF, DMARC (`_dmarc.`), TXT de verificação comuns.
+- **`.well-known/security.txt`** (`wellknown_security_txt`) — GET com concorrência limitada nos origins vivos.
+- **`.well-known/openid-configuration`** (`wellknown_openid`) — descoberta OIDC; endpoints aparecem como `finding` tipo `endpoint`.
+
+Estes blocos usam limites em `server/config.js` (timeouts, concorrência, tamanhos).
+
 ### Modo Kali (scan ativo — opcional)
 
-Em **Kali Linux**, com `nmap` no PATH, a UI permite **Modo Kali**: após a fase passiva, o servidor corre (se existirem):
+Em **Kali Linux**, com `nmap` no PATH, a UI permite **Modo Kali**. O recon **passivo e a enumeração habitual (crt.sh, etc.) continuam a correr primeiro**; depois, se as ferramentas existirem no `PATH`, o servidor pode executar:
+
+**Enumeração de subdomínios (complementar ao crt.sh/VT)** — marcar na UI **Subfinder (Kali)** e/ou **Amass (Kali)**; só efeito com **Modo Kali** ligado. Os hostnames obtidos são mesclados com a lista atual, resolvidos por DNS e seguem o pipeline (probing, etc.). Implementação: `server/modules/kali-subdomain-tools.js` (por defeito `subfinder -d … -silent -all`; `amass enum -passive -d …`).
+
+**Após a fase passiva / probing:**
 
 - **nmap** — `-sV` por defeito (personalizável com `GHOSTRECON_NMAP_ARGS`, ex. `-A -Pn -T4` — mais lento)
+- **whois** — no domínio raiz e numa amostra limitada de subdomínios vivos; `findings` tipo `whois` (campos principais: registrar, datas, NS, país quando existir no texto)
 - **searchsploit** — consultas heurísticas a partir de produto/versão do nmap
 - **ffuf** — wordlist comum, **apenas respostas HTTP 200**
 - **nuclei** — templates contra URLs base (https/http do alvo e hosts com 80/443 no nmap)
+- **wpscan** — só se `wpscan` estiver no PATH **e** o passivo tiver indicado WordPress (`tech`); output JSON é parseado para core, tema e plugins (`findings` tipo `wpscan`)
 
-Requisitos típicos no Kali: `nmap`, `ffuf`, `nuclei`, `searchsploit`, wordlists em `/usr/share/seclists` ou `dirb`.
+Requisitos típicos no Kali: `nmap`, `ffuf`, `nuclei`, `searchsploit`, `whois`, `wpscan` (opcional), `subfinder` / `amass` (opcional), wordlists em `/usr/share/seclists` ou `dirb`.
 
 | Variável | Uso |
 |----------|-----|
 | `GHOSTRECON_FORCE_KALI` | `1` = tratar como Kali (testes em WSL/outra distro com ferramentas) |
 | `GHOSTRECON_NMAP_ARGS` | Argumentos extra do nmap (substitui o padrão `-sV -Pn -T4 --host-timeout 180s`) |
+
+Ver também a tabela de variáveis acima (`GHOSTRECON_WPSCAN_*`, `GHOSTRECON_WHOIS_SUBDOMAINS_MAX`, `GHOSTRECON_SUBFINDER_TIMEOUT_MS`, `GHOSTRECON_AMASS_TIMEOUT_MS`).
 
 **Aviso:** isto é **recon/scan ativo**. Usa apenas em **alvos autorizados**.
 
@@ -133,6 +155,12 @@ goshtrecon/
         ├── github.js
         ├── google-cse.js
         ├── kali-scan.js
+        ├── kali-subdomain-tools.js  # subfinder / amass (Kali + módulos UI)
+        ├── wpscan.js                 # WPScan JSON → findings (Kali)
+        ├── dns-enrichment.js        # MX/TXT/SPF/DMARC
+        ├── wellknown.js             # security.txt + openid-configuration
+        ├── prioritization.js
+        ├── cve-hints.js
         ├── db.js           # Fachada: Supabase se env definido, senão SQLite
         ├── db-sqlite.js
         ├── db-supabase.js   # Cliente REST (@supabase/supabase-js)
@@ -167,17 +195,17 @@ Crie `server/modules/minha-fonte.js` exportando funções puras/async, importe e
 
 ### Limites e performance
 
-Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurrency`, `probeTimeoutMs`, `googleCseMaxQueries`, `googleCseDelayMs`).
+Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurrency`, `probeTimeoutMs`, `googleCseMaxQueries`, `googleCseDelayMs`, limites DNS enrichment, `/.well-known`, WHOIS no Kali, etc.).
 
 ## API
 
 - `GET /api/health` — status.
-- `GET /api/capabilities` — deteta Kali + ferramentas (`nmap`, `ffuf`, `nuclei`, `searchsploit`).
+- `GET /api/capabilities` — deteta Kali + ferramentas (`nmap`, `ffuf`, `nuclei`, `searchsploit`, `wpscan`, `whois`, etc.).
 - `GET /api/runs?limit=50` — lista recons gravados (metadados + stats).
 - `GET /api/runs/:id` — recon completo com `findings`.
 - `GET /api/runs/:newerId/diff/:baselineId` — compara dois runs do **mesmo** alvo: `added` / `removed` (fingerprints iguais ao corpus `bounty_intel`).
 - `GET /api/intel/:domain` — artefactos únicos acumulados para o alvo (`bounty_intel`).
-- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "modules": ["subdomains", "wayback", "common_crawl", "security_headers", "robots_sitemap", "rdap", "virustotal", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding`, `dork`, `intel`, `done` (inclui `runId` se gravado), `error`. Rate limit opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`.
+- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "kaliMode": false, "modules": ["subdomains", "dns_enrichment", "wellknown_security_txt", "wellknown_openid", "wayback", "subfinder", "amass", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding`, `dork`, `intel`, `done` (inclui `runId` se gravado), `error`. Rate limit opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`. Os módulos `subfinder` e `amass` só complementam subdomínios quando `kaliMode` é `true` e a ferramenta existe no sistema.
 
 ## Docker
 
