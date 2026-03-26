@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawn } from 'node:child_process';
+import { limits } from '../config.js';
 import { runWpscanJson, extractWpscanFindings } from './wpscan.js';
 
 const WORDLISTS = [
@@ -47,6 +48,7 @@ export async function getKaliCapabilities() {
     ffuf: await pathWhich('ffuf'),
     searchsploit: await pathWhich('searchsploit'),
     wpscan: await pathWhich('wpscan'),
+    whois: await pathWhich('whois'),
   };
 
   const ready = qualifyDistro && tools.nmap;
@@ -279,10 +281,79 @@ async function runNucleiList(urls, log) {
   }
 }
 
+function pickFirstMatch(re, text) {
+  const m = String(text || '').match(re);
+  return m?.[1] ? String(m[1]).trim() : null;
+}
+
+function pickAllMatches(re, text, limit = 8) {
+  const out = [];
+  const s = String(text || '');
+  let m;
+  // eslint-disable-next-line no-constant-condition
+  while ((m = re.exec(s)) !== null) {
+    if (m[1]) out.push(String(m[1]).trim());
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function parseWhoisText(domainOrHost, whoisText) {
+  // Formatos variam por registrar; usamos regexes comuns.
+  const registrar = pickFirstMatch(/Registrar:\s*(.+)$/im, whoisText) || pickFirstMatch(/registrar:\s*(.+)$/im, whoisText);
+  const registrantCountry =
+    pickFirstMatch(/Registrant Country:\s*(.+)$/im, whoisText) || pickFirstMatch(/country:\s*(.+)$/im, whoisText);
+  const created =
+    pickFirstMatch(/Creation Date:\s*(.+)$/im, whoisText) ||
+    pickFirstMatch(/created on:\s*(.+)$/im, whoisText) ||
+    pickFirstMatch(/Created:\s*(.+)$/im, whoisText);
+  const updated =
+    pickFirstMatch(/Updated Date:\s*(.+)$/im, whoisText) || pickFirstMatch(/updated on:\s*(.+)$/im, whoisText);
+  const expires =
+    pickFirstMatch(/Registry Expiry Date:\s*(.+)$/im, whoisText) ||
+    pickFirstMatch(/Expiry Date:\s*(.+)$/im, whoisText) ||
+    pickFirstMatch(/expires on:\s*(.+)$/im, whoisText);
+
+  // Alguns whois usam "Name Server:" e outros "nserver:".
+  const nameServers =
+    pickAllMatches(/Name Server:\s*(.+)$/gim, whoisText, 10).length
+      ? pickAllMatches(/Name Server:\s*(.+)$/gim, whoisText, 10)
+      : pickAllMatches(/nserver:\s*(.+)$/gim, whoisText, 10);
+
+  // Se quase nada vier, não cria achado “vazio”.
+  const hasSomething = Boolean(registrar || created || expires || nameServers.length);
+  return {
+    hasSomething,
+    registrar,
+    registrantCountry,
+    created,
+    updated,
+    expires,
+    nameServers,
+    domainOrHost,
+  };
+}
+
+async function runWhoisJsonLike({ target, timeoutMs, log }) {
+  // quem usa whois no Kali geralmente tem o CLI "whois".
+  // Não normalizamos em JSON: apenas parseamos texto com regexes.
+  const proc = await runProc('whois', [target], timeoutMs);
+  const text = [proc.stdout, proc.stderr].filter(Boolean).join('\n').slice(0, 220_000);
+  if (typeof log === 'function' && text.includes('No match')) log(`whois: sem match para ${target}`, 'info');
+  return { ok: proc.code === 0, text };
+}
+
 /**
  * Scan ativo: nmap → searchsploit (heurístico) → ffuf (só HTTP 200) → nuclei.
  */
-export async function runKaliAggressiveScan({ domain, subdomainsAlive, cap, log, addFinding }) {
+export async function runKaliAggressiveScan({
+  domain,
+  subdomainsAlive,
+  cap,
+  log,
+  addFinding,
+  wordpressTargets,
+}) {
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
   const hosts = [...new Set(rawHosts)].slice(0, 22);
 
@@ -344,6 +415,55 @@ export async function runKaliAggressiveScan({ domain, subdomainsAlive, cap, log,
     }
   }
 
+  // ── WHOIS (Kali) ──
+  // WHOIS é leitura externa (não é exploit), mas ainda assim é "ativo". Mantemos só quando ferramenta existe
+  // e com amostra limitada de subdomínios para não explodir tempo.
+  if (cap.tools.whois) {
+    log('═══ whois (registo domínio) ═══', 'section');
+
+    const whoisTargets = [domain, ...(subdomainsAlive || [])]
+      .map(sanitizeHost)
+      .filter(Boolean)
+      .slice(0, 1 + (process.env.GHOSTRECON_WHOIS_SUBDOMAINS_MAX ? Number(process.env.GHOSTRECON_WHOIS_SUBDOMAINS_MAX) : limits.whoisSubdomainsMax));
+
+    // Normalmente whois em subdomínios devolve o mesmo registo do domínio raiz.
+    // Ainda assim, seguimos a tua ideia e executamos numa amostra pequena.
+    for (const t of whoisTargets) {
+      try {
+        const { text } = await runWhoisJsonLike({ target: t, timeoutMs: limits.whoisTimeoutMs, log });
+        const parsed = parseWhoisText(t, text);
+        if (!parsed.hasSomething) continue;
+        const ns = parsed.nameServers?.slice(0, 6) || [];
+        const valueParts = [
+          parsed.registrar ? `Registrar: ${parsed.registrar}` : null,
+          parsed.expires ? `Expires: ${parsed.expires}` : null,
+          parsed.created ? `Created: ${parsed.created}` : null,
+        ].filter(Boolean);
+
+        addFinding(
+          {
+            type: 'whois',
+            prio: 'low',
+            score: 26,
+            value: valueParts.length ? valueParts.join(' | ') : `whois: ${t}`,
+            meta: [
+              parsed.domainOrHost ? `Target: ${parsed.domainOrHost}` : null,
+              parsed.registrantCountry ? `Country: ${parsed.registrantCountry}` : null,
+              ns.length ? `NS: ${ns.join(', ')}` : null,
+              parsed.updated ? `Updated: ${parsed.updated}` : null,
+            ]
+              .filter(Boolean)
+              .join(' • '),
+            url: null,
+          },
+          null,
+        );
+      } catch (e) {
+        log(`whois ${t}: ${e.message}`, 'warn');
+      }
+    }
+  }
+
   if (cap.tools.ffuf) {
     log('═══ ffuf (apenas HTTP 200) ═══', 'section');
     const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 5);
@@ -395,23 +515,30 @@ export async function runKaliAggressiveScan({ domain, subdomainsAlive, cap, log,
     const timeoutMs = Number(process.env.GHOSTRECON_WPSCAN_TIMEOUT_MS || 240000);
 
     log('═══ wpscan (WordPress enumeration) ═══', 'section');
-    const targets = [`http://${domain}/`, `https://${domain}/`];
-    for (const t of targets) {
-      const res = await runWpscanJson({ targetUrl: t, detectionMode, timeoutMs, log });
-      if (res?.json) {
-        const findings = extractWpscanFindings({ targetUrl: t, wpscanJson: res.json });
-        if (findings.length) log(`wpscan ${t} → ${findings.length} finding(s)`, 'success');
-        for (const f of findings) addFinding(f, null);
-      } else {
-        addFinding({
-          type: 'wpscan',
-          prio: 'low',
-          score: 10,
-          value: `wpscan failed @ ${t}`,
-          meta: res?.error || 'unknown error',
-          url: t,
-        });
-        log(`wpscan ${t}: sem JSON (${res?.error || 'unknown'})`, 'warn');
+    const targets = Array.isArray(wordpressTargets) ? wordpressTargets : null;
+
+    if (!targets || targets.length === 0) {
+      log('wpscan: WordPress não confirmado no passivo — skip', 'info');
+    } else {
+      const uniqTargets = [...new Set(targets)].slice(0, 6);
+      log(`wpscan: ${uniqTargets.length} target(s) (WordPress)`, 'info');
+      for (const t of uniqTargets) {
+        const res = await runWpscanJson({ targetUrl: t, detectionMode, timeoutMs, log });
+        if (res?.json) {
+          const findings = extractWpscanFindings({ targetUrl: t, wpscanJson: res.json });
+          if (findings.length) log(`wpscan ${t} → ${findings.length} finding(s)`, 'success');
+          for (const f of findings) addFinding(f, null);
+        } else {
+          addFinding({
+            type: 'wpscan',
+            prio: 'low',
+            score: 10,
+            value: `wpscan failed @ ${t}`,
+            meta: res?.error || 'unknown error',
+            url: t,
+          });
+          log(`wpscan ${t}: sem JSON (${res?.error || 'unknown'})`, 'warn');
+        }
       }
     }
   }

@@ -34,6 +34,9 @@ export const limits = {
   wellKnownSecurityTxtTimeoutMs: 8000,
   wellKnownOpenIdTimeoutMs: 9000,
   wellKnownOpenIdMaxEndpoints: 10,
+  /** WHOIS (Kali mode) */
+  whoisTimeoutMs: 20000,
+  whoisSubdomainsMax: 3,
 };
 
 /** Rate limit POST /api/recon/stream (por IP). 0 = desativado */

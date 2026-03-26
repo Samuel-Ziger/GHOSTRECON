@@ -140,6 +140,7 @@ async function runPipeline(ctx) {
       allSubs = [...new Set([...allSubs, ...vtHostnames])];
       if (allSubs.length > before) log(`VirusTotal fundido em enum: +${allSubs.length - before} nome(s)`, 'info');
     }
+
     const capped = allSubs.filter((s) => s !== domain).slice(0, 150);
     log(`Resolvendo DNS (máx. ${capped.length} hosts)...`, 'info');
     for (const host of capped) {
@@ -659,7 +660,36 @@ async function runPipeline(ctx) {
     progress(86);
     const cap = await getKaliCapabilities();
     if (cap.kali) {
-      await runKaliAggressiveScan({ domain, subdomainsAlive, cap, log, addFinding });
+      // Só roda wpscan se o passivo já indicou WordPress.
+      // Evidência vem de findings do tipo "tech" (geradas no probeHttp).
+      const wpHosts = new Set();
+      for (const f of findings) {
+        if (f?.type !== 'tech') continue;
+        const v = String(f.value || '');
+        if (!/wordpress/i.test(v)) continue;
+        const meta = String(f.meta || '');
+        const m = meta.match(/Detectado em\s+(.+)\s*$/i);
+        if (m?.[1]) wpHosts.add(m[1]);
+      }
+
+      const wordpressTargets = [...wpHosts]
+        .slice(0, 10)
+        .map((h) => {
+          const origin = originByHost.get(h)?.origin;
+          if (origin) return origin;
+          return [`https://${h}/`, `http://${h}/`];
+        })
+        .flat()
+        .filter(Boolean);
+
+      await runKaliAggressiveScan({
+        domain,
+        subdomainsAlive,
+        cap,
+        log,
+        addFinding,
+        wordpressTargets,
+      });
     } else {
       log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
     }
