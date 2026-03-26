@@ -1,6 +1,6 @@
 # GHOSTRECON
 
-Framework **passivo** de OSINT / recon para bug bounty: subdomínios (crt.sh), DNS, HTTP probing, Wayback (CDX), extração de parâmetros, análise heurística de JS, detecção de possíveis secrets, geração de Google Dorks (URLs de busca + abertura em abas), **opcionalmente descoberta de URLs via Google Programmable Search (Custom Search JSON API)**, gravação em **Supabase (Postgres)** ou **SQLite** (`data/bugbounty.db`: histórico de runs + corpus **deduplicado** por alvo), correlação e sugestões de vetores. Interface web dark/red team em `index.html`.
+Framework **passivo** de OSINT / recon para bug bounty: subdomínios (crt.sh + opcional **VirusTotal**), DNS, HTTP probing com **análise de cabeçalhos de segurança** e **inspeção TLS** (certificado), Wayback (CDX) + **Common Crawl**, **robots.txt / sitemap.xml** nos hosts vivos, **RDAP** (registo de domínio), extração de parâmetros, análise heurística de JS, detecção de possíveis secrets, geração de Google Dorks (URLs de busca + abertura em abas), **opcionalmente descoberta de URLs via Google Programmable Search (Custom Search JSON API)**, gravação em **Supabase (Postgres)** ou **SQLite** (`data/bugbounty.db`: histórico de runs + corpus **deduplicado** por alvo), **comparação entre runs** (API), **webhook** e **rate limit** opcionais na API, correlação e sugestões de vetores. Interface web dark/red team em `index.html`.
 
 ## Requisitos
 
@@ -11,9 +11,11 @@ Framework **passivo** de OSINT / recon para bug bounty: subdomínios (crt.sh), D
 ```bash
 npm install
 npm start
+npm test   # testes mínimos (ex.: cabeçalhos de segurança)
 ```
 
-Abra **http://127.0.0.1:3847** (porta alterável com `PORT=3000 npm start`).
+Abra **http://127.0.0.1:3847** (porta alterável com `PORT=3000 npm start`).$env:PORT=3847
+ Stop-Process -Id 21460 -Force
 
 > A UI chama `POST /api/recon/stream`. Abrir só o arquivo `index.html` no disco **não** executa o pipeline — é necessário o servidor.
 
@@ -31,6 +33,11 @@ Abra **http://127.0.0.1:3847** (porta alterável com `PORT=3000 npm start`).
 | `SUPABASE_ANON_KEY` | Chave **anon** (JWT) do dashboard — uso típico no servidor com `.env` (não commits) |
 | `SUPABASE_PUBLISHABLE_KEY` | Alternativa à anon, se usares a chave publishable do projeto |
 | `SUPABASE_SERVICE_ROLE_KEY` | Opcional: no **servidor** apenas; ignora RLS — preferível em produção com políticas restritas |
+| `VIRUSTOTAL_API_KEY` | Subdomínios via API (módulo **virustotal** na UI) |
+| `GHOSTRECON_WEBHOOK_URL` | `POST` JSON após recon gravado (`runId`, `target`, `stats`, …) |
+| `GHOSTRECON_RL_MAX` | Máx. recons por IP por janela (predef. `12`; `0` = desligado) |
+| `GHOSTRECON_RL_WINDOW_MS` | Janela do rate limit em ms (predef. `60000`) |
+| `GHOSTRECON_CC_CDX_API` | URL do índice CDX Common Crawl (opcional; senão usa `collinfo.json`) |
 
 ### Supabase
 
@@ -133,7 +140,15 @@ goshtrecon/
         ├── db-common.js
         ├── scoring.js
         ├── correlation.js
-        └── intelligence.js
+        ├── intelligence.js
+        ├── security-headers.js
+        ├── tls-cert.js
+        ├── robots-sitemap.js
+        ├── commoncrawl.js
+        ├── rdap.js
+        ├── virustotal.js
+        ├── db-compare.js
+        └── webhook-notify.js
 ```
 
 ## Como expandir
@@ -160,8 +175,18 @@ Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurren
 - `GET /api/capabilities` — deteta Kali + ferramentas (`nmap`, `ffuf`, `nuclei`, `searchsploit`).
 - `GET /api/runs?limit=50` — lista recons gravados (metadados + stats).
 - `GET /api/runs/:id` — recon completo com `findings`.
+- `GET /api/runs/:newerId/diff/:baselineId` — compara dois runs do **mesmo** alvo: `added` / `removed` (fingerprints iguais ao corpus `bounty_intel`).
 - `GET /api/intel/:domain` — artefactos únicos acumulados para o alvo (`bounty_intel`).
-- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "modules": ["subdomains", "wayback", "google_cse", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding`, `dork`, `intel`, `done` (inclui `runId` se gravado), `error`.
+- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "modules": ["subdomains", "wayback", "common_crawl", "security_headers", "robots_sitemap", "rdap", "virustotal", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding`, `dork`, `intel`, `done` (inclui `runId` se gravado), `error`. Rate limit opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`.
+
+## Docker
+
+Na raiz do repo (expõe a porta `3847`; define `DATABASE_URL` ou SQLite montado em `data/`):
+
+```bash
+docker build -t ghostrecon .
+docker run --rm -p 3847:3847 --env-file .env ghostrecon
+```
 
 ## Exportação
 

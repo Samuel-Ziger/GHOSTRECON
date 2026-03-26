@@ -34,6 +34,14 @@ function baseMultiplierFromMeta(meta) {
     x *= 1.05;
     reasons.push('histórico Wayback');
   }
+  if (m.includes('common crawl')) {
+    x *= 1.05;
+    reasons.push('Common Crawl');
+  }
+  if (m.includes('robots/sitemap')) {
+    x *= 1.08;
+    reasons.push('descoberto via robots/sitemap');
+  }
   return { x, reasons };
 }
 

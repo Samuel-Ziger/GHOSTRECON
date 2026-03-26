@@ -6,6 +6,30 @@ function extractTitle(html) {
   return m ? m[1].trim().replace(/\s+/g, ' ') : '';
 }
 
+/** Cabeçalhos relevantes para análise de superfície (sem armazenar corpo). */
+export function snapshotSecurityHeaders(headers) {
+  const get = (n) => headers.get(n) || '';
+  const snap = {
+    strictTransportSecurity: get('strict-transport-security'),
+    contentSecurityPolicy: get('content-security-policy'),
+    xFrameOptions: get('x-frame-options'),
+    xContentTypeOptions: get('x-content-type-options'),
+    permissionsPolicy: get('permissions-policy'),
+    referrerPolicy: get('referrer-policy'),
+    crossOriginOpenerPolicy: get('cross-origin-opener-policy'),
+    crossOriginEmbedderPolicy: get('cross-origin-embedder-policy'),
+    server: get('server'),
+    setCookieSample: [],
+  };
+  if (typeof headers.getSetCookie === 'function') {
+    snap.setCookieSample = headers.getSetCookie().slice(0, 6);
+  } else {
+    const sc = get('set-cookie');
+    if (sc) snap.setCookieSample = [sc];
+  }
+  return snap;
+}
+
 export async function probeHttp(url) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), limits.probeTimeoutMs);
@@ -24,12 +48,14 @@ export async function probeHttp(url) {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(slice);
     const title = extractTitle(text);
     const tech = detectTech(res.headers, text);
+    const securityHeaders = snapshotSecurityHeaders(res.headers);
     return {
       ok: true,
       url: res.url,
       status: res.status,
       title,
       tech,
+      securityHeaders,
     };
   } catch (e) {
     return {

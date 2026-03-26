@@ -5,6 +5,14 @@ import { fileURLToPath } from 'url';
 import { fetchCrtShSubdomains } from './modules/subdomains.js';
 import { resolves } from './modules/dns.js';
 import { probeHttp, mapPool } from './modules/probe.js';
+import { analyzeSecurityHeaders } from './modules/security-headers.js';
+import { peekTlsCertificate } from './modules/tls-cert.js';
+import { crawlRobotsAndSitemapsForOrigin, hostnameInScope } from './modules/robots-sitemap.js';
+import { fetchCommonCrawlUrls } from './modules/commoncrawl.js';
+import { fetchRdapSummary } from './modules/rdap.js';
+import { fetchVirustotalSubdomains } from './modules/virustotal.js';
+import { compareRuns } from './modules/db-compare.js';
+import { postReconWebhook } from './modules/webhook-notify.js';
 import { fetchWaybackUrls, filterInterestingUrls, extractJsUrls } from './modules/wayback.js';
 import { extractParamsFromUrls } from './modules/params.js';
 import { analyzeJsUrl } from './modules/js-analyzer.js';
@@ -16,7 +24,7 @@ import { correlate } from './modules/correlation.js';
 import { suggestVectors, buildExploitChecklist } from './modules/intelligence.js';
 import { applyPrioritizationV2, topHighProbability } from './modules/prioritization.js';
 import { extractCveHintsFromTechStrings } from './modules/cve-hints.js';
-import { limits } from './config.js';
+import { limits, reconRateLimitConfig } from './config.js';
 import {
   saveRun,
   listRuns,
@@ -29,6 +37,22 @@ import { googleCseSearch, urlMatchesTarget } from './modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const reconRlHits = new Map();
+
+function allowReconRequest(req) {
+  const { max, windowMs } = reconRateLimitConfig();
+  if (max <= 0) return true;
+  const ip = String(
+    req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '_',
+  );
+  const now = Date.now();
+  const arr = (reconRlHits.get(ip) || []).filter((t) => now - t < windowMs);
+  if (arr.length >= max) return false;
+  arr.push(now);
+  reconRlHits.set(ip, arr);
+  return true;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -76,6 +100,8 @@ async function runPipeline(ctx) {
 
   let subdomainsAlive = [];
   const probedHosts = new Set();
+  const seenEp = new Set();
+  let vtHostnames = [];
 
   log(`Alvo: ${domain} | Módulos: ${modules.join(', ')}`, 'info');
   log(exactMatch ? 'Modo: exact match (aspas nos dorks)' : 'Modo: broad match', 'info');
@@ -86,6 +112,16 @@ async function runPipeline(ctx) {
   pipe('input', 'done');
 
   // ── SUBDOMAINS ──────────────────────────────
+  if (modules.includes('virustotal')) {
+    const vt = await fetchVirustotalSubdomains(domain, process.env.VIRUSTOTAL_API_KEY);
+    if (vt.ok && vt.items?.length) {
+      vtHostnames = vt.items;
+      log(`VirusTotal: ${vtHostnames.length} hostname(s)`, 'success');
+    } else {
+      log(vt.note || 'VirusTotal: sem dados', vt.ok ? 'info' : 'warn');
+    }
+  }
+
   let allSubs = [];
   if (modules.includes('subdomains')) {
     pipe('subdomains', 'active');
@@ -96,6 +132,11 @@ async function runPipeline(ctx) {
       log(`${allSubs.length} nomes únicos em CT logs`, 'success');
     } catch (e) {
       log(`crt.sh: ${e.message}`, 'warn');
+    }
+    if (vtHostnames.length) {
+      const before = allSubs.length;
+      allSubs = [...new Set([...allSubs, ...vtHostnames])];
+      if (allSubs.length > before) log(`VirusTotal fundido em enum: +${allSubs.length - before} nome(s)`, 'info');
     }
     const capped = allSubs.filter((s) => s !== domain).slice(0, 150);
     log(`Resolvendo DNS (máx. ${capped.length} hosts)...`, 'info');
@@ -127,10 +168,38 @@ async function runPipeline(ctx) {
     pipe('subdomains', 'done');
   }
 
+  if (modules.includes('rdap')) {
+    pipe('rdap', 'active');
+    progress(18);
+    log('Consultando RDAP (registo de domínio)...', 'info');
+    try {
+      const rd = await fetchRdapSummary(domain);
+      addFinding(
+        {
+          type: 'rdap',
+          prio: 'low',
+          score: 24,
+          value: rd.handle || domain,
+          meta: `Estado: ${rd.statuses || '—'} · NS: ${(rd.nameservers || []).slice(0, 10).join(', ') || '—'}`,
+        },
+        null,
+      );
+      if (rd.events?.length) log(`RDAP: ${rd.events.join(' | ')}`, 'info');
+    } catch (e) {
+      log(`RDAP: ${e.message}`, 'warn');
+    }
+    pipe('rdap', 'done');
+  } else {
+    emit({ type: 'pipe', name: 'rdap', state: 'skip' });
+  }
+
   // ── ALIVE / PROBE ───────────────────────────
   pipe('alive', 'active');
   progress(28);
-  const hostsToProbe = [domain, ...new Set(subdomainsAlive)].slice(0, 80);
+  const hostsToProbe = [
+    domain,
+    ...new Set([...subdomainsAlive, ...(modules.includes('subdomains') ? [] : vtHostnames)]),
+  ].slice(0, 80);
   const urlsToProbe = [];
   for (const h of hostsToProbe) {
     urlsToProbe.push(`https://${h}/`, `http://${h}/`);
@@ -162,6 +231,123 @@ async function runPipeline(ctx) {
       }
     }
   }
+
+  if (modules.includes('security_headers')) {
+    for (const { r } of probeResults) {
+      if (!r.ok || !r.securityHeaders) continue;
+      if (r.status <= 0 || r.status >= 500) continue;
+      let host;
+      try {
+        host = new URL(r.url).hostname;
+      } catch {
+        continue;
+      }
+      for (const issue of analyzeSecurityHeaders(r.url, r.securityHeaders)) {
+        addFinding(
+          {
+            type: 'security',
+            prio: issue.prio,
+            score: issue.score,
+            value: `${issue.text} @ ${host}`,
+            meta: `HTTP ${r.status}`,
+            url: r.url,
+          },
+          null,
+        );
+      }
+    }
+  }
+
+  const originByHost = new Map();
+  for (const { r } of probeResults) {
+    if (!r.ok || r.status <= 0 || r.status >= 500) continue;
+    let u;
+    try {
+      u = new URL(r.url);
+    } catch {
+      continue;
+    }
+    if (!hostnameInScope(u.hostname, domain)) continue;
+    const prefer = u.protocol === 'https:' ? 2 : 1;
+    const cur = originByHost.get(u.hostname);
+    if (!cur || prefer > cur.prefer) {
+      const port = u.port ? `:${u.port}` : '';
+      originByHost.set(u.hostname, { origin: `${u.protocol}//${u.hostname}${port}/`, prefer });
+    }
+  }
+
+  const runSurface = modules.includes('security_headers') || modules.includes('robots_sitemap');
+  if (runSurface) {
+    pipe('surface', 'active');
+    progress(33);
+    if (modules.includes('security_headers')) {
+      const hostsTls = [...originByHost.entries()].filter(([, v]) => v.prefer === 2).map(([h]) => h);
+      if (hostsTls.length) log(`Inspeção TLS (${hostsTls.length} host HTTPS)...`, 'info');
+      await mapPool(hostsTls, limits.surfaceConcurrency, async (hostname) => {
+        const cert = await peekTlsCertificate(hostname, 443, limits.tlsProbeTimeoutMs);
+        if (cert.ok) {
+          const soon = cert.daysLeft != null && cert.daysLeft < 30;
+          addFinding(
+            {
+              type: 'tls',
+              prio: soon ? 'med' : 'low',
+              score: soon ? 52 : 28,
+              value: `${hostname} — cert válido até ${cert.validTo || '?'}`,
+              meta: `Assunto: ${cert.subject || '—'} · Emissor: ${cert.issuer || '—'}${cert.daysLeft != null ? ` · ~${cert.daysLeft}d` : ''}`,
+              url: `https://${hostname}/`,
+            },
+            null,
+          );
+        }
+      });
+    }
+    if (modules.includes('robots_sitemap')) {
+      const bases = [...originByHost.values()].map((v) => v.origin);
+      log(`robots.txt / sitemap (${bases.length} origem(ns))...`, 'info');
+      await mapPool(bases, limits.surfaceConcurrency, async (baseOrigin) => {
+        const crawl = await crawlRobotsAndSitemapsForOrigin(baseOrigin, domain);
+        for (const p of (crawl.disallowHints || []).slice(0, 20)) {
+          addFinding(
+            {
+              type: 'intel',
+              prio: 'low',
+              score: 36,
+              value: `robots Disallow: ${p}`,
+              meta: crawl.robotsUrl || baseOrigin,
+              url: crawl.robotsUrl || baseOrigin,
+            },
+            null,
+          );
+        }
+        for (const pageUrl of crawl.pageUrls || []) {
+          let pathname = '/';
+          try {
+            pathname = new URL(pageUrl).pathname;
+          } catch {
+            continue;
+          }
+          const { score, prio } = scoreEndpointPath(pathname);
+          if (seenEp.has(pageUrl)) continue;
+          seenEp.add(pageUrl);
+          addFinding(
+            {
+              type: 'endpoint',
+              prio,
+              score: Math.max(score, 44),
+              value: pageUrl,
+              meta: `robots/sitemap • ${new URL(baseOrigin).hostname}`,
+              url: pageUrl,
+            },
+            'endpoints',
+          );
+        }
+      });
+    }
+    pipe('surface', 'done');
+  } else {
+    emit({ type: 'pipe', name: 'surface', state: 'skip' });
+  }
+
   pipe('alive', 'done');
   progress(40);
 
@@ -180,10 +366,23 @@ async function runPipeline(ctx) {
     log('Wayback desativado', 'info');
   }
 
-  const interesting = filterInterestingUrls(waybackUrls);
+  let ccUrls = [];
+  if (modules.includes('common_crawl')) {
+    log('Common Crawl (índice CDX)...', 'info');
+    try {
+      ccUrls = await fetchCommonCrawlUrls(domain);
+      log(`${ccUrls.length} URLs únicas (200) no Common Crawl`, 'success');
+    } catch (e) {
+      log(`Common Crawl: ${e.message}`, 'warn');
+    }
+  }
+
+  const urlCorpus = [...new Set([...waybackUrls, ...ccUrls])];
+  const waybackSet = new Set(waybackUrls);
+  const ccSet = new Set(ccUrls);
+  const interesting = filterInterestingUrls(urlCorpus);
   log(`${interesting.length} URLs marcadas como interessantes (filtro heurístico)`, 'info');
 
-  const seenEp = new Set();
   for (const rawUrl of interesting.slice(0, 400)) {
     let pathname = '/';
     try {
@@ -194,13 +393,14 @@ async function runPipeline(ctx) {
     const { score, prio } = scoreEndpointPath(pathname);
     if (seenEp.has(rawUrl)) continue;
     seenEp.add(rawUrl);
+    const src = waybackSet.has(rawUrl) ? 'Wayback' : ccSet.has(rawUrl) ? 'Common Crawl' : 'arquivo web';
     addFinding(
       {
         type: 'endpoint',
         prio,
         score,
         value: rawUrl,
-        meta: `Score ${score}/100 • Wayback`,
+        meta: `Score ${score}/100 • ${src}`,
         url: rawUrl,
       },
       'endpoints',
@@ -211,7 +411,7 @@ async function runPipeline(ctx) {
 
   // ── PARAMS ──────────────────────────────────
   pipe('params', 'active');
-  const paramRows = extractParamsFromUrls(waybackUrls.length ? waybackUrls : interesting);
+  const paramRows = extractParamsFromUrls(urlCorpus.length ? urlCorpus : interesting);
   for (const { name, count } of paramRows.slice(0, 60)) {
     const { score, prio } = scoreParamName(name);
     const vuln =
@@ -233,7 +433,7 @@ async function runPipeline(ctx) {
 
   // ── JS ANALYSIS ─────────────────────────────
   pipe('js', 'active');
-  const jsList = extractJsUrls(waybackUrls.length ? waybackUrls : [], 120).slice(0, limits.maxJsFetch);
+  const jsList = extractJsUrls(urlCorpus.length ? urlCorpus : [], 120).slice(0, limits.maxJsFetch);
   log(`Analisando ${jsList.length} arquivos JS (passivo)...`, 'info');
   for (const jsUrl of jsList) {
     const a = await analyzeJsUrl(jsUrl);
@@ -506,6 +706,18 @@ async function runPipeline(ctx) {
     kaliMode: Boolean(kaliMode),
     storage: storageLabel(),
   });
+
+  const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
+  if (whUrl && runId != null) {
+    void postReconWebhook(whUrl, {
+      target: domain,
+      runId,
+      stats,
+      intelMerge,
+      kaliMode: Boolean(kaliMode),
+      modules: modulesForDb,
+    });
+  }
 }
 
 app.post('/api/recon/stream', async (req, res) => {
@@ -516,6 +728,12 @@ app.post('/api/recon/stream', async (req, res) => {
   const send = (obj) => {
     res.write(`${JSON.stringify(obj)}\n`);
   };
+
+  if (!allowReconRequest(req)) {
+    send({ type: 'error', message: 'Rate limit — aguarde antes de novo recon' });
+    res.end();
+    return;
+  }
 
   const domainRaw = req.body?.domain;
   const modules = Array.isArray(req.body?.modules) ? req.body.modules : [];
@@ -580,6 +798,26 @@ app.get('/api/runs/:id', async (req, res) => {
       return;
     }
     res.json(run);
+  } catch (e) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+/** Diff entre dois runs do mesmo alvo (fingerprints como `bounty_intel`). */
+app.get('/api/runs/:newerId/diff/:baselineId', async (req, res) => {
+  const newerId = Number(req.params.newerId);
+  const baselineId = Number(req.params.baselineId);
+  if (!Number.isFinite(newerId) || !Number.isFinite(baselineId)) {
+    res.status(400).json({ error: 'ids inválidos' });
+    return;
+  }
+  try {
+    const result = await compareRuns(baselineId, newerId);
+    if (result.error) {
+      res.status(result.error === 'run não encontrado' ? 404 : 400).json(result);
+      return;
+    }
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e?.message || String(e) });
   }

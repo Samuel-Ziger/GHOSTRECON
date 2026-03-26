@@ -73,6 +73,11 @@ export const DORK_TEMPLATES = {
   wayback: [],
   /** Descoberta via Google Custom Search API (chaves em env), não gera query própria */
   google_cse: [],
+  common_crawl: [],
+  robots_sitemap: [],
+  rdap: [],
+  security_headers: [],
+  virustotal: [],
 };
 
 const HIGH_DORK = new Set([

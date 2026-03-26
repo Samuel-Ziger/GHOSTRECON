@@ -19,7 +19,11 @@ function sanitizeHost(h) {
 
 async function pathWhich(cmd) {
   return new Promise((resolve) => {
-    const p = spawn('which', [cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const finder = process.platform === 'win32' ? 'where' : 'which';
+    const p = spawn(finder, [cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    // No Windows (e ambientes sem PATH completo), spawn pode falhar (ex.: "which" não existe).
+    // A detecção de ferramentas é opcional; não pode derrubar o servidor.
+    p.on('error', () => resolve(false));
     p.on('close', (c) => resolve(c === 0));
   });
 }

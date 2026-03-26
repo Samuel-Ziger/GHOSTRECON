@@ -819,6 +819,10 @@
   .type-nmap { background: rgba(100,200,255,0.1); color: #66ccff; border: 1px solid rgba(100,200,255,0.35); }
   .type-exploit { background: rgba(255,80,120,0.15); color: #ff6b9d; border: 1px solid rgba(255,80,120,0.4); }
   .type-nuclei { background: rgba(255,140,0,0.12); color: #ffaa55; border: 1px solid rgba(255,140,0,0.35); }
+  .type-security { background: rgba(0,200,180,0.1); color: #55ddcc; border: 1px solid rgba(0,200,180,0.35); }
+  .type-tls { background: rgba(120,160,255,0.1); color: #88aaff; border: 1px solid rgba(120,160,255,0.35); }
+  .type-rdap { background: rgba(160,160,200,0.12); color: #b8b8d8; border: 1px solid rgba(160,160,200,0.35); }
+  .type-intel { background: rgba(100,140,120,0.12); color: #88bbaa; border: 1px solid rgba(100,140,120,0.35); }
 
   .finding-score {
     margin-left: auto;
@@ -1014,7 +1018,7 @@
     <span>|</span>
     <span id="clockEl">--:--:--</span>
     <span>|</span>
-    <span>v2.4.1-OSS</span>
+    <span>v2.5.0-OSS</span>
   </div>
 </header>
 
@@ -1210,6 +1214,11 @@
         <div class="module-group-title">// OSINT Sources</div>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="subdomains" checked><div class="checkbox-box"></div><span class="checkbox-text">Subdomain discovery</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wayback" checked><div class="checkbox-box"></div><span class="checkbox-text">Wayback Machine</span><span class="tag tag-low">LOW</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="common_crawl"><div class="checkbox-box"></div><span class="checkbox-text">Common Crawl (CDX)</span><span class="tag tag-low">LOW</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="rdap"><div class="checkbox-box"></div><span class="checkbox-text">RDAP (registo domínio)</span><span class="tag tag-low">WHOIS+</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="robots_sitemap" checked><div class="checkbox-box"></div><span class="checkbox-text">robots.txt / sitemap</span><span class="tag tag-med">MED</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="virustotal"><div class="checkbox-box"></div><span class="checkbox-text">VirusTotal subs</span><span class="tag tag-med">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="github" checked><div class="checkbox-box"></div><span class="checkbox-text">GitHub leaks</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="pastebin"><div class="checkbox-box"></div><span class="checkbox-text">Pastebin leaks</span><span class="tag tag-high">HIGH</span></label>
       </div>
@@ -1236,7 +1245,15 @@
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
+        <div class="pipe-node" id="pipe-rdap">RDAP</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
         <div class="pipe-node" id="pipe-alive">ALIVE CHECK</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-node" id="pipe-surface">SURFACE</div>
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
@@ -1317,6 +1334,9 @@
           <div class="filter-tab" onclick="filterFindings('nmap', this)">NMAP</div>
           <div class="filter-tab" onclick="filterFindings('exploit', this)">EXPLOIT.DB</div>
           <div class="filter-tab" onclick="filterFindings('nuclei', this)">NUCLEI</div>
+          <div class="filter-tab" onclick="filterFindings('security', this)">SEC</div>
+          <div class="filter-tab" onclick="filterFindings('tls', this)">TLS</div>
+          <div class="filter-tab" onclick="filterFindings('rdap', this)">RDAP</div>
         </div>
         <div class="findings-list" id="findingsList">
           <div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--mono);font-size:11px">
@@ -1557,7 +1577,7 @@ function refreshFindingsList() {
 }
 
 function resetPipelineVisual() {
-  ['input','subdomains','alive','urls','params','js','dorks','secrets','kali','score'].forEach(n => setPipe(n, ''));
+  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','kali','score'].forEach(n => setPipe(n, ''));
 }
 
 let dorkActiveTabs = 0;
