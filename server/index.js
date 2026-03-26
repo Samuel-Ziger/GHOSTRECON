@@ -480,7 +480,7 @@ async function runPipeline(ctx) {
   // ── PARAMS ──────────────────────────────────
   pipe('params', 'active');
   const paramRows = extractParamsFromUrls(urlCorpus.length ? urlCorpus : interesting);
-  for (const { name, count } of paramRows.slice(0, 60)) {
+  for (const { name, count, sampleUrl } of paramRows.slice(0, 60)) {
     const { score, prio } = scoreParamName(name);
     const vuln =
       ['redirect', 'url', 'file', 'path', 'callback'].includes(name.toLowerCase()) ? ' → Open Redirect/SSRF?' : '';
@@ -491,6 +491,7 @@ async function runPipeline(ctx) {
         score,
         value: `?${name}=`,
         meta: `~${count} ocorrências em URLs${vuln}`,
+        url: sampleUrl || undefined,
       },
       'params',
     );

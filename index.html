@@ -819,6 +819,7 @@
   .type-nmap { background: rgba(100,200,255,0.1); color: #66ccff; border: 1px solid rgba(100,200,255,0.35); }
   .type-exploit { background: rgba(255,80,120,0.15); color: #ff6b9d; border: 1px solid rgba(255,80,120,0.4); }
   .type-nuclei { background: rgba(255,140,0,0.12); color: #ffaa55; border: 1px solid rgba(255,140,0,0.35); }
+  .type-wpscan { background: rgba(130,180,255,0.10); color: #7aaeff; border: 1px solid rgba(130,180,255,0.35); }
   .type-security { background: rgba(0,200,180,0.1); color: #55ddcc; border: 1px solid rgba(0,200,180,0.35); }
   .type-tls { background: rgba(120,160,255,0.1); color: #88aaff; border: 1px solid rgba(120,160,255,0.35); }
   .type-rdap { background: rgba(160,160,200,0.12); color: #b8b8d8; border: 1px solid rgba(160,160,200,0.35); }
@@ -1333,11 +1334,12 @@
           <div class="filter-tab" onclick="filterFindings('low', this)">🟢 LOW</div>
           <div class="filter-tab" onclick="filterFindings('subdomain', this)">SUBS</div>
           <div class="filter-tab" onclick="filterFindings('endpoint', this)">ENDPOINTS</div>
+          <div class="filter-tab" onclick="filterFindings('param', this)">PARAMS</div>
           <div class="filter-tab" onclick="filterFindings('secret', this)">SECRETS</div>
           <div class="filter-tab" onclick="filterFindings('nmap', this)">NMAP</div>
           <div class="filter-tab" onclick="filterFindings('exploit', this)">EXPLOIT.DB</div>
           <div class="filter-tab" onclick="filterFindings('nuclei', this)">NUCLEI</div>
-          <div class="filter-tab" onclick="filterFindings('param', this)">PARAMS</div>
+          <div class="filter-tab" onclick="filterFindings('wpscan', this)">WPSCAN</div>
           <div class="filter-tab" onclick="filterFindings('security', this)">SEC</div>
           <div class="filter-tab" onclick="filterFindings('tls', this)">TLS</div>
           <div class="filter-tab" onclick="filterFindings('rdap', this)">RDAP</div>
@@ -1444,9 +1446,17 @@ function updateStat(key, val) {
 
 // ─── FINDINGS ────────────────────────────────────────────
 function addFinding(f) {
+  // índice para manter ordenação consistente em re-renderizações
+  f.__idx = findings.length;
   findings.push(f);
   document.getElementById('findCount').textContent = findings.length + ' achados';
-  if (currentFilter === 'all' || currentFilter === f.prio || currentFilter === f.type) renderFinding(f);
+  // Em "ALL" reordenamos a lista inteira sempre que chega algo novo,
+  // para garantir que `endpoint` e `param` fiquem lado a lado (independente da ordem de descoberta).
+  if (currentFilter === 'all') {
+    refreshFindingsList();
+    return;
+  }
+  if (currentFilter === f.prio || currentFilter === f.type) renderFinding(f);
 }
 
 function renderFinding(f) {
@@ -1573,6 +1583,32 @@ function refreshFindingsList() {
   document.getElementById('findCount').textContent = findings.length + ' achados';
   const f = currentFilter;
   const filtered = findings.filter(x => f === 'all' || x.prio === f || x.type === f);
+  if (f === 'all') {
+    // Agrupar endpoints e params para não ficarem "separados" por outros tipos.
+    const rank = {
+      subs: 1,
+      endpoint: 2,
+      param: 3,
+      secret: 8,
+      js: 9,
+      dork: 10,
+      tech: 11,
+      nmap: 12,
+      exploit: 13,
+      nuclei: 14,
+      security: 15,
+      tls: 16,
+      rdap: 17,
+      intel: 18,
+      wpscan: 19,
+    };
+    filtered.sort((a, b) => {
+      const ra = rank[a.type] ?? 999;
+      const rb = rank[b.type] ?? 999;
+      if (ra !== rb) return ra - rb;
+      return (a.__idx ?? 0) - (b.__idx ?? 0);
+    });
+  }
   if (filtered.length === 0) {
     list.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-dim);font-family:var(--mono);font-size:11px">Sem resultados para o filtro "${f}"</div>`;
     return;

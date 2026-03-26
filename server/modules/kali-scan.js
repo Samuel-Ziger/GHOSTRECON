@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawn } from 'node:child_process';
+import { runWpscanJson, extractWpscanFindings } from './wpscan.js';
 
 const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt',
@@ -45,6 +46,7 @@ export async function getKaliCapabilities() {
     nuclei: await pathWhich('nuclei'),
     ffuf: await pathWhich('ffuf'),
     searchsploit: await pathWhich('searchsploit'),
+    wpscan: await pathWhich('wpscan'),
   };
 
   const ready = qualifyDistro && tools.nmap;
@@ -385,6 +387,32 @@ export async function runKaliAggressiveScan({ domain, subdomainsAlive, cap, log,
       log(`nuclei: ${findings.length} finding(s)`, findings.length ? 'warn' : 'info');
     } catch (e) {
       log(`nuclei: ${e.message}`, 'warn');
+    }
+  }
+
+  if (cap.tools.wpscan) {
+    const detectionMode = process.env.GHOSTRECON_WPSCAN_DETECTION_MODE || 'mixed';
+    const timeoutMs = Number(process.env.GHOSTRECON_WPSCAN_TIMEOUT_MS || 240000);
+
+    log('═══ wpscan (WordPress enumeration) ═══', 'section');
+    const targets = [`http://${domain}/`, `https://${domain}/`];
+    for (const t of targets) {
+      const res = await runWpscanJson({ targetUrl: t, detectionMode, timeoutMs, log });
+      if (res?.json) {
+        const findings = extractWpscanFindings({ targetUrl: t, wpscanJson: res.json });
+        if (findings.length) log(`wpscan ${t} → ${findings.length} finding(s)`, 'success');
+        for (const f of findings) addFinding(f, null);
+      } else {
+        addFinding({
+          type: 'wpscan',
+          prio: 'low',
+          score: 10,
+          value: `wpscan failed @ ${t}`,
+          meta: res?.error || 'unknown error',
+          url: t,
+        });
+        log(`wpscan ${t}: sem JSON (${res?.error || 'unknown'})`, 'warn');
+      }
     }
   }
 

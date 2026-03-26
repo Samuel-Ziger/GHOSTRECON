@@ -9,9 +9,16 @@ export const DORK_TEMPLATES = {
     (d) => `site:${d} intitle:"index of" inurl:backup`,
   ],
   documents: [
-    (d) => `site:${d} ext:pdf OR ext:doc OR ext:docx OR ext:xls`,
-    (d) => `site:${d} filetype:pdf confidential`,
-    (d) => `site:${d} ext:xlsx "internal" OR "confidential"`,
+    // PDFs e documentos de escritório (uso geral)
+    (d) => `site:${d} (filetype:pdf OR filetype:doc OR filetype:docx OR filetype:odt OR filetype:xls OR filetype:xlsx OR filetype:ods OR filetype:csv OR filetype:ppt OR filetype:pptx OR filetype:odp)`,
+    // PDFs com termos comuns de vazamento
+    (d) => `site:${d} filetype:pdf ("confidential" OR "internal use" OR "do not distribute" OR "for internal")`,
+    // Word/ODT com termos comuns
+    (d) => `site:${d} (filetype:doc OR filetype:docx OR filetype:odt) ("confidential" OR "internal" OR "contract" OR "nda")`,
+    // Planilhas/CSV com contexto de documento interno
+    (d) => `site:${d} (filetype:xls OR filetype:xlsx OR filetype:ods OR filetype:csv) ("internal" OR "report" OR "pricing" OR "budget")`,
+    // Apresentações
+    (d) => `site:${d} (filetype:ppt OR filetype:pptx OR filetype:odp) ("presentation" OR "slide" OR "deck" OR "overview")`,
   ],
   config: [
     (d) => `site:${d} ext:xml OR ext:conf OR ext:cnf OR ext:config`,
