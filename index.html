@@ -1219,6 +1219,9 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="robots_sitemap" checked><div class="checkbox-box"></div><span class="checkbox-text">robots.txt / sitemap</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="virustotal"><div class="checkbox-box"></div><span class="checkbox-text">VirusTotal subs</span><span class="tag tag-med">API</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="dns_enrichment" checked><div class="checkbox-box"></div><span class="checkbox-text">DNS TXT/MX (SPF/DMARC)</span><span class="tag tag-low">LOW</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="wellknown_security_txt"><div class="checkbox-box"></div><span class="checkbox-text">.well-known/security.txt</span><span class="tag tag-med">MED</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="wellknown_openid"><div class="checkbox-box"></div><span class="checkbox-text">.well-known/openid-configuration</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="github" checked><div class="checkbox-box"></div><span class="checkbox-text">GitHub leaks</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="pastebin"><div class="checkbox-box"></div><span class="checkbox-text">Pastebin leaks</span><span class="tag tag-high">HIGH</span></label>
       </div>
@@ -1334,6 +1337,7 @@
           <div class="filter-tab" onclick="filterFindings('nmap', this)">NMAP</div>
           <div class="filter-tab" onclick="filterFindings('exploit', this)">EXPLOIT.DB</div>
           <div class="filter-tab" onclick="filterFindings('nuclei', this)">NUCLEI</div>
+          <div class="filter-tab" onclick="filterFindings('param', this)">PARAMS</div>
           <div class="filter-tab" onclick="filterFindings('security', this)">SEC</div>
           <div class="filter-tab" onclick="filterFindings('tls', this)">TLS</div>
           <div class="filter-tab" onclick="filterFindings('rdap', this)">RDAP</div>

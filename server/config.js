@@ -21,6 +21,19 @@ export const limits = {
   tlsProbeTimeoutMs: 8000,
   /** VirusTotal subdomains (opcional) */
   virustotalSubdomainMax: 200,
+  /** DNS enrichment (TXT/MX/DMARC/SPF) */
+  dnsEnrichMaxHosts: 18,
+  dnsEnrichTimeoutMs: 9000,
+  dnsEnrichConcurrency: 6,
+  dnsMxMax: 6,
+  dnsTxtEnrichMaxHosts: 8,
+  dnsTxtInterestingMax: 8,
+  /** /.well-known (security.txt / OIDC discovery) */
+  wellKnownMaxHosts: 18,
+  wellKnownConcurrency: 4,
+  wellKnownSecurityTxtTimeoutMs: 8000,
+  wellKnownOpenIdTimeoutMs: 9000,
+  wellKnownOpenIdMaxEndpoints: 10,
 };
 
 /** Rate limit POST /api/recon/stream (por IP). 0 = desativado */

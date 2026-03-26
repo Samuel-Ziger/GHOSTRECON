@@ -24,6 +24,8 @@ import { correlate } from './modules/correlation.js';
 import { suggestVectors, buildExploitChecklist } from './modules/intelligence.js';
 import { applyPrioritizationV2, topHighProbability } from './modules/prioritization.js';
 import { extractCveHintsFromTechStrings } from './modules/cve-hints.js';
+import { fetchDnsEnrichment } from './modules/dns-enrichment.js';
+import { fetchWellKnownSecurityTxt, fetchWellKnownOpenIdConfiguration } from './modules/wellknown.js';
 import { limits, reconRateLimitConfig } from './config.js';
 import {
   saveRun,
@@ -168,6 +170,21 @@ async function runPipeline(ctx) {
     pipe('subdomains', 'done');
   }
 
+  // ── DNS ENRICHMENT (TXT/MX/SPF/DMARC) ─────────
+  if (modules.includes('dns_enrichment')) {
+    pipe('dns_enrichment', 'active');
+    progress(14);
+    log('Enriquecimento DNS (MX/TXT/SPF/DMARC)...', 'info');
+    try {
+      const { findings } = await fetchDnsEnrichment(domain, subdomainsAlive, { maxHosts: limits.dnsEnrichMaxHosts });
+      if (findings.length) log(`DNS intel: ${findings.length} achado(s)`, 'success');
+      for (const f of findings) addFinding(f, null);
+    } catch (e) {
+      log(`DNS Enrichment: ${e.message}`, 'warn');
+    }
+    pipe('dns_enrichment', 'done');
+  }
+
   if (modules.includes('rdap')) {
     pipe('rdap', 'active');
     progress(18);
@@ -276,7 +293,9 @@ async function runPipeline(ctx) {
     }
   }
 
-  const runSurface = modules.includes('security_headers') || modules.includes('robots_sitemap');
+  const runWellKnown = modules.includes('wellknown_security_txt') || modules.includes('wellknown_openid');
+  const runSurface =
+    modules.includes('security_headers') || modules.includes('robots_sitemap') || runWellKnown;
   if (runSurface) {
     pipe('surface', 'active');
     progress(33);
@@ -340,6 +359,55 @@ async function runPipeline(ctx) {
             },
             'endpoints',
           );
+        }
+      });
+    }
+
+    // ── /.well-known (security.txt + OIDC discovery) ──
+    if (runWellKnown) {
+      const origins = [...originByHost.values()].map((v) => v.origin).slice(0, limits.wellKnownMaxHosts);
+      if (origins.length) log(`/.well-known (${origins.length} origem(ns))...`, 'info');
+
+      await mapPool(origins, limits.wellKnownConcurrency, async (baseOrigin) => {
+        if (modules.includes('wellknown_security_txt')) {
+          try {
+            const sec = await fetchWellKnownSecurityTxt(baseOrigin);
+            if (sec.ok && sec.findings?.length) {
+              for (const f of sec.findings) addFinding(f, null);
+            }
+          } catch (e) {
+            log(`security.txt: ${e.message}`, 'warn');
+          }
+        }
+
+        if (modules.includes('wellknown_openid')) {
+          try {
+            const oid = await fetchWellKnownOpenIdConfiguration(baseOrigin);
+            if (oid.ok && oid.endpoints?.length) {
+              for (const ep of oid.endpoints) {
+                let pathname = '/';
+                try {
+                  pathname = new URL(ep.url).pathname;
+                } catch {
+                  // keep default
+                }
+                const { score, prio } = scoreEndpointPath(pathname);
+                addFinding(
+                  {
+                    type: 'endpoint',
+                    prio: prio === 'low' ? 'med' : prio,
+                    score: Math.max(score, 55),
+                    value: ep.url,
+                    meta: `OIDC discovery (.well-known) • ${ep.label}`,
+                    url: ep.url,
+                  },
+                  'endpoints',
+                );
+              }
+            }
+          } catch (e) {
+            log(`OIDC discovery: ${e.message}`, 'warn');
+          }
         }
       });
     }
