@@ -281,6 +281,57 @@ async function runNucleiList(urls, log) {
   }
 }
 
+async function runNucleiTags(urls, tagsCsv, log) {
+  if (!urls.length) return [];
+  const dir = await mkdtemp(join(tmpdir(), 'ghnu-'));
+  const listFile = join(dir, 'targets.txt');
+  const outFile = join(dir, 'out.jsonl');
+  await writeFile(listFile, [...new Set(urls)].slice(0, 30).join('\n'), 'utf8');
+  try {
+    await runProc(
+      'nuclei',
+      [
+        '-l',
+        listFile,
+        '-jsonl',
+        '-o',
+        outFile,
+        '-silent',
+        '-rate-limit',
+        '25',
+        '-timeout',
+        '8',
+        '-tags',
+        tagsCsv,
+      ],
+      360000,
+    );
+    let text = '';
+    try {
+      text = await readFile(outFile, 'utf8');
+    } catch {
+      return [];
+    }
+    return text
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (e) {
+    log(`nuclei(${tagsCsv}): ${e.message}`, 'warn');
+    return [];
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 function pickFirstMatch(re, text) {
   const m = String(text || '').match(re);
   return m?.[1] ? String(m[1]).trim() : null;
@@ -353,6 +404,7 @@ export async function runKaliAggressiveScan({
   log,
   addFinding,
   wordpressTargets,
+  paramUrls,
 }) {
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
   const hosts = [...new Set(rawHosts)].slice(0, 22);
@@ -507,6 +559,52 @@ export async function runKaliAggressiveScan({
       log(`nuclei: ${findings.length} finding(s)`, findings.length ? 'warn' : 'info');
     } catch (e) {
       log(`nuclei: ${e.message}`, 'warn');
+    }
+  }
+
+  // XSS/SQLi via nuclei tags contra URLs com query string (vindas do corpus passivo)
+  if (cap.tools.nuclei && Array.isArray(paramUrls) && paramUrls.length) {
+    const urls = [...new Set(paramUrls)].slice(0, 30);
+    log(`═══ nuclei (xss/sqli) em URLs com parâmetros (${urls.length}) ═══`, 'section');
+
+    try {
+      const xss = await runNucleiTags(urls, 'xss', log);
+      for (const f of xss) {
+        const matched = f['matched-at'] || f.host || f.url || '';
+        const tid = f['template-id'] || f.templateID || 'template';
+        const sev = f.info?.severity || f.severity || 'info';
+        addFinding({
+          type: 'xss',
+          prio: ['critical', 'high'].includes(String(sev).toLowerCase()) ? 'high' : 'med',
+          score: sev === 'critical' ? 95 : sev === 'high' ? 90 : 70,
+          value: `${tid} @ ${matched}`,
+          meta: `nuclei:xss • ${sev}`,
+          url: matched.startsWith('http') ? matched : null,
+        });
+      }
+      if (xss.length) log(`XSS: ${xss.length} finding(s)`, 'warn');
+    } catch (e) {
+      log(`XSS nuclei: ${e.message}`, 'warn');
+    }
+
+    try {
+      const sqli = await runNucleiTags(urls, 'sqli', log);
+      for (const f of sqli) {
+        const matched = f['matched-at'] || f.host || f.url || '';
+        const tid = f['template-id'] || f.templateID || 'template';
+        const sev = f.info?.severity || f.severity || 'info';
+        addFinding({
+          type: 'sqli',
+          prio: ['critical', 'high'].includes(String(sev).toLowerCase()) ? 'high' : 'med',
+          score: sev === 'critical' ? 98 : sev === 'high' ? 92 : 72,
+          value: `${tid} @ ${matched}`,
+          meta: `nuclei:sqli • ${sev}`,
+          url: matched.startsWith('http') ? matched : null,
+        });
+      }
+      if (sqli.length) log(`SQLi: ${sqli.length} finding(s)`, 'warn');
+    } catch (e) {
+      log(`SQLi nuclei: ${e.message}`, 'warn');
     }
   }
 

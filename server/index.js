@@ -482,6 +482,9 @@ async function runPipeline(ctx) {
   const interesting = filterInterestingUrls(urlCorpus);
   log(`${interesting.length} URLs marcadas como interessantes (filtro heurístico)`, 'info');
 
+  // URLs com query string (bons alvos para templates de XSS/SQLi no modo Kali)
+  const paramUrlsForKali = [...new Set(urlCorpus.filter((u) => /\?.+=/i.test(u)))].slice(0, 40);
+
   for (const rawUrl of interesting.slice(0, 400)) {
     let pathname = '/';
     try {
@@ -526,6 +529,37 @@ async function runPipeline(ctx) {
       },
       'params',
     );
+
+    // Heurística (passivo): marcar parâmetros comuns para XSS / SQLi como candidatos (não confirmados)
+    const n = String(name).toLowerCase();
+    const xssCandidates = new Set(['q', 'query', 'search', 's', 'keyword', 'term', 'message', 'comment', 'title', 'name']);
+    const sqliCandidates = new Set(['id', 'ids', 'user', 'user_id', 'uid', 'account', 'order', 'order_id', 'page', 'sort', 'filter', 'where']);
+    if (xssCandidates.has(n)) {
+      addFinding(
+        {
+          type: 'intel',
+          prio: prio === 'high' ? 'med' : 'low',
+          score: 54,
+          value: `XSS candidate param: ?${name}=`,
+          meta: 'Heurístico (passivo) — priorizar testes de reflexão/encoding',
+          url: sampleUrl || undefined,
+        },
+        null,
+      );
+    }
+    if (sqliCandidates.has(n)) {
+      addFinding(
+        {
+          type: 'intel',
+          prio: prio === 'high' ? 'med' : 'low',
+          score: 56,
+          value: `SQLi candidate param: ?${name}=`,
+          meta: 'Heurístico (passivo) — priorizar filtros/IDs/ordenação',
+          url: sampleUrl || undefined,
+        },
+        null,
+      );
+    }
   }
   log(`${paramRows.length} nomes de parâmetros distintos (amostra Wayback)`, 'success');
   pipe('params', 'done');
@@ -719,6 +753,7 @@ async function runPipeline(ctx) {
         log,
         addFinding,
         wordpressTargets,
+        paramUrls: paramUrlsForKali,
       });
     } else {
       log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
