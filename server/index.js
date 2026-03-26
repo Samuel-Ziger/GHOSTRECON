@@ -37,6 +37,7 @@ import {
 } from './modules/db.js';
 import { googleCseSearch, urlMatchesTarget } from './modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
+import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -125,20 +126,49 @@ async function runPipeline(ctx) {
   }
 
   let allSubs = [];
-  if (modules.includes('subdomains')) {
+  const runCrtSubdomains = modules.includes('subdomains');
+  const runKaliSubfinderAmass = Boolean(kaliMode) && (modules.includes('subfinder') || modules.includes('amass'));
+  if (runCrtSubdomains || runKaliSubfinderAmass) {
     pipe('subdomains', 'active');
     progress(12);
-    log('Consultando crt.sh (Certificate Transparency)...', 'info');
-    try {
-      allSubs = await fetchCrtShSubdomains(domain);
-      log(`${allSubs.length} nomes únicos em CT logs`, 'success');
-    } catch (e) {
-      log(`crt.sh: ${e.message}`, 'warn');
+    if (runCrtSubdomains) {
+      log('Consultando crt.sh (Certificate Transparency)...', 'info');
+      try {
+        allSubs = await fetchCrtShSubdomains(domain);
+        log(`${allSubs.length} nomes únicos em CT logs`, 'success');
+      } catch (e) {
+        log(`crt.sh: ${e.message}`, 'warn');
+      }
+      if (vtHostnames.length) {
+        const before = allSubs.length;
+        allSubs = [...new Set([...allSubs, ...vtHostnames])];
+        if (allSubs.length > before) log(`VirusTotal fundido em enum: +${allSubs.length - before} nome(s)`, 'info');
+      }
+    } else {
+      log('crt.sh (subdomains) desativado — usando enum Kali (se selecionado).', 'info');
     }
-    if (vtHostnames.length) {
-      const before = allSubs.length;
-      allSubs = [...new Set([...allSubs, ...vtHostnames])];
-      if (allSubs.length > before) log(`VirusTotal fundido em enum: +${allSubs.length - before} nome(s)`, 'info');
+
+    if (runKaliSubfinderAmass) {
+      if (modules.includes('subfinder')) {
+        try {
+          const extra = await enumerateSubdomainsWithSubfinder(domain, log);
+          if (extra.length) {
+            allSubs = [...new Set([...allSubs, ...extra])];
+          }
+        } catch (e) {
+          log(`subfinder: ${e.message}`, 'warn');
+        }
+      }
+      if (modules.includes('amass')) {
+        try {
+          const extra = await enumerateSubdomainsWithAmass(domain, log);
+          if (extra.length) {
+            allSubs = [...new Set([...allSubs, ...extra])];
+          }
+        } catch (e) {
+          log(`amass: ${e.message}`, 'warn');
+        }
+      }
     }
 
     const capped = allSubs.filter((s) => s !== domain).slice(0, 150);
