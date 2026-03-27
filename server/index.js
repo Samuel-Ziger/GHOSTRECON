@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomBytes } from 'crypto';
 import { fetchCrtShSubdomains } from './modules/subdomains.js';
 import { resolves } from './modules/dns.js';
 import { probeHttp, mapPool } from './modules/probe.js';
@@ -26,6 +27,17 @@ import { applyPrioritizationV2, topHighProbability } from './modules/prioritizat
 import { extractCveHintsFromTechStrings } from './modules/cve-hints.js';
 import { fetchDnsEnrichment } from './modules/dns-enrichment.js';
 import { fetchWellKnownSecurityTxt, fetchWellKnownOpenIdConfiguration } from './modules/wellknown.js';
+import { runEvidenceVerification } from './modules/verify.js';
+import { dedupeBySemanticFamily } from './modules/semantic-dedupe.js';
+import { buildReportTemplates } from './modules/report-template.js';
+import { discoverAssetHints, detectTakeoverCandidates } from './modules/asset-discovery.js';
+import { resolveReconProfile } from './modules/runtime-profile.js';
+import { fetchArchiveToolUrls } from './modules/archive-tools.js';
+import { wafw00fFingerprint } from './modules/waf-fingerprint.js';
+import { discoverParamsActive } from './modules/param-discovery.js';
+import { resolveCnameChain, matchProviderByCname, matchProviderBody } from './modules/takeover.js';
+import { crawlWithKatana } from './modules/js-crawler.js';
+import { validateSecretFindings } from './modules/secret-validation.js';
 import { limits, reconRateLimitConfig } from './config.js';
 import {
   saveRun,
@@ -44,13 +56,50 @@ import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from '
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const reconRlHits = new Map();
+const csrfTokens = new Map();
+const CSRF_TTL_MS = 2 * 60 * 60 * 1000;
+
+const PORT = Number(process.env.PORT) || 3847;
+const HOST = String(process.env.HOST || '127.0.0.1').trim();
+const allowedOrigins = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+
+function clientIp(req) {
+  return String(
+    req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '_',
+  );
+}
+
+function cleanupExpiredCsrfTokens(now = Date.now()) {
+  for (const [token, entry] of csrfTokens.entries()) {
+    if (!entry?.expiresAt || entry.expiresAt <= now) csrfTokens.delete(token);
+  }
+}
+
+function issueCsrfToken(req) {
+  cleanupExpiredCsrfTokens();
+  const token = randomBytes(24).toString('hex');
+  csrfTokens.set(token, { ip: clientIp(req), expiresAt: Date.now() + CSRF_TTL_MS });
+  return token;
+}
+
+function validateCsrfToken(req) {
+  cleanupExpiredCsrfTokens();
+  const token = String(req.headers['x-csrf-token'] || '').trim();
+  if (!token) return false;
+  const entry = csrfTokens.get(token);
+  if (!entry) return false;
+  if (entry.ip !== clientIp(req)) return false;
+  if (entry.expiresAt <= Date.now()) {
+    csrfTokens.delete(token);
+    return false;
+  }
+  return true;
+}
 
 function allowReconRequest(req) {
   const { max, windowMs } = reconRateLimitConfig();
   if (max <= 0) return true;
-  const ip = String(
-    req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '_',
-  );
+  const ip = clientIp(req);
   const now = Date.now();
   const arr = (reconRlHits.get(ip) || []).filter((t) => now - t < windowMs);
   if (arr.length >= max) return false;
@@ -65,11 +114,26 @@ const ROOT = path.join(__dirname, '..');
 const app = express();
 
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = String(req.headers.origin || '').trim();
+  const hasOrigin = Boolean(origin);
+  const originAllowed = hasOrigin ? allowedOrigins.has(origin) : true;
+
+  if (hasOrigin && originAllowed) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token');
   if (req.method === 'OPTIONS') {
+    if (!originAllowed) {
+      res.sendStatus(403);
+      return;
+    }
     res.sendStatus(204);
+    return;
+  }
+  if (!originAllowed) {
+    res.status(403).json({ error: 'origin não permitido' });
     return;
   }
   next();
@@ -86,7 +150,8 @@ function normDomain(d) {
 }
 
 async function runPipeline(ctx) {
-  const { domain, exactMatch, modules, emit, kaliMode = false } = ctx;
+  const { domain, exactMatch, modules, emit, kaliMode = false, auth = null, profile = 'standard' } = ctx;
+  const runtimeProfile = resolveReconProfile(profile);
   const domainStr = exactMatch ? `"${domain}"` : domain;
   const findings = [];
   const stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
@@ -112,8 +177,9 @@ async function runPipeline(ctx) {
   const probedHosts = new Set();
   const seenEp = new Set();
   let vtHostnames = [];
+  let tlsSanHosts = [];
 
-  log(`Alvo: ${domain} | Módulos: ${modules.join(', ')}`, 'info');
+  log(`Alvo: ${domain} | Módulos: ${modules.join(', ')} | Perfil: ${runtimeProfile.name}`, 'info');
   log(exactMatch ? 'Modo: exact match (aspas nos dorks)' : 'Modo: broad match', 'info');
 
   // ── INPUT ─────────────────────────────────────
@@ -254,7 +320,7 @@ async function runPipeline(ctx) {
   const hostsToProbe = [
     domain,
     ...new Set([...subdomainsAlive, ...(modules.includes('subdomains') ? [] : vtHostnames)]),
-  ].slice(0, 80);
+  ].slice(0, runtimeProfile.maxHostsToProbe);
   const urlsToProbe = [];
   for (const h of hostsToProbe) {
     urlsToProbe.push(`https://${h}/`, `http://${h}/`);
@@ -262,7 +328,7 @@ async function runPipeline(ctx) {
   log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
 
   const probeResults = await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
-    const r = await probeHttp(u);
+    const r = await probeHttp(u, { auth });
     return { u, r };
   });
 
@@ -272,6 +338,22 @@ async function runPipeline(ctx) {
     const host = new URL(r.url).hostname;
     if (r.status > 0 && r.status < 500) {
       log(`ALIVE ${r.url} → ${r.status} ${r.title ? `"${r.title.slice(0, 60)}"` : ''}`, 'success');
+      // WAFW00F (fase 2 – opcional, melhor em quick<= off; standard/deep só se ferramenta existir)
+      if (modules.includes('wafw00f') || runtimeProfile.name !== 'quick') {
+        try {
+          const wf = await wafw00fFingerprint(host);
+          if (wf?.waf) {
+            addFinding({
+              type: 'intel',
+              prio: 'low',
+              score: 30,
+              value: `WAF detected: ${wf.waf} @ ${host}`,
+              meta: `waf=${wf.waf} • tool=wafw00f`,
+              url: r.url,
+            });
+          }
+        } catch {}
+      }
       for (const t of r.tech || []) {
         const tk = `${host}::${t}`;
         if (seenTech.has(tk)) continue;
@@ -283,6 +365,16 @@ async function runPipeline(ctx) {
           value: t,
           meta: `Detectado em ${host}`,
         });
+        if (String(t).toLowerCase().includes('cloudflare')) {
+          addFinding({
+            type: 'intel',
+            prio: 'low',
+            score: 28,
+            value: `WAF hint @ ${host}`,
+            meta: 'waf=cloudflare',
+            url: r.url,
+          });
+        }
       }
     }
   }
@@ -398,6 +490,14 @@ async function runPipeline(ctx) {
             },
             null,
           );
+          if (cert.subjectAltName) {
+            const sanHosts = String(cert.subjectAltName)
+              .split(',')
+              .map((x) => x.replace(/DNS:/gi, '').trim().toLowerCase().replace(/^\*\./, ''))
+              .filter((x) => /^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}$/i.test(x))
+              .slice(0, 30);
+            tlsSanHosts = [...new Set([...tlsSanHosts, ...sanHosts])];
+          }
         }
       });
     }
@@ -572,7 +672,32 @@ async function runPipeline(ctx) {
     }
   }
 
-  const urlCorpus = [...new Set([...waybackUrls, ...ccUrls])];
+  let archiveCliUrls = [];
+  if (runtimeProfile.includeCliArchives || modules.includes('gau') || modules.includes('waybackurls')) {
+    try {
+      archiveCliUrls = await fetchArchiveToolUrls(domain, log);
+    } catch (e) {
+      log(`Archive CLI: ${e.message}`, 'warn');
+    }
+  }
+
+  const urlCorpus = [...new Set([...waybackUrls, ...ccUrls, ...archiveCliUrls])];
+  if (runtimeProfile.name === 'deep') {
+    const seeds = [`https://${domain}/`, `http://${domain}/`];
+    for (const seed of seeds) {
+      try {
+        const k = await crawlWithKatana(seed, { depth: 3 });
+        if (k.ok && k.urls.length) {
+          for (const u of k.urls.slice(0, 300)) {
+            if (!urlCorpus.includes(u)) urlCorpus.push(u);
+          }
+          log(`Katana: +${k.urls.length} URL(s) via crawl JS`, 'info');
+        }
+      } catch (e) {
+        log(`Katana: ${e.message}`, 'warn');
+      }
+    }
+  }
   const waybackSet = new Set(waybackUrls);
   const ccSet = new Set(ccUrls);
   const interesting = filterInterestingUrls(urlCorpus);
@@ -581,7 +706,7 @@ async function runPipeline(ctx) {
   // URLs com query string (bons alvos para templates de XSS/SQLi no modo Kali)
   const paramUrlsForKali = [...new Set(urlCorpus.filter((u) => /\?.+=/i.test(u)))].slice(0, 40);
 
-  for (const rawUrl of interesting.slice(0, 400)) {
+  for (const rawUrl of interesting.slice(0, runtimeProfile.maxInterestingUrls)) {
     let pathname = '/';
     try {
       pathname = new URL(rawUrl).pathname;
@@ -705,7 +830,8 @@ async function runPipeline(ctx) {
 
   // ── DORKS (URLs apenas) ─────────────────────
   pipe('dorks', 'active');
-  const dorks = buildDorks(domainStr, modules);
+  const techHintsForDorks = findings.filter((f) => f.type === 'tech').map((f) => f.value);
+  const dorks = buildDorks(domainStr, modules, techHintsForDorks);
   for (const d of dorks) {
     emit({
       type: 'dork',
@@ -812,7 +938,67 @@ async function runPipeline(ctx) {
   if (modules.includes('pastebin')) {
     log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
   }
+  // Validação live/dead de achados de secret (fase 3)
+  try {
+    const sv = await validateSecretFindings(findings, log);
+    for (const row of sv) {
+      addFinding({
+        type: 'secret_validation',
+        prio: row.status === 'live' ? 'high' : row.status === 'probable' ? 'med' : 'low',
+        score: row.status === 'live' ? 86 : row.status === 'probable' ? 62 : 24,
+        value: `Secret ${row.status.toUpperCase()} • ${row.ref}`,
+        meta: `reason=${row.reason}`,
+      });
+    }
+    if (sv.length) log(`Secret validation: ${sv.length} item(ns)`, 'info');
+  } catch (e) {
+    log(`Secret validation: ${e.message}`, 'warn');
+  }
   pipe('secrets', 'done');
+
+  // ── VERIFY (evidence-guided) ─────────────────
+  pipe('verify', 'active');
+  progress(84);
+  try {
+    const verified = await runEvidenceVerification({
+      findings,
+      auth,
+      log,
+      maxEndpoints: runtimeProfile.maxVerifyEndpoints,
+    });
+    for (const vf of verified) addFinding(vf, null);
+    if (verified.length) log(`Verify: ${verified.length} resultado(s) xss/sqli/open_redirect/idor/lfi`, 'success');
+  } catch (e) {
+    log(`Verify: ${e.message}`, 'warn');
+  }
+  // Param discovery ativo (fase 2): tentar em endpoints sem query
+  try {
+    const candidates = findings
+      .filter((f) => f.type === 'endpoint' && typeof f.value === 'string' && /^https?:\/\//i.test(f.value))
+      .filter((f) => !/\?/.test(String(f.value)))
+      .slice(0, Math.max(6, Math.round(runtimeProfile.maxVerifyEndpoints / 3)));
+    for (const ep of candidates) {
+      const r = await discoverParamsActive(ep.value, { timeoutMs: 70000 });
+      const ps = [...new Set(r.params || [])].slice(0, 20);
+      for (const p of ps) {
+        addFinding(
+          {
+            type: 'param',
+            prio: 'med',
+            score: 62,
+            value: `?${p}=`,
+            meta: `active_discovery • tool=${r.tool || 'n/a'}`,
+            url: `${ep.value}${ep.value.includes('?') ? '&' : '?'}${p}=X`,
+          },
+          'params',
+        );
+      }
+      if (ps.length) log(`Param discovery: ${ps.length} em ${ep.value}`, 'info');
+    }
+  } catch (e) {
+    log(`Param discovery: ${e.message}`, 'warn');
+  }
+  pipe('verify', 'done');
 
   // ── KALI: nmap / searchsploit / ffuf / nuclei ──
   if (kaliMode) {
@@ -891,17 +1077,79 @@ async function runPipeline(ctx) {
 
   progress(90);
 
+  // ── ASSET DISCOVERY (passivo complementar) ──
+  pipe('assets', 'active');
+  try {
+    const assets = await discoverAssetHints(domain, subdomainsAlive, tlsSanHosts);
+    for (const a of assets) addFinding(a, null);
+    const tk = detectTakeoverCandidates(findings);
+    for (const t of tk) addFinding(t, null);
+    // Takeover avançado (fase 2): CNAME + corpo
+    const aliveHosts = [...new Set(findings.filter((f) => f.type === 'subdomain').map((f) => f.value))].slice(0, 20);
+    for (const h of aliveHosts) {
+      try {
+        const chain = await resolveCnameChain(h, 4);
+        const prov = matchProviderByCname(chain);
+        if (!prov) continue;
+        let body = '';
+        try {
+          const res = await fetch(`https://${h}/`, { redirect: 'follow', signal: AbortSignal.timeout(9000) });
+          body = await res.text();
+        } catch {}
+        const match = matchProviderBody(prov, body);
+        addFinding(
+          {
+            type: 'takeover',
+            prio: match ? 'high' : 'med',
+            score: match ? 82 : 60,
+            value: `Takeover ${match ? 'CONFIRMED' : 'candidate'}: ${h} → ${prov.name}`,
+            meta: `cname_chain=${chain.join(' > ').slice(0, 160)} • body_match=${match ? 'yes' : 'no'}`,
+            url: `https://${h}/`,
+          },
+          null,
+        );
+      } catch {}
+    }
+    if (assets.length || tk.length) {
+      log(`Asset discovery: +${assets.length} hints, takeover candidates: ${tk.length}`, 'info');
+    }
+  } catch (e) {
+    log(`Asset discovery: ${e.message}`, 'warn');
+  }
+  pipe('assets', 'done');
+
   // ── PRIORIZAÇÃO V2 + CVE hints + CORRELATION + INTEL ──
   pipe('score', 'active');
   progress(93);
   log('═══ Priorização v2 (composite + HIGH PROBABILITY) ═══', 'section');
   applyPrioritizationV2(findings);
+  for (const f of findings) {
+    if (f.type === 'endpoint' && f.url && /\?.+=/i.test(f.url)) {
+      f.meta = [f.meta, 'status_consistent=true'].filter(Boolean).join(' • ');
+    }
+    if (f.type === 'endpoint' && /\/(admin|dashboard|account|profile|settings|billing)(\/|$)/i.test(String(f.value || ''))) {
+      f.meta = [f.meta, 'auth=required'].filter(Boolean).join(' • ');
+    }
+  }
+  const techStrs = findings.filter((f) => f.type === 'tech').map((f) => f.value);
+  const cveHints = extractCveHintsFromTechStrings(techStrs);
+  for (const f of findings) {
+    if (cveHints.length && f.type === 'tech') {
+      f.meta = [f.meta, 'cve_hint=true'].filter(Boolean).join(' • ');
+    }
+  }
+  applyPrioritizationV2(findings);
+
+  const semantic = dedupeBySemanticFamily(findings);
+  if (semantic.merged > 0) {
+    findings.length = 0;
+    findings.push(...semantic.findings);
+    log(`Dedupe semântico: ${semantic.merged} achado(s) colapsado(s) por família`, 'info');
+  }
   stats.high = findings.filter((f) => f.prio === 'high').length;
   emit({ type: 'stats', stats: { ...stats } });
   emit({ type: 'findings_rescore', findings });
 
-  const techStrs = findings.filter((f) => f.type === 'tech').map((f) => f.value);
-  const cveHints = extractCveHintsFromTechStrings(techStrs);
   if (cveHints.length) {
     log('═══ Versões detectadas → lookup CVE (manual) ═══', 'section');
     for (const h of cveHints) {
@@ -952,6 +1200,11 @@ async function runPipeline(ctx) {
   for (const h of hints) {
     emit({ type: 'intel', line: h });
   }
+  const reportTemplates = buildReportTemplates(findings, domain);
+  for (const tpl of reportTemplates) {
+    emit({ type: 'report_template', template: tpl });
+    emit({ type: 'intel', line: `REPORT: ${tpl.title}` });
+  }
   pipe('score', 'done');
   progress(100);
 
@@ -981,6 +1234,38 @@ async function runPipeline(ctx) {
         'info',
       );
     }
+    try {
+      const runs = await listRuns(120);
+      const nt = domain.trim().toLowerCase();
+      const prev = runs.find((r) => String(r.target).trim().toLowerCase() === nt && r.id < runId);
+      if (prev) {
+        const diff = await compareRuns(prev.id, runId);
+        if (!diff.error) {
+          const hotAdded = diff.added.filter((x) => {
+            const t = String(x.type || '').toLowerCase();
+            const v = String(x.value || '').toLowerCase();
+            return ['xss', 'sqli', 'open_redirect', 'idor', 'lfi', 'secret', 'exploit', 'nuclei', 'takeover'].includes(t)
+              || /\/(admin|api|graphql|internal|debug)|token|key|secret/.test(v);
+          });
+          if (hotAdded.length) {
+            emit({
+              type: 'delta_hot',
+              baselineRunId: prev.id,
+              newerRunId: runId,
+              hotAddedCount: hotAdded.length,
+              sample: hotAdded.slice(0, 12).map((x) => ({
+                type: x.type,
+                prio: x.prio,
+                value: String(x.value || '').slice(0, 180),
+              })),
+            });
+            log(`Delta hot: ${hotAdded.length} novidade(s) crítica(s) vs run #${prev.id}`, 'warn');
+          }
+        }
+      }
+    } catch {
+      /* ignore delta hot */
+    }
   } else {
     log(`Não foi possível gravar na base (${storageLabel()}) — ver consola do servidor`, 'warn');
   }
@@ -995,6 +1280,7 @@ async function runPipeline(ctx) {
     intelMerge,
     kaliMode: Boolean(kaliMode),
     storage: storageLabel(),
+    reportTemplates,
   });
 
   const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
@@ -1058,6 +1344,12 @@ app.post('/api/recon/stream', async (req, res) => {
     res.write(`${JSON.stringify(obj)}\n`);
   };
 
+  if (!validateCsrfToken(req)) {
+    send({ type: 'error', message: 'CSRF token inválido/ausente' });
+    res.end();
+    return;
+  }
+
   if (!allowReconRequest(req)) {
     send({ type: 'error', message: 'Rate limit — aguarde antes de novo recon' });
     res.end();
@@ -1068,6 +1360,16 @@ app.post('/api/recon/stream', async (req, res) => {
   const modules = Array.isArray(req.body?.modules) ? req.body.modules : [];
   const exactMatch = Boolean(req.body?.exactMatch);
   const kaliMode = Boolean(req.body?.kaliMode);
+  const profile = String(req.body?.profile || 'standard')
+    .trim()
+    .toLowerCase();
+  const auth =
+    req.body?.auth && typeof req.body.auth === 'object'
+      ? {
+          headers: req.body.auth.headers && typeof req.body.auth.headers === 'object' ? req.body.auth.headers : {},
+          cookie: req.body.auth.cookie ? String(req.body.auth.cookie) : '',
+        }
+      : null;
 
   if (!domainRaw || !isValidDomain(normDomain(domainRaw))) {
     send({ type: 'error', message: 'Domínio inválido' });
@@ -1084,11 +1386,19 @@ app.post('/api/recon/stream', async (req, res) => {
       modules,
       emit: send,
       kaliMode,
+      auth,
+      profile,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
   }
   res.end();
+});
+
+app.get('/api/csrf-token', (req, res) => {
+  const token = issueCsrfToken(req);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ token, expiresInMs: CSRF_TTL_MS });
 });
 
 app.get('/api/health', (_req, res) => {
@@ -1181,9 +1491,8 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(ROOT, 'index.html'));
 });
 
-const PORT = Number(process.env.PORT) || 3847;
-const server = app.listen(PORT, () => {
-  console.log(`GHOSTRECON → http://127.0.0.1:${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  console.log(`GHOSTRECON → http://${HOST}:${PORT}`);
 });
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {

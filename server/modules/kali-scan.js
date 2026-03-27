@@ -250,10 +250,19 @@ async function runNucleiList(urls, log) {
   const listFile = join(dir, 'targets.txt');
   const outFile = join(dir, 'out.jsonl');
   await writeFile(listFile, [...new Set(urls)].slice(0, 18).join('\n'), 'utf8');
+  const profile = String(process.env.GHOSTRECON_NUCLEI_PROFILE || 'bb-passive').toLowerCase();
+  const profileArgs =
+    profile === 'safe'
+      ? ['-severity', 'medium,high,critical']
+      : profile === 'bb-active'
+        ? ['-severity', 'low,medium,high,critical']
+        : profile === 'high-impact'
+          ? ['-severity', 'high,critical', '-tags', 'rce,sqli,lfi,ssrf,xss,auth-bypass']
+          : ['-severity', 'medium,high,critical'];
   try {
     await runProc(
       'nuclei',
-      ['-l', listFile, '-jsonl', '-o', outFile, '-silent', '-rate-limit', '35', '-timeout', '8'],
+      ['-l', listFile, '-jsonl', '-o', outFile, '-silent', '-rate-limit', '35', '-timeout', '8', ...profileArgs],
       320000,
     );
     let text = '';
@@ -288,6 +297,8 @@ async function runNucleiTags(urls, tagsCsv, log) {
   const listFile = join(dir, 'targets.txt');
   const outFile = join(dir, 'out.jsonl');
   await writeFile(listFile, [...new Set(urls)].slice(0, 30).join('\n'), 'utf8');
+  const profile = String(process.env.GHOSTRECON_NUCLEI_PROFILE || 'bb-passive').toLowerCase();
+  const sevArgs = profile === 'safe' ? ['-severity', 'medium,high,critical'] : ['-severity', 'low,medium,high,critical'];
   try {
     await runProc(
       'nuclei',
@@ -304,6 +315,7 @@ async function runNucleiTags(urls, tagsCsv, log) {
         '8',
         '-tags',
         tagsCsv,
+        ...sevArgs,
       ],
       360000,
     );

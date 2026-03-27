@@ -31,7 +31,42 @@ export function snapshotSecurityHeaders(headers) {
   return snap;
 }
 
-export async function probeHttp(url) {
+function buildRequestHeaders(auth) {
+  const h = {
+    'User-Agent': UA,
+    Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+  };
+  if (auth?.headers && typeof auth.headers === 'object') {
+    for (const [k, v] of Object.entries(auth.headers)) {
+      if (!k || v == null) continue;
+      h[String(k)] = String(v);
+    }
+  }
+  if (auth?.cookie) h.Cookie = String(auth.cookie);
+  return h;
+}
+
+function detectWaf(headers, bodySnippet = '') {
+  const blob = [
+    headers.get('server') || '',
+    headers.get('x-sucuri-id') || '',
+    headers.get('cf-ray') || '',
+    headers.get('x-akamai-request-id') || '',
+    headers.get('x-cdn') || '',
+    bodySnippet.slice(0, 1200),
+  ]
+    .join(' ')
+    .toLowerCase();
+  if (/cloudflare|cf-ray/.test(blob)) return 'cloudflare';
+  if (/akamai/.test(blob)) return 'akamai';
+  if (/sucuri/.test(blob)) return 'sucuri';
+  if (/imperva|incapsula/.test(blob)) return 'imperva';
+  if (/aws\s*waf|awselb/.test(blob)) return 'aws-waf';
+  return '';
+}
+
+export async function probeHttp(url, opts = {}) {
+  const { auth } = opts;
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), limits.probeTimeoutMs);
   try {
@@ -39,10 +74,7 @@ export async function probeHttp(url) {
       method: 'GET',
       redirect: 'follow',
       signal: controller.signal,
-      headers: {
-        'User-Agent': UA,
-        Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
-      },
+      headers: buildRequestHeaders(auth),
     });
     const buf = await res.arrayBuffer();
     const slice = buf.byteLength > limits.maxBodySnippet ? buf.slice(0, limits.maxBodySnippet) : buf;
@@ -50,6 +82,7 @@ export async function probeHttp(url) {
     const title = extractTitle(text);
     const tech = detectTech(res.headers, text);
     const securityHeaders = snapshotSecurityHeaders(res.headers);
+    const waf = detectWaf(res.headers, text);
     const ct = res.headers.get('content-type') || '';
     let surface = null;
     if (/text\/html|application\/xhtml/i.test(ct)) {
@@ -65,6 +98,7 @@ export async function probeHttp(url) {
       status: res.status,
       title,
       tech,
+      waf,
       securityHeaders,
       surface,
     };

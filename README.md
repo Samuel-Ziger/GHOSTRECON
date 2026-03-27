@@ -204,6 +204,53 @@ Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurren
 - **Scans pesados XSS/SQLi** (nuclei com `-tags xss` / `-tags sqli`, e **dalfox**) só correm se existirem **sinais passivos**: parâmetros típicos nas URLs do corpus (`id`, `q`, `search`, etc.) ou findings `intel` «XSS/SQLi candidate param» gerados na fase de parâmetros.
 - Variáveis úteis: `GHOSTRECON_NMAP_ARGS`, `GHOSTRECON_DALFOX_MAX_URLS`, `GHOSTRECON_DALFOX_TIMEOUT_MS`, `GHOSTRECON_WPSCAN_*`, `GHOSTRECON_FORCE_KALI`.
 
+### Verify (evidence-guided)
+
+A pipeline inclui fase **Verify** para classificar candidatos em **`confirmed`**, **`probable`** ou **`noisy`** nos tipos:
+
+- `xss`
+- `sqli`
+- `open_redirect`
+- `idor`
+- `lfi` (path traversal / file inclusion)
+
+Cada resultado leva evidência mínima (`requestSnippet`, `responseSnippet`, `status`, `timestamp`, `source`) e é incluído na priorização.
+
+### Perfis de execução
+
+Define no browser (localStorage) para ajustar cobertura/tempo:
+
+```js
+localStorage.setItem('ghostrecon_profile', 'quick');    // quick | standard | deep
+```
+
+- `quick`: menor cobertura, mais rápido
+- `standard`: equilíbrio
+- `deep`: maior cobertura (inclui fontes CLI como `gau` / `waybackurls` quando disponíveis)
+
+### Fase 3 (tools)
+
+- **Katana (crawl JS/headless)**: no perfil `deep`, tenta expandir corpus via `katana` (se presente no PATH).
+- **Nuclei profiles**: variável `GHOSTRECON_NUCLEI_PROFILE` com opções:
+  - `safe`
+  - `bb-passive` (default)
+  - `bb-active`
+  - `high-impact`
+- **Secret live/dead**: findings `secret` passam por validação HTTP e geram `secret_validation` (`live`, `probable`, `dead`).
+
+### Auth opcional para programas privados
+
+Para mapear superfície autenticada, podes definir no browser:
+
+```js
+localStorage.setItem('ghostrecon_auth_json', JSON.stringify({
+  headers: { Authorization: 'Bearer <TOKEN>' },
+  cookie: 'session=<COOKIE>'
+}));
+```
+
+A UI envia isso em `auth` no `POST /api/recon/stream`, usado em probe/verify.
+
 ### Shodan (passivo)
 
 Ativa o módulo `shodan` no recon e define `SHODAN_API_KEY`. O servidor resolve IPv4 para uma amostra de hosts vivos e consulta `api.shodan.io/shodan/host/{ip}` (limite em `server/config.js`).

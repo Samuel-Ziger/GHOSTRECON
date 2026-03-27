@@ -1075,6 +1075,29 @@
         <input type="number" id="maxDorkTabs" value="3" min="1" max="20" class="domain-input" style="padding:8px 10px;text-align:right;width:100px">
       </div>
 
+      <div class="toggle-row" style="align-items:center;gap:10px;margin-bottom:12px">
+        <span class="toggle-label">Perfil recon</span>
+        <select id="reconProfileSelect" class="domain-input" style="padding:8px 10px;width:140px">
+          <option value="quick">quick</option>
+          <option value="standard" selected>standard</option>
+          <option value="deep">deep</option>
+        </select>
+      </div>
+
+      <details style="margin-bottom:12px;border:1px solid var(--border);padding:10px;background:var(--bg2)">
+        <summary style="cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--accent)">Auth opcional (private program)</summary>
+        <div style="margin-top:10px">
+          <div class="toggle-label" style="margin-bottom:6px">Header Authorization (opcional)</div>
+          <input id="authHeaderInput" class="domain-input" type="text" placeholder="Bearer eyJ..." style="padding:8px 10px">
+          <div class="toggle-label" style="margin:8px 0 6px">Cookie (opcional)</div>
+          <input id="authCookieInput" class="domain-input" type="text" placeholder="session=abc123" style="padding:8px 10px">
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button type="button" class="find-btn" onclick="saveAuthConfig()">Salvar auth</button>
+            <button type="button" class="find-btn" onclick="clearAuthConfig()">Limpar</button>
+          </div>
+        </div>
+      </details>
+
       <div id="kaliPanel" style="margin-bottom:14px;padding:12px;border:1px solid var(--border);background:var(--bg2)">
         <div class="section-label" style="margin-bottom:8px">Kali (scan ativo)</div>
         <div id="kaliCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:10px;line-height:1.4">A detetar ambiente…</div>
@@ -1228,8 +1251,11 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="subdomains" checked><div class="checkbox-box"></div><span class="checkbox-text">Subdomain discovery</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wayback" checked><div class="checkbox-box"></div><span class="checkbox-text">Wayback Machine</span><span class="tag tag-low">LOW</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="common_crawl"><div class="checkbox-box"></div><span class="checkbox-text">Common Crawl (CDX)</span><span class="tag tag-low">LOW</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="gau"><div class="checkbox-box"></div><span class="checkbox-text">gau (archive URLs)</span><span class="tag tag-low">CLI</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="waybackurls"><div class="checkbox-box"></div><span class="checkbox-text">waybackurls (archive URLs)</span><span class="tag tag-low">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="rdap"><div class="checkbox-box"></div><span class="checkbox-text">RDAP (registo domínio)</span><span class="tag tag-low">WHOIS+</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="wafw00f"><div class="checkbox-box"></div><span class="checkbox-text">WAF fingerprint (wafw00f)</span><span class="tag tag-med">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="robots_sitemap" checked><div class="checkbox-box"></div><span class="checkbox-text">robots.txt / sitemap</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="virustotal"><div class="checkbox-box"></div><span class="checkbox-text">VirusTotal subs</span><span class="tag tag-med">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="shodan"><div class="checkbox-box"></div><span class="checkbox-text">Shodan (IP lookup)</span><span class="tag tag-med">API</span></label>
@@ -1296,7 +1322,15 @@
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
+        <div class="pipe-node" id="pipe-verify">VERIFY</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
         <div class="pipe-node" id="pipe-kali">KALI SCAN</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-node" id="pipe-assets">ASSETS</div>
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
@@ -1358,6 +1392,11 @@
           <div class="filter-tab" onclick="filterFindings('dalfox', this)">DALFOX</div>
           <div class="filter-tab" onclick="filterFindings('xss', this)">XSS</div>
           <div class="filter-tab" onclick="filterFindings('sqli', this)">SQLI</div>
+          <div class="filter-tab" onclick="filterFindings('lfi', this)">LFI</div>
+          <div class="filter-tab" onclick="filterFindings('open_redirect', this)">REDIRECT</div>
+          <div class="filter-tab" onclick="filterFindings('idor', this)">IDOR</div>
+          <div class="filter-tab" onclick="filterFindings('takeover', this)">TAKEOVER</div>
+          <div class="filter-tab" onclick="filterFindings('secret_validation', this)">SECRET-CHECK</div>
           <div class="filter-tab" onclick="filterFindings('whois', this)">WHOIS</div>
           <div class="filter-tab" onclick="filterFindings('security', this)">SEC</div>
           <div class="filter-tab" onclick="filterFindings('tls', this)">TLS</div>
@@ -1400,6 +1439,7 @@ let isRunning = false;
 let stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
 let targetDomain = '';
 let dorkUrlQueue = [];
+let csrfToken = '';
 
 /**
  * Com a página em http://127.0.0.1:PORT (npm start), usa URLs relativas.
@@ -1453,6 +1493,77 @@ function apiUrl(path) {
   return base ? `${base}${p}` : p;
 }
 
+function getOptionalAuthConfig() {
+  try {
+    const raw = localStorage.getItem('ghostrecon_auth_json');
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== 'object') return null;
+    return {
+      headers: j.headers && typeof j.headers === 'object' ? j.headers : {},
+      cookie: j.cookie ? String(j.cookie) : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getReconProfile() {
+  const sel = document.getElementById('reconProfileSelect');
+  if (sel?.value && ['quick', 'standard', 'deep'].includes(String(sel.value).toLowerCase())) {
+    return String(sel.value).toLowerCase();
+  }
+  try {
+    const p = String(localStorage.getItem('ghostrecon_profile') || 'standard')
+      .trim()
+      .toLowerCase();
+    if (['quick', 'standard', 'deep'].includes(p)) return p;
+  } catch {}
+  return 'standard';
+}
+
+function saveAuthConfig() {
+  const authHeader = (document.getElementById('authHeaderInput')?.value || '').trim();
+  const authCookie = (document.getElementById('authCookieInput')?.value || '').trim();
+  const headers = {};
+  if (authHeader) headers.Authorization = authHeader;
+  const payload = { headers, cookie: authCookie };
+  localStorage.setItem('ghostrecon_auth_json', JSON.stringify(payload));
+  addLog('Auth opcional salva no browser (localStorage).', 'info');
+}
+
+function clearAuthConfig() {
+  localStorage.removeItem('ghostrecon_auth_json');
+  const h = document.getElementById('authHeaderInput');
+  const c = document.getElementById('authCookieInput');
+  if (h) h.value = '';
+  if (c) c.value = '';
+  addLog('Auth opcional removida.', 'info');
+}
+
+function initProfileUi() {
+  const sel = document.getElementById('reconProfileSelect');
+  if (!sel) return;
+  const p = String(localStorage.getItem('ghostrecon_profile') || 'standard').toLowerCase();
+  if (['quick', 'standard', 'deep'].includes(p)) sel.value = p;
+  sel.addEventListener('change', () => {
+    localStorage.setItem('ghostrecon_profile', sel.value);
+    addLog(`Perfil ajustado para: ${sel.value}`, 'info');
+  });
+}
+
+function initAuthUi() {
+  try {
+    const raw = localStorage.getItem('ghostrecon_auth_json');
+    if (!raw) return;
+    const j = JSON.parse(raw);
+    const h = document.getElementById('authHeaderInput');
+    const c = document.getElementById('authCookieInput');
+    if (h && j?.headers?.Authorization) h.value = String(j.headers.Authorization);
+    if (c && j?.cookie) c.value = String(j.cookie);
+  } catch {}
+}
+
 // ─── CLOCK ────────────────────────────────────────────────
 setInterval(() => {
   const now = new Date();
@@ -1470,9 +1581,30 @@ function addLog(msg, type = 'info') {
   const prefixes = { info: '[*]', success: '[+]', warn: '[!]', error: '[✗]', find: '[→]', section: '[─]' };
   const div = document.createElement('div');
   div.className = `term-line term-${type}`;
-  div.innerHTML = `<span class="term-time">${now}</span><span class="term-prefix">${prefixes[type] || '[*]'}</span><span class="term-msg">${msg}</span>`;
+  const tm = document.createElement('span');
+  tm.className = 'term-time';
+  tm.textContent = now;
+  const pf = document.createElement('span');
+  pf.className = 'term-prefix';
+  pf.textContent = prefixes[type] || '[*]';
+  const mg = document.createElement('span');
+  mg.className = 'term-msg';
+  mg.textContent = String(msg ?? '');
+  div.appendChild(tm);
+  div.appendChild(pf);
+  div.appendChild(mg);
   el.appendChild(div);
   el.parentElement.scrollTop = el.parentElement.scrollHeight;
+}
+
+async function ensureCsrfToken(force = false) {
+  if (csrfToken && !force) return csrfToken;
+  const res = await fetch(apiUrl('/api/csrf-token'));
+  if (!res.ok) throw new Error(`falha ao obter token CSRF (HTTP ${res.status})`);
+  const data = await res.json();
+  csrfToken = String(data?.token || '');
+  if (!csrfToken) throw new Error('token CSRF vazio');
+  return csrfToken;
 }
 
 // ─── PIPELINE CONTROL ────────────────────────────────────
@@ -1676,6 +1808,11 @@ function refreshFindingsList() {
       subs: 1,
       endpoint: 2,
       param: 3,
+      xss: 4,
+      sqli: 5,
+      lfi: 6,
+      open_redirect: 7,
+      idor: 8,
       secret: 8,
       js: 9,
       dork: 10,
@@ -1688,6 +1825,8 @@ function refreshFindingsList() {
       rdap: 17,
       intel: 18,
       wpscan: 19,
+      takeover: 20,
+      secret_validation: 21,
     };
     filtered.sort((a, b) => {
       const ra = rank[a.type] ?? 999;
@@ -1704,7 +1843,7 @@ function refreshFindingsList() {
 }
 
 function resetPipelineVisual() {
-  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','kali','score'].forEach(n => setPipe(n, ''));
+  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','verify','kali','assets','score'].forEach(n => setPipe(n, ''));
 }
 
 let dorkActiveTabs = 0;
@@ -1816,6 +1955,7 @@ async function startRecon() {
   addLog(`Iniciando GHOSTRECON para: ${targetDomain}`, 'section');
   addLog(`Módulos ativos: ${selectedMods.join(', ') || '(nenhum)' }`, 'info');
   addLog(`Modo: ${exact ? 'Exact Match (aspas nos dorks)' : 'Broad Match'}`, 'info');
+  addLog(`Perfil de execução: ${getReconProfile()}`, 'info');
   addLog('Conectando ao pipeline local (servidor Node)...', 'info');
 
   const finishOk = () => {
@@ -1834,14 +1974,17 @@ async function startRecon() {
   };
 
   try {
+    const token = await ensureCsrfToken();
     const res = await fetch(apiUrl('/api/recon/stream'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
       body: JSON.stringify({
         domain: targetDomain,
         exactMatch: exact,
         modules: selectedMods,
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
+        profile: getReconProfile(),
+        auth: getOptionalAuthConfig(),
       }),
     });
 
@@ -1882,6 +2025,15 @@ async function startRecon() {
           const raw = ev.line;
           const line = (raw.startsWith('☐') || raw.startsWith('🔎')) ? raw : `⚡ ${raw}`;
           addLog(line, 'find');
+        }
+        if (ev.type === 'report_template' && ev.template) {
+          addLog(`Template: ${ev.template.title}`, 'info');
+        }
+        if (ev.type === 'delta_hot' && ev.hotAddedCount) {
+          addLog(`Delta HOT: ${ev.hotAddedCount} novidade(s) crítica(s) vs baseline #${ev.baselineRunId}`, 'warn');
+          for (const s of (ev.sample || []).slice(0, 6)) {
+            addLog(`HOT ${String(s.type || '?').toUpperCase()}: ${String(s.value || '').slice(0, 120)}`, 'warn');
+          }
         }
         if (ev.type === 'error') {
           finishErr(ev.message || 'Erro no servidor');
@@ -2115,6 +2267,8 @@ async function fetchKaliCapabilities() {
 
 fetchKaliCapabilities();
 loadRunsHistory();
+initProfileUi();
+initAuthUi();
 </script>
 </body>
 </html>

@@ -1,10 +1,11 @@
 import { UA, limits } from '../config.js';
+import { fetchWithBackoff } from './http-utils.js';
 
 /**
  * URLs históricas via índice CDX do Common Crawl (complemento ao Wayback).
  */
 export async function fetchCommonCrawlUrls(domain) {
-  const collRes = await fetch('https://index.commoncrawl.org/collinfo.json', {
+  const collRes = await fetchWithBackoff('https://index.commoncrawl.org/collinfo.json', {
     headers: { 'User-Agent': UA },
     signal: AbortSignal.timeout(limits.commonCrawlCollinfoTimeoutMs),
   });
@@ -26,7 +27,7 @@ export async function fetchCommonCrawlUrls(domain) {
   const urlParam = `*.${domain}/*`;
   const q = `${apiBase}?url=${encodeURIComponent(urlParam)}&output=json&filter=status:200&limit=${lim}`;
 
-  const res = await fetch(q, {
+  const res = await fetchWithBackoff(q, {
     headers: { 'User-Agent': UA },
     signal: AbortSignal.timeout(limits.commonCrawlQueryTimeoutMs),
   });

@@ -50,6 +50,7 @@ function typeMultiplier(f) {
   if (f.type === 'secret') return { x: 1.35, r: 'possível secret/credencial' };
   if (f.type === 'exploit') return { x: 1.3, r: 'referência Exploit-DB' };
   if (f.type === 'nuclei') return { x: 1.3, r: 'template Nuclei' };
+  if (f.type === 'lfi') return { x: 1.28, r: 'teste LFI/traversal' };
   if (f.type === 'nmap') return { x: 1.08, r: 'superfície nmap' };
   return { x: 1, r: null };
 }
@@ -78,6 +79,51 @@ function endpointUrlBoost(f) {
   return { x: 1, r: null };
 }
 
+function exploitabilityBoost(f) {
+  let x = 1;
+  const r = [];
+  const m = String(f.meta || '').toLowerCase();
+  const v = String(f.value || '').toLowerCase();
+  if (f?.verification?.classification === 'confirmed') {
+    x *= 1.35;
+    r.push('verify=confirmed');
+  } else if (f?.verification?.classification === 'probable') {
+    x *= 1.18;
+    r.push('verify=probable');
+  }
+  if (/auth=required|401|403/.test(m)) {
+    x *= 1.14;
+    r.push('endpoint autenticado');
+  }
+  if (/waf=/.test(m)) {
+    x *= 0.92;
+    r.push('waf presente');
+  }
+  if (/status_consistent=true|stable_status=true/.test(m)) {
+    x *= 1.12;
+    r.push('status consistente');
+  }
+  if (/reflected=yes/.test(m)) {
+    x *= 1.2;
+    r.push('parâmetro refletido');
+  }
+  if (/cve_hint=true|cve\/tags|cve:/.test(m) || /cve-\d{4}-\d+/i.test(v)) {
+    x *= 1.16;
+    r.push('sinal de CVE');
+  }
+  const conf = Number(f?.verification?.confidenceScore);
+  if (Number.isFinite(conf)) {
+    if (conf >= 85) {
+      x *= 1.18;
+      r.push('confidence alta');
+    } else if (conf >= 65) {
+      x *= 1.08;
+      r.push('confidence média');
+    }
+  }
+  return { x, reasons: r };
+}
+
 /**
  * @param {Array<object>} findings
  */
@@ -101,6 +147,10 @@ export function applyPrioritizationV2(findings) {
     const em = endpointUrlBoost(f);
     mult *= em.x;
     if (em.r) why.push(em.r);
+
+    const ex = exploitabilityBoost(f);
+    mult *= ex.x;
+    why.push(...ex.reasons);
 
     let composite = Math.min(100, Math.round(base * mult));
 
@@ -131,6 +181,12 @@ export function applyPrioritizationV2(findings) {
     f.compositeScore = composite;
     f.attackTier = attackTier;
     f.priorityWhy = [...new Set(why)].filter(Boolean);
+    if (f.verification) {
+      let c = f.verification.classification === 'confirmed' ? 88 : f.verification.classification === 'probable' ? 68 : 35;
+      if (String(f.meta || '').toLowerCase().includes('reflected=yes')) c += 6;
+      if (String(f.meta || '').toLowerCase().includes('waf=')) c -= 5;
+      f.verification.confidenceScore = Math.max(1, Math.min(99, Math.round(c)));
+    }
 
     const whyText = f.priorityWhy.length ? f.priorityWhy.join(' • ') : '';
     const tag = `[COMP ${composite} | ${attackTier}]`;
