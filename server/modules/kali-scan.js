@@ -49,6 +49,7 @@ export async function getKaliCapabilities() {
     searchsploit: await pathWhich('searchsploit'),
     wpscan: await pathWhich('wpscan'),
     whois: await pathWhich('whois'),
+    dalfox: await pathWhich('dalfox'),
   };
 
   const ready = qualifyDistro && tools.nmap;
@@ -329,6 +330,37 @@ async function runNucleiTags(urls, tagsCsv, log) {
     return [];
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+function parseDalfoxLines(text, limit = 6) {
+  const lines = String(text || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const hits = [];
+  for (const line of lines) {
+    if (/\[(POC|VULN|WEAK)\]/i.test(line) || /\bvulnerab/i.test(line)) {
+      hits.push(line.slice(0, 260));
+    }
+    if (hits.length >= limit) break;
+  }
+  return hits;
+}
+
+async function runDalfoxUrl(url, log) {
+  const timeoutMs = Number(process.env.GHOSTRECON_DALFOX_TIMEOUT_MS || 120000);
+  const args = ['url', url, '--silence', '--skip-bav', '--skip-mining-all', '--worker', '40'];
+  try {
+    const proc = await runProc('dalfox', args, timeoutMs);
+    const text = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
+    const hits = parseDalfoxLines(text);
+    if (proc.code !== 0 && typeof log === 'function') {
+      log(`dalfox ${url}: código ${proc.code}`, 'warn');
+    }
+    return { ok: true, hits };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e), hits: [] };
   }
 }
 
@@ -638,6 +670,29 @@ export async function runKaliAggressiveScan({
           log(`wpscan ${t}: sem JSON (${res?.error || 'unknown'})`, 'warn');
         }
       }
+    }
+  }
+
+  if (cap.tools.dalfox && Array.isArray(paramUrls) && paramUrls.length) {
+    const targets = [...new Set(paramUrls)].slice(0, Number(process.env.GHOSTRECON_DALFOX_MAX_URLS || 12));
+    log(`═══ dalfox (XSS) em URLs com parâmetros (${targets.length}) ═══`, 'section');
+    for (const u of targets) {
+      const r = await runDalfoxUrl(u, log);
+      if (!r.ok) {
+        log(`dalfox ${u}: ${r.error}`, 'warn');
+        continue;
+      }
+      for (const h of r.hits) {
+        addFinding({
+          type: 'dalfox',
+          prio: 'high',
+          score: 90,
+          value: `dalfox hit @ ${u}`,
+          meta: h,
+          url: u,
+        });
+      }
+      if (r.hits.length) log(`dalfox ${u} → ${r.hits.length} hit(s)`, 'warn');
     }
   }
 

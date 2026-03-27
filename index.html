@@ -820,6 +820,7 @@
   .type-exploit { background: rgba(255,80,120,0.15); color: #ff6b9d; border: 1px solid rgba(255,80,120,0.4); }
   .type-nuclei { background: rgba(255,140,0,0.12); color: #ffaa55; border: 1px solid rgba(255,140,0,0.35); }
   .type-wpscan { background: rgba(130,180,255,0.10); color: #7aaeff; border: 1px solid rgba(130,180,255,0.35); }
+  .type-dalfox { background: rgba(255,90,120,0.12); color: #ff7aa0; border: 1px solid rgba(255,90,120,0.35); }
   .type-whois { background: rgba(180,160,255,0.10); color: #b8a6ff; border: 1px solid rgba(180,160,255,0.35); }
   .type-xss { background: rgba(255,0,80,0.12); color: #ff4d88; border: 1px solid rgba(255,0,80,0.35); }
   .type-sqli { background: rgba(255,60,0,0.10); color: #ff7755; border: 1px solid rgba(255,60,0,0.35); }
@@ -1345,6 +1346,7 @@
           <div class="filter-tab" onclick="filterFindings('exploit', this)">EXPLOIT.DB</div>
           <div class="filter-tab" onclick="filterFindings('nuclei', this)">NUCLEI</div>
           <div class="filter-tab" onclick="filterFindings('wpscan', this)">WPSCAN</div>
+          <div class="filter-tab" onclick="filterFindings('dalfox', this)">DALFOX</div>
           <div class="filter-tab" onclick="filterFindings('xss', this)">XSS</div>
           <div class="filter-tab" onclick="filterFindings('sqli', this)">SQLI</div>
           <div class="filter-tab" onclick="filterFindings('whois', this)">WHOIS</div>
@@ -1930,7 +1932,13 @@ async function fetchKaliCapabilities() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const c = await res.json();
     const t = c.tools || {};
-    const parts = [`nmap:${t.nmap ? '✓' : '✗'}`, `ffuf:${t.ffuf ? '✓' : '✗'}`, `nuclei:${t.nuclei ? '✓' : '✗'}`, `searchsploit:${t.searchsploit ? '✓' : '✗'}`];
+    const parts = [
+      `nmap:${t.nmap ? '✓' : '✗'}`,
+      `ffuf:${t.ffuf ? '✓' : '✗'}`,
+      `nuclei:${t.nuclei ? '✓' : '✗'}`,
+      `searchsploit:${t.searchsploit ? '✓' : '✗'}`,
+      `dalfox:${t.dalfox ? '✓' : '✗'}`,
+    ];
     if (line) {
       line.style.color = c.kali ? 'var(--accent2)' : 'var(--text-dim)';
       line.textContent = c.kali ? `Disponível — ${parts.join(' ')}` : `${c.message || 'Indisponível'} — ${parts.join(' ')}`;
