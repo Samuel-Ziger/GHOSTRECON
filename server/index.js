@@ -34,7 +34,9 @@ import {
   listIntelForTarget,
   intelCountForTarget,
   storageLabel,
+  fingerprintFinding,
 } from './modules/db.js';
+import { collectUniqueIpv4, shodanHostSummary } from './modules/ip-intel.js';
 import { googleCseSearch, urlMatchesTarget } from './modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
@@ -90,6 +92,11 @@ async function runPipeline(ctx) {
   const stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
 
   const addFinding = (f, statKey) => {
+    try {
+      f.fingerprint = fingerprintFinding(domain, f);
+    } catch {
+      /* ignore */
+    }
     if (statKey) stats[statKey] = (stats[statKey] || 0) + 1;
     findings.push(f);
     if (f.prio === 'high') stats.high += 1;
@@ -280,6 +287,49 @@ async function runPipeline(ctx) {
     }
   }
 
+  {
+    let surfaceN = 0;
+    const cap = limits.htmlSurfaceMaxEndpoints;
+    for (const { r } of probeResults) {
+      if (!r.ok || !r.surface) continue;
+      if (surfaceN >= cap) break;
+      let pageHost = '';
+      try {
+        pageHost = new URL(r.url).hostname;
+      } catch {
+        continue;
+      }
+      const merged = [...(r.surface.links || []), ...(r.surface.formActions || [])];
+      for (const link of merged) {
+        if (surfaceN >= cap) break;
+        let u;
+        try {
+          u = new URL(link);
+        } catch {
+          continue;
+        }
+        if (!hostnameInScope(u.hostname, domain)) continue;
+        const href = u.href;
+        if (seenEp.has(href)) continue;
+        seenEp.add(href);
+        const { score, prio } = scoreEndpointPath(u.pathname);
+        addFinding(
+          {
+            type: 'endpoint',
+            prio,
+            score: Math.max(score, 42),
+            value: href,
+            meta: `HTML surface • ${pageHost}`,
+            url: href,
+          },
+          'endpoints',
+        );
+        surfaceN++;
+      }
+    }
+    if (surfaceN) log(`Superfície HTML: +${surfaceN} URL(s) (href/forms)`, 'info');
+  }
+
   if (modules.includes('security_headers')) {
     for (const { r } of probeResults) {
       if (!r.ok || !r.securityHeaders) continue;
@@ -450,6 +500,52 @@ async function runPipeline(ctx) {
   pipe('alive', 'done');
   progress(40);
 
+  if (modules.includes('shodan')) {
+    const sk = process.env.SHODAN_API_KEY?.trim();
+    if (!sk) {
+      log('Shodan: define SHODAN_API_KEY para lookup passivo (api.shodan.io)', 'warn');
+    } else {
+      log('Shodan: resolução IPv4 + host lookup (passivo)...', 'info');
+      try {
+        const ips = await collectUniqueIpv4(
+          hostsToProbe,
+          limits.shodanResolveMaxHosts,
+          limits.shodanMaxIps,
+        );
+        for (const ip of ips) {
+          const s = await shodanHostSummary(ip, sk);
+          if (!s.ok) {
+            log(`Shodan ${ip}: ${s.note}`, 'warn');
+            continue;
+          }
+          const portStr = s.ports?.length ? s.ports.join(', ') : '—';
+          const hn = s.hostnames?.length ? s.hostnames.join(', ') : '—';
+          const vn = s.vulns?.length ? s.vulns.join(', ') : '';
+          addFinding(
+            {
+              type: 'intel',
+              prio: s.vulns?.length ? 'high' : 'med',
+              score: s.vulns?.length ? 74 : 50,
+              value: `Shodan host ${ip}`,
+              meta: [
+                s.org && `org: ${s.org}`,
+                `ports: ${portStr}`,
+                `hostnames: ${hn}`,
+                vn && `cve/tags: ${vn}`,
+              ]
+                .filter(Boolean)
+                .join(' · '),
+              url: `https://www.shodan.io/host/${ip}`,
+            },
+            null,
+          );
+        }
+      } catch (e) {
+        log(`Shodan: ${e.message}`, 'warn');
+      }
+    }
+  }
+
   // ── WAYBACK / URLS ──────────────────────────
   let waybackUrls = [];
   pipe('urls', 'active');
@@ -541,7 +637,7 @@ async function runPipeline(ctx) {
           prio: prio === 'high' ? 'med' : 'low',
           score: 54,
           value: `XSS candidate param: ?${name}=`,
-          meta: 'Heurístico (passivo) — priorizar testes de reflexão/encoding',
+          meta: 'Heurístico (passivo) — priorizar testes de reflexão/encoding • confidence=heuristic',
           url: sampleUrl || undefined,
         },
         null,
@@ -554,7 +650,7 @@ async function runPipeline(ctx) {
           prio: prio === 'high' ? 'med' : 'low',
           score: 56,
           value: `SQLi candidate param: ?${name}=`,
-          meta: 'Heurístico (passivo) — priorizar filtros/IDs/ordenação',
+          meta: 'Heurístico (passivo) — priorizar filtros/IDs/ordenação • confidence=heuristic',
           url: sampleUrl || undefined,
         },
         null,
@@ -746,6 +842,34 @@ async function runPipeline(ctx) {
         .flat()
         .filter(Boolean);
 
+      let xssSignals = false;
+      let sqliSignals = false;
+      const xssParamRe = /[?&](q|query|search|s|keyword|term|message|comment|title|name)=/i;
+      const sqliParamRe =
+        /[?&](id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where)=/i;
+      for (const u of paramUrlsForKali) {
+        if (xssParamRe.test(u)) xssSignals = true;
+        if (sqliParamRe.test(u)) sqliSignals = true;
+        if (xssSignals && sqliSignals) break;
+      }
+      for (const f of findings) {
+        if (f.type !== 'intel') continue;
+        const v = String(f.value || '');
+        if (/XSS candidate param/i.test(v)) xssSignals = true;
+        if (/SQLi candidate param/i.test(v)) sqliSignals = true;
+      }
+      if (!xssSignals && !sqliSignals) {
+        log(
+          'Scan agressivo XSS/SQLi: sem sinais (URLs com parâmetros típicos nem candidatos intel) — nuclei tags xss/sqli e dalfox em skip',
+          'info',
+        );
+      } else {
+        log(
+          `Scan agressivo: sinais XSS=${xssSignals ? 'sim' : 'não'} SQLi=${sqliSignals ? 'sim' : 'não'}`,
+          'info',
+        );
+      }
+
       await runKaliAggressiveScan({
         domain,
         subdomainsAlive,
@@ -754,6 +878,8 @@ async function runPipeline(ctx) {
         addFinding,
         wordpressTargets,
         paramUrls: paramUrlsForKali,
+        xssSignals,
+        sqliSignals,
       });
     } else {
       log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
@@ -873,6 +999,42 @@ async function runPipeline(ctx) {
 
   const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
   if (whUrl && runId != null) {
+    const findingsByType = {};
+    for (const f of findings) {
+      const t = f?.type || 'unknown';
+      findingsByType[t] = (findingsByType[t] || 0) + 1;
+    }
+    let runDiffSummary = null;
+    try {
+      const runs = await listRuns(120);
+      const nt = domain.trim().toLowerCase();
+      const prev = runs.find((r) => String(r.target).trim().toLowerCase() === nt && r.id < runId);
+      if (prev) {
+        const diff = await compareRuns(prev.id, runId);
+        if (!diff.error) {
+          runDiffSummary = {
+            baselineId: diff.baselineId,
+            newerId: diff.newerId,
+            baselineCreatedAt: diff.baselineCreatedAt,
+            newerCreatedAt: diff.newerCreatedAt,
+            addedCount: diff.addedCount,
+            removedCount: diff.removedCount,
+            addedSample: diff.added.slice(0, 10).map((x) => ({
+              type: x.type,
+              prio: x.prio,
+              value: String(x.value ?? '').slice(0, 240),
+            })),
+            removedSample: diff.removed.slice(0, 10).map((x) => ({
+              type: x.type,
+              prio: x.prio,
+              value: String(x.value ?? '').slice(0, 240),
+            })),
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('[GHOSTRECON webhook diff]', e?.message || e);
+    }
     void postReconWebhook(whUrl, {
       target: domain,
       runId,
@@ -880,6 +1042,9 @@ async function runPipeline(ctx) {
       intelMerge,
       kaliMode: Boolean(kaliMode),
       modules: modulesForDb,
+      highCount: findings.filter((f) => f.prio === 'high').length,
+      findingsByType,
+      runDiffSummary,
     });
   }
 }

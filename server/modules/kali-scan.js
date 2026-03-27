@@ -429,6 +429,17 @@ async function runWhoisJsonLike({ target, timeoutMs, log }) {
 /**
  * Scan ativo: nmap → searchsploit (heurístico) → ffuf (só HTTP 200) → nuclei.
  */
+function nucleiEvidenceMeta({ tid, sev, extra }) {
+  const parts = [
+    `scanner=nuclei`,
+    `severity=${sev}`,
+    tid && `template=${tid}`,
+    `confidence=active_scan`,
+  ];
+  if (extra) parts.push(extra);
+  return parts.filter(Boolean).join(' • ');
+}
+
 export async function runKaliAggressiveScan({
   domain,
   subdomainsAlive,
@@ -437,6 +448,8 @@ export async function runKaliAggressiveScan({
   addFinding,
   wordpressTargets,
   paramUrls,
+  xssSignals = true,
+  sqliSignals = true,
 }) {
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
   const hosts = [...new Set(rawHosts)].slice(0, 22);
@@ -584,7 +597,11 @@ export async function runKaliAggressiveScan({
           prio: ['critical', 'high'].includes(String(sev).toLowerCase()) ? 'high' : 'med',
           score: sev === 'critical' ? 95 : sev === 'high' ? 88 : 60,
           value: `${tid} @ ${matched}`,
-          meta: `nuclei • ${sev}`,
+          meta: nucleiEvidenceMeta({
+            tid,
+            sev,
+            extra: matched ? `matched=${String(matched).slice(0, 120)}` : null,
+          }),
           url: matched.startsWith('http') ? matched : null,
         });
       }
@@ -597,46 +614,55 @@ export async function runKaliAggressiveScan({
   // XSS/SQLi via nuclei tags contra URLs com query string (vindas do corpus passivo)
   if (cap.tools.nuclei && Array.isArray(paramUrls) && paramUrls.length) {
     const urls = [...new Set(paramUrls)].slice(0, 30);
-    log(`═══ nuclei (xss/sqli) em URLs com parâmetros (${urls.length}) ═══`, 'section');
 
-    try {
-      const xss = await runNucleiTags(urls, 'xss', log);
-      for (const f of xss) {
-        const matched = f['matched-at'] || f.host || f.url || '';
-        const tid = f['template-id'] || f.templateID || 'template';
-        const sev = f.info?.severity || f.severity || 'info';
-        addFinding({
-          type: 'xss',
-          prio: ['critical', 'high'].includes(String(sev).toLowerCase()) ? 'high' : 'med',
-          score: sev === 'critical' ? 95 : sev === 'high' ? 90 : 70,
-          value: `${tid} @ ${matched}`,
-          meta: `nuclei:xss • ${sev}`,
-          url: matched.startsWith('http') ? matched : null,
-        });
+    if (xssSignals) {
+      log(`═══ nuclei (xss) em URLs com parâmetros (${urls.length}) ═══`, 'section');
+      try {
+        const xss = await runNucleiTags(urls, 'xss', log);
+        for (const f of xss) {
+          const matched = f['matched-at'] || f.host || f.url || '';
+          const tid = f['template-id'] || f.templateID || 'template';
+          const sev = f.info?.severity || f.severity || 'info';
+          addFinding({
+            type: 'xss',
+            prio: ['critical', 'high'].includes(String(sev).toLowerCase()) ? 'high' : 'med',
+            score: sev === 'critical' ? 95 : sev === 'high' ? 90 : 70,
+            value: `${tid} @ ${matched}`,
+            meta: nucleiEvidenceMeta({ tid, sev, extra: 'tags=xss' }),
+            url: matched.startsWith('http') ? matched : null,
+          });
+        }
+        if (xss.length) log(`XSS: ${xss.length} finding(s)`, 'warn');
+      } catch (e) {
+        log(`XSS nuclei: ${e.message}`, 'warn');
       }
-      if (xss.length) log(`XSS: ${xss.length} finding(s)`, 'warn');
-    } catch (e) {
-      log(`XSS nuclei: ${e.message}`, 'warn');
+    } else {
+      log('nuclei tags=xss: skip (sem sinais passivos)', 'info');
     }
 
-    try {
-      const sqli = await runNucleiTags(urls, 'sqli', log);
-      for (const f of sqli) {
-        const matched = f['matched-at'] || f.host || f.url || '';
-        const tid = f['template-id'] || f.templateID || 'template';
-        const sev = f.info?.severity || f.severity || 'info';
-        addFinding({
-          type: 'sqli',
-          prio: ['critical', 'high'].includes(String(sev).toLowerCase()) ? 'high' : 'med',
-          score: sev === 'critical' ? 98 : sev === 'high' ? 92 : 72,
-          value: `${tid} @ ${matched}`,
-          meta: `nuclei:sqli • ${sev}`,
-          url: matched.startsWith('http') ? matched : null,
-        });
+    if (sqliSignals) {
+      log(`═══ nuclei (sqli) em URLs com parâmetros (${urls.length}) ═══`, 'section');
+      try {
+        const sqli = await runNucleiTags(urls, 'sqli', log);
+        for (const f of sqli) {
+          const matched = f['matched-at'] || f.host || f.url || '';
+          const tid = f['template-id'] || f.templateID || 'template';
+          const sev = f.info?.severity || f.severity || 'info';
+          addFinding({
+            type: 'sqli',
+            prio: ['critical', 'high'].includes(String(sev).toLowerCase()) ? 'high' : 'med',
+            score: sev === 'critical' ? 98 : sev === 'high' ? 92 : 72,
+            value: `${tid} @ ${matched}`,
+            meta: nucleiEvidenceMeta({ tid, sev, extra: 'tags=sqli' }),
+            url: matched.startsWith('http') ? matched : null,
+          });
+        }
+        if (sqli.length) log(`SQLi: ${sqli.length} finding(s)`, 'warn');
+      } catch (e) {
+        log(`SQLi nuclei: ${e.message}`, 'warn');
       }
-      if (sqli.length) log(`SQLi: ${sqli.length} finding(s)`, 'warn');
-    } catch (e) {
-      log(`SQLi nuclei: ${e.message}`, 'warn');
+    } else {
+      log('nuclei tags=sqli: skip (sem sinais passivos)', 'info');
     }
   }
 
@@ -673,7 +699,7 @@ export async function runKaliAggressiveScan({
     }
   }
 
-  if (cap.tools.dalfox && Array.isArray(paramUrls) && paramUrls.length) {
+  if (cap.tools.dalfox && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     const targets = [...new Set(paramUrls)].slice(0, Number(process.env.GHOSTRECON_DALFOX_MAX_URLS || 12));
     log(`═══ dalfox (XSS) em URLs com parâmetros (${targets.length}) ═══`, 'section');
     for (const u of targets) {
@@ -688,12 +714,14 @@ export async function runKaliAggressiveScan({
           prio: 'high',
           score: 90,
           value: `dalfox hit @ ${u}`,
-          meta: h,
+          meta: `scanner=dalfox • confidence=tool_output • ${h}`,
           url: u,
         });
       }
       if (r.hits.length) log(`dalfox ${u} → ${r.hits.length} hit(s)`, 'warn');
     }
+  } else if (cap.tools.dalfox && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+    log('dalfox: skip (sem sinais XSS passivos)', 'info');
   }
 
   log('═══ Fim modo Kali ═══', 'section');

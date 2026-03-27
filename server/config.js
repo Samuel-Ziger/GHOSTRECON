@@ -37,6 +37,11 @@ export const limits = {
   /** WHOIS (Kali mode) */
   whoisTimeoutMs: 20000,
   whoisSubdomainsMax: 3,
+  /** Superfície extraída do HTML (href/forms) por host vivo */
+  htmlSurfaceMaxEndpoints: 100,
+  /** Shodan (módulo passivo): resolução e IPs consultados */
+  shodanResolveMaxHosts: 14,
+  shodanMaxIps: 5,
 };
 
 /** Rate limit POST /api/recon/stream (por IP). 0 = desativado */

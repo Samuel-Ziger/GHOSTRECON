@@ -1,5 +1,6 @@
 import { UA, limits } from '../config.js';
 import { detectTech } from './tech.js';
+import { extractHtmlSurface } from './html-surface.js';
 
 function extractTitle(html) {
   const m = html.match(/<title[^>]*>([^<]{0,300})/i);
@@ -49,6 +50,15 @@ export async function probeHttp(url) {
     const title = extractTitle(text);
     const tech = detectTech(res.headers, text);
     const securityHeaders = snapshotSecurityHeaders(res.headers);
+    const ct = res.headers.get('content-type') || '';
+    let surface = null;
+    if (/text\/html|application\/xhtml/i.test(ct)) {
+      try {
+        surface = extractHtmlSurface(text, res.url);
+      } catch {
+        surface = null;
+      }
+    }
     return {
       ok: true,
       url: res.url,
@@ -56,6 +66,7 @@ export async function probeHttp(url) {
       title,
       tech,
       securityHeaders,
+      surface,
     };
   } catch (e) {
     return {

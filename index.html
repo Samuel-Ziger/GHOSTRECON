@@ -934,6 +934,13 @@
 
   .export-btn:hover { border-color: var(--accent2); color: var(--accent2); }
 
+  .find-btn.dismiss-fp {
+    border-color: var(--text-dim);
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+  .find-btn.dismiss-fp:hover { border-color: var(--accent3); color: var(--accent3); }
+
   /* ===== EMPTY STATE ===== */
   .empty-state {
     display: flex;
@@ -1093,6 +1100,7 @@
         <span id="runsHistoryEmpty">Carregando…</span>
       </div>
       <div id="intelBanner" style="display:none;margin-top:12px;padding:11px 12px;border:1px solid var(--accent2);background:rgba(0,255,136,0.07);font-family:var(--mono);font-size:10px;color:var(--text-bright);line-height:1.55;border-radius:0"></div>
+      <div id="intelCorpusStrip" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid var(--border);background:var(--bg2);font-family:var(--mono);font-size:9px;color:var(--text-dim);line-height:1.5;max-height:140px;overflow-y:auto"></div>
     </div>
 
     <!-- Module Selection -->
@@ -1224,6 +1232,7 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="robots_sitemap" checked><div class="checkbox-box"></div><span class="checkbox-text">robots.txt / sitemap</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="virustotal"><div class="checkbox-box"></div><span class="checkbox-text">VirusTotal subs</span><span class="tag tag-med">API</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="shodan"><div class="checkbox-box"></div><span class="checkbox-text">Shodan (IP lookup)</span><span class="tag tag-med">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="dns_enrichment" checked><div class="checkbox-box"></div><span class="checkbox-text">DNS TXT/MX (SPF/DMARC)</span><span class="tag tag-low">LOW</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wellknown_security_txt"><div class="checkbox-box"></div><span class="checkbox-text">.well-known/security.txt</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wellknown_openid"><div class="checkbox-box"></div><span class="checkbox-text">.well-known/openid-configuration</span><span class="tag tag-med">MED</span></label>
@@ -1397,6 +1406,36 @@ let dorkUrlQueue = [];
  * Se abrires o HTML pelo disco (file://), os pedidos vão para esta base
  * (CORS permitido no servidor). Outra porta: localStorage.setItem('ghostrecon_api_base','http://127.0.0.1:TEU_PORTO')
  */
+const DISMISS_FP_KEY = 'ghostrecon_dismissed_fps';
+
+function getDismissedFingerprints() {
+  try {
+    const raw = localStorage.getItem(DISMISS_FP_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function isFingerprintDismissed(fp) {
+  if (!fp || typeof fp !== 'string') return false;
+  return getDismissedFingerprints().includes(fp);
+}
+
+function dismissFindingFingerprint(fp) {
+  if (!fp) return;
+  const cur = getDismissedFingerprints();
+  const next = [...new Set([...cur, fp])].slice(-400);
+  try {
+    localStorage.setItem(DISMISS_FP_KEY, JSON.stringify(next));
+  } catch {}
+  const i = findings.findIndex((x) => x.fingerprint === fp);
+  if (i >= 0) findings.splice(i, 1);
+  document.getElementById('findCount').textContent = findings.length + ' achados';
+  refreshFindingsList();
+}
+
 function getApiBase() {
   try {
     const proto = window.location.protocol;
@@ -1456,6 +1495,7 @@ function updateStat(key, val) {
 
 // ─── FINDINGS ────────────────────────────────────────────
 function addFinding(f) {
+  if (isFingerprintDismissed(f.fingerprint)) return;
   // índice para manter ordenação consistente em re-renderizações
   f.__idx = findings.length;
   findings.push(f);
@@ -1535,6 +1575,14 @@ function renderFinding(f) {
     ob.onclick = () => window.open(f.url, '_blank', 'noopener,noreferrer');
     actions.appendChild(ob);
   }
+  if (f.fingerprint) {
+    const db = document.createElement('button');
+    db.className = 'find-btn dismiss-fp';
+    db.textContent = '✕ FP';
+    db.title = 'Marcar como falso positivo (ocultar neste browser)';
+    db.onclick = () => dismissFindingFingerprint(f.fingerprint);
+    actions.appendChild(db);
+  }
   const cb = document.createElement('button');
   cb.className = 'find-btn';
   cb.textContent = '⎘ COPY';
@@ -1554,6 +1602,35 @@ function escapeHtml(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+async function showIntelCorpusStrip(domain) {
+  const el = document.getElementById('intelCorpusStrip');
+  if (!el || !domain) return;
+  el.innerHTML = '';
+  el.style.display = 'none';
+  try {
+    const res = await fetch(apiUrl(`/api/intel/${encodeURIComponent(domain)}`));
+    if (!res.ok) return;
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) return;
+    el.style.display = 'block';
+    const head = document.createElement('div');
+    head.style.cssText = 'color:var(--accent);margin-bottom:6px';
+    head.textContent = `Corpus DB — últimas ${Math.min(8, items.length)} entradas (first_seen → last_seen)`;
+    el.appendChild(head);
+    for (const row of items.slice(0, 8)) {
+      const ln = document.createElement('div');
+      ln.style.cssText = 'margin:4px 0;padding:4px 0;border-bottom:1px solid var(--border)';
+      const fs = row.first_seen ? String(row.first_seen).slice(0, 10) : '—';
+      const ls = row.last_seen ? String(row.last_seen).slice(0, 19).replace('T', ' ') : '—';
+      ln.textContent = `[${row.type || '?'}] ${fs} … ${ls} — ${String(row.value || '').slice(0, 72)}`;
+      el.appendChild(ln);
+    }
+  } catch {
+    /* offline */
+  }
 }
 
 function showIntelMergeBanner(target, intel) {
@@ -1723,6 +1800,8 @@ async function startRecon() {
   document.getElementById('findCount').textContent = '0 achados';
   const ib = document.getElementById('intelBanner');
   if (ib) { ib.style.display = 'none'; ib.innerHTML = ''; }
+  const ic = document.getElementById('intelCorpusStrip');
+  if (ic) { ic.style.display = 'none'; ic.innerHTML = ''; }
   resetPipelineVisual();
 
   const btn = document.getElementById('runBtn');
@@ -1795,7 +1874,7 @@ async function startRecon() {
         }
         if (ev.type === 'finding' && ev.finding) addFinding(ev.finding);
         if (ev.type === 'findings_rescore' && Array.isArray(ev.findings)) {
-          findings = ev.findings;
+          findings = ev.findings.filter((x) => !isFingerprintDismissed(x.fingerprint));
           refreshFindingsList();
         }
         if (ev.type === 'dork' && ev.googleUrl) enqueueDorkTab(ev.googleUrl);
@@ -1815,6 +1894,7 @@ async function startRecon() {
           addLog(`Alto: ${stats.high} | Subs: ${stats.subs} | Endpoints: ${stats.endpoints} | Params: ${stats.params} | Secrets: ${stats.secrets} | Dorks: ${stats.dorks}`, 'success');
           if (ev.runId != null) addLog(`Gravado: run #${ev.runId} → ${ev.storage || 'base de dados'}`, 'success');
           showIntelMergeBanner(ev.target, ev.intelMerge);
+          void showIntelCorpusStrip(ev.target || targetDomain);
           addLog('Exporte JSON / MD / TXT na barra inferior.', 'info');
           loadRunsHistory();
         }
@@ -1832,28 +1912,82 @@ function exportJSON() {
     target: targetDomain,
     timestamp: new Date().toISOString(),
     stats,
-    findings: findings.map(f => ({ type: f.type, priority: f.prio, score: f.score || 0, value: f.value, meta: f.meta || '', url: f.url || '' }))
+    findings: findings.map(f => ({
+      type: f.type,
+      priority: f.prio,
+      score: f.score || 0,
+      value: f.value,
+      meta: f.meta || '',
+      url: f.url || '',
+      fingerprint: f.fingerprint || '',
+    })),
   };
   download(`ghostrecon_${targetDomain}_${Date.now()}.json`, JSON.stringify(out, null, 2), 'application/json');
 }
 
 function exportMarkdown() {
+  const high = findings.filter((f) => f.prio === 'high');
+  const reproUrls = [
+    ...new Set(findings.filter((f) => f.url).map((f) => f.url)),
+  ].slice(0, 40);
   const groups = {};
-  findings.forEach(f => { if (!groups[f.type]) groups[f.type] = []; groups[f.type].push(f); });
-  let md = `# GHOSTRECON Report\n**Target:** ${targetDomain}\n**Date:** ${new Date().toISOString()}\n\n`;
-  md += `## Summary\n| Metric | Count |\n|---|---|\n`;
-  md += `| Subdomínios | ${stats.subs} |\n| Endpoints | ${stats.endpoints} |\n| Parâmetros | ${stats.params} |\n| Secrets | ${stats.secrets} |\n| Dorks | ${stats.dorks} |\n| Alto Risco | ${stats.high} |\n\n`;
+  findings.forEach((f) => {
+    if (!groups[f.type]) groups[f.type] = [];
+    groups[f.type].push(f);
+  });
+  let md = `# GHOSTRECON — relatório bug bounty\n\n**Alvo:** ${targetDomain}\n\n**Data (ISO):** ${new Date().toISOString()}\n\n`;
+  md += `## Resumo\n| Métrica | Valor |\n|---|---|\n`;
+  md += `| Subdomínios | ${stats.subs} |\n| Endpoints | ${stats.endpoints} |\n| Parâmetros | ${stats.params} |\n| Secrets | ${stats.secrets} |\n| Dorks | ${stats.dorks} |\n| Prioridade alta (UI) | ${stats.high} |\n\n`;
+  if (high.length) {
+    md += `## Alto risco (prioridade HIGH)\n`;
+    high.forEach((f) => {
+      md += `- **${f.type}** — \`${String(f.value).replace(/`/g, "'")}\`\n`;
+      if (f.meta) md += `  - _${String(f.meta).replace(/_/g, '\\_')}_\n`;
+      if (f.url) md += `  - URL: ${f.url}\n`;
+    });
+    md += '\n';
+  }
+  if (reproUrls.length) {
+    md += `## URLs para reprodução / verificação manual\n`;
+    reproUrls.forEach((u) => {
+      md += `- ${u}\n`;
+    });
+    md += '\n';
+  }
   for (const [type, items] of Object.entries(groups)) {
     md += `## ${type.toUpperCase()}\n`;
-    items.forEach(f => { md += `- **[${f.prio.toUpperCase()}]** \`${f.value}\`${f.meta ? ` — ${f.meta}` : ''}\n`; });
+    items.forEach((f) => {
+      md += `- **[${f.prio.toUpperCase()}]** \`${String(f.value).replace(/`/g, "'")}\`${f.meta ? ` — ${String(f.meta).replace(/`/g, "'")}` : ''}\n`;
+    });
     md += '\n';
   }
   download(`ghostrecon_${targetDomain}_${Date.now()}.md`, md, 'text/markdown');
 }
 
 function exportTXT() {
-  let txt = `GHOSTRECON — OSINT RECON REPORT\nTarget: ${targetDomain}\nDate: ${new Date().toISOString()}\n${'='.repeat(60)}\n\n`;
-  findings.forEach(f => { txt += `[${f.prio.toUpperCase()}] [${f.type}] ${f.value}\n  → ${f.meta || ''}\n`; });
+  const high = findings.filter((f) => f.prio === 'high');
+  const reproUrls = [
+    ...new Set(findings.filter((f) => f.url).map((f) => f.url)),
+  ].slice(0, 40);
+  let txt = `GHOSTRECON — relatório bug bounty\nAlvo: ${targetDomain}\nData: ${new Date().toISOString()}\n${'='.repeat(60)}\n\n`;
+  txt += `RESUMO: subs ${stats.subs} | endpoints ${stats.endpoints} | params ${stats.params} | secrets ${stats.secrets} | HIGH ${stats.high}\n\n`;
+  if (high.length) {
+    txt += `--- ALTO RISCO ---\n`;
+    high.forEach((f) => {
+      txt += `[${f.type}] ${f.value}\n  ${f.meta || ''}\n  ${f.url || ''}\n\n`;
+    });
+  }
+  if (reproUrls.length) {
+    txt += `--- URLs (reprodução) ---\n`;
+    reproUrls.forEach((u) => {
+      txt += `${u}\n`;
+    });
+    txt += '\n';
+  }
+  txt += `--- TODOS OS ACHADOS ---\n`;
+  findings.forEach((f) => {
+    txt += `[${f.prio.toUpperCase()}] [${f.type}] ${f.value}\n  → ${f.meta || ''}\n`;
+  });
   download(`ghostrecon_${targetDomain}_${Date.now()}.txt`, txt, 'text/plain');
 }
 

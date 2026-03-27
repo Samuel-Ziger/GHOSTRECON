@@ -196,7 +196,21 @@ Crie `server/modules/minha-fonte.js` exportando funções puras/async, importe e
 
 ### Limites e performance
 
-Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurrency`, `probeTimeoutMs`, `googleCseMaxQueries`, `googleCseDelayMs`, limites DNS enrichment, `/.well-known`, WHOIS no Kali, etc.).
+Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurrency`, `probeTimeoutMs`, `googleCseMaxQueries`, `googleCseDelayMs`, limites DNS enrichment, `/.well-known`, WHOIS no Kali, `htmlSurfaceMaxEndpoints`, Shodan, etc.).
+
+### Modo Kali: wordlists e gating
+
+- **ffuf** usa a primeira wordlist disponível nesta ordem: `/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt`, `.../common.txt`, `/usr/share/wordlists/dirb/common.txt`. Sem ficheiro → o scan ffuf é ignorado com aviso no log.
+- **Scans pesados XSS/SQLi** (nuclei com `-tags xss` / `-tags sqli`, e **dalfox**) só correm se existirem **sinais passivos**: parâmetros típicos nas URLs do corpus (`id`, `q`, `search`, etc.) ou findings `intel` «XSS/SQLi candidate param» gerados na fase de parâmetros.
+- Variáveis úteis: `GHOSTRECON_NMAP_ARGS`, `GHOSTRECON_DALFOX_MAX_URLS`, `GHOSTRECON_DALFOX_TIMEOUT_MS`, `GHOSTRECON_WPSCAN_*`, `GHOSTRECON_FORCE_KALI`.
+
+### Shodan (passivo)
+
+Ativa o módulo `shodan` no recon e define `SHODAN_API_KEY`. O servidor resolve IPv4 para uma amostra de hosts vivos e consulta `api.shodan.io/shodan/host/{ip}` (limite em `server/config.js`).
+
+### Webhook pós-recon
+
+`GHOSTRECON_WEBHOOK_URL` recebe JSON com `stats`, `findingsByType`, `highCount` e, quando há run anterior do **mesmo** alvo na base, `runDiffSummary` (contagens e amostras de `added`/`removed`).
 
 ## API
 
@@ -206,7 +220,7 @@ Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurren
 - `GET /api/runs/:id` — recon completo com `findings`.
 - `GET /api/runs/:newerId/diff/:baselineId` — compara dois runs do **mesmo** alvo: `added` / `removed` (fingerprints iguais ao corpus `bounty_intel`).
 - `GET /api/intel/:domain` — artefactos únicos acumulados para o alvo (`bounty_intel`).
-- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "kaliMode": false, "modules": ["subdomains", "dns_enrichment", "wellknown_security_txt", "wellknown_openid", "wayback", "subfinder", "amass", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding`, `dork`, `intel`, `done` (inclui `runId` se gravado), `error`. Rate limit opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`. Os módulos `subfinder` e `amass` só complementam subdomínios quando `kaliMode` é `true` e a ferramenta existe no sistema.
+- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "kaliMode": false, "modules": ["subdomains", "shodan", "dns_enrichment", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding` (com `fingerprint` para dedupe/dismiss na UI), `dork`, `intel`, `done` (inclui `runId` se gravado), `error`. Rate limit opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`. Os módulos `subfinder` e `amass` só complementam subdomínios quando `kaliMode` é `true` e a ferramenta existe no sistema.
 
 ## Docker
 
@@ -219,7 +233,7 @@ docker run --rm -p 3847:3847 --env-file .env ghostrecon
 
 ## Exportação
 
-O browser gera **JSON**, **Markdown** e **TXT** a partir dos achados acumulados na sessão.
+O browser gera **JSON**, **Markdown** e **TXT** a partir dos achados acumulados na sessão (relatório inclui resumo de alto risco e URLs para reprodução quando existirem).
 
 ## Aviso legal
 
