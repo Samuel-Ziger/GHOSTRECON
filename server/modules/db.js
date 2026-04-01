@@ -3,6 +3,7 @@ import * as supabase from './db-supabase.js';
 import * as pg from './db-pg.js';
 
 export { fingerprintFinding, norm } from './db-common.js';
+export { resolveLocalProjectDbDir, sanitizePathSegment } from './db-sqlite.js';
 
 /** Conexão direta Postgres (recomendado no Node; IPv4 → Session Pooler no dashboard). */
 function useDatabaseUrl() {
@@ -30,11 +31,48 @@ export function storageLabel() {
   return 'SQLite (data/bugbounty.db)';
 }
 
-/** @returns {Promise<{ runId: number, intelMerge: object } | null>} */
+/**
+ * @param {object} payload
+ * @param {string} [payload.localProjectName] nome da pasta projeto; cria `escopo/{nome}/{domínio}/ghostrecon.db`
+ * @returns {Promise<{ runId: number, intelMerge: object, localMirrorPath?: string } | null>}
+ */
 export async function saveRun(payload) {
-  if (useDatabaseUrl()) return pg.saveRun(payload);
-  if (useSupabaseApi()) return supabase.saveRun(payload);
-  return sqlite.saveRun(payload);
+  const { localProjectName, ...rest } = payload;
+  const projectDir = sqlite.resolveLocalProjectDbDir(localProjectName, rest.target);
+  const useRemote = useDatabaseUrl() || useSupabaseApi();
+
+  let result = null;
+  if (useDatabaseUrl()) {
+    result = await pg.saveRun(rest);
+  } else if (useSupabaseApi()) {
+    result = await supabase.saveRun(rest);
+  } else if (projectDir) {
+    result = sqlite.saveRunToProjectDir(projectDir, rest);
+  } else {
+    result = sqlite.saveRun(rest);
+  }
+
+  if (projectDir && useRemote) {
+    try {
+      const mirror = sqlite.saveRunToProjectDir(projectDir, rest);
+      if (mirror?.dbPath) {
+        if (result) {
+          result = { ...result, localMirrorPath: mirror.dbPath };
+        } else {
+          result = {
+            runId: mirror.runId,
+            intelMerge: mirror.intelMerge,
+            localMirrorPath: mirror.dbPath,
+            remoteSaveFailed: true,
+          };
+        }
+      }
+    } catch (e) {
+      console.error('[GHOSTRECON local mirror]', e);
+    }
+  }
+
+  return result;
 }
 
 export async function listRuns(limit) {

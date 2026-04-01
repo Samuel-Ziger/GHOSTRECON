@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './load-env.js';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,7 +8,14 @@ import { resolves } from './modules/dns.js';
 import { probeHttp, mapPool } from './modules/probe.js';
 import { analyzeSecurityHeaders } from './modules/security-headers.js';
 import { peekTlsCertificate } from './modules/tls-cert.js';
-import { crawlRobotsAndSitemapsForOrigin, hostnameInScope } from './modules/robots-sitemap.js';
+import { crawlRobotsAndSitemapsForOrigin } from './modules/robots-sitemap.js';
+import {
+  parseOutOfScopeEnv,
+  hostInReconScope,
+  urlInReconScope,
+  parseOutOfScopeClientInput,
+  mergeOutOfScopeLists,
+} from './modules/scope.js';
 import { fetchCommonCrawlUrls } from './modules/commoncrawl.js';
 import { fetchRdapSummary } from './modules/rdap.js';
 import { fetchVirustotalSubdomains } from './modules/virustotal.js';
@@ -49,8 +56,9 @@ import {
   fingerprintFinding,
 } from './modules/db.js';
 import { collectUniqueIpv4, shodanHostSummary } from './modules/ip-intel.js';
-import { googleCseSearch, urlMatchesTarget } from './modules/google-cse.js';
+import { googleCseSearch } from './modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
+import { runDualAiReports, aiKeysConfigured } from './modules/ai-dual-report.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -139,7 +147,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '200kb' }));
+app.use(express.json({ limit: '5mb' }));
 
 function isValidDomain(d) {
   return /^[a-zA-Z0-9][a-zA-Z0-9-.]+\.[a-zA-Z]{2,}$/.test(d);
@@ -150,7 +158,17 @@ function normDomain(d) {
 }
 
 async function runPipeline(ctx) {
-  const { domain, exactMatch, modules, emit, kaliMode = false, auth = null, profile = 'standard' } = ctx;
+  const {
+    domain,
+    exactMatch,
+    modules,
+    emit,
+    kaliMode = false,
+    auth = null,
+    profile = 'standard',
+    outOfScope: outOfScopeClientRaw = null,
+    projectName: projectNameRaw = '',
+  } = ctx;
   const runtimeProfile = resolveReconProfile(profile);
   const domainStr = exactMatch ? `"${domain}"` : domain;
   const findings = [];
@@ -181,6 +199,15 @@ async function runPipeline(ctx) {
 
   log(`Alvo: ${domain} | Módulos: ${modules.join(', ')} | Perfil: ${runtimeProfile.name}`, 'info');
   log(exactMatch ? 'Modo: exact match (aspas nos dorks)' : 'Modo: broad match', 'info');
+  const outOfScopeFromEnv = parseOutOfScopeEnv(process.env.GHOSTRECON_OUT_OF_SCOPE);
+  let outOfScopeList = [...outOfScopeFromEnv];
+  if (modules.includes('out_of_scope') && outOfScopeClientRaw != null && outOfScopeClientRaw !== '') {
+    const fromUi = parseOutOfScopeClientInput(outOfScopeClientRaw);
+    outOfScopeList = mergeOutOfScopeLists(outOfScopeFromEnv, fromUi);
+  }
+  if (outOfScopeList.length) {
+    log(`Fora de escopo (${outOfScopeList.length} regra(s)): ${outOfScopeList.join(', ')}`, 'info');
+  }
 
   // ── INPUT ─────────────────────────────────────
   pipe('input', 'active');
@@ -400,7 +427,7 @@ async function runPipeline(ctx) {
         } catch {
           continue;
         }
-        if (!hostnameInScope(u.hostname, domain)) continue;
+        if (!hostInReconScope(u.hostname, domain, outOfScopeList)) continue;
         const href = u.href;
         if (seenEp.has(href)) continue;
         seenEp.add(href);
@@ -457,7 +484,7 @@ async function runPipeline(ctx) {
     } catch {
       continue;
     }
-    if (!hostnameInScope(u.hostname, domain)) continue;
+    if (!hostInReconScope(u.hostname, domain, outOfScopeList)) continue;
     const prefer = u.protocol === 'https:' ? 2 : 1;
     const cur = originByHost.get(u.hostname);
     if (!cur || prefer > cur.prefer) {
@@ -505,7 +532,7 @@ async function runPipeline(ctx) {
       const bases = [...originByHost.values()].map((v) => v.origin);
       log(`robots.txt / sitemap (${bases.length} origem(ns))...`, 'info');
       await mapPool(bases, limits.surfaceConcurrency, async (baseOrigin) => {
-        const crawl = await crawlRobotsAndSitemapsForOrigin(baseOrigin, domain);
+        const crawl = await crawlRobotsAndSitemapsForOrigin(baseOrigin, domain, outOfScopeList);
         for (const p of (crawl.disallowHints || []).slice(0, 20)) {
           addFinding(
             {
@@ -681,23 +708,29 @@ async function runPipeline(ctx) {
     }
   }
 
-  const urlCorpus = [...new Set([...waybackUrls, ...ccUrls, ...archiveCliUrls])];
+  let urlCorpus = [...new Set([...waybackUrls, ...ccUrls, ...archiveCliUrls])];
   if (runtimeProfile.name === 'deep') {
     const seeds = [`https://${domain}/`, `http://${domain}/`];
     for (const seed of seeds) {
       try {
         const k = await crawlWithKatana(seed, { depth: 3 });
         if (k.ok && k.urls.length) {
+          let added = 0;
           for (const u of k.urls.slice(0, 300)) {
-            if (!urlCorpus.includes(u)) urlCorpus.push(u);
+            if (!urlInReconScope(u, domain, outOfScopeList)) continue;
+            if (!urlCorpus.includes(u)) {
+              urlCorpus.push(u);
+              added++;
+            }
           }
-          log(`Katana: +${k.urls.length} URL(s) via crawl JS`, 'info');
+          log(`Katana: +${added} URL(s) no escopo via crawl JS (${k.urls.length} brutas)`, 'info');
         }
       } catch (e) {
         log(`Katana: ${e.message}`, 'warn');
       }
     }
   }
+  urlCorpus = urlCorpus.filter((u) => urlInReconScope(u, domain, outOfScopeList));
   const waybackSet = new Set(waybackUrls);
   const ccSet = new Set(ccUrls);
   const interesting = filterInterestingUrls(urlCorpus);
@@ -877,7 +910,7 @@ async function runPipeline(ctx) {
         try {
           const items = await googleCseSearch(d.query, gKey, gCx);
           for (const it of items) {
-            if (!urlMatchesTarget(it.link, domain)) continue;
+            if (!urlInReconScope(it.link, domain, outOfScopeList)) continue;
             if (seenG.has(it.link)) continue;
             seenG.add(it.link);
             let pathname = '/';
@@ -1216,6 +1249,7 @@ async function runPipeline(ctx) {
     stats: { ...stats },
     findings,
     correlation: corr,
+    localProjectName: String(projectNameRaw || '').trim(),
   });
   let runId = null;
   let intelMerge = null;
@@ -1223,6 +1257,13 @@ async function runPipeline(ctx) {
     runId = saved.runId;
     intelMerge = saved.intelMerge;
     log(`Recon gravado — run #${runId} → ${storageLabel()}`, 'success');
+    const sqlitePath = saved.localMirrorPath || saved.dbPath;
+    if (sqlitePath) {
+      log(`SQLite no disco: ${sqlitePath}`, 'success');
+    }
+    if (saved.remoteSaveFailed) {
+      log('Aviso: gravação na cloud falhou — este run ficou no SQLite local acima.', 'warn');
+    }
     if (intelMerge?.newArtifacts > 0) {
       log(
         `Corpus do alvo: +${intelMerge.newArtifacts} artefacto(s) novo(s) na base; ${intelMerge.alreadyKnown} já existiam; total único para ${domain}: ${intelMerge.totalKnownForTarget}`,
@@ -1281,6 +1322,7 @@ async function runPipeline(ctx) {
     kaliMode: Boolean(kaliMode),
     storage: storageLabel(),
     reportTemplates,
+    localSqlitePath: saved?.localMirrorPath || saved?.dbPath || null,
   });
 
   const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
@@ -1388,6 +1430,8 @@ app.post('/api/recon/stream', async (req, res) => {
       kaliMode,
       auth,
       profile,
+      outOfScope: req.body?.outOfScope,
+      projectName: req.body?.projectName,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
@@ -1408,9 +1452,33 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/capabilities', async (_req, res) => {
   try {
     const cap = await getKaliCapabilities();
-    res.json(cap);
+    res.json({ ...cap, ai: aiKeysConfigured() });
   } catch (e) {
-    res.status(500).json({ kali: false, message: e.message, tools: {} });
+    res.status(500).json({ kali: false, message: e.message, tools: {}, ai: aiKeysConfigured() });
+  }
+});
+
+app.post('/api/ai-reports', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const payload = req.body?.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    res.status(400).json({ ok: false, error: 'Corpo inválido: falta object "payload" (export JSON do pipeline).' });
+    return;
+  }
+  const projectName = String(req.body?.projectName ?? payload.projectName ?? '').trim();
+  const targetDomain = String(req.body?.targetDomain ?? payload.target ?? '').trim();
+  if (!targetDomain) {
+    res.status(400).json({ ok: false, error: 'Define Target ($) ou inclui "target" no payload.' });
+    return;
+  }
+  try {
+    const out = await runDualAiReports(payload, { projectName, targetDomain });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 

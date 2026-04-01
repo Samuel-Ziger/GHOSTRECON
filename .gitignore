@@ -1,6 +1,12 @@
 node_modules/
 data/*.db
 data/*.db-*
+
+# Relatórios IA sem pasta de projeto
+data/ai_reports/
+
+# SQLite por projeto/escopo (não versionar)
+escopo/
 .env
 .env.local
 

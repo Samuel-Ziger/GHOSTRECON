@@ -85,6 +85,8 @@ export const DORK_TEMPLATES = {
   rdap: [],
   security_headers: [],
   virustotal: [],
+  /** Lista servida pela UI/API; não gera dorks */
+  out_of_scope: [],
 };
 
 const HIGH_DORK = new Set([

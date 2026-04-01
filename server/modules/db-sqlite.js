@@ -6,18 +6,12 @@ import { findingsForRunsTable, fingerprintFinding } from './db-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..', '..');
-const DATA_DIR = path.join(ROOT, 'data');
+export const DATA_DIR = path.join(ROOT, 'data');
+/** Raiz local por projeto/escopo — pasta `escopo/` na raiz do repo (ignorada no git). */
+export const SCOPE_DIR = path.join(ROOT, 'escopo');
 const DEFAULT_DB = path.join(DATA_DIR, 'bugbounty.db');
 
-let dbInstance = null;
-
-export function getDb() {
-  if (dbInstance) return dbInstance;
-  const dbPath = process.env.GHOSTRECON_DB || DEFAULT_DB;
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  dbInstance = new Database(dbPath);
-  dbInstance.pragma('journal_mode = WAL');
-  dbInstance.exec(`
+const SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       target TEXT NOT NULL,
@@ -56,13 +50,51 @@ export function getDb() {
       UNIQUE(target, fp)
     );
     CREATE INDEX IF NOT EXISTS idx_intel_target ON bounty_intel(target);
-  `);
+  `;
+
+function applySqliteSchema(d) {
+  d.exec(SCHEMA_SQL);
+}
+
+let dbInstance = null;
+
+/** Segmento seguro para pasta (projeto ou domínio). */
+export function sanitizePathSegment(raw, fallback = 'unnamed') {
+  let s = String(raw || '')
+    .trim()
+    .replace(/\.\./g, '')
+    .replace(/[/\\]+/g, '_')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 96);
+  if (!s) s = fallback;
+  return s;
+}
+
+/**
+ * `escopo/{projeto}/{alvo}/` na raiz do repositório — alvo = domínio (escopo técnico).
+ * @returns {string|null} caminho absoluto ou null se sem nome de projeto
+ */
+export function resolveLocalProjectDbDir(projectName, domain) {
+  const p = String(projectName || '').trim();
+  if (!p) return null;
+  const safeProject = sanitizePathSegment(p);
+  const safeScope = sanitizePathSegment(domain, 'scope');
+  return path.join(SCOPE_DIR, safeProject, safeScope);
+}
+
+export function getDb() {
+  if (dbInstance) return dbInstance;
+  const dbPath = process.env.GHOSTRECON_DB || DEFAULT_DB;
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  dbInstance = new Database(dbPath);
+  dbInstance.pragma('journal_mode = WAL');
+  applySqliteSchema(dbInstance);
   return dbInstance;
 }
 
-export function mergeIntelForTarget(target, runId, findings) {
+export function mergeIntelForTargetDb(d, target, runId, findings) {
   try {
-    const d = getDb();
     const now = new Date().toISOString();
     let newArtifacts = 0;
     let alreadyKnown = 0;
@@ -128,47 +160,77 @@ export function mergeIntelForTarget(target, runId, findings) {
   }
 }
 
+export function mergeIntelForTarget(target, runId, findings) {
+  return mergeIntelForTargetDb(getDb(), target, runId, findings);
+}
+
+function saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation }) {
+  const now = new Date().toISOString();
+  const insRun = d.prepare(
+    `INSERT INTO runs (target, exact_match, modules_json, stats_json, correlation_json, created_at)
+     VALUES (@target, @exact, @modules, @stats, @corr, @created)`,
+  );
+  const insFinding = d.prepare(
+    `INSERT INTO findings (run_id, type, prio, score, value, meta, url)
+     VALUES (@run_id, @type, @prio, @score, @value, @meta, @url)`,
+  );
+
+  const runResult = insRun.run({
+    target,
+    exact: exactMatch ? 1 : 0,
+    modules: JSON.stringify(modules),
+    stats: JSON.stringify(stats),
+    corr: correlation ? JSON.stringify(correlation) : null,
+    created: now,
+  });
+  const runId = Number(runResult.lastInsertRowid);
+
+  const insertAll = d.transaction((rows) => {
+    for (const f of rows) {
+      insFinding.run({
+        run_id: runId,
+        type: f.type,
+        prio: f.prio,
+        score: f.score ?? null,
+        value: f.value,
+        meta: f.meta ?? null,
+        url: f.url ?? null,
+      });
+    }
+  });
+  insertAll(findingsForRunsTable(target, findings));
+
+  const intelMerge = mergeIntelForTargetDb(d, target, runId, findings);
+  return { runId, intelMerge };
+}
+
+/**
+ * Grava run + intel num SQLite dedicado (espelho local ou único quando sem cloud).
+ * @returns {{ runId: number, intelMerge: object, dbPath: string } | null}
+ */
+export function saveRunToProjectDir(projectRootDir, payload) {
+  try {
+    fs.mkdirSync(projectRootDir, { recursive: true });
+    const dbPath = path.join(projectRootDir, 'ghostrecon.db');
+    const d = new Database(dbPath);
+    d.pragma('journal_mode = WAL');
+    applySqliteSchema(d);
+    try {
+      const out = saveRunWithDb(d, payload);
+      return { ...out, dbPath };
+    } finally {
+      d.close();
+    }
+  } catch (e) {
+    console.error('[GHOSTRECON DB project dir]', e.message);
+    return null;
+  }
+}
+
 export function saveRun({ target, exactMatch, modules, stats, findings, correlation }) {
   try {
     const d = getDb();
-    const now = new Date().toISOString();
-    const insRun = d.prepare(
-      `INSERT INTO runs (target, exact_match, modules_json, stats_json, correlation_json, created_at)
-       VALUES (@target, @exact, @modules, @stats, @corr, @created)`,
-    );
-    const insFinding = d.prepare(
-      `INSERT INTO findings (run_id, type, prio, score, value, meta, url)
-       VALUES (@run_id, @type, @prio, @score, @value, @meta, @url)`,
-    );
-
-    const runResult = insRun.run({
-      target,
-      exact: exactMatch ? 1 : 0,
-      modules: JSON.stringify(modules),
-      stats: JSON.stringify(stats),
-      corr: correlation ? JSON.stringify(correlation) : null,
-      created: now,
-    });
-    const runId = Number(runResult.lastInsertRowid);
-
-    const insertAll = d.transaction((rows) => {
-      for (const f of rows) {
-        insFinding.run({
-          run_id: runId,
-          type: f.type,
-          prio: f.prio,
-          score: f.score ?? null,
-          value: f.value,
-          meta: f.meta ?? null,
-          url: f.url ?? null,
-        });
-      }
-    });
-    insertAll(findingsForRunsTable(target, findings));
-
-    const intelMerge = mergeIntelForTarget(target, runId, findings);
-
-    return { runId, intelMerge };
+    return saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation });
   } catch (e) {
     console.error('[GHOSTRECON DB]', e.message);
     return null;

@@ -1044,10 +1044,29 @@
       <div id="fileModeWarn" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--accent4);background:rgba(255,170,0,0.08);font-family:var(--mono);font-size:10px;color:var(--accent4);line-height:1.45">
         Abriste o HTML pelo <strong>disco</strong> (file://). O histórico e o recon usam o servidor em <span id="fileModeApiUrl">http://127.0.0.1:3847</span> — corre <code style="color:var(--text-bright)">npm start</code>. Melhor: abre <a id="fileModeOpenLink" href="#" style="color:var(--accent)">http://127.0.0.1:3847</a> no browser.
       </div>
+      <div class="section-label">Projeto (pasta local)</div>
+      <p style="font-size:9px;color:var(--text-dim);margin:0 0 8px;line-height:1.45">Opcional. Com nome preenchido, grava também em <code style="color:var(--accent)">escopo/{nome}/{domínio}/ghostrecon.db</code> (pasta <code>escopo/</code> ignorada no git; corpus + runs), além do Supabase/Postgres se estiverem configurados.</p>
+      <div class="input-wrap">
+        <span class="input-prefix">#</span>
+        <input class="domain-input" id="projectNameInput" type="text" placeholder="nome_cliente" autocomplete="off" spellcheck="false">
+      </div>
+
       <div class="section-label">Target</div>
       <div class="input-wrap">
         <span class="input-prefix">$</span>
         <input class="domain-input" id="domainInput" type="text" placeholder="example.com" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="toggle-row" style="margin-top:10px">
+        <span class="toggle-label" title="Um de cada vez no servidor — mais seguro para rate limits do que paralelo">Fila de alvos (sequencial)</span>
+        <label class="toggle">
+          <input type="checkbox" id="batchModeToggle">
+          <div class="toggle-track"><div class="toggle-thumb"></div></div>
+        </label>
+      </div>
+      <div id="batchWrap" style="display:none;margin-bottom:12px">
+        <div class="section-label" style="font-size:10px;opacity:.9">Depois do Target ($) — mais domínios (um por linha, até 24; 25 no total com o primeiro)</div>
+        <textarea id="batchDomainsInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:76px;margin-top:6px" placeholder="outro.org&#10;https://terceiro.net"></textarea>
       </div>
 
       <div class="toggle-row">
@@ -1267,11 +1286,36 @@
       </div>
 
       <div class="module-group">
+        <div class="module-group-title">// Fora de escopo</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Com o módulo ativo, URLs nesses hosts deixam de entrar no corpus, superfície HTML, sitemaps e Google CSE. Podes usar hostname, URL ou <code>*.sub.zona.com</code>. Somam-se à variável <code>GHOSTRECON_OUT_OF_SCOPE</code>.</p>
+        <label class="checkbox-item">
+          <input type="checkbox" class="mod" value="out_of_scope" id="modOutOfScope">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Aplicar lista fora de escopo</span>
+          <span class="tag tag-med">SCOPE</span>
+        </label>
+        <textarea id="outOfScopeInput" class="gh-textarea" spellcheck="false" autocomplete="off" disabled style="min-height:72px;margin-top:8px;opacity:0.45" placeholder="staging.exemplo.com&#10;https://cdn.exemplo.com/path&#10;*.legacy.exemplo.com"></textarea>
+      </div>
+
+      <div class="module-group">
         <div class="module-group-title">// Sensitive Data</div>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="passwords" checked><div class="checkbox-box"></div><span class="checkbox-text">Passwords & credentials</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="sensitive" checked><div class="checkbox-box"></div><span class="checkbox-text">Sensitive exposure</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="subfinder"><div class="checkbox-box"></div><span class="checkbox-text">Subfinder (Kali)</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="amass"><div class="checkbox-box"></div><span class="checkbox-text">Amass (Kali)</span><span class="tag tag-med">MED</span></label>
+      </div>
+
+      <div class="module-group">
+        <div class="module-group-title">// IA · relatórios (Gemini + Claude)</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Não faz parte do recon: envia o <strong>mesmo JSON</strong> da sessão actual para as duas APIs, com o <strong>mesmo prompt</strong> no servidor. Gera <code>relatorio</code> e <code>proximos_passos</code> (Markdown) para comparares manualmente. Dados sensíveis saem do teu browser — verifica regras do programa.</p>
+        <div id="aiKeysLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">APIs IA: a carregar…</div>
+        <label class="checkbox-item">
+          <input type="checkbox" id="modAiReports">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Confirmo envio para APIs externas</span>
+          <span class="tag tag-high">IA</span>
+        </label>
+        <button type="button" class="run-btn" id="btnAiDualReport" disabled style="margin-top:10px;width:100%;font-size:11px;padding:10px 12px">Gerar relatório + próximos passos (2× IA)</button>
       </div>
     </div>
   </aside>
@@ -1438,8 +1482,133 @@ let currentFilter = 'all';
 let isRunning = false;
 let stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
 let targetDomain = '';
+/** Última corrida: um alvo ou vários (export) */
+let batchTargetsSnapshot = [];
+/** Metadados do último `done` do stream (correlação, templates, etc.) */
+let lastPipelineBundle = null;
 let dorkUrlQueue = [];
 let csrfToken = '';
+
+const BATCH_MAX_TARGETS = 25;
+const DOMAIN_TOKEN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$/;
+
+/** Domínios extra da lista (sem o primeiro alvo do campo $). */
+function parseBatchDomainsFromTextarea(maxEntries = BATCH_MAX_TARGETS) {
+  const raw = document.getElementById('batchDomainsInput')?.value || '';
+  const parts = [];
+  for (const line of raw.split(/\r?\n/)) {
+    for (const chunk of line.split(/[,;\s]+/)) {
+      const t = chunk.trim();
+      if (t) parts.push(t);
+    }
+  }
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    let norm = p.replace(/^https?:\/\//i, '').trim().split('/')[0].split(':')[0].toLowerCase();
+    if (!DOMAIN_TOKEN_RE.test(norm)) continue;
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
+    if (out.length >= maxEntries) break;
+  }
+  return out;
+}
+
+function syncBatchWrapVisibility() {
+  const on = document.getElementById('batchModeToggle')?.checked;
+  const w = document.getElementById('batchWrap');
+  if (w) w.style.display = on ? 'block' : 'none';
+}
+
+function buildPipelineExportPayload() {
+  const multi = batchTargetsSnapshot.length > 1;
+  const pn = (document.getElementById('projectNameInput')?.value || '').trim();
+  const b = lastPipelineBundle || {};
+  const findingsExport = findings.map((f) => ({
+    type: f.type,
+    priority: f.prio,
+    score: f.score || 0,
+    value: f.value,
+    meta: f.meta || '',
+    url: f.url || '',
+    fingerprint: f.fingerprint || '',
+    compositeScore: f.compositeScore,
+    attackTier: f.attackTier,
+    priorityWhy: f.priorityWhy,
+  }));
+  return {
+    schemaVersion: 1,
+    source: 'ghostrecon-ui-pipeline-export',
+    exportedAt: new Date().toISOString(),
+    projectName: pn || undefined,
+    target: targetDomain,
+    targets: multi ? batchTargetsSnapshot.slice() : undefined,
+    stats: { ...stats },
+    findings: findingsExport,
+    correlation: b.correlation,
+    reportTemplates: b.reportTemplates,
+    runId: b.runId,
+    storage: b.storage,
+    intelMerge: b.intelMerge,
+  };
+}
+
+function syncAiReportUi() {
+  const cb = document.getElementById('modAiReports');
+  const btn = document.getElementById('btnAiDualReport');
+  if (!btn) return;
+  const ai = window.__aiKeys || {};
+  const hasTarget = (targetDomain || document.getElementById('domainInput')?.value || '').trim().length > 0;
+  const can = Boolean(cb?.checked && ai.any && hasTarget);
+  btn.disabled = !can;
+}
+
+async function runAiDualReportsClick() {
+  const btn = document.getElementById('btnAiDualReport');
+  if (!document.getElementById('modAiReports')?.checked) {
+    addLog('IA: marca a confirmação de envio para APIs externas.', 'warn');
+    return;
+  }
+  const td = (targetDomain || document.getElementById('domainInput')?.value || '').trim();
+  if (!td) {
+    addLog('IA: define um Target ($) ou corre um recon primeiro.', 'warn');
+    return;
+  }
+  const token = await ensureCsrfToken();
+  const payload = buildPipelineExportPayload();
+  if (!payload.target) payload.target = td;
+  addLog('A enviar o mesmo JSON do pipeline para Gemini e Claude (prompt partilhado no servidor)…', 'info');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(apiUrl('/api/ai-reports'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      body: JSON.stringify({
+        payload,
+        projectName: payload.projectName || '',
+        targetDomain: payload.target || td,
+      }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) {
+      addLog(`IA: ${j.error || 'HTTP ' + res.status}`, 'error');
+      return;
+    }
+    addLog(`IA: pasta de saída → ${j.outputDir}`, 'success');
+    if (j.pipelineJsonPath) addLog(`Snapshot JSON: ${j.pipelineJsonPath}`, 'info');
+    if (j.gemini?.ok) {
+      addLog(`Gemini ✓ relatório + próximos passos gravados.`, 'success');
+    } else addLog(`Gemini ✗ ${j.gemini?.error || 'falhou'}`, 'warn');
+    if (j.claude?.ok) {
+      addLog(`Claude ✓ relatório + próximos passos gravados.`, 'success');
+    } else addLog(`Claude ✗ ${j.claude?.error || 'falhou'}`, 'warn');
+  } catch (e) {
+    addLog(`IA: ${e.message}`, 'error');
+  } finally {
+    syncAiReportUi();
+  }
+}
 
 /**
  * Com a página em http://127.0.0.1:PORT (npm start), usa URLs relativas.
@@ -1921,13 +2090,138 @@ async function downloadRunFromApi(id) {
 }
 
 // ─── MAIN RECON PIPELINE (backend NDJSON) ─────────────────
+/**
+ * @param batchPreserveCount ao receber findings_rescore, manter os primeiros N (achados dos alvos anteriores na fila)
+ * @param batchPosition null ou { index, total } para mensagens de fila
+ */
+async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosition) {
+  if (!res.ok) return false;
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let failed = false;
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch { continue; }
+
+      if (ev.type === 'log') addLog(ev.msg, ev.level || 'info');
+      if (ev.type === 'progress') setProgress(ev.pct);
+      if (ev.type === 'pipe') setPipe(ev.name, ev.state);
+      if (ev.type === 'stats' && ev.stats) {
+        Object.keys(ev.stats).forEach(k => updateStat(k, ev.stats[k]));
+      }
+      if (ev.type === 'finding' && ev.finding) addFinding(ev.finding);
+      if (ev.type === 'findings_rescore' && Array.isArray(ev.findings)) {
+        const incoming = ev.findings.filter((x) => !isFingerprintDismissed(x.fingerprint));
+        if (batchPreserveCount > 0) {
+          findings = [...findings.slice(0, batchPreserveCount), ...incoming];
+        } else {
+          findings = incoming;
+        }
+        refreshFindingsList();
+      }
+      if (ev.type === 'dork' && ev.googleUrl) enqueueDorkTab(ev.googleUrl);
+      if (ev.type === 'intel' && ev.line) {
+        const raw = ev.line;
+        const ln = (raw.startsWith('☐') || raw.startsWith('🔎')) ? raw : `⚡ ${raw}`;
+        addLog(ln, 'find');
+      }
+      if (ev.type === 'report_template' && ev.template) {
+        addLog(`Template: ${ev.template.title}`, 'info');
+      }
+      if (ev.type === 'delta_hot' && ev.hotAddedCount) {
+        addLog(`Delta HOT: ${ev.hotAddedCount} novidade(s) crítica(s) vs baseline #${ev.baselineRunId}`, 'warn');
+        for (const s of (ev.sample || []).slice(0, 6)) {
+          addLog(`HOT ${String(s.type || '?').toUpperCase()}: ${String(s.value || '').slice(0, 120)}`, 'warn');
+        }
+      }
+      if (ev.type === 'error') {
+        addLog(ev.message || 'Erro no servidor', 'error');
+        failed = true;
+        break outer;
+      }
+      if (ev.type === 'done') {
+        const multi = batchPosition && batchPosition.total > 1;
+        addLog('', 'section');
+        addLog('══════════════════════════════════════════════════', 'section');
+        if (multi) {
+          addLog(
+            `FILA [${batchPosition.index}/${batchPosition.total}] ${ev.target || targetDomain} — concluído · ${findings.length} achados na lista`,
+            'success',
+          );
+        } else {
+          addLog(`RECON CONCLUÍDO — ${findings.length} achados totais`, 'success');
+        }
+        addLog(
+          `Alto: ${stats.high} | Subs: ${stats.subs} | Endpoints: ${stats.endpoints} | Params: ${stats.params} | Secrets: ${stats.secrets} | Dorks: ${stats.dorks}`,
+          'success',
+        );
+        if (ev.runId != null) addLog(`Gravado: run #${ev.runId} → ${ev.storage || 'base de dados'}`, 'success');
+        showIntelMergeBanner(ev.target, ev.intelMerge);
+        void showIntelCorpusStrip(ev.target || targetDomain);
+        if (!multi) addLog('Exporte JSON / MD / TXT na barra inferior.', 'info');
+        loadRunsHistory();
+        lastPipelineBundle = {
+          correlation: ev.correlation ?? null,
+          reportTemplates: ev.reportTemplates ?? [],
+          runId: ev.runId ?? null,
+          storage: ev.storage ?? null,
+          intelMerge: ev.intelMerge ?? null,
+        };
+        syncAiReportUi();
+      }
+    }
+  }
+  return !failed;
+}
+
 async function startRecon() {
   if (isRunning) return;
-  targetDomain = document.getElementById('domainInput').value.trim();
-  if (!targetDomain) { addLog('ERRO: Insira um domínio alvo', 'error'); return; }
-  if (!targetDomain.match(/^[a-zA-Z0-9][a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}$/)) {
-    addLog('ERRO: Domínio inválido. Use formato: exemplo.com', 'error'); return;
+
+  const batchMode = Boolean(document.getElementById('batchModeToggle')?.checked);
+  let targets = [];
+  const d = document.getElementById('domainInput').value.trim();
+  if (batchMode) {
+    if (!d) {
+      addLog('ERRO: Fila ativa — preenche primeiro o Target ($) com o domínio inicial.', 'error');
+      return;
+    }
+    if (!d.match(/^[a-zA-Z0-9][a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}$/)) {
+      addLog('ERRO: Domínio inválido no Target. Use formato: exemplo.com', 'error');
+      return;
+    }
+    const first = d.replace(/^https?:\/\//i, '').trim().split('/')[0].split(':')[0].toLowerCase();
+    const seen = new Set([first]);
+    targets = [first];
+    const restMax = Math.max(0, BATCH_MAX_TARGETS - 1);
+    for (const norm of parseBatchDomainsFromTextarea(restMax)) {
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      targets.push(norm);
+    }
+  } else {
+    if (!d) {
+      addLog('ERRO: Insira um domínio alvo', 'error');
+      return;
+    }
+    if (!d.match(/^[a-zA-Z0-9][a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}$/)) {
+      addLog('ERRO: Domínio inválido. Use formato: exemplo.com', 'error');
+      return;
+    }
+    targets = [d.replace(/^https?:\/\//i, '').trim().split('/')[0].split(':')[0].toLowerCase()];
   }
+
+  batchTargetsSnapshot = targets.slice();
+  targetDomain = targets[targets.length - 1];
+  lastPipelineBundle = null;
 
   isRunning = true;
   logStarted = false;
@@ -1935,24 +2229,39 @@ async function startRecon() {
   dorkUrlQueue = [];
   dorkActiveTabs = 0;
   document.getElementById('findingsList').innerHTML = '';
-  Object.keys(stats).forEach(k => { stats[k] = 0; updateStat(k, 0); });
+  Object.keys(stats).forEach(k => {
+    stats[k] = 0;
+    updateStat(k, 0);
+  });
   document.getElementById('findCount').textContent = '0 achados';
   const ib = document.getElementById('intelBanner');
-  if (ib) { ib.style.display = 'none'; ib.innerHTML = ''; }
+  if (ib) {
+    ib.style.display = 'none';
+    ib.innerHTML = '';
+  }
   const ic = document.getElementById('intelCorpusStrip');
-  if (ic) { ic.style.display = 'none'; ic.innerHTML = ''; }
+  if (ic) {
+    ic.style.display = 'none';
+    ic.innerHTML = '';
+  }
   resetPipelineVisual();
 
   const btn = document.getElementById('runBtn');
   btn.textContent = '⏳ EXECUTANDO...';
   btn.classList.add('running');
   document.getElementById('progressWrap').style.display = 'block';
-  document.getElementById('statusText').textContent = 'RECON ATIVO';
+  document.getElementById('statusText').textContent =
+    targets.length > 1 ? `FILA 1/${targets.length} · ${targets[0]}` : 'RECON ATIVO';
 
   const exact = document.getElementById('exactMatch').checked;
   const selectedMods = [...document.querySelectorAll('.mod:checked')].map(x => x.value);
 
-  addLog(`Iniciando GHOSTRECON para: ${targetDomain}`, 'section');
+  addLog(
+    targets.length > 1
+      ? `Iniciando FILA — ${targets.length} alvo(s): 1º = Target ($), depois a lista · sequencial`
+      : `Iniciando GHOSTRECON para: ${targets[0]}`,
+    'section',
+  );
   addLog(`Módulos ativos: ${selectedMods.join(', ') || '(nenhum)' }`, 'info');
   addLog(`Modo: ${exact ? 'Exact Match (aspas nos dorks)' : 'Broad Match'}`, 'info');
   addLog(`Perfil de execução: ${getReconProfile()}`, 'info');
@@ -1961,7 +2270,8 @@ async function startRecon() {
   const finishOk = () => {
     btn.textContent = '▶ RUN RECON';
     btn.classList.remove('running');
-    document.getElementById('statusText').textContent = 'RECON COMPLETO';
+    document.getElementById('statusText').textContent =
+      batchTargetsSnapshot.length > 1 ? 'FILA CONCLUÍDA' : 'RECON COMPLETO';
     isRunning = false;
   };
 
@@ -1974,84 +2284,77 @@ async function startRecon() {
   };
 
   try {
-    const token = await ensureCsrfToken();
-    const res = await fetch(apiUrl('/api/recon/stream'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
-      body: JSON.stringify({
+    const useOos = selectedMods.includes('out_of_scope');
+    const oosText = (document.getElementById('outOfScopeInput')?.value || '').trim();
+    const projectName = (document.getElementById('projectNameInput')?.value || '').trim();
+
+    for (let i = 0; i < targets.length; i++) {
+      targetDomain = targets[i];
+      const batchPreserveFindingsBeforeRun = findings.length;
+      if (targets.length > 1) {
+        document.getElementById('statusText').textContent = `FILA ${i + 1}/${targets.length} · ${targetDomain}`;
+        if (i > 0) {
+          addLog(`─── Seguinte alvo (${i + 1}/${targets.length}): ${targetDomain} ───`, 'section');
+          resetPipelineVisual();
+          Object.keys(stats).forEach(k => {
+            stats[k] = 0;
+            updateStat(k, 0);
+          });
+          setProgress(0);
+        }
+      }
+
+      const token = await ensureCsrfToken();
+      const streamBody = {
         domain: targetDomain,
         exactMatch: exact,
         modules: selectedMods,
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
         profile: getReconProfile(),
         auth: getOptionalAuthConfig(),
-      }),
-    });
+      };
+      if (useOos) streamBody.outOfScope = oosText || '';
+      if (projectName) streamBody.projectName = projectName;
 
-    if (!res.ok) {
-      finishErr(`HTTP ${res.status} — confira se o servidor está rodando (npm start)`);
-      return;
-    }
+      const res = await fetch(apiUrl('/api/recon/stream'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+        body: JSON.stringify(streamBody),
+      });
 
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 1);
-        if (!line) continue;
-        let ev;
-        try { ev = JSON.parse(line); } catch { continue; }
-
-        if (ev.type === 'log') addLog(ev.msg, ev.level || 'info');
-        if (ev.type === 'progress') setProgress(ev.pct);
-        if (ev.type === 'pipe') setPipe(ev.name, ev.state);
-        if (ev.type === 'stats' && ev.stats) {
-          Object.keys(ev.stats).forEach(k => updateStat(k, ev.stats[k]));
-        }
-        if (ev.type === 'finding' && ev.finding) addFinding(ev.finding);
-        if (ev.type === 'findings_rescore' && Array.isArray(ev.findings)) {
-          findings = ev.findings.filter((x) => !isFingerprintDismissed(x.fingerprint));
-          refreshFindingsList();
-        }
-        if (ev.type === 'dork' && ev.googleUrl) enqueueDorkTab(ev.googleUrl);
-        if (ev.type === 'intel' && ev.line) {
-          const raw = ev.line;
-          const line = (raw.startsWith('☐') || raw.startsWith('🔎')) ? raw : `⚡ ${raw}`;
-          addLog(line, 'find');
-        }
-        if (ev.type === 'report_template' && ev.template) {
-          addLog(`Template: ${ev.template.title}`, 'info');
-        }
-        if (ev.type === 'delta_hot' && ev.hotAddedCount) {
-          addLog(`Delta HOT: ${ev.hotAddedCount} novidade(s) crítica(s) vs baseline #${ev.baselineRunId}`, 'warn');
-          for (const s of (ev.sample || []).slice(0, 6)) {
-            addLog(`HOT ${String(s.type || '?').toUpperCase()}: ${String(s.value || '').slice(0, 120)}`, 'warn');
-          }
-        }
-        if (ev.type === 'error') {
-          finishErr(ev.message || 'Erro no servidor');
+      if (!res.ok) {
+        const msg = `HTTP ${res.status} — ${targetDomain}`;
+        if (targets.length === 1) {
+          finishErr(`${msg} — confira se o servidor está rodando (npm start)`);
           return;
         }
-        if (ev.type === 'done') {
-          addLog('', 'section');
-          addLog('══════════════════════════════════════════════════', 'section');
-          addLog(`RECON CONCLUÍDO — ${findings.length} achados totais`, 'success');
-          addLog(`Alto: ${stats.high} | Subs: ${stats.subs} | Endpoints: ${stats.endpoints} | Params: ${stats.params} | Secrets: ${stats.secrets} | Dorks: ${stats.dorks}`, 'success');
-          if (ev.runId != null) addLog(`Gravado: run #${ev.runId} → ${ev.storage || 'base de dados'}`, 'success');
-          showIntelMergeBanner(ev.target, ev.intelMerge);
-          void showIntelCorpusStrip(ev.target || targetDomain);
-          addLog('Exporte JSON / MD / TXT na barra inferior.', 'info');
-          loadRunsHistory();
-        }
+        addLog(`${msg} (a saltar para o próximo)`, 'error');
+        continue;
+      }
+
+      const ok = await consumeReconStreamFromResponse(
+        res,
+        batchPreserveFindingsBeforeRun,
+        targets.length > 1 ? { index: i + 1, total: targets.length } : null,
+      );
+      if (!ok && targets.length === 1) {
+        finishErr('Pipeline terminou com erro — vê o log acima.');
+        return;
+      }
+      if (!ok && targets.length > 1) {
+        addLog(`Erro no pipeline para ${targetDomain} — continuação da fila.`, 'warn');
       }
     }
+
+    if (targets.length > 1) {
+      addLog('', 'section');
+      addLog(
+        `═══ Fila concluída: ${targets.length} alvo(s) · ${findings.length} achados na lista agregada ═══`,
+        'success',
+      );
+      addLog('Exporte JSON / MD / TXT na barra inferior (todos os alvos desta corrida).', 'info');
+    }
+
     finishOk();
   } catch (e) {
     finishErr(`Falha de rede: ${e.message}. Execute \`npm start\` na pasta do projeto e abra http://127.0.0.1:3847`);
@@ -2060,8 +2363,12 @@ async function startRecon() {
 
 // ─── EXPORT FUNCTIONS ────────────────────────────────────
 function exportJSON() {
+  const multi = batchTargetsSnapshot.length > 1;
+  const pn = (document.getElementById('projectNameInput')?.value || '').trim();
   const out = {
+    projectName: pn || undefined,
     target: targetDomain,
+    targets: multi ? batchTargetsSnapshot.slice() : undefined,
     timestamp: new Date().toISOString(),
     stats,
     findings: findings.map(f => ({
@@ -2074,7 +2381,10 @@ function exportJSON() {
       fingerprint: f.fingerprint || '',
     })),
   };
-  download(`ghostrecon_${targetDomain}_${Date.now()}.json`, JSON.stringify(out, null, 2), 'application/json');
+  const name = multi
+    ? `ghostrecon_fila_${batchTargetsSnapshot.length}_${Date.now()}.json`
+    : `ghostrecon_${targetDomain}_${Date.now()}.json`;
+  download(name, JSON.stringify(out, null, 2), 'application/json');
 }
 
 function exportMarkdown() {
@@ -2087,7 +2397,11 @@ function exportMarkdown() {
     if (!groups[f.type]) groups[f.type] = [];
     groups[f.type].push(f);
   });
-  let md = `# GHOSTRECON — relatório bug bounty\n\n**Alvo:** ${targetDomain}\n\n**Data (ISO):** ${new Date().toISOString()}\n\n`;
+  const multi = batchTargetsSnapshot.length > 1;
+  const alvoLinha = multi
+    ? `**Fila (${batchTargetsSnapshot.length} alvos):** ${batchTargetsSnapshot.join(', ')}`
+    : `**Alvo:** ${targetDomain}`;
+  let md = `# GHOSTRECON — relatório bug bounty\n\n${alvoLinha}\n\n**Data (ISO):** ${new Date().toISOString()}\n\n`;
   md += `## Resumo\n| Métrica | Valor |\n|---|---|\n`;
   md += `| Subdomínios | ${stats.subs} |\n| Endpoints | ${stats.endpoints} |\n| Parâmetros | ${stats.params} |\n| Secrets | ${stats.secrets} |\n| Dorks | ${stats.dorks} |\n| Prioridade alta (UI) | ${stats.high} |\n\n`;
   if (high.length) {
@@ -2113,7 +2427,10 @@ function exportMarkdown() {
     });
     md += '\n';
   }
-  download(`ghostrecon_${targetDomain}_${Date.now()}.md`, md, 'text/markdown');
+  const mdName = multi
+    ? `ghostrecon_fila_${batchTargetsSnapshot.length}_${Date.now()}.md`
+    : `ghostrecon_${targetDomain}_${Date.now()}.md`;
+  download(mdName, md, 'text/markdown');
 }
 
 function exportTXT() {
@@ -2121,7 +2438,9 @@ function exportTXT() {
   const reproUrls = [
     ...new Set(findings.filter((f) => f.url).map((f) => f.url)),
   ].slice(0, 40);
-  let txt = `GHOSTRECON — relatório bug bounty\nAlvo: ${targetDomain}\nData: ${new Date().toISOString()}\n${'='.repeat(60)}\n\n`;
+  const multi = batchTargetsSnapshot.length > 1;
+  const alvoTxt = multi ? `Fila (${batchTargetsSnapshot.length}): ${batchTargetsSnapshot.join(', ')}` : `Alvo: ${targetDomain}`;
+  let txt = `GHOSTRECON — relatório bug bounty\n${alvoTxt}\nData: ${new Date().toISOString()}\n${'='.repeat(60)}\n\n`;
   txt += `RESUMO: subs ${stats.subs} | endpoints ${stats.endpoints} | params ${stats.params} | secrets ${stats.secrets} | HIGH ${stats.high}\n\n`;
   if (high.length) {
     txt += `--- ALTO RISCO ---\n`;
@@ -2140,7 +2459,10 @@ function exportTXT() {
   findings.forEach((f) => {
     txt += `[${f.prio.toUpperCase()}] [${f.type}] ${f.value}\n  → ${f.meta || ''}\n`;
   });
-  download(`ghostrecon_${targetDomain}_${Date.now()}.txt`, txt, 'text/plain');
+  const txtName = multi
+    ? `ghostrecon_fila_${batchTargetsSnapshot.length}_${Date.now()}.txt`
+    : `ghostrecon_${targetDomain}_${Date.now()}.txt`;
+  download(txtName, txt, 'text/plain');
 }
 
 function download(filename, content, type) {
@@ -2198,6 +2520,22 @@ document.getElementById('domainInput').addEventListener('keydown', e => {
 
 document.getElementById('ghCustomQuery')?.addEventListener('input', updateGhPreview);
 document.getElementById('ghPrefixSite')?.addEventListener('change', updateGhPreview);
+
+function syncOutOfScopeUi() {
+  const cb = document.getElementById('modOutOfScope');
+  const ta = document.getElementById('outOfScopeInput');
+  if (!cb || !ta) return;
+  const on = cb.checked;
+  ta.disabled = !on;
+  ta.style.opacity = on ? '1' : '0.45';
+}
+document.getElementById('modOutOfScope')?.addEventListener('change', syncOutOfScopeUi);
+syncOutOfScopeUi();
+document.getElementById('batchModeToggle')?.addEventListener('change', syncBatchWrapVisibility);
+syncBatchWrapVisibility();
+document.getElementById('modAiReports')?.addEventListener('change', syncAiReportUi);
+document.getElementById('domainInput')?.addEventListener('input', syncAiReportUi);
+document.getElementById('btnAiDualReport')?.addEventListener('click', () => void runAiDualReportsClick());
 document.getElementById('domainInput')?.addEventListener('input', updateGhPreview);
 document.getElementById('exactMatch')?.addEventListener('change', updateGhPreview);
 document.getElementById('ghCustomQuery')?.addEventListener('keydown', e => {
@@ -2229,6 +2567,15 @@ async function fetchKaliCapabilities() {
       line.style.color = c.kali ? 'var(--accent2)' : 'var(--text-dim)';
       line.textContent = c.kali ? `Disponível — ${parts.join(' ')}` : `${c.message || 'Indisponível'} — ${parts.join(' ')}`;
     }
+    window.__aiKeys = c.ai || { gemini: false, claude: false, both: false, any: false };
+    const aiEl = document.getElementById('aiKeysLine');
+    if (aiEl) {
+      const a = window.__aiKeys;
+      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · Claude ${a.claude ? '✓' : '✗'} — .env: GEMINI_API_KEY (ou GOOGLE_AI_API_KEY) + ANTHROPIC_API_KEY`;
+      aiEl.style.color = a.both ? 'var(--accent2)' : 'var(--accent4)';
+    }
+    syncAiReportUi();
+
     if (c.kali) {
       window.__kaliScanAvailable = true;
       if (toggle) toggle.disabled = false;
@@ -2247,6 +2594,13 @@ async function fetchKaliCapabilities() {
       toggle.disabled = true;
       toggle.checked = false;
     }
+    window.__aiKeys = { gemini: false, claude: false, both: false, any: false };
+    const aiEl = document.getElementById('aiKeysLine');
+    if (aiEl) {
+      aiEl.textContent = 'APIs IA: indisponível (servidor offline).';
+      aiEl.style.color = 'var(--accent3)';
+    }
+    syncAiReportUi();
   }
 }
 
