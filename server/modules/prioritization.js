@@ -170,6 +170,14 @@ export function applyPrioritizationV2(findings) {
       attackTier = 'ELEVATED';
     }
 
+    let bountyProbability = Math.min(100, Math.max(0, Math.round(composite)));
+    if (attackTier === 'HIGH_PROBABILITY') {
+      bountyProbability = Math.min(100, Math.round(bountyProbability * 1.08));
+    } else if (attackTier === 'ELEVATED') {
+      bountyProbability = Math.min(100, Math.round(bountyProbability * 1.03));
+    }
+    f.bountyProbability = bountyProbability;
+
     if (composite >= 93 && f.prio !== 'high') {
       f.prio = 'high';
       why.push('composite ≥93 → prioridade HIGH');
@@ -195,6 +203,10 @@ export function applyPrioritizationV2(findings) {
     } else if (!String(f.meta || '').includes('[COMP ')) {
       f.meta = [f.meta, tag].filter(Boolean).join(' — ');
     }
+    const metaClean = String(f.meta || '')
+      .replace(/\s*—\s*bounty_prob=\d+\/100/g, '')
+      .trim();
+    f.meta = [metaClean, `bounty_prob=${f.bountyProbability}/100`].filter(Boolean).join(' — ');
   }
 
   return findings;

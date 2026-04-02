@@ -738,6 +738,165 @@
   .filter-tab:hover { color: var(--text); }
   .filter-tab.active { color: var(--accent); border-color: var(--accent); }
 
+  .panel-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .findings-help-trigger {
+    width: 22px;
+    height: 22px;
+    box-sizing: border-box;
+    border-radius: 0;
+    border: 1px solid var(--border-bright);
+    background: var(--panel);
+    color: var(--red);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+  }
+
+  .findings-help-trigger:hover {
+    border-color: var(--red);
+    color: #ff5566;
+    box-shadow: 0 0 12px rgba(255, 34, 68, 0.25);
+  }
+
+  .findings-help-trigger:focus-visible {
+    outline: 2px solid var(--red);
+    outline-offset: 2px;
+  }
+
+  .findings-help-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 20000;
+    background: rgba(2, 4, 10, 0.82);
+    backdrop-filter: blur(4px);
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+
+  .findings-help-overlay.is-open {
+    display: flex;
+  }
+
+  .findings-help-dialog {
+    position: relative;
+    width: min(520px, 100%);
+    max-height: min(82vh, 720px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg2);
+    border: 1px solid var(--border-bright);
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6), var(--glow);
+  }
+
+  .findings-help-dialog-head {
+    padding: 16px 44px 12px 18px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .findings-help-dialog h2 {
+    margin: 0;
+    font-family: var(--display);
+    font-size: 12px;
+    letter-spacing: 3px;
+    color: var(--text-bright);
+  }
+
+  .findings-help-intro {
+    margin: 8px 0 0 0;
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.45;
+  }
+
+  .findings-help-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    color: var(--text);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    font-family: var(--mono);
+  }
+
+  .findings-help-close:hover {
+    border-color: var(--accent3);
+    color: var(--accent3);
+  }
+
+  .findings-help-scroll {
+    overflow-y: auto;
+    padding: 12px 18px 20px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .findings-help-dl {
+    margin: 0;
+  }
+
+  .findings-help-dl dt {
+    font-family: var(--mono);
+    color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    margin-top: 14px;
+  }
+
+  .findings-help-dl dt:first-child {
+    margin-top: 0;
+  }
+
+  .findings-help-dl dd {
+    margin: 5px 0 0 0;
+    padding: 0;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.5;
+    opacity: 0.92;
+  }
+
+  .findings-help-section-title {
+    margin: 22px 0 0 0;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    font-family: var(--display);
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--accent2);
+  }
+
+  .findings-help-section-intro {
+    margin: 8px 0 0 0;
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.45;
+  }
+
   .findings-list { padding: 12px; }
 
   .finding-card {
@@ -1147,7 +1306,16 @@
 
     <!-- Module Selection -->
     <div class="modules-section">
-      <div class="section-label">Modules</div>
+      <div class="section-label">
+        <span>Modules</span>
+        <button
+          type="button"
+          class="findings-help-trigger"
+          onclick="openModulesHelpModal()"
+          title="O que faz cada módulo?"
+          aria-label="Ajuda: módulos"
+        >?</button>
+      </div>
 
       <div class="module-group">
         <div class="module-group-title">// Google Dorking</div>
@@ -1286,6 +1454,15 @@
       </div>
 
       <div class="module-group">
+        <div class="module-group-title">// API · specs · GraphQL</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Liga <strong>Wayback</strong> e/ou <strong>Common Crawl</strong> para o corpus trazer URLs; o GraphQL só corre se existir URL com <code>graphql</code> nesse corpus (máx. 10). OpenAPI tenta paths típicos em cada origem HTTPS viva.</p>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="openapi_specs" id="modOpenapiSpecs"><div class="checkbox-box"></div><span class="checkbox-text">OpenAPI / Swagger leak</span><span class="tag tag-med">API</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="graphql_probe" id="modGraphqlProbe"><div class="checkbox-box"></div><span class="checkbox-text">GraphQL — introspecção mínima (1 POST)</span><span class="tag tag-high">API</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="micro_exploit"><div class="checkbox-box"></div><span class="checkbox-text">Micro-exploit XSS (pós-verify)</span><span class="tag tag-high">ACT</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="stealth_requests"><div class="checkbox-box"></div><span class="checkbox-text">Stealth (jitter + UA rotativa)</span><span class="tag tag-low">NET</span></label>
+      </div>
+
+      <div class="module-group">
         <div class="module-group-title">// Fora de escopo</div>
         <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Com o módulo ativo, URLs nesses hosts deixam de entrar no corpus, superfície HTML, sitemaps e Google CSE. Podes usar hostname, URL ou <code>*.sub.zona.com</code>. Somam-se à variável <code>GHOSTRECON_OUT_OF_SCOPE</code>.</p>
         <label class="checkbox-item">
@@ -1307,7 +1484,7 @@
 
       <div class="module-group">
         <div class="module-group-title">// IA · relatórios (Gemini + Claude)</div>
-        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Não faz parte do recon: envia o <strong>mesmo JSON</strong> da sessão actual para as duas APIs, com o <strong>mesmo prompt</strong> no servidor. Gera <code>relatorio</code> e <code>proximos_passos</code> (Markdown) para comparares manualmente. Dados sensíveis saem do teu browser — verifica regras do programa.</p>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Com <strong>Confirmo envio</strong> activo: ao terminar <em>cada</em> recon (ou cada alvo na fila), o servidor envia o JSON desse run para Gemini e/ou Claude e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco. Sem a confirmação, não há chamadas às APIs. Para desligar a geração automática no servidor (mesmo com a caixa marcada), usa <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code>. Respeita as regras do programa de bounty.</p>
         <div id="aiKeysLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">APIs IA: a carregar…</div>
         <label class="checkbox-item">
           <input type="checkbox" id="modAiReports">
@@ -1315,7 +1492,6 @@
           <span class="checkbox-text">Confirmo envio para APIs externas</span>
           <span class="tag tag-high">IA</span>
         </label>
-        <button type="button" class="run-btn" id="btnAiDualReport" disabled style="margin-top:10px;width:100%;font-size:11px;padding:10px 12px">Gerar relatório + próximos passos (2× IA)</button>
       </div>
     </div>
   </aside>
@@ -1417,7 +1593,16 @@
       <!-- Findings Panel -->
       <div class="findings-panel">
         <div class="panel-header">
-          <div class="panel-title">FINDINGS</div>
+          <div class="panel-title-row">
+            <div class="panel-title">FINDINGS</div>
+            <button
+              type="button"
+              class="findings-help-trigger"
+              onclick="openFindingsHelpModal()"
+              title="O que significa cada filtro?"
+              aria-label="Ajuda: filtros de achados"
+            >?</button>
+          </div>
           <div class="counter" id="findCount">0 achados</div>
         </div>
         <div class="filter-tabs" id="filterTabs">
@@ -1426,6 +1611,7 @@
           <div class="filter-tab" onclick="filterFindings('med', this)">🟡 MED</div>
           <div class="filter-tab" onclick="filterFindings('low', this)">🟢 LOW</div>
           <div class="filter-tab" onclick="filterFindings('subdomain', this)">SUBS</div>
+          <div class="filter-tab" onclick="filterFindings('subfinder', this)" title="Hosts com DNS OK reportados pelo subfinder (Kali)">HOSTS</div>
           <div class="filter-tab" onclick="filterFindings('endpoint', this)">ENDPOINTS</div>
           <div class="filter-tab" onclick="filterFindings('param', this)">PARAMS</div>
           <div class="filter-tab" onclick="filterFindings('secret', this)">SECRETS</div>
@@ -1519,95 +1705,6 @@ function syncBatchWrapVisibility() {
   const on = document.getElementById('batchModeToggle')?.checked;
   const w = document.getElementById('batchWrap');
   if (w) w.style.display = on ? 'block' : 'none';
-}
-
-function buildPipelineExportPayload() {
-  const multi = batchTargetsSnapshot.length > 1;
-  const pn = (document.getElementById('projectNameInput')?.value || '').trim();
-  const b = lastPipelineBundle || {};
-  const findingsExport = findings.map((f) => ({
-    type: f.type,
-    priority: f.prio,
-    score: f.score || 0,
-    value: f.value,
-    meta: f.meta || '',
-    url: f.url || '',
-    fingerprint: f.fingerprint || '',
-    compositeScore: f.compositeScore,
-    attackTier: f.attackTier,
-    priorityWhy: f.priorityWhy,
-  }));
-  return {
-    schemaVersion: 1,
-    source: 'ghostrecon-ui-pipeline-export',
-    exportedAt: new Date().toISOString(),
-    projectName: pn || undefined,
-    target: targetDomain,
-    targets: multi ? batchTargetsSnapshot.slice() : undefined,
-    stats: { ...stats },
-    findings: findingsExport,
-    correlation: b.correlation,
-    reportTemplates: b.reportTemplates,
-    runId: b.runId,
-    storage: b.storage,
-    intelMerge: b.intelMerge,
-  };
-}
-
-function syncAiReportUi() {
-  const cb = document.getElementById('modAiReports');
-  const btn = document.getElementById('btnAiDualReport');
-  if (!btn) return;
-  const ai = window.__aiKeys || {};
-  const hasTarget = (targetDomain || document.getElementById('domainInput')?.value || '').trim().length > 0;
-  const can = Boolean(cb?.checked && ai.any && hasTarget);
-  btn.disabled = !can;
-}
-
-async function runAiDualReportsClick() {
-  const btn = document.getElementById('btnAiDualReport');
-  if (!document.getElementById('modAiReports')?.checked) {
-    addLog('IA: marca a confirmação de envio para APIs externas.', 'warn');
-    return;
-  }
-  const td = (targetDomain || document.getElementById('domainInput')?.value || '').trim();
-  if (!td) {
-    addLog('IA: define um Target ($) ou corre um recon primeiro.', 'warn');
-    return;
-  }
-  const token = await ensureCsrfToken();
-  const payload = buildPipelineExportPayload();
-  if (!payload.target) payload.target = td;
-  addLog('A enviar o mesmo JSON do pipeline para Gemini e Claude (prompt partilhado no servidor)…', 'info');
-  if (btn) btn.disabled = true;
-  try {
-    const res = await fetch(apiUrl('/api/ai-reports'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
-      body: JSON.stringify({
-        payload,
-        projectName: payload.projectName || '',
-        targetDomain: payload.target || td,
-      }),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || !j.ok) {
-      addLog(`IA: ${j.error || 'HTTP ' + res.status}`, 'error');
-      return;
-    }
-    addLog(`IA: pasta de saída → ${j.outputDir}`, 'success');
-    if (j.pipelineJsonPath) addLog(`Snapshot JSON: ${j.pipelineJsonPath}`, 'info');
-    if (j.gemini?.ok) {
-      addLog(`Gemini ✓ relatório + próximos passos gravados.`, 'success');
-    } else addLog(`Gemini ✗ ${j.gemini?.error || 'falhou'}`, 'warn');
-    if (j.claude?.ok) {
-      addLog(`Claude ✓ relatório + próximos passos gravados.`, 'success');
-    } else addLog(`Claude ✗ ${j.claude?.error || 'falhou'}`, 'warn');
-  } catch (e) {
-    addLog(`IA: ${e.message}`, 'error');
-  } finally {
-    syncAiReportUi();
-  }
 }
 
 /**
@@ -1795,6 +1892,16 @@ function updateStat(key, val) {
 }
 
 // ─── FINDINGS ────────────────────────────────────────────
+/** Filtro virtual `subfinder`: subdomínios cujo meta inclui tool=subfinder (enum Kali). */
+function findingMatchesFilter(f) {
+  const x = currentFilter;
+  if (x === 'all') return true;
+  if (x === 'subfinder') {
+    return f.type === 'subdomain' && /\btool=subfinder\b/.test(String(f.meta || ''));
+  }
+  return f.prio === x || f.type === x;
+}
+
 function addFinding(f) {
   if (isFingerprintDismissed(f.fingerprint)) return;
   // índice para manter ordenação consistente em re-renderizações
@@ -1807,7 +1914,7 @@ function addFinding(f) {
     refreshFindingsList();
     return;
   }
-  if (currentFilter === f.prio || currentFilter === f.type) renderFinding(f);
+  if (findingMatchesFilter(f)) renderFinding(f);
 }
 
 function renderFinding(f) {
@@ -1970,7 +2077,7 @@ function refreshFindingsList() {
   list.innerHTML = '';
   document.getElementById('findCount').textContent = findings.length + ' achados';
   const f = currentFilter;
-  const filtered = findings.filter(x => f === 'all' || x.prio === f || x.type === f);
+  const filtered = findings.filter((x) => f === 'all' || findingMatchesFilter(x));
   if (f === 'all') {
     // Agrupar endpoints e params para não ficarem "separados" por outros tipos.
     const rank = {
@@ -2005,7 +2112,8 @@ function refreshFindingsList() {
     });
   }
   if (filtered.length === 0) {
-    list.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-dim);font-family:var(--mono);font-size:11px">Sem resultados para o filtro "${f}"</div>`;
+    const flab = f === 'subfinder' ? 'HOSTS (subfinder)' : f;
+    list.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-dim);font-family:var(--mono);font-size:11px">Sem resultados para o filtro "${flab}"</div>`;
     return;
   }
   filtered.forEach(x => renderFinding(x));
@@ -2093,8 +2201,9 @@ async function downloadRunFromApi(id) {
 /**
  * @param batchPreserveCount ao receber findings_rescore, manter os primeiros N (achados dos alvos anteriores na fila)
  * @param batchPosition null ou { index, total } para mensagens de fila
+ * @param statsBaseline null (recon único) ou snapshot `{ subs, endpoints, … }` antes deste stream — na fila, soma baseline + stats do servidor
  */
-async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosition) {
+async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosition, statsBaseline = null) {
   if (!res.ok) return false;
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -2116,7 +2225,14 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       if (ev.type === 'progress') setProgress(ev.pct);
       if (ev.type === 'pipe') setPipe(ev.name, ev.state);
       if (ev.type === 'stats' && ev.stats) {
-        Object.keys(ev.stats).forEach(k => updateStat(k, ev.stats[k]));
+        if (statsBaseline) {
+          Object.keys(ev.stats).forEach((k) => {
+            const base = Number(statsBaseline[k]) || 0;
+            updateStat(k, base + (Number(ev.stats[k]) || 0));
+          });
+        } else {
+          Object.keys(ev.stats).forEach((k) => updateStat(k, ev.stats[k]));
+        }
       }
       if (ev.type === 'finding' && ev.finding) addFinding(ev.finding);
       if (ev.type === 'findings_rescore' && Array.isArray(ev.findings)) {
@@ -2142,6 +2258,20 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         for (const s of (ev.sample || []).slice(0, 6)) {
           addLog(`HOT ${String(s.type || '?').toUpperCase()}: ${String(s.value || '').slice(0, 120)}`, 'warn');
         }
+      }
+      if (ev.type === 'ai_report') {
+        if (ev.phase === 'start') {
+          addLog(`IA (automático): ${ev.target || targetDomain}…`, 'info');
+        }
+        if (ev.phase === 'done') {
+          if (ev.outputDir) addLog(`IA: pasta de saída → ${ev.outputDir}`, 'success');
+          if (ev.pipelineJsonPath) addLog(`IA: snapshot JSON → ${ev.pipelineJsonPath}`, 'info');
+          if (ev.gemini?.ok) addLog('IA Gemini ✓ (automático)', 'success');
+          else if (ev.gemini?.error) addLog(`IA Gemini ✗ ${ev.gemini.error}`, 'warn');
+          if (ev.claude?.ok) addLog('IA Claude ✓ (automático)', 'success');
+          else if (ev.claude?.error) addLog(`IA Claude ✗ ${ev.claude.error}`, 'warn');
+        }
+        if (ev.phase === 'error' && ev.message) addLog(`IA: ${ev.message}`, 'error');
       }
       if (ev.type === 'error') {
         addLog(ev.message || 'Erro no servidor', 'error');
@@ -2176,7 +2306,6 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           storage: ev.storage ?? null,
           intelMerge: ev.intelMerge ?? null,
         };
-        syncAiReportUi();
       }
     }
   }
@@ -2296,13 +2425,11 @@ async function startRecon() {
         if (i > 0) {
           addLog(`─── Seguinte alvo (${i + 1}/${targets.length}): ${targetDomain} ───`, 'section');
           resetPipelineVisual();
-          Object.keys(stats).forEach(k => {
-            stats[k] = 0;
-            updateStat(k, 0);
-          });
           setProgress(0);
         }
       }
+
+      const statsBaseline = targets.length > 1 ? { ...stats } : null;
 
       const token = await ensureCsrfToken();
       const streamBody = {
@@ -2312,6 +2439,7 @@ async function startRecon() {
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
         profile: getReconProfile(),
         auth: getOptionalAuthConfig(),
+        autoAiReports: Boolean(document.getElementById('modAiReports')?.checked),
       };
       if (useOos) streamBody.outOfScope = oosText || '';
       if (projectName) streamBody.projectName = projectName;
@@ -2336,6 +2464,7 @@ async function startRecon() {
         res,
         batchPreserveFindingsBeforeRun,
         targets.length > 1 ? { index: i + 1, total: targets.length } : null,
+        statsBaseline,
       );
       if (!ok && targets.length === 1) {
         finishErr('Pipeline terminou com erro — vê o log acima.');
@@ -2533,9 +2662,6 @@ document.getElementById('modOutOfScope')?.addEventListener('change', syncOutOfSc
 syncOutOfScopeUi();
 document.getElementById('batchModeToggle')?.addEventListener('change', syncBatchWrapVisibility);
 syncBatchWrapVisibility();
-document.getElementById('modAiReports')?.addEventListener('change', syncAiReportUi);
-document.getElementById('domainInput')?.addEventListener('input', syncAiReportUi);
-document.getElementById('btnAiDualReport')?.addEventListener('click', () => void runAiDualReportsClick());
 document.getElementById('domainInput')?.addEventListener('input', updateGhPreview);
 document.getElementById('exactMatch')?.addEventListener('change', updateGhPreview);
 document.getElementById('ghCustomQuery')?.addEventListener('keydown', e => {
@@ -2574,8 +2700,6 @@ async function fetchKaliCapabilities() {
       aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · Claude ${a.claude ? '✓' : '✗'} — .env: GEMINI_API_KEY (ou GOOGLE_AI_API_KEY) + ANTHROPIC_API_KEY`;
       aiEl.style.color = a.both ? 'var(--accent2)' : 'var(--accent4)';
     }
-    syncAiReportUi();
-
     if (c.kali) {
       window.__kaliScanAvailable = true;
       if (toggle) toggle.disabled = false;
@@ -2600,7 +2724,6 @@ async function fetchKaliCapabilities() {
       aiEl.textContent = 'APIs IA: indisponível (servidor offline).';
       aiEl.style.color = 'var(--accent3)';
     }
-    syncAiReportUi();
   }
 }
 
@@ -2623,6 +2746,255 @@ fetchKaliCapabilities();
 loadRunsHistory();
 initProfileUi();
 initAuthUi();
+
+function openFindingsHelpModal() {
+  const o = document.getElementById('findingsHelpOverlay');
+  if (!o) return;
+  o.classList.add('is-open');
+  o.setAttribute('aria-hidden', 'false');
+}
+
+function closeFindingsHelpModal() {
+  const o = document.getElementById('findingsHelpOverlay');
+  if (!o) return;
+  o.classList.remove('is-open');
+  o.setAttribute('aria-hidden', 'true');
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeFindingsHelpModal();
+    closeModulesHelpModal();
+  }
+});
+
+function openModulesHelpModal() {
+  const o = document.getElementById('modulesHelpOverlay');
+  if (!o) return;
+  o.classList.add('is-open');
+  o.setAttribute('aria-hidden', 'false');
+}
+
+function closeModulesHelpModal() {
+  const o = document.getElementById('modulesHelpOverlay');
+  if (!o) return;
+  o.classList.remove('is-open');
+  o.setAttribute('aria-hidden', 'true');
+}
 </script>
+
+<div
+  id="findingsHelpOverlay"
+  class="findings-help-overlay"
+  aria-hidden="true"
+  onclick="if (event.target === this) closeFindingsHelpModal()"
+>
+  <div
+    class="findings-help-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="findingsHelpTitle"
+    onclick="event.stopPropagation()"
+  >
+    <button type="button" class="findings-help-close" onclick="closeFindingsHelpModal()" aria-label="Fechar">×</button>
+    <div class="findings-help-dialog-head">
+      <h2 id="findingsHelpTitle">AJUDA — ACHADOS</h2>
+      <p class="findings-help-intro">
+        Os <strong>separadores</strong> filtram os cartões pela prioridade ou pelo tipo. A <strong>barra de números</strong> em baixo resume contagens enviadas pelo servidor durante o recon. Com <strong>fila de alvos</strong>, esses contadores <em>somam</em> todos os alvos da mesma corrida. Alguns tipos de cartão só aparecem com modo Kali ou módulos activos.
+      </p>
+    </div>
+    <div class="findings-help-scroll">
+      <dl class="findings-help-dl">
+        <dt>ALL</dt>
+        <dd>Todos os cartões da sessão actual, com ordenação por tipo (subdomínios, endpoints, parâmetros, depois scans e heurísticas).</dd>
+        <dt>🔴 HIGH</dt>
+        <dd>Apenas achados com prioridade <strong>alta</strong> (heurística de risco ou confirmações mais fortes).</dd>
+        <dt>🟡 MED</dt>
+        <dd>Prioridade <strong>média</strong> — candidatos a investigar sem ser o topo da fila.</dd>
+        <dt>🟢 LOW</dt>
+        <dd>Prioridade <strong>baixa</strong> — contexto, intel passiva ou ruído provável.</dd>
+        <dt>SUBS</dt>
+        <dd>Subdomínios com DNS (A/AAAA) que resolvem: crt.sh, VirusTotal, subfinder/amass (Kali), etc., fundidos no mesmo fluxo.</dd>
+        <dt>HOSTS</dt>
+        <dd>Subdomínios em que o <strong>subfinder</strong> (Kali) contribuiu para a descoberta; o texto do cartão inclui <code>tool=subfinder</code> no meta.</dd>
+        <dt>ENDPOINTS</dt>
+        <dd>URLs ou caminhos (Wayback, Common Crawl, sitemap/robots, superfície HTML, Google CSE, JS, etc.).</dd>
+        <dt>PARAMS</dt>
+        <dd>Nomes de parâmetros de query extraídos do corpus de URLs (e descoberta activa quando aplicável).</dd>
+        <dt>SECRETS</dt>
+        <dd>Padrões que <em>parecem</em> segredos (ficheiros JS, GitHub Code Search) — tratar como suspeitos até validares.</dd>
+        <dt>NMAP</dt>
+        <dd>Saída do <strong>nmap</strong> no modo Kali (serviços e versões na amostra analisada).</dd>
+        <dt>EXPLOIT.DB</dt>
+        <dd>Referências do <strong>searchsploit</strong> associadas a produto/versão detectados (modo Kali).</dd>
+        <dt>NUCLEI</dt>
+        <dd>Resultados do <strong>Nuclei</strong> (incluindo passagens com tags XSS/SQLi quando há candidatos no corpus).</dd>
+        <dt>WPSCAN</dt>
+        <dd>Enumeração <strong>WPScan</strong> (WordPress) só quando o recon passivo já indicou WordPress e a ferramenta existe no Kali.</dd>
+        <dt>DALFOX</dt>
+        <dd>Resultados do <strong>Dalfox</strong> (XSS) no modo Kali, quando o pipeline activa essa fase.</dd>
+        <dt>XSS</dt>
+        <dd>Achados classificados como XSS (ex.: templates Nuclei ou fase Verify).</dd>
+        <dt>SQLI</dt>
+        <dd>Achados classificados como injecção SQL (Nuclei, Verify, etc.).</dd>
+        <dt>LFI</dt>
+        <dd>Inclusão local de ficheiros / path traversal levantados na verificação com evidência.</dd>
+        <dt>REDIRECT</dt>
+        <dd>Open redirect (fase Verify ou ferramentas que emitam esse tipo).</dd>
+        <dt>IDOR</dt>
+        <dd>Inseguranças de controlo de acesso / IDOR reportadas pelo pipeline de verificação.</dd>
+        <dt>TAKEOVER</dt>
+        <dd>Candidatos ou confirmações de <strong>subdomain takeover</strong> (CNAME, páginas de fornecedor, etc.).</dd>
+        <dt>SECRET-CHECK</dt>
+        <dd>Resultado da validação de segredos: <strong>live</strong>, <strong>provável</strong> ou <strong>morto</strong> (tipo <code>secret_validation</code>).</dd>
+        <dt>WHOIS</dt>
+        <dd>Texto de <strong>whois</strong> sobre o domínio ou subdomínios (modo Kali).</dd>
+        <dt>SEC</dt>
+        <dd>Problemas em <strong>cabeçalhos HTTP de segurança</strong> (HSTS, CSP, X-Frame-Options, cookies, etc.).</dd>
+        <dt>TLS</dt>
+        <dd>Certificado TLS: validade, SAN, emissor — alertas se a expiração estiver próxima.</dd>
+        <dt>RDAP</dt>
+        <dd>Metadados de <strong>registo de domínio</strong> via RDAP (estado, nameservers, eventos).</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">BARRA INFERIOR — CONTADORES</h3>
+      <p class="findings-help-section-intro">
+        Valores actualizados em tempo real com o stream do pipeline. Não são o total de linhas na lista (há tipos sem contador próprio, ex.: <code>tech</code>, <code>intel</code>).
+      </p>
+      <dl class="findings-help-dl">
+        <dt>Subdomínios</dt>
+        <dd>Número de achados do tipo <code>subdomain</code> (hosts com A/AAAA após enumeração).</dd>
+        <dt>Endpoints</dt>
+        <dd>Achados <code>endpoint</code> e rotas extraídas de JS (<code>js</code>) que o pipeline contabiliza como superfície URL.</dd>
+        <dt>Parâmetros</dt>
+        <dd>Quantidade de achados <code>param</code> (nomes de query vistos no corpus ou descobertos activamente).</dd>
+        <dt>Secrets</dt>
+        <dd>Achados <code>secret</code> (padrões sensíveis em JS, GitHub, etc.) — muitos são para triagem manual.</dd>
+        <dt>Dorks</dt>
+        <dd>Quantidade de queries Google Hacking geradas como cartões <code>dork</code> neste run.</dd>
+        <dt>Alto Risco</dt>
+        <dd>Total de cartões com prioridade <strong>high</strong> após a última actualização de stats (inclui vários tipos, não só subs/endpoints).</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+
+<div
+  id="modulesHelpOverlay"
+  class="findings-help-overlay"
+  aria-hidden="true"
+  onclick="if (event.target === this) closeModulesHelpModal()"
+>
+  <div
+    class="findings-help-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="modulesHelpTitle"
+    onclick="event.stopPropagation()"
+    style="width: min(560px, 100%)"
+  >
+    <button type="button" class="findings-help-close" onclick="closeModulesHelpModal()" aria-label="Fechar">×</button>
+    <div class="findings-help-dialog-head">
+      <h2 id="modulesHelpTitle">MÓDULOS — GUIA</h2>
+      <p class="findings-help-intro">
+        Cada caixa envia o respetivo <code>value</code> no array <code>modules</code> do <code>POST /api/recon/stream</code>. Combina só o que o programa de bounty permite. Tags <strong>HIGH/MED/LOW</strong> indicam sensibilidade aproximada; <strong>API/CLI</strong> indicam dependências externas.
+      </p>
+    </div>
+    <div class="findings-help-scroll">
+      <h3 class="findings-help-section-title" style="margin-top:0;padding-top:0;border-top:none">// Google Dorking</h3>
+      <p class="findings-help-section-intro">Gera strings de Google Hacking e URLs de pesquisa; no fim do pipeline aparecem como cartões <code>dork</code> e, com «Abrir dorks» ligado, abrem em abas (fila com delay).</p>
+      <dl class="findings-help-dl">
+        <dt>Directory listing</dt>
+        <dd>Dorks para pastas com listagem (index of, parent directory).</dd>
+        <dt>Exposed documents</dt>
+        <dd>PDF, Office, CSV, etc. com termos de confidencialidade / internos.</dd>
+        <dt>Config files</dt>
+        <dd>Extensões e caminhos típicos de configuração (.env, yaml, xml, …).</dd>
+        <dt>Database files</dt>
+        <dd>Ficheiros SQL, SQLite, MDB expostos.</dd>
+        <dt>Log files</dt>
+        <dd>Extensão .log e caminhos /logs/, error_log, access_log.</dd>
+        <dt>Backup &amp; old files</dt>
+        <dd>.bak, .old, backup, bkp, orig.</dd>
+        <dt>Login pages</dt>
+        <dd>Superfície de autenticação (signin, login, oauth).</dd>
+        <dt>SQL errors</dt>
+        <dd>Rastos de erros SQL visíveis em páginas indexadas.</dd>
+        <dt>PHP errors / warnings</dt>
+        <dd>Mensagens PHP expostas.</dd>
+        <dt>phpinfo() exposure</dt>
+        <dd>Páginas phpinfo ou equivalentes.</dd>
+        <dt>Google CSE (URLs reais)</dt>
+        <dd>Após gerar dorks, o servidor chama a <strong>Custom Search JSON API</strong> com <code>GOOGLE_CSE_KEY</code> + <code>GOOGLE_CSE_CX</code> e acrescenta <strong>endpoints reais</strong> ao alvo (quota diária limitada).</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">// Google hacking → nova aba</h3>
+      <p class="findings-help-section-intro">Fluxo <strong>manual</strong>: escreves a query com operadores Google (site:, filetype:, inurl:, OR, aspas, …). O URL é montado e abre noutra aba — igual aos dorks automáticos em termos de abertura, mas tu controlas o texto. Usa «Prefixar site: &lt;target&gt;» para restringir ao domínio do Target ($); desliga o prefixo se quiseres pesquisa global. A prévia mostra o URL antes de abrir.</p>
+
+      <h3 class="findings-help-section-title">// OSINT Sources</h3>
+      <dl class="findings-help-dl">
+        <dt>Subdomain discovery</dt>
+        <dd>Certificate Transparency (crt.sh) + fusão com VirusTotal se activo; enum Kali (subfinder/amass) só com Modo Kali e módulos respectivos.</dd>
+        <dt>Wayback Machine</dt>
+        <dd>URLs históricas 200 via CDX (Archive.org).</dd>
+        <dt>Common Crawl (CDX)</dt>
+        <dd>URLs do índice Common Crawl.</dd>
+        <dt>gau / waybackurls</dt>
+        <dd>Ferramentas CLI no PATH (perfil <code>deep</code> ou módulos) para mais URLs de arquivo.</dd>
+        <dt>RDAP</dt>
+        <dd>Metadados de registo do domínio (WHOIS+ estruturado).</dd>
+        <dt>Headers HTTP + TLS</dt>
+        <dd>Probing + cabeçalhos de segurança + certificado TLS nos hosts vivos.</dd>
+        <dt>WAF fingerprint (wafw00f)</dt>
+        <dd>CLI <code>wafw00f</code> quando disponível (deteção de WAF).</dd>
+        <dt>robots.txt / sitemap</dt>
+        <dd>Crawl de Disallow e URLs de sitemap por origem viva.</dd>
+        <dt>VirusTotal subs</dt>
+        <dd>Subdomínios via API (<code>VIRUSTOTAL_API_KEY</code>).</dd>
+        <dt>Shodan (IP lookup)</dt>
+        <dd>IPv4 resolvidos + API Shodan (<code>SHODAN_API_KEY</code>).</dd>
+        <dt>DNS TXT/MX (SPF/DMARC)</dt>
+        <dd>Enriquecimento MX, SPF, DMARC, TXT de verificação.</dd>
+        <dt>.well-known/security.txt</dt>
+        <dd>Política de divulgação contacto de segurança.</dd>
+        <dt>.well-known/openid-configuration</dt>
+        <dd>Descoberta OIDC e endpoints relacionados.</dd>
+        <dt>GitHub leaks</dt>
+        <dd>GitHub Code Search no domínio (token opcional aumenta limite).</dd>
+        <dt>Pastebin leaks</dt>
+        <dd>Sem API fiável — o pipeline sugere usar dorks gerados.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">// API · specs · GraphQL</h3>
+      <p class="findings-help-section-intro">Liga <strong>Wayback</strong> e/ou <strong>Common Crawl</strong> (ou outras fontes de URLs) para o corpus incluir caminhos úteis. O GraphQL só corre se existir URL com <code>graphql</code> nesse corpus (máx. 10). OpenAPI tenta paths típicos (<code>/openapi.json</code>, <code>/swagger.json</code>, …) em cada origem HTTPS viva.</p>
+      <dl class="findings-help-dl">
+        <dt>OpenAPI / Swagger leak</dt>
+        <dd>GET a paths comuns; se a resposta for JSON de spec, extrai paths e parâmetros como achados.</dd>
+        <dt>GraphQL — introspecção mínima</dt>
+        <dd>Um POST com query mínima de introspecção; se o servidor responder, gera <code>intel</code> — rever manualmente e respeitar regras do programa.</dd>
+        <dt>Micro-exploit XSS (pós-verify)</dt>
+        <dd>Depois do verify, segunda variante de payload em XSS <code>probable</code> (pedidos GET activos).</dd>
+        <dt>Stealth (jitter + UA rotativa)</dt>
+        <dd>Atraso aleatório entre alguns pedidos e rotação de User-Agent; também pode activar-se com <code>GHOSTRECON_STEALTH=1</code> no <code>.env</code>.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">// Fora de escopo</h3>
+      <p class="findings-help-section-intro">Com o módulo <strong>Aplicar lista fora de escopo</strong> activo, hosts na textarea deixam de entrar no corpus, superfície HTML, sitemaps e Google CSE. Aceita hostname, URL ou wildcard tipo <code>*.sub.zona.com</code>. A variável <code>GHOSTRECON_OUT_OF_SCOPE</code> no <code>.env</code> soma regras permanentes.</p>
+
+      <h3 class="findings-help-section-title">// Sensitive Data</h3>
+      <dl class="findings-help-dl">
+        <dt>Passwords &amp; credentials</dt>
+        <dd>Categoria de dorks focada em credenciais e passwords em texto.</dd>
+        <dt>Sensitive exposure</dt>
+        <dd>Dorks para dados sensíveis genéricos (PII, interno, etc.).</dd>
+        <dt>Subfinder / Amass (Kali)</dt>
+        <dd>Enumeração extra de subdomínios no sistema com ferramentas no PATH — só com <strong>Modo Kali</strong> ligado.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">// IA · relatórios (Gemini + Claude)</h3>
+      <p class="findings-help-section-intro">Com <strong>Confirmo envio para APIs externas</strong>: ao terminar cada recon (ou cada alvo na fila), o servidor envia o JSON desse run às APIs configuradas e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco; os próximos passos também são ecoados no log do terminal. Sem a confirmação não há chamadas. <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code> desliga a geração automática no servidor mesmo com a caixa marcada. Chaves: <code>GEMINI_API_KEY</code> ou <code>GOOGLE_AI_API_KEY</code>, e <code>ANTHROPIC_API_KEY</code>. Cumpre sempre o programa de bounty.</p>
+    </div>
+  </div>
+</div>
 </body>
 </html>

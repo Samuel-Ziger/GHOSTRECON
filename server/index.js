@@ -1,6 +1,7 @@
 import './load-env.js';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
 import { fetchCrtShSubdomains } from './modules/subdomains.js';
@@ -34,7 +35,8 @@ import { applyPrioritizationV2, topHighProbability } from './modules/prioritizat
 import { extractCveHintsFromTechStrings } from './modules/cve-hints.js';
 import { fetchDnsEnrichment } from './modules/dns-enrichment.js';
 import { fetchWellKnownSecurityTxt, fetchWellKnownOpenIdConfiguration } from './modules/wellknown.js';
-import { runEvidenceVerification } from './modules/verify.js';
+import { runEvidenceVerification, runMicroExploitVariants } from './modules/verify.js';
+import { harvestOpenApiFromOrigins, tryGraphqlMinimalProbe } from './modules/openapi-harvest.js';
 import { dedupeBySemanticFamily } from './modules/semantic-dedupe.js';
 import { buildReportTemplates } from './modules/report-template.js';
 import { discoverAssetHints, detectTakeoverCandidates } from './modules/asset-discovery.js';
@@ -157,6 +159,84 @@ function normDomain(d) {
   return d.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
 }
 
+function aiAutoReportsServerAllowed() {
+  const v = String(process.env.GHOSTRECON_AI_AUTO ?? '1').trim().toLowerCase();
+  return v !== '0' && v !== 'false' && v !== 'no';
+}
+
+/** Mesmo formato que `buildPipelineExportPayload()` na UI — para `runDualAiReports`. */
+/** Lê os .md de próximos passos gerados pela IA e envia para o terminal NDJSON (decisão antes do próximo alvo na fila). */
+function emitIaProximosPassosToLog(aiOut, log) {
+  if (!aiOut || typeof log !== 'function') return;
+  const parts = [];
+  if (aiOut.gemini?.ok && aiOut.gemini.proximosPath) {
+    parts.push({ label: 'Gemini — próximos passos', path: aiOut.gemini.proximosPath });
+  }
+  if (aiOut.claude?.ok && aiOut.claude.proximosPath) {
+    parts.push({ label: 'Claude — próximos passos', path: aiOut.claude.proximosPath });
+  }
+  if (!parts.length) return;
+  log('═══ DECISÃO / PRÓXIMOS PASSOS (IA) ═══', 'section');
+  for (const { label, path: fpath } of parts) {
+    log(`── ${label} ──`, 'section');
+    try {
+      const text = fs.readFileSync(fpath, 'utf8');
+      for (const line of text.split('\n')) {
+        const t = line.replace(/\r$/, '');
+        if (t.trim() === '') log(' ', 'info');
+        else if (t.length > 2400) log(`${t.slice(0, 2400)}…`, 'info');
+        else log(t, 'info');
+      }
+    } catch (e) {
+      log(`Não foi possível ler ${fpath}: ${e.message}`, 'warn');
+    }
+  }
+  log('═══ Fim decisão IA — pode seguir para o próximo alvo ═══', 'section');
+}
+
+function buildPipelineExportPayloadForAi({
+  target,
+  projectName,
+  stats,
+  findings,
+  correlation,
+  reportTemplates,
+  runId,
+  storage,
+  intelMerge,
+  kaliMode,
+  modules,
+}) {
+  const findingsExport = findings.map((f) => ({
+    type: f.type,
+    priority: f.prio,
+    score: f.score || 0,
+    value: f.value,
+    meta: f.meta || '',
+    url: f.url || '',
+    fingerprint: f.fingerprint || '',
+    compositeScore: f.compositeScore,
+    attackTier: f.attackTier,
+    priorityWhy: f.priorityWhy,
+  }));
+  return {
+    schemaVersion: 1,
+    source: 'ghostrecon-server-pipeline',
+    exportedAt: new Date().toISOString(),
+    projectName: projectName || undefined,
+    target,
+    stats: { ...stats },
+    findings: findingsExport,
+    correlation,
+    reportTemplates,
+    runId,
+    storage,
+    intelMerge,
+    kaliMode,
+    modules,
+  };
+}
+
 async function runPipeline(ctx) {
   const {
     domain,
@@ -168,6 +248,7 @@ async function runPipeline(ctx) {
     profile = 'standard',
     outOfScope: outOfScopeClientRaw = null,
     projectName: projectNameRaw = '',
+    autoAiReports = false,
   } = ctx;
   const runtimeProfile = resolveReconProfile(profile);
   const domainStr = exactMatch ? `"${domain}"` : domain;
@@ -226,6 +307,8 @@ async function runPipeline(ctx) {
   }
 
   let allSubs = [];
+  /** Hostnames normalizados devolvidos pelo subfinder (para meta `tool=subfinder` na UI). */
+  const subfinderHostsNorm = new Set();
   const runCrtSubdomains = modules.includes('subdomains');
   const runKaliSubfinderAmass = Boolean(kaliMode) && (modules.includes('subfinder') || modules.includes('amass'));
   if (runCrtSubdomains || runKaliSubfinderAmass) {
@@ -252,6 +335,10 @@ async function runPipeline(ctx) {
       if (modules.includes('subfinder')) {
         try {
           const extra = await enumerateSubdomainsWithSubfinder(domain, log);
+          for (const h of extra) {
+            const hn = String(h).trim().toLowerCase();
+            if (hn) subfinderHostsNorm.add(hn);
+          }
           if (extra.length) {
             allSubs = [...new Set([...allSubs, ...extra])];
           }
@@ -278,13 +365,15 @@ async function runPipeline(ctx) {
       if (r.ok) {
         log(`✓ ${host} → ${r.records.slice(0, 2).join(', ')}`, 'success');
         const { score, prio } = { score: 52, prio: 'med' };
+        const hn = String(host).trim().toLowerCase();
+        const viaSubfinder = subfinderHostsNorm.has(hn);
         addFinding(
           {
             type: 'subdomain',
             prio,
             score,
             value: host,
-            meta: `DNS: ${r.records.join(', ')}`,
+            meta: `DNS: ${r.records.join(', ')}${viaSubfinder ? ' · tool=subfinder' : ''}`,
             url: `https://${host}`,
           },
           'subs',
@@ -355,7 +444,7 @@ async function runPipeline(ctx) {
   log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
 
   const probeResults = await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
-    const r = await probeHttp(u, { auth });
+    const r = await probeHttp(u, { auth, modules });
     return { u, r };
   });
 
@@ -673,6 +762,19 @@ async function runPipeline(ctx) {
     }
   }
 
+  if (modules.includes('openapi_specs')) {
+    log('OpenAPI/Swagger: a procurar specs em paths comuns…', 'info');
+    try {
+      const bases = [...originByHost.values()].map((v) => v.origin);
+      const specRows = await harvestOpenApiFromOrigins(bases, domain, outOfScopeList, modules, log);
+      for (const row of specRows) {
+        addFinding(row, row.type === 'param' ? 'params' : row.type === 'endpoint' ? 'endpoints' : null);
+      }
+    } catch (e) {
+      log(`OpenAPI harvest: ${e.message}`, 'warn');
+    }
+  }
+
   // ── WAYBACK / URLS ──────────────────────────
   let waybackUrls = [];
   pipe('urls', 'active');
@@ -731,6 +833,24 @@ async function runPipeline(ctx) {
     }
   }
   urlCorpus = urlCorpus.filter((u) => urlInReconScope(u, domain, outOfScopeList));
+
+  if (modules.includes('graphql_probe')) {
+    const gqlUrls = [...new Set(urlCorpus.filter((u) => /graphql/i.test(u)))].slice(0, 10);
+    if (!gqlUrls.length) {
+      log(
+        'GraphQL: módulo activo mas nenhuma URL com "graphql" no corpus — liga Wayback/Common Crawl ou outras fontes de URLs.',
+        'info',
+      );
+    } else {
+      try {
+        const gqlFindings = await tryGraphqlMinimalProbe(gqlUrls, domain, outOfScopeList, modules, log);
+        for (const gf of gqlFindings) addFinding(gf, null);
+      } catch (e) {
+        log(`GraphQL probe: ${e.message}`, 'warn');
+      }
+    }
+  }
+
   const waybackSet = new Set(waybackUrls);
   const ccSet = new Set(ccUrls);
   const interesting = filterInterestingUrls(urlCorpus);
@@ -824,7 +944,7 @@ async function runPipeline(ctx) {
   const jsList = extractJsUrls(urlCorpus.length ? urlCorpus : [], 120).slice(0, limits.maxJsFetch);
   log(`Analisando ${jsList.length} arquivos JS (passivo)...`, 'info');
   for (const jsUrl of jsList) {
-    const a = await analyzeJsUrl(jsUrl);
+    const a = await analyzeJsUrl(jsUrl, { modules });
     if (!a.ok) {
       log(`JS skip: ${jsUrl} (${a.error || a.status})`, 'warn');
       continue;
@@ -841,6 +961,19 @@ async function runPipeline(ctx) {
           url: jsUrl,
         },
         'endpoints',
+      );
+    }
+    for (const ins of a.insights || []) {
+      addFinding(
+        {
+          type: 'intel',
+          prio: ins.kind === 'role_admin_hint' ? 'high' : 'med',
+          score: ins.kind === 'role_admin_hint' ? 72 : 58,
+          value: `JS insight (${ins.kind}): ${ins.snippet.slice(0, 160)}`,
+          meta: `js_context • kind=${ins.kind} • confidence=heuristic`,
+          url: jsUrl,
+        },
+        null,
       );
     }
     const sec = scanSecrets(a.body || '');
@@ -998,11 +1131,20 @@ async function runPipeline(ctx) {
       auth,
       log,
       maxEndpoints: runtimeProfile.maxVerifyEndpoints,
+      modules,
     });
     for (const vf of verified) addFinding(vf, null);
     if (verified.length) log(`Verify: ${verified.length} resultado(s) xss/sqli/open_redirect/idor/lfi`, 'success');
   } catch (e) {
     log(`Verify: ${e.message}`, 'warn');
+  }
+  if (modules.includes('micro_exploit')) {
+    try {
+      const micro = await runMicroExploitVariants({ findings, auth, log, modules, maxTests: 16 });
+      for (const mf of micro) addFinding(mf, null);
+    } catch (e) {
+      log(`Micro-exploit: ${e.message}`, 'warn');
+    }
   }
   // Param discovery ativo (fase 2): tentar em endpoints sem query
   try {
@@ -1325,6 +1467,50 @@ async function runPipeline(ctx) {
     localSqlitePath: saved?.localMirrorPath || saved?.dbPath || null,
   });
 
+  if (autoAiReports && aiAutoReportsServerAllowed() && aiKeysConfigured().any) {
+    emit({ type: 'ai_report', phase: 'start', target: domain });
+    log('IA: recon concluído — a gerar relatórios (Gemini e/ou Claude) com o JSON deste run…', 'info');
+    const pn = String(projectNameRaw || '').trim();
+    const aiPayload = buildPipelineExportPayloadForAi({
+      target: domain,
+      projectName: pn,
+      stats,
+      findings,
+      correlation: corr,
+      reportTemplates,
+      runId,
+      storage: storageLabel(),
+      intelMerge,
+      kaliMode: Boolean(kaliMode),
+      modules: modulesForDb,
+    });
+    try {
+      const aiOut = await runDualAiReports(aiPayload, { projectName: pn, targetDomain: domain });
+      emit({
+        type: 'ai_report',
+        phase: 'done',
+        target: domain,
+        outputDir: aiOut.outputDir,
+        pipelineJsonPath: aiOut.pipelineJsonPath,
+        gemini: { ok: Boolean(aiOut.gemini?.ok), error: aiOut.gemini?.error || null },
+        claude: { ok: Boolean(aiOut.claude?.ok), error: aiOut.claude?.error || null },
+      });
+      if (aiOut.gemini?.ok) log('IA Gemini ✓ relatório + próximos passos gravados.', 'success');
+      else if (aiKeysConfigured().gemini) log(`IA Gemini ✗ ${aiOut.gemini?.error || 'falhou'}`, 'warn');
+      if (aiOut.claude?.ok) log('IA Claude ✓ relatório + próximos passos gravados.', 'success');
+      else if (aiKeysConfigured().claude) log(`IA Claude ✗ ${aiOut.claude?.error || 'falhou'}`, 'warn');
+      emitIaProximosPassosToLog(aiOut, log);
+    } catch (e) {
+      emit({
+        type: 'ai_report',
+        phase: 'error',
+        target: domain,
+        message: e?.message || String(e),
+      });
+      log(`IA: ${e?.message || e}`, 'error');
+    }
+  }
+
   const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
   if (whUrl && runId != null) {
     const findingsByType = {};
@@ -1432,6 +1618,7 @@ app.post('/api/recon/stream', async (req, res) => {
       profile,
       outOfScope: req.body?.outOfScope,
       projectName: req.body?.projectName,
+      autoAiReports: Boolean(req.body?.autoAiReports),
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });

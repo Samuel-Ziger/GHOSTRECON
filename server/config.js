@@ -42,6 +42,11 @@ export const limits = {
   /** Shodan (módulo passivo): resolução e IPs consultados */
   shodanResolveMaxHosts: 14,
   shodanMaxIps: 5,
+  /** OpenAPI/Swagger — quantas origens HTTPS tentar */
+  openapiMaxOrigins: 10,
+  /** Stealth (jitter entre pedidos, ms) */
+  stealthJitterMinMs: 60,
+  stealthJitterMaxMs: 420,
 };
 
 /** Rate limit POST /api/recon/stream (por IP). 0 = desativado */

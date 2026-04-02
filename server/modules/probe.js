@@ -1,6 +1,7 @@
-import { UA, limits } from '../config.js';
+import { limits } from '../config.js';
 import { detectTech } from './tech.js';
 import { extractHtmlSurface } from './html-surface.js';
+import { stealthPause, pickStealthUserAgent } from './request-policy.js';
 
 function extractTitle(html) {
   const m = html.match(/<title[^>]*>([^<]{0,300})/i);
@@ -31,9 +32,9 @@ export function snapshotSecurityHeaders(headers) {
   return snap;
 }
 
-function buildRequestHeaders(auth) {
+function buildRequestHeaders(auth, modules = []) {
   const h = {
-    'User-Agent': UA,
+    'User-Agent': pickStealthUserAgent(modules),
     Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
   };
   if (auth?.headers && typeof auth.headers === 'object') {
@@ -66,7 +67,8 @@ function detectWaf(headers, bodySnippet = '') {
 }
 
 export async function probeHttp(url, opts = {}) {
-  const { auth } = opts;
+  const { auth, modules = [] } = opts;
+  await stealthPause(modules);
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), limits.probeTimeoutMs);
   try {
@@ -74,7 +76,7 @@ export async function probeHttp(url, opts = {}) {
       method: 'GET',
       redirect: 'follow',
       signal: controller.signal,
-      headers: buildRequestHeaders(auth),
+      headers: buildRequestHeaders(auth, modules),
     });
     const buf = await res.arrayBuffer();
     const slice = buf.byteLength > limits.maxBodySnippet ? buf.slice(0, limits.maxBodySnippet) : buf;

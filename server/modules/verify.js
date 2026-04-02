@@ -1,5 +1,5 @@
-import { UA } from '../config.js';
 import crypto from 'crypto';
+import { stealthPause, pickStealthUserAgent } from './request-policy.js';
 
 const XSS_PARAM_RE = /^(q|query|search|s|keyword|term|message|comment|title|name)$/i;
 const SQLI_PARAM_RE = /^(id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where)$/i;
@@ -15,9 +15,9 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function buildHeaders(auth = {}) {
+function buildHeaders(auth = {}, modules = []) {
   const h = {
-    'User-Agent': UA,
+    'User-Agent': pickStealthUserAgent(modules),
     Accept: 'text/html,application/xhtml+xml,application/json,*/*;q=0.8',
   };
   const extra = auth?.headers && typeof auth.headers === 'object' ? auth.headers : {};
@@ -29,12 +29,13 @@ function buildHeaders(auth = {}) {
   return h;
 }
 
-async function fetchText(url, { auth, timeoutMs = 12000 } = {}) {
+async function fetchText(url, { auth, timeoutMs = 12000, modules = [] } = {}) {
+  await stealthPause(modules);
   const res = await fetch(url, {
     method: 'GET',
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
-    headers: buildHeaders(auth),
+    headers: buildHeaders(auth, modules),
   });
   const text = await res.text().catch(() => '');
   return { status: res.status, headers: res.headers, text: text.slice(0, 160000), location: res.headers.get('location') || '' };
@@ -78,7 +79,7 @@ function pushVerificationFinding(out, kind, classification, score, value, meta, 
   });
 }
 
-export async function runEvidenceVerification({ findings, auth, log, maxEndpoints = 36 }) {
+export async function runEvidenceVerification({ findings, auth, log, maxEndpoints = 36, modules = [] }) {
   const out = [];
   const endpointUrls = [...new Set(
     (findings || [])
@@ -108,7 +109,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         const x = new URL(u.href);
         x.searchParams.set(p, payload);
         try {
-          const r = await fetchText(x.href, { auth });
+          const r = await fetchText(x.href, { auth, modules });
           const reflectedRaw = r.text.includes(payload);
           const reflectedMarker = r.text.includes(marker);
           const escaped = r.text.includes('&lt;') && r.text.includes(marker);
@@ -142,7 +143,10 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         b.searchParams.set(p, '1');
         t.searchParams.set(p, "1'");
         try {
-          const [rb, rt] = await Promise.all([fetchText(b.href, { auth }), fetchText(t.href, { auth })]);
+          const [rb, rt] = await Promise.all([
+            fetchText(b.href, { auth, modules }),
+            fetchText(t.href, { auth, modules }),
+          ]);
           const errBase = SQL_ERROR_RE.test(rb.text);
           const errTest = SQL_ERROR_RE.test(rt.text);
           const statusDiff = rb.status !== rt.status;
@@ -174,7 +178,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         const x = new URL(u.href);
         x.searchParams.set(p, 'https://example.org/');
         try {
-          const r = await fetchText(x.href, { auth });
+          const r = await fetchText(x.href, { auth, modules });
           const loc = String(r.location || '');
           const confirmed = /^https?:\/\/example\.org\/?/i.test(loc);
           const probable = !confirmed && /example\.org/i.test(r.text);
@@ -208,7 +212,10 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         b.searchParams.set(p, '1');
         t.searchParams.set(p, '2');
         try {
-          const [rb, rt] = await Promise.all([fetchText(b.href, { auth }), fetchText(t.href, { auth })]);
+          const [rb, rt] = await Promise.all([
+            fetchText(b.href, { auth, modules }),
+            fetchText(t.href, { auth, modules }),
+          ]);
           const sameStatus = rb.status === rt.status;
           const bodyChanged = rb.text.slice(0, 4000) !== rt.text.slice(0, 4000);
           const maybeUnauthorized = [401, 403].includes(rt.status);
@@ -247,7 +254,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
           const x = new URL(u.href);
           x.searchParams.set(p, payload);
           try {
-            const r = await fetchText(x.href, { auth });
+            const r = await fetchText(x.href, { auth, modules });
             const unixHit = LFI_UNIX_RE.test(r.text);
             const winHit = LFI_WIN_RE.test(r.text);
             const hasTraversalError = /(failed to open stream|no such file|permission denied|include\(\)|fopen\()/i.test(
@@ -282,5 +289,66 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
     }
   }
 
+  return out;
+}
+
+/**
+ * Segunda ronda leve: variantes de payload em XSS classificados como probable (micro-exploit).
+ */
+export async function runMicroExploitVariants({ findings, auth, log, modules = [], maxTests = 14 }) {
+  const out = [];
+  const tried = new Set();
+  let count = 0;
+  for (const f of findings) {
+    if (f.type !== 'xss') continue;
+    if (f.verification?.classification !== 'probable') continue;
+    const urlStr = f.verification?.evidence?.url || f.url;
+    if (!urlStr || typeof urlStr !== 'string') continue;
+    if (tried.has(urlStr)) continue;
+    tried.add(urlStr);
+    if (count >= maxTests) break;
+    let u;
+    try {
+      u = new URL(urlStr);
+    } catch {
+      continue;
+    }
+    const params = [...u.searchParams.keys()];
+    if (!params.length) continue;
+    const p = params[0];
+    const payload = String.raw`"><svg/onload=alert(1)>`;
+    const x = new URL(u.href);
+    x.searchParams.set(p, payload);
+    try {
+      const r = await fetchText(x.href, { auth, modules });
+      const raw = r.text.includes(payload);
+      const loose = /onload\s*=\s*alert/i.test(r.text) && /<svg/i.test(r.text);
+      const classification = raw ? 'confirmed' : loose ? 'probable' : 'noisy';
+      const score = classification === 'confirmed' ? 97 : classification === 'probable' ? 82 : 32;
+      pushVerificationFinding(
+        out,
+        'xss',
+        classification,
+        score,
+        `Micro-exploit XSS ${classification.toUpperCase()} @ ${x.pathname} ?${p}= (variante svg)`,
+        `verify=micro_xss • param=${p} • variant=svg_onload • confidence=${classification}`,
+        {
+          source: 'micro-exploit-xss',
+          url: x.href,
+          method: 'GET',
+          status: r.status,
+          requestSnippet: `${x.pathname}?${p}=…`,
+          responseSnippet: sampleSnippet(r.text, 'svg'),
+          timestamp: nowIso(),
+        },
+      );
+      count++;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (out.length && typeof log === 'function') {
+    log(`Micro-exploit: ${out.length} teste(s) de variante XSS após verify`, 'info');
+  }
   return out;
 }
