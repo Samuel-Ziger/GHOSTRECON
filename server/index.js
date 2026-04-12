@@ -172,8 +172,11 @@ function emitIaProximosPassosToLog(aiOut, log) {
   if (aiOut.gemini?.ok && aiOut.gemini.proximosPath) {
     parts.push({ label: 'Gemini — próximos passos', path: aiOut.gemini.proximosPath });
   }
+  if (aiOut.openrouter?.ok && aiOut.openrouter.proximosPath) {
+    parts.push({ label: 'OpenRouter — próximos passos', path: aiOut.openrouter.proximosPath });
+  }
   if (aiOut.claude?.ok && aiOut.claude.proximosPath) {
-    parts.push({ label: 'Claude — próximos passos', path: aiOut.claude.proximosPath });
+    parts.push({ label: 'Claude (Anthropic) — próximos passos', path: aiOut.claude.proximosPath });
   }
   if (!parts.length) return;
   log('═══ DECISÃO / PRÓXIMOS PASSOS (IA) ═══', 'section');
@@ -1231,6 +1234,9 @@ async function runPipeline(ctx) {
         );
       }
 
+      const runKaliNuclei = Boolean(modules.includes('kali_nuclei'));
+      const runKaliFfuf = Boolean(modules.includes('kali_ffuf'));
+
       await runKaliAggressiveScan({
         domain,
         subdomainsAlive,
@@ -1241,6 +1247,8 @@ async function runPipeline(ctx) {
         paramUrls: paramUrlsForKali,
         xssSignals,
         sqliSignals,
+        runNuclei: runKaliNuclei,
+        runFfuf: runKaliFfuf,
       });
     } else {
       log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
@@ -1493,11 +1501,14 @@ async function runPipeline(ctx) {
         outputDir: aiOut.outputDir,
         pipelineJsonPath: aiOut.pipelineJsonPath,
         gemini: { ok: Boolean(aiOut.gemini?.ok), error: aiOut.gemini?.error || null },
+        openrouter: { ok: Boolean(aiOut.openrouter?.ok), error: aiOut.openrouter?.error || null },
         claude: { ok: Boolean(aiOut.claude?.ok), error: aiOut.claude?.error || null },
       });
       if (aiOut.gemini?.ok) log('IA Gemini ✓ relatório + próximos passos gravados.', 'success');
       else if (aiKeysConfigured().gemini) log(`IA Gemini ✗ ${aiOut.gemini?.error || 'falhou'}`, 'warn');
-      if (aiOut.claude?.ok) log('IA Claude ✓ relatório + próximos passos gravados.', 'success');
+      if (aiOut.openrouter?.ok) log('IA OpenRouter ✓ relatório + próximos passos gravados.', 'success');
+      else if (aiKeysConfigured().openrouter) log(`IA OpenRouter ✗ ${aiOut.openrouter?.error || 'falhou'}`, 'warn');
+      if (aiOut.claude?.ok) log('IA Claude (Anthropic) ✓ relatório + próximos passos gravados.', 'success');
       else if (aiKeysConfigured().claude) log(`IA Claude ✗ ${aiOut.claude?.error || 'falhou'}`, 'warn');
       emitIaProximosPassosToLog(aiOut, log);
     } catch (e) {

@@ -1,6 +1,6 @@
 # GHOSTRECON
 
-Framework **passivo** de OSINT / recon para bug bounty: subdomínios (crt.sh + opcional **VirusTotal**), **enriquecimento DNS** (MX/TXT, SPF/DMARC e TXT de verificação), HTTP probing com **análise de cabeçalhos de segurança** e **inspeção TLS** (certificado), descoberta **`.well-known`** (`security.txt`, **OIDC** `openid-configuration`), Wayback (CDX) + **Common Crawl**, **robots.txt / sitemap.xml** nos hosts vivos, **RDAP** (registo de domínio), extração de parâmetros, análise heurística de JS, detecção de possíveis secrets, geração de Google Dorks (URLs de busca + abertura em abas), **opcionalmente descoberta de URLs via Google Programmable Search (Custom Search JSON API)**. Em **Kali** (modo ativo opcional): **subfinder** / **amass** (enum de subdomínios), **whois**, **wpscan** (só se o passivo indicar WordPress), **nuclei** (passagem geral + segunda passagem com `-tags xss` e `-tags sqli` sobre URLs com query vindas do corpus Wayback/Common Crawl), além de nmap/ffuf/searchsploit. Gravação em **Supabase (Postgres)** ou **SQLite** (`data/bugbounty.db`: histórico de runs + corpus **deduplicado** por alvo), **comparação entre runs** (API), **webhook** e **rate limit** opcionais na API, correlação e sugestões de vetores. Interface web dark/red team em `index.html`.
+Framework **passivo** de OSINT / recon para bug bounty: subdomínios (crt.sh + opcional **VirusTotal**), **enriquecimento DNS** (MX/TXT, SPF/DMARC e TXT de verificação), HTTP probing com **análise de cabeçalhos de segurança** e **inspeção TLS** (certificado), descoberta **`.well-known`** (`security.txt`, **OIDC** `openid-configuration`), Wayback (CDX) + **Common Crawl**, **robots.txt / sitemap.xml** nos hosts vivos, **RDAP** (registo de domínio), extração de parâmetros, análise heurística de JS, detecção de possíveis secrets, geração de Google Dorks (URLs de busca + abertura em abas), **opcionalmente descoberta de URLs via Google Programmable Search (Custom Search JSON API)**. Em **Kali** (modo ativo opcional): **subfinder** / **amass** (enum de subdomínios), **whois**, **wpscan** (só se o passivo indicar WordPress), **ffuf** e **nuclei** (módulos UI opcionais `kali_ffuf` / `kali_nuclei`), além de **nmap** e **searchsploit**. Gravação em **Supabase (Postgres)** ou **SQLite** (`data/bugbounty.db`: histórico de runs + corpus **deduplicado** por alvo), **comparação entre runs** (API), **webhook** e **rate limit** opcionais na API, correlação e sugestões de vetores. Interface web dark/red team em `index.html`.
 
 ## Requisitos
 
@@ -112,17 +112,17 @@ Em **Kali Linux**, com `nmap` no PATH, a UI permite **Modo Kali**. O recon **pas
 - **nmap** — `-sV` por defeito (personalizável com `GHOSTRECON_NMAP_ARGS`, ex. `-A -Pn -T4` — mais lento)
 - **whois** — no domínio raiz e numa amostra limitada de subdomínios vivos; `findings` tipo `whois` (campos principais: registrar, datas, NS, país quando existir no texto)
 - **searchsploit** — consultas heurísticas a partir de produto/versão do nmap
-- **ffuf** — wordlist comum, **apenas respostas HTTP 200**
-- **nuclei** — templates contra URLs base (https/http do alvo e hosts com 80/443 no nmap)
-- **nuclei (XSS / SQLi)** — após o nuclei geral, se existirem candidatos: o pipeline recolhe até ~40 URLs com parâmetros (`?key=value`) do **corpus Wayback + Common Crawl** (o mesmo `urlCorpus` dessa execução) e corre `nuclei` com `-tags xss` e `-tags sqli` sobre uma amostra (até ~30 URLs por passagem). Os achados aparecem como `finding` tipo **`xss`** ou **`sqli`** e a UI tem filtros **XSS** / **SQLI**. Para haver candidatos, activa normalmente **Wayback** e/ou **Common Crawl**; o resultado depende dos **templates Nuclei** instalados e actualizados no Kali.
+- **ffuf** — **opcional**: módulo UI **`kali_ffuf`** (Sensitive Data), **desmarcado por defeito**. Wordlist comum, **apenas HTTP 200**; muitas threads (por defeito 32 — ajustável com `GHOSTRECON_FFUF_THREADS` no `.env`). Só com **Modo Kali** e caixa marcada.
+- **nuclei** — **opcional**: módulo **`kali_nuclei`**, **desmarcado por defeito**. Só com **Modo Kali** e caixa marcada. Passagem geral + tags **XSS/SQLi** quando aplicável; achados `nuclei` / `xss` / `sqli`.
 - **wpscan** — só se `wpscan` estiver no PATH **e** o passivo tiver indicado WordPress (`tech`); output JSON é parseado para core, tema e plugins (`findings` tipo `wpscan`)
 
-Requisitos típicos no Kali: `nmap`, `ffuf`, `nuclei`, `searchsploit`, `whois`, `wpscan` (opcional), `subfinder` / `amass` (opcional), wordlists em `/usr/share/seclists` ou `dirb`.
+Requisitos típicos no Kali: `nmap`, `searchsploit`, `whois`; `ffuf` / `nuclei` só necessários se activares os módulos `kali_ffuf` / `kali_nuclei`; `wpscan` (opcional), `subfinder` / `amass` (opcional), wordlists em `/usr/share/seclists` ou `dirb` para o ffuf.
 
 | Variável | Uso |
 |----------|-----|
 | `GHOSTRECON_FORCE_KALI` | `1` = tratar como Kali (testes em WSL/outra distro com ferramentas) |
 | `GHOSTRECON_NMAP_ARGS` | Argumentos extra do nmap (substitui o padrão `-sV -Pn -T4 --host-timeout 180s`) |
+| `GHOSTRECON_FFUF_THREADS` | Threads do **ffuf** quando o módulo `kali_ffuf` está activo (1–64; padrão 32). Valores mais baixos reduzem pico de CPU/rede. |
 
 Ver também a tabela de variáveis acima (`GHOSTRECON_WPSCAN_*`, `GHOSTRECON_WHOIS_SUBDOMAINS_MAX`, `GHOSTRECON_SUBFINDER_TIMEOUT_MS`, `GHOSTRECON_AMASS_TIMEOUT_MS`).
 
@@ -200,7 +200,7 @@ Ajuste `server/config.js` (`waybackCollapseLimit`, `maxJsFetch`, `probeConcurren
 
 ### Modo Kali: wordlists e gating
 
-- **ffuf** usa a primeira wordlist disponível nesta ordem: `/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt`, `.../common.txt`, `/usr/share/wordlists/dirb/common.txt`. Sem ficheiro → o scan ffuf é ignorado com aviso no log.
+- **ffuf** (com módulo `kali_ffuf` activo) usa a primeira wordlist disponível nesta ordem: `/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt`, `.../common.txt`, `/usr/share/wordlists/dirb/common.txt`. Sem ficheiro → o scan ffuf é ignorado com aviso no log.
 - **Scans pesados XSS/SQLi** (nuclei com `-tags xss` / `-tags sqli`, e **dalfox**) só correm se existirem **sinais passivos**: parâmetros típicos nas URLs do corpus (`id`, `q`, `search`, etc.) ou findings `intel` «XSS/SQLi candidate param» gerados na fase de parâmetros.
 - Variáveis úteis: `GHOSTRECON_NMAP_ARGS`, `GHOSTRECON_DALFOX_MAX_URLS`, `GHOSTRECON_DALFOX_TIMEOUT_MS`, `GHOSTRECON_WPSCAN_*`, `GHOSTRECON_FORCE_KALI`.
 
@@ -267,7 +267,7 @@ Ativa o módulo `shodan` no recon e define `SHODAN_API_KEY`. O servidor resolve 
 - `GET /api/runs/:id` — recon completo com `findings`.
 - `GET /api/runs/:newerId/diff/:baselineId` — compara dois runs do **mesmo** alvo: `added` / `removed` (fingerprints iguais ao corpus `bounty_intel`).
 - `GET /api/intel/:domain` — artefactos únicos acumulados para o alvo (`bounty_intel`).
-- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "kaliMode": false, "modules": ["subdomains", "shodan", "dns_enrichment", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding` (com `fingerprint` para dedupe/dismiss na UI), `dork`, `intel`, `done` (inclui `runId` se gravado), `error`. Rate limit opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`. Os módulos `subfinder` e `amass` só complementam subdomínios quando `kaliMode` é `true` e a ferramenta existe no sistema.
+- `POST /api/recon/stream` — corpo JSON `{ "domain": "example.com", "exactMatch": false, "kaliMode": false, "modules": ["subdomains", "shodan", "dns_enrichment", ...] }`. Resposta **NDJSON**: `log`, `progress`, `pipe`, `stats`, `finding` (com `fingerprint` para dedupe/dismiss na UI), `dork`, `intel`, `done` (inclui `runId` se gravado), `error`. Rate limit opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`. Os módulos `subfinder` e `amass` só complementam subdomínios quando `kaliMode` é `true` e a ferramenta existe no sistema. Os módulos `kali_ffuf` e `kali_nuclei` só activam **ffuf** / **nuclei** na fase Kali quando `kaliMode` é `true` e a ferramenta existe no PATH.
 
 ## Docker
 

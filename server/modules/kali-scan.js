@@ -212,6 +212,7 @@ async function runFfuf200(baseUrl, log) {
   const dir = await mkdtemp(join(tmpdir(), 'ghff-'));
   const out = join(dir, 'out.json');
   const base = baseUrl.replace(/\/$/, '');
+  const threads = Math.min(64, Math.max(1, Number(process.env.GHOSTRECON_FFUF_THREADS || 32)));
   try {
     const args = [
       '-u',
@@ -221,7 +222,7 @@ async function runFfuf200(baseUrl, log) {
       '-mc',
       '200',
       '-t',
-      '32',
+      String(threads),
       '-timeout',
       '8',
       '-maxtime',
@@ -439,7 +440,7 @@ async function runWhoisJsonLike({ target, timeoutMs, log }) {
 }
 
 /**
- * Scan ativo: nmap → searchsploit (heurístico) → ffuf (só HTTP 200) → nuclei.
+ * Scan ativo: nmap → searchsploit (heurístico) → ffuf (só HTTP 200) → nuclei (se `runNuclei`).
  */
 function nucleiEvidenceMeta({ tid, sev, extra }) {
   const parts = [
@@ -462,6 +463,10 @@ export async function runKaliAggressiveScan({
   paramUrls,
   xssSignals = true,
   sqliSignals = true,
+  /** Só corre scans nuclei se o módulo UI `kali_nuclei` estiver activo (e modo Kali no servidor). */
+  runNuclei = false,
+  /** Só corre ffuf se o módulo UI `kali_ffuf` estiver activo (e modo Kali no servidor). */
+  runFfuf = false,
 }) {
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
   const hosts = [...new Set(rawHosts)].slice(0, 22);
@@ -573,7 +578,7 @@ export async function runKaliAggressiveScan({
     }
   }
 
-  if (cap.tools.ffuf) {
+  if (runFfuf && cap.tools.ffuf) {
     log('═══ ffuf (apenas HTTP 200) ═══', 'section');
     const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 5);
     for (const u of uniqBases) {
@@ -593,9 +598,11 @@ export async function runKaliAggressiveScan({
       }
       if (paths.length) log(`ffuf ${u} → ${paths.length} caminho(s) 200`, 'success');
     }
+  } else if (!runFfuf && cap.tools.ffuf) {
+    log('ffuf: omitido — activa o módulo «Ffuf (Kali)» em Sensitive Data (só com Modo Kali).', 'info');
   }
 
-  if (cap.tools.nuclei) {
+  if (runNuclei && cap.tools.nuclei) {
     log('═══ nuclei ═══', 'section');
     const targets = [...new Set(baseUrlsForFfuf.map((b) => b.replace(/\/$/, '')))].slice(0, 15);
     try {
@@ -621,10 +628,12 @@ export async function runKaliAggressiveScan({
     } catch (e) {
       log(`nuclei: ${e.message}`, 'warn');
     }
+  } else if (!runNuclei && cap.tools.nuclei) {
+    log('Nuclei: omitido — activa o módulo «Nuclei (Kali)» em Sensitive Data (só com Modo Kali).', 'info');
   }
 
   // XSS/SQLi via nuclei tags contra URLs com query string (vindas do corpus passivo)
-  if (cap.tools.nuclei && Array.isArray(paramUrls) && paramUrls.length) {
+  if (runNuclei && cap.tools.nuclei && Array.isArray(paramUrls) && paramUrls.length) {
     const urls = [...new Set(paramUrls)].slice(0, 30);
 
     if (xssSignals) {

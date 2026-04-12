@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { DATA_DIR, resolveLocalProjectDbDir, sanitizePathSegment } from './db-sqlite.js';
 
-/** Prompt idêntico para Gemini e Claude (system + instrução sobre o JSON). */
+/** Prompt idêntico para Gemini, OpenRouter e Anthropic direct (system + instrução sobre o JSON). */
 export const AI_SYSTEM_PROMPT = `És analista de segurança (bug bounty / pentest defensivo). Recebes UM objeto JSON exportado do framework GHOSTRECON (recon passivo, OSINT, heurísticas).
 
 Regras obrigatórias:
@@ -60,7 +60,30 @@ function extractJsonObject(text) {
   return JSON.parse(s);
 }
 
-export async function callGemini(userText, apiKey, model) {
+/** Extrai segundos sugeridos pela mensagem Gemini ("Please retry in 35.2s"). */
+function parseGeminiRetrySeconds(message) {
+  const m = String(message).match(/retry in ([\d.]+)\s*s/i);
+  if (!m) return null;
+  const sec = Math.ceil(parseFloat(m[1], 10));
+  if (!Number.isFinite(sec)) return null;
+  return Math.min(120, Math.max(3, sec));
+}
+
+function formatGeminiHttpError(status, data, model) {
+  const raw = String(data?.error?.message || JSON.stringify(data)).trim();
+  if (status === 429) {
+    if (/limit:\s*0/i.test(raw) || /free_tier.*limit:\s*0/i.test(raw)) {
+      return `Quota/cota: o modelo «${model}» não tem pedidos disponíveis no plano grátis da tua conta (limite 0). Define outro modelo em GHOSTRECON_GEMINI_MODEL (ex.: gemini-2.5-flash ou gemini-1.5-flash) ou activa faturação em Google AI Studio. Docs: https://ai.google.dev/gemini-api/docs/rate-limits`;
+    }
+    return `Rate limit 429 — aguarda e tenta de novo, ou reduz uso / muda de modelo. ${raw.length > 200 ? `${raw.slice(0, 200)}…` : raw}`;
+  }
+  if (status === 400 && /API key/i.test(raw)) {
+    return `Pedido inválido (400): verifica a chave e o nome do modelo «${model}».`;
+  }
+  return raw.length > 320 ? `${raw.slice(0, 320)}…` : raw;
+}
+
+async function callGeminiOnce(userText, apiKey, model) {
   const u = new URL(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
   );
@@ -79,12 +102,75 @@ export async function callGemini(userText, apiKey, model) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data?.error?.message || JSON.stringify(data).slice(0, 300);
-    throw new Error(`Gemini HTTP ${res.status}: ${msg}`);
+    const detail = formatGeminiHttpError(res.status, data, model);
+    const err = new Error(`Gemini HTTP ${res.status}: ${detail}`);
+    err.geminiStatus = res.status;
+    err.geminiRetryAfterSec = res.status === 429 ? parseGeminiRetrySeconds(data?.error?.message || '') : null;
+    throw err;
   }
   const parts = data?.candidates?.[0]?.content?.parts;
   const t = Array.isArray(parts) ? parts.map((p) => p.text || '').join('') : '';
   if (!t) throw new Error('Gemini sem texto na resposta');
+  return t;
+}
+
+export async function callGemini(userText, apiKey, model) {
+  const maxAttempts = Math.max(1, Math.min(5, Number(process.env.GHOSTRECON_GEMINI_MAX_RETRIES || 3)));
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await callGeminiOnce(userText, apiKey, model);
+    } catch (e) {
+      lastErr = e;
+      const status = e?.geminiStatus;
+      const is429 = status === 429 || /HTTP 429/.test(String(e.message));
+      if (!is429 || attempt >= maxAttempts) throw e;
+      const fromApi = e?.geminiRetryAfterSec;
+      const backoff = fromApi ?? Math.min(90, 12 * attempt);
+      await new Promise((r) => setTimeout(r, backoff * 1000));
+    }
+  }
+  throw lastErr;
+}
+
+/** Chat Completions (OpenAI-compatible) na OpenRouter — substitui o segundo relatório que antes usava Anthropic direct. */
+export async function callOpenRouter(userText, apiKey, model, opts = {}) {
+  const system = opts.systemPrompt != null ? opts.systemPrompt : AI_SYSTEM_PROMPT;
+  const referer = process.env.GHOSTRECON_OPENROUTER_HTTP_REFERER?.trim();
+  const title = process.env.GHOSTRECON_OPENROUTER_APP_TITLE?.trim() || 'GHOSTRECON';
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+  };
+  if (referer) headers['HTTP-Referer'] = referer;
+  if (title) headers['X-Title'] = title;
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: userText },
+      ],
+      temperature: 0.25,
+      max_tokens: 16384,
+    }),
+    signal: AbortSignal.timeout(180000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const raw = String(data?.error?.message || data?.message || JSON.stringify(data));
+    const msg = raw.length > 360 ? `${raw.slice(0, 360)}…` : raw;
+    throw new Error(`OpenRouter HTTP ${res.status}: ${msg}`);
+  }
+  const content = data?.choices?.[0]?.message?.content;
+  let t = '';
+  if (typeof content === 'string') t = content;
+  else if (Array.isArray(content)) {
+    t = content.map((p) => (typeof p === 'string' ? p : p?.text || '')).join('');
+  }
+  if (!t) throw new Error('OpenRouter sem texto na resposta');
   return t;
 }
 
@@ -106,7 +192,13 @@ export async function callClaude(userText, apiKey, model) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data?.error?.message || JSON.stringify(data).slice(0, 300);
+    const raw = String(data?.error?.message || JSON.stringify(data));
+    if (res.status === 400 && /balance|credit|billing|too low/i.test(raw)) {
+      throw new Error(
+        `Claude HTTP 400: saldo de créditos insuficiente na Anthropic — abre Plans & Billing para comprar créditos ou subscrever plano. https://console.anthropic.com/`,
+      );
+    }
+    const msg = raw.length > 360 ? `${raw.slice(0, 360)}…` : raw;
     throw new Error(`Claude HTTP ${res.status}: ${msg}`);
   }
   const blocks = data?.content;
@@ -133,12 +225,16 @@ function resolveOutputDir(projectName, targetDomain) {
 
 /**
  * @param {object} payload — export completo do pipeline (UI)
- * @returns {{ outputDir: string, gemini: object, claude: object, pipelineJsonPath: string }}
+ * @returns {{ outputDir: string, gemini: object, openrouter: object, claude: object, pipelineJsonPath: string }}
  */
 export async function runDualAiReports(payload, { projectName, targetDomain } = {}) {
   const geminiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_AI_API_KEY?.trim();
+  const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
   const claudeKey = process.env.ANTHROPIC_API_KEY?.trim();
-  const geminiModel = process.env.GHOSTRECON_GEMINI_MODEL?.trim() || 'gemini-2.0-flash';
+  /** Modelo por defeito: 2.5-flash costuma ter cota free distinta de 2.0; sobrescreve com GHOSTRECON_GEMINI_MODEL. */
+  const geminiModel = process.env.GHOSTRECON_GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+  const openrouterModel =
+    process.env.GHOSTRECON_OPENROUTER_MODEL?.trim() || 'anthropic/claude-3.5-sonnet';
   const claudeModel = process.env.GHOSTRECON_CLAUDE_MODEL?.trim() || 'claude-3-5-sonnet-20241022';
 
   const { payload: p, json: jsonStr } = shrinkPayload(payload);
@@ -148,12 +244,13 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
   fs.writeFileSync(pipelineJsonPath, JSON.stringify(p, null, 2), 'utf8');
 
   const userBlockGemini = buildUserContent(jsonStr);
-  const userBlockClaude = buildClaudeUserPayloadJsonOnly(jsonStr);
+  const secondUser = buildClaudeUserPayloadJsonOnly(jsonStr);
 
   const result = {
     outputDir,
     pipelineJsonPath,
     gemini: { ok: false, error: null, relatorioPath: null, proximosPath: null },
+    openrouter: { ok: false, error: null, relatorioPath: null, proximosPath: null },
     claude: { ok: false, error: null, relatorioPath: null, proximosPath: null },
   };
 
@@ -181,9 +278,19 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
     result.gemini = { ok: false, error: 'GEMINI_API_KEY ou GOOGLE_AI_API_KEY não definido', relatorioPath: null, proximosPath: null };
   }
 
-  if (claudeKey) {
+  if (openrouterKey) {
     try {
-      const raw = await callClaude(userBlockClaude, claudeKey, claudeModel);
+      const raw = await callOpenRouter(secondUser, openrouterKey, openrouterModel);
+      fs.writeFileSync(path.join(outputDir, 'openrouter_raw.txt'), raw, 'utf8');
+      const parsed = extractJsonObject(raw);
+      const paths = writePair('openrouter', parsed);
+      result.openrouter = { ok: true, ...paths };
+    } catch (e) {
+      result.openrouter = { ok: false, error: e.message, relatorioPath: null, proximosPath: null };
+    }
+  } else if (claudeKey) {
+    try {
+      const raw = await callClaude(secondUser, claudeKey, claudeModel);
       fs.writeFileSync(path.join(outputDir, 'claude_raw.txt'), raw, 'utf8');
       const parsed = extractJsonObject(raw);
       const paths = writePair('claude', parsed);
@@ -192,7 +299,12 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
       result.claude = { ok: false, error: e.message, relatorioPath: null, proximosPath: null };
     }
   } else {
-    result.claude = { ok: false, error: 'ANTHROPIC_API_KEY não definido', relatorioPath: null, proximosPath: null };
+    result.openrouter = {
+      ok: false,
+      error: 'OPENROUTER_API_KEY ou ANTHROPIC_API_KEY não definido',
+      relatorioPath: null,
+      proximosPath: null,
+    };
   }
 
   return result;
@@ -200,6 +312,13 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
 
 export function aiKeysConfigured() {
   const g = Boolean(process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_AI_API_KEY?.trim());
+  const o = Boolean(process.env.OPENROUTER_API_KEY?.trim());
   const c = Boolean(process.env.ANTHROPIC_API_KEY?.trim());
-  return { gemini: g, claude: c, any: g || c, both: g && c };
+  return {
+    gemini: g,
+    openrouter: o,
+    claude: !o && c,
+    any: g || o || c,
+    both: g && (o || c),
+  };
 }

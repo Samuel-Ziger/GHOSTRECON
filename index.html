@@ -1280,7 +1280,7 @@
         <div class="section-label" style="margin-bottom:8px">Kali (scan ativo)</div>
         <div id="kaliCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:10px;line-height:1.4">A detetar ambiente…</div>
         <div class="toggle-row">
-          <span class="toggle-label">Modo Kali (nmap, ffuf 200, nuclei, searchsploit)</span>
+          <span class="toggle-label">Modo Kali (nmap, searchsploit; Ffuf e Nuclei opcionais nos módulos)</span>
           <label class="toggle">
             <input type="checkbox" id="kaliModeToggle" disabled>
             <div class="toggle-track"><div class="toggle-thumb"></div></div>
@@ -1478,13 +1478,27 @@
         <div class="module-group-title">// Sensitive Data</div>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="passwords" checked><div class="checkbox-box"></div><span class="checkbox-text">Passwords & credentials</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="sensitive" checked><div class="checkbox-box"></div><span class="checkbox-text">Sensitive exposure</span><span class="tag tag-high">HIGH</span></label>
+        <label class="checkbox-item" title="Só com Modo Kali + ffuf no PATH. Muitas threads e pedidos — pico de CPU/rede; pode contribuir para crash do separador do browser se o sistema ficar sem margem.">
+          <input type="checkbox" class="mod" value="kali_ffuf" id="modKaliFfuf">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Ffuf (Kali) — HTTP 200</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Fuzz de caminhos com wordlist (32 threads por defeito). Desmarcado por defeito — activa só quando precisares.</p>
+        <label class="checkbox-item" title="Só corre com Modo Kali ligado e ferramenta nuclei no PATH. Pesado em RAM/CPU — desmarcado por defeito.">
+          <input type="checkbox" class="mod" value="kali_nuclei" id="modKaliNuclei">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Nuclei (Kali)</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Passagem geral + tags XSS/SQLi em URLs com parâmetros. Sem esta caixa, o scan Kali não invoca o Nuclei.</p>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="subfinder"><div class="checkbox-box"></div><span class="checkbox-text">Subfinder (Kali)</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="amass"><div class="checkbox-box"></div><span class="checkbox-text">Amass (Kali)</span><span class="tag tag-med">MED</span></label>
       </div>
 
       <div class="module-group">
-        <div class="module-group-title">// IA · relatórios (Gemini + Claude)</div>
-        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Com <strong>Confirmo envio</strong> activo: ao terminar <em>cada</em> recon (ou cada alvo na fila), o servidor envia o JSON desse run para Gemini e/ou Claude e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco. Sem a confirmação, não há chamadas às APIs. Para desligar a geração automática no servidor (mesmo com a caixa marcada), usa <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code>. Respeita as regras do programa de bounty.</p>
+        <div class="module-group-title">// IA · relatórios (Gemini + OpenRouter)</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Com <strong>Confirmo envio</strong> activo: ao terminar <em>cada</em> recon (ou cada alvo na fila), o servidor envia o JSON desse run para Gemini e para o segundo modelo via <strong>OpenRouter</strong> (se <code>OPENROUTER_API_KEY</code> existir; senão Anthropic direct com <code>ANTHROPIC_API_KEY</code>) e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco. Sem a confirmação, não há chamadas às APIs. Para desligar a geração automática no servidor (mesmo com a caixa marcada), usa <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code>. Respeita as regras do programa de bounty.</p>
         <div id="aiKeysLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">APIs IA: a carregar…</div>
         <label class="checkbox-item">
           <input type="checkbox" id="modAiReports">
@@ -2268,7 +2282,9 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           if (ev.pipelineJsonPath) addLog(`IA: snapshot JSON → ${ev.pipelineJsonPath}`, 'info');
           if (ev.gemini?.ok) addLog('IA Gemini ✓ (automático)', 'success');
           else if (ev.gemini?.error) addLog(`IA Gemini ✗ ${ev.gemini.error}`, 'warn');
-          if (ev.claude?.ok) addLog('IA Claude ✓ (automático)', 'success');
+          if (ev.openrouter?.ok) addLog('IA OpenRouter ✓ (automático)', 'success');
+          else if (ev.openrouter?.error) addLog(`IA OpenRouter ✗ ${ev.openrouter.error}`, 'warn');
+          if (ev.claude?.ok) addLog('IA Claude (Anthropic) ✓ (automático)', 'success');
           else if (ev.claude?.error) addLog(`IA Claude ✗ ${ev.claude.error}`, 'warn');
         }
         if (ev.phase === 'error' && ev.message) addLog(`IA: ${ev.message}`, 'error');
@@ -2693,11 +2709,13 @@ async function fetchKaliCapabilities() {
       line.style.color = c.kali ? 'var(--accent2)' : 'var(--text-dim)';
       line.textContent = c.kali ? `Disponível — ${parts.join(' ')}` : `${c.message || 'Indisponível'} — ${parts.join(' ')}`;
     }
-    window.__aiKeys = c.ai || { gemini: false, claude: false, both: false, any: false };
+    window.__aiKeys = c.ai || { gemini: false, openrouter: false, claude: false, both: false, any: false };
     const aiEl = document.getElementById('aiKeysLine');
     if (aiEl) {
       const a = window.__aiKeys;
-      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · Claude ${a.claude ? '✓' : '✗'} — .env: GEMINI_API_KEY (ou GOOGLE_AI_API_KEY) + ANTHROPIC_API_KEY`;
+      const sec = a.openrouter ? 'OpenRouter' : 'Anthropic';
+      const secOk = Boolean(a.openrouter || a.claude);
+      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · ${sec} ${secOk ? '✓' : '✗'} — .env: GEMINI + OPENROUTER_API_KEY (prioritário) ou ANTHROPIC_API_KEY`;
       aiEl.style.color = a.both ? 'var(--accent2)' : 'var(--accent4)';
     }
     if (c.kali) {
@@ -2718,7 +2736,7 @@ async function fetchKaliCapabilities() {
       toggle.disabled = true;
       toggle.checked = false;
     }
-    window.__aiKeys = { gemini: false, claude: false, both: false, any: false };
+    window.__aiKeys = { gemini: false, openrouter: false, claude: false, both: false, any: false };
     const aiEl = document.getElementById('aiKeysLine');
     if (aiEl) {
       aiEl.textContent = 'APIs IA: indisponível (servidor offline).';
@@ -2987,12 +3005,16 @@ function closeModulesHelpModal() {
         <dd>Categoria de dorks focada em credenciais e passwords em texto.</dd>
         <dt>Sensitive exposure</dt>
         <dd>Dorks para dados sensíveis genéricos (PII, interno, etc.).</dd>
+        <dt>Ffuf (Kali) — HTTP 200</dt>
+        <dd>Fuzz de directorias/ficheiros com <strong>ffuf</strong> (wordlist comum, só código 200). Só com <strong>Modo Kali</strong> e esta caixa; desmarcada por defeito — é intensivo (muitas ligações) e pode stressar RAM/CPU e o separador do browser.</dd>
+        <dt>Nuclei (Kali)</dt>
+        <dd>Scanner <strong>nuclei</strong> na fase Kali: passagem geral nos alvos HTTP(S) e, se houver URLs com query no corpus, corridas com tags <code>xss</code> e <code>sqli</code>. Só corre com <strong>Modo Kali</strong> ligado e esta caixa marcada; desmarcada por defeito (menos carga no sistema).</dd>
         <dt>Subfinder / Amass (Kali)</dt>
         <dd>Enumeração extra de subdomínios no sistema com ferramentas no PATH — só com <strong>Modo Kali</strong> ligado.</dd>
       </dl>
 
       <h3 class="findings-help-section-title">// IA · relatórios (Gemini + Claude)</h3>
-      <p class="findings-help-section-intro">Com <strong>Confirmo envio para APIs externas</strong>: ao terminar cada recon (ou cada alvo na fila), o servidor envia o JSON desse run às APIs configuradas e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco; os próximos passos também são ecoados no log do terminal. Sem a confirmação não há chamadas. <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code> desliga a geração automática no servidor mesmo com a caixa marcada. Chaves: <code>GEMINI_API_KEY</code> ou <code>GOOGLE_AI_API_KEY</code>, e <code>ANTHROPIC_API_KEY</code>. Cumpre sempre o programa de bounty.</p>
+      <p class="findings-help-section-intro">Com <strong>Confirmo envio para APIs externas</strong>: ao terminar cada recon (ou cada alvo na fila), o servidor envia o JSON desse run às APIs configuradas e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco; os próximos passos também são ecoados no log do terminal. Sem a confirmação não há chamadas. <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code> desliga a geração automática no servidor mesmo com a caixa marcada. Chaves: <code>GEMINI_API_KEY</code> ou <code>GOOGLE_AI_API_KEY</code>; segundo relatório via <code>OPENROUTER_API_KEY</code> (recomendado) ou <code>ANTHROPIC_API_KEY</code> se não houver OpenRouter. Cumpre sempre o programa de bounty.</p>
     </div>
   </div>
 </div>
