@@ -2,20 +2,43 @@ import fs from 'fs';
 import path from 'path';
 import { DATA_DIR, resolveLocalProjectDbDir, sanitizePathSegment } from './db-sqlite.js';
 
+/** Limites de caracteres por campo (prompt + truncagem no servidor). Config: GHOSTRECON_AI_RELATORIO_MAX_CHARS, GHOSTRECON_AI_PROXIMOS_MAX_CHARS */
+export function getAiMarkdownCharLimits() {
+  const rel = Number(process.env.GHOSTRECON_AI_RELATORIO_MAX_CHARS);
+  const prox = Number(process.env.GHOSTRECON_AI_PROXIMOS_MAX_CHARS);
+  const maxRel = Number.isFinite(rel) ? Math.min(8000, Math.max(400, rel)) : 2400;
+  const maxProx = Number.isFinite(prox) ? Math.min(4000, Math.max(200, prox)) : 1600;
+  return { maxRelatorio: maxRel, maxProximos: maxProx };
+}
+
+function clampMarkdown(text, max) {
+  const s = String(text ?? '');
+  if (s.length <= max) return s;
+  const cut = Math.max(0, max - 40);
+  return `${s.slice(0, cut)}\n\n*(truncado no servidor — limite ${max} caracteres)*`;
+}
+
 /** Prompt idêntico para Gemini, OpenRouter e Anthropic direct (system + instrução sobre o JSON). */
-export const AI_SYSTEM_PROMPT = `És analista de segurança (bug bounty / pentest defensivo). Recebes UM objeto JSON exportado do framework GHOSTRECON (recon passivo, OSINT, heurísticas).
+export function buildAiSystemPrompt() {
+  const { maxRelatorio, maxProximos } = getAiMarkdownCharLimits();
+  return `És analista de segurança (bug bounty / pentest defensivo). Recebes UM objeto JSON exportado do framework GHOSTRECON (recon passivo, OSINT, heurísticas).
 
 Regras obrigatórias:
 - Baseia-te APENAS no conteúdo do JSON. Não inventes CVEs, versões exactas, URLs que não apareçam, nem explorações "confirmadas" se o dado for só heurística ou passivo.
 - Indica claramente quando algo for hipótese ou requer verificação manual.
 - Não descrevas passos de exploit automatizado; foca em priorização, verificação e documentação.
 
+Estilo e extensão (obrigatório):
+- Sê extremamente conciso e directo ao ponto: prioriza falhas, riscos e superfície de ataque evidenciados no JSON; evita introduções longas e repetição.
+- Conta caracteres mentalmente antes de responder.
+
 Formato de resposta (OBRIGATÓRIO):
 Responde APENAS com um único objeto JSON válido (sem texto antes ou depois, sem blocos markdown), com exactamente estas chaves:
-- "relatorio": string em Markdown — síntese executiva, superfície de ataque inferida, agrupamento por tipo de achado, notas de risco.
-- "proximos_passos": string em Markdown — lista priorizada de próximas acções manuais (verificação, reprodução segura, escopo).
+- "relatorio": string em Markdown — no máximo ${maxRelatorio} caracteres. Síntese seca: achados relevantes por severidade/tipo, notas de risco.
+- "proximos_passos": string em Markdown — no máximo ${maxProximos} caracteres. Lista curta e priorizada de verificações manuais seguras.
 
 Idioma: português (Portugal ou Brasil, consistente).`;
+}
 
 const MAX_PAYLOAD_CHARS = 900_000;
 
@@ -38,7 +61,7 @@ function shrinkPayload(obj) {
 }
 
 function buildUserContent(jsonString) {
-  return `${AI_SYSTEM_PROMPT}
+  return `${buildAiSystemPrompt()}
 
 ---
 
@@ -135,7 +158,7 @@ export async function callGemini(userText, apiKey, model) {
 
 /** Chat Completions (OpenAI-compatible) na OpenRouter — substitui o segundo relatório que antes usava Anthropic direct. */
 export async function callOpenRouter(userText, apiKey, model, opts = {}) {
-  const system = opts.systemPrompt != null ? opts.systemPrompt : AI_SYSTEM_PROMPT;
+  const system = opts.systemPrompt != null ? opts.systemPrompt : buildAiSystemPrompt();
   const referer = process.env.GHOSTRECON_OPENROUTER_HTTP_REFERER?.trim();
   const title = process.env.GHOSTRECON_OPENROUTER_APP_TITLE?.trim() || 'GHOSTRECON';
   const headers = {
@@ -185,7 +208,7 @@ export async function callClaude(userText, apiKey, model) {
     body: JSON.stringify({
       model,
       max_tokens: 16384,
-      system: AI_SYSTEM_PROMPT,
+      system: buildAiSystemPrompt(),
       messages: [{ role: 'user', content: userText }],
     }),
     signal: AbortSignal.timeout(180000),
@@ -209,7 +232,8 @@ export async function callClaude(userText, apiKey, model) {
 
 /** Conteúdo user só com o JSON (system já leva as regras no Claude). */
 function buildClaudeUserPayloadJsonOnly(jsonString) {
-  return `Analisa o seguinte JSON do GHOSTRECON. Responde APENAS com o objeto JSON pedido (chaves "relatorio" e "proximos_passos", valores Markdown).
+  const { maxRelatorio, maxProximos } = getAiMarkdownCharLimits();
+  return `Analisa o seguinte JSON do GHOSTRECON. Responde APENAS com o objeto JSON pedido (chaves "relatorio" e "proximos_passos", valores Markdown). Cumpre os limites: relatorio ≤ ${maxRelatorio} caracteres, proximos_passos ≤ ${maxProximos} caracteres.
 
 JSON:
 ${jsonString}`;
@@ -249,19 +273,42 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
   const result = {
     outputDir,
     pipelineJsonPath,
-    gemini: { ok: false, error: null, relatorioPath: null, proximosPath: null },
-    openrouter: { ok: false, error: null, relatorioPath: null, proximosPath: null },
-    claude: { ok: false, error: null, relatorioPath: null, proximosPath: null },
+    gemini: {
+      ok: false,
+      error: null,
+      relatorio: null,
+      proximos_passos: null,
+      relatorioPath: null,
+      proximosPath: null,
+    },
+    openrouter: {
+      ok: false,
+      error: null,
+      relatorio: null,
+      proximos_passos: null,
+      relatorioPath: null,
+      proximosPath: null,
+    },
+    claude: {
+      ok: false,
+      error: null,
+      relatorio: null,
+      proximos_passos: null,
+      relatorioPath: null,
+      proximosPath: null,
+    },
   };
 
+  const { maxRelatorio, maxProximos } = getAiMarkdownCharLimits();
+
   const writePair = (prefix, parsed) => {
-    const rel = String(parsed?.relatorio ?? '');
-    const prox = String(parsed?.proximos_passos ?? '');
+    const rel = clampMarkdown(parsed?.relatorio ?? '', maxRelatorio);
+    const prox = clampMarkdown(parsed?.proximos_passos ?? '', maxProximos);
     const rp = path.join(outputDir, `${prefix}_relatorio.md`);
     const pp = path.join(outputDir, `${prefix}_proximos_passos.md`);
     fs.writeFileSync(rp, rel, 'utf8');
     fs.writeFileSync(pp, prox, 'utf8');
-    return { relatorioPath: rp, proximosPath: pp };
+    return { relatorio: rel, proximos_passos: prox, relatorioPath: rp, proximosPath: pp };
   };
 
   if (geminiKey) {
@@ -270,12 +317,26 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
       fs.writeFileSync(path.join(outputDir, 'gemini_raw.txt'), raw, 'utf8');
       const parsed = extractJsonObject(raw);
       const paths = writePair('gemini', parsed);
-      result.gemini = { ok: true, ...paths };
+      result.gemini = { ok: true, error: null, ...paths };
     } catch (e) {
-      result.gemini = { ok: false, error: e.message, relatorioPath: null, proximosPath: null };
+      result.gemini = {
+        ok: false,
+        error: e.message,
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
     }
   } else {
-    result.gemini = { ok: false, error: 'GEMINI_API_KEY ou GOOGLE_AI_API_KEY não definido', relatorioPath: null, proximosPath: null };
+    result.gemini = {
+      ok: false,
+      error: 'GEMINI_API_KEY ou GOOGLE_AI_API_KEY não definido',
+      relatorio: null,
+      proximos_passos: null,
+      relatorioPath: null,
+      proximosPath: null,
+    };
   }
 
   if (openrouterKey) {
@@ -284,9 +345,16 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
       fs.writeFileSync(path.join(outputDir, 'openrouter_raw.txt'), raw, 'utf8');
       const parsed = extractJsonObject(raw);
       const paths = writePair('openrouter', parsed);
-      result.openrouter = { ok: true, ...paths };
+      result.openrouter = { ok: true, error: null, ...paths };
     } catch (e) {
-      result.openrouter = { ok: false, error: e.message, relatorioPath: null, proximosPath: null };
+      result.openrouter = {
+        ok: false,
+        error: e.message,
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
     }
   } else if (claudeKey) {
     try {
@@ -294,20 +362,42 @@ export async function runDualAiReports(payload, { projectName, targetDomain } = 
       fs.writeFileSync(path.join(outputDir, 'claude_raw.txt'), raw, 'utf8');
       const parsed = extractJsonObject(raw);
       const paths = writePair('claude', parsed);
-      result.claude = { ok: true, ...paths };
+      result.claude = { ok: true, error: null, ...paths };
     } catch (e) {
-      result.claude = { ok: false, error: e.message, relatorioPath: null, proximosPath: null };
+      result.claude = {
+        ok: false,
+        error: e.message,
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
     }
   } else {
     result.openrouter = {
       ok: false,
       error: 'OPENROUTER_API_KEY ou ANTHROPIC_API_KEY não definido',
+      relatorio: null,
+      proximos_passos: null,
       relatorioPath: null,
       proximosPath: null,
     };
   }
 
   return result;
+}
+
+/** Escolhe o primeiro relatório bem-sucedido (Gemini → OpenRouter → Claude) para webhook/UI. */
+export function pickAiReportForWebhook(aiOut) {
+  if (!aiOut || typeof aiOut !== 'object') return null;
+  const order = ['gemini', 'openrouter', 'claude'];
+  for (const key of order) {
+    const b = aiOut[key];
+    if (b?.ok && typeof b.relatorio === 'string' && typeof b.proximos_passos === 'string') {
+      return { provider: key, relatorio: b.relatorio, proximos_passos: b.proximos_passos };
+    }
+  }
+  return null;
 }
 
 export function aiKeysConfigured() {

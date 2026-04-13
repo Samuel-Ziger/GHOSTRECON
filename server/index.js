@@ -21,7 +21,7 @@ import { fetchCommonCrawlUrls } from './modules/commoncrawl.js';
 import { fetchRdapSummary } from './modules/rdap.js';
 import { fetchVirustotalSubdomains } from './modules/virustotal.js';
 import { compareRuns } from './modules/db-compare.js';
-import { postReconWebhook } from './modules/webhook-notify.js';
+import { postReconWebhook, postAiReportWebhook } from './modules/webhook-notify.js';
 import { fetchWaybackUrls, filterInterestingUrls, extractJsUrls } from './modules/wayback.js';
 import { extractParamsFromUrls } from './modules/params.js';
 import { analyzeJsUrl } from './modules/js-analyzer.js';
@@ -60,7 +60,7 @@ import {
 import { collectUniqueIpv4, shodanHostSummary } from './modules/ip-intel.js';
 import { googleCseSearch } from './modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
-import { runDualAiReports, aiKeysConfigured } from './modules/ai-dual-report.js';
+import { runDualAiReports, aiKeysConfigured, pickAiReportForWebhook } from './modules/ai-dual-report.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -274,6 +274,8 @@ async function runPipeline(ctx) {
   const log = (msg, level = 'info') => emit({ type: 'log', msg, level });
   const pipe = (name, state) => emit({ type: 'pipe', name, state });
   const progress = (p) => emit({ type: 'progress', pct: p });
+
+  let pipelineAiOut = null;
 
   let subdomainsAlive = [];
   const probedHosts = new Set();
@@ -1494,6 +1496,7 @@ async function runPipeline(ctx) {
     });
     try {
       const aiOut = await runDualAiReports(aiPayload, { projectName: pn, targetDomain: domain });
+      pipelineAiOut = aiOut;
       emit({
         type: 'ai_report',
         phase: 'done',
@@ -1571,6 +1574,20 @@ async function runPipeline(ctx) {
       findingsByType,
       runDiffSummary,
     });
+  }
+
+  const whAi = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
+  if (whAi) {
+    const picked = pickAiReportForWebhook(pipelineAiOut);
+    if (picked) {
+      void postAiReportWebhook(whAi, {
+        target: domain,
+        runId,
+        provider: picked.provider,
+        relatorio: picked.relatorio,
+        proximos_passos: picked.proximos_passos,
+      });
+    }
   }
 }
 
@@ -1674,6 +1691,19 @@ app.post('/api/ai-reports', async (req, res) => {
   }
   try {
     const out = await runDualAiReports(payload, { projectName, targetDomain });
+    const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
+    if (whUrl) {
+      const picked = pickAiReportForWebhook(out);
+      if (picked) {
+        void postAiReportWebhook(whUrl, {
+          target: targetDomain,
+          runId: payload.runId ?? null,
+          provider: picked.provider,
+          relatorio: picked.relatorio,
+          proximos_passos: picked.proximos_passos,
+        });
+      }
+    }
     res.json({ ok: true, ...out });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
