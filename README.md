@@ -157,7 +157,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - Cascata de execução (run automático): **Gemini** (até 3 tentativas, espera fixa padrão 60s entre falhas) → **OpenRouter** (1 tentativa) → **Claude** (1 tentativa) → **LM Studio** (último recurso, se activo no `.env`).
 - UI: opção **"LM Studio no final (pré-check obrigatório)"** — valida o LM Studio antes do recon; no servidor o LM Studio **só corre** se todos os providers cloud anteriores falharem (útil porque modelos locais podem demorar muito em *reasoning*).
 - **`GHOSTRECON_AI_AUTO=0`**: desliga geração automática no fim do pipeline (podes usar `POST /api/ai-reports` com payload exportado).
-- **`GET /api/capabilities`**: inclui `ai`, bloco **`shannon`** (se pasta Shannon existir) e **`pentestgpt`** (presença de `IAs/PentestGPT`, `pyproject.toml`, Python 3.12+, uv, docker).
+- **`GET /api/capabilities`**: inclui `ai`, **`shannon`** e **`pentestgpt`**. O bloco `pentestgpt` resume a **árvore** local (`GHOSTRECON_PENTESTGPT_HOME` / `IAs/PentestGPT`: `pyproject.toml`, Python 3.12+, `uv`, Docker, etc.) e **`http`** — `configured` / `preview` indicam se `GHOSTRECON_PENTESTGPT_URL` está definida no **servidor** (a pré-visualização mascara query strings).
 
 ### 26. Shannon Lite (white-box), Temporal e PentestGPT (opcional)
 
@@ -165,7 +165,10 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - **Módulo `shannon_whitebox`**: após a fase **secrets**, se existirem clones neste run e **`GHOSTRECON_SHANNON_AUTO_RUN`** não for `0`, o servidor corre **`shannon start`** (via `node …/shannon`) com `-u https://<alvo>/`, `-r <clone absoluto>`, `-w ghostrecon-…`, opcional **`--pipeline-testing`** (`GHOSTRECON_SHANNON_PIPELINE_TESTING=1`). Uma **fila global** serializa scans. O fim do trabalho segue **`workflow.log`** no workspace (não o exit imediato do processo `start`). Lê **`comprehensive_security_assessment_report.md`** em `<clone>/.shannon/deliverables/` e emite findings `intel`.
 - **UI / pré-check**: linha de estado Shannon, `shannonPrecheck` (default activo) e `shannonSkipDepsVerify` no POST; se o pré-check falhar, o recon é recusado com `error` NDJSON. Botão **Docker pull** chama `POST /api/shannon/prep` e imprime `dockerPullLog` no terminal. **`GHOSTRECON_SHANNON_HOME`**: path absoluto alternativo ao Shannon.
 - **Temporal Web UI**: quando o CLI imprime `http://localhost:8233/...`, o servidor envia **`open_url`** na stream; a UI abre numa nova aba (como os dorks). Desliga com **`GHOSTRECON_SHANNON_OPEN_TEMPORAL_UI=0`**.
-- **PentestGPT (validação HTTP no Ghost)**: módulo **`pentestgpt_validate`**. Após **`score`**, `POST` JSON para **`GHOSTRECON_PENTESTGPT_URL`** com `ghostPayload`. Resposta tolerante: `summary`, `validatedFindings`, `falsePositives`. **`GHOSTRECON_PENTESTGPT_HOME`** ajusta o path mostrado em capabilities (default `IAs/PentestGPT`). Script opcional **`npm run pentestgpt-bridge`** → `server/scripts/pentestgpt-ghost-bridge.mjs` (OpenRouter + `OPENROUTER_API_KEY`) em `http://127.0.0.1:8765/validate`. O **agente** upstream GreyDGL (Docker/TUI) é independente — ver **`IAs/README.md`** e **`PLANO_IAS_LOCAIS_GHOSTRECON.md`**.
+- **PentestGPT (validação HTTP no Ghost)**: módulo **`pentestgpt_validate`**. Após **`score`**, `POST` JSON para a URL efectiva (**`GHOSTRECON_PENTESTGPT_URL`** ou override `pentestgptUrl` no corpo do recon) com `ghostPayload`. Resposta tolerante: `summary`, `validatedFindings`, `falsePositives` → novos **findings** na UI / SQLite ou cartão **intel** «PentestGPT (resumo)». **`GHOSTRECON_PENTESTGPT_HOME`** ajusta o path da árvore em capabilities (default `IAs/PentestGPT`). Script opcional **`npm run pentestgpt-bridge`** → `pentestgpt-ghost-bridge.mjs`: prompt de sistema focado em **bug bounty** (triagem OSINT/recon, não CTF); substituível com **`GHOSTRECON_PENTESTGPT_BRIDGE_SYSTEM_PROMPT`**. O **agente** upstream GreyDGL (Docker/TUI) é independente — ver **`IAs/README.md`** e **`PLANO_IAS_LOCAIS_GHOSTRECON.md`**.
+- **PentestGPT — UI e rotas**: na sidebar, **URL POST (opcional)** envia `pentestgptUrl` por run; **Lembrar** usa `localStorage` (`ghostrecon_pentestgpt_url_override`); **Testar ponte** chama **`POST /api/pentestgpt-ping`** (CSRF) e o servidor faz **`GET`** na origem do endpoint de validação com sufixo **`/health`** (evita CORS no browser). Se o módulo está activo mas **não** há URL no `.env` nem no campo, a UI pergunta se queres continuar (o passo será ignorado).
+- **Shannon — resultado na UI**: por repo, finding **`intel`** com título `Shannon white-box: org/repo`, **meta** com `workspace`, caminho do **Markdown** do relatório e **excerto**; em falha, `intel` com fase/erro. O relatório completo fica no disco do workspace Shannon.
+- **Ajuda «?» nos Modules**: o botão ao lado de **Modules** abre um guia com todas as categorias, secções dedicadas a **Shannon**, **PentestGPT** (o que faz / o que aparece no Ghost / configuração) e esclarecimento de que as caixas de **IA** não usam `class="mod"` (enviam `autoAiReports` / `aiProviderMode`).
 
 ### 27. Webhook
 
@@ -181,8 +184,9 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - **Nome de projeto**: pasta local opcional para SQLite espelhado.
 - **Modo Kali**, módulos por categorias (Fontes, OSINT, Secrets, etc.).
 - **Fila de dorks**: delay e máximo de abas para abrir Google no browser.
-- **Shannon (sidebar)**: módulo **`shannon_whitebox`**, pré-check de dependências, omitir verificação, **repos GitHub (manual)** (textarea → `shannonGithubRepos`), botão **Docker pull** (prep), barra de pipeline com **`pipe-shannon`**.
-- **PentestGPT (sidebar)**: módulo **`pentestgpt_validate`**, linha de estado **`pentestgptCapLine`** (capabilities) e **`pipe-pentestgpt`** na barra.
+- **Shannon (sidebar)**: módulo **`shannon_whitebox`**, pré-check de dependências, omitir verificação, **repos GitHub (manual)** (textarea → `shannonGithubRepos`), botão **Docker pull** (prep), barra de pipeline com **`pipe-shannon`**. Linha de estado **`shannonCapLine`** (`GET /api/capabilities` → `shannon`).
+- **PentestGPT (sidebar)**: módulo **`pentestgpt_validate`**, linha **`pentestgptCapLine`** (árvore upstream **e** indicador **`POST .env`**), campo **URL POST** opcional + **Lembrar** + **Testar ponte**, **`pipe-pentestgpt`** na barra.
+- **Guia de módulos**: botão **?** junto a «Modules» — pop-up com descrição de cada módulo, **Shannon** / **PentestGPT** (função + resultados no Ghost) e nota sobre opções de **IA**.
 - **Dismiss** de findings por fingerprint (`localStorage`).
 - **Exportação** no browser: **JSON** (payload alinhado com o servidor para IA), **Markdown**, **TXT**.
 - **Auth opcional**: `localStorage` `ghostrecon_auth_json` → enviado como `auth` (headers + cookie) para probe/verify.
@@ -194,7 +198,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 ## Segurança do servidor
 
 - **CORS**: apenas origens `http://127.0.0.1:PORT` e `http://localhost:PORT` (PORT do servidor).
-- **CSRF**: `GET /api/csrf-token` → header `X-CSRF-Token` obrigatório em `POST /api/recon/stream` e `POST /api/ai-reports`.
+- **CSRF**: `GET /api/csrf-token` → header `X-CSRF-Token` obrigatório em `POST /api/recon/stream`, `POST /api/ai-reports`, `POST /api/shannon/prep` e `POST /api/pentestgpt-ping`.
 - **Rate limit** opcional por IP em `POST /api/recon/stream` (`GHOSTRECON_RL_*`).
 - Corpo JSON limitado a **5 MB**.
 
@@ -229,8 +233,9 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 | `GET` | `/` | Serve `index.html` |
 | `GET` | `/api/health` | `{ ok, service }` |
 | `GET` | `/api/csrf-token` | Token CSRF (vinculado ao IP, TTL ~2 h) |
-| `GET` | `/api/capabilities` | Kali, PATH, chaves IA, `shannon`, `pentestgpt` (diagnóstico pastas locais) |
+| `GET` | `/api/capabilities` | Kali, PATH, chaves IA, `shannon`, `pentestgpt` (árvore local + `http` se `GHOSTRECON_PENTESTGPT_URL` definida) |
 | `POST` | `/api/shannon/prep` | Header `X-CSRF-Token`; corpo `{ "pullUpstream": true }` → `docker pull keygraph/shannon:latest`; resposta inclui `dockerPullLog` |
+| `POST` | `/api/pentestgpt-ping` | CSRF; corpo `{ "pentestgptUrl": "…" }` opcional — resolve URL (override ou `.env`), `GET` em `…/health` na mesma origem; JSON `{ ok, healthUrl, status, body }` ou erro |
 | `GET` | `/api/ai/lmstudio-check` | Testa conexão com LM Studio local (pré-check da UI) |
 | `POST` | `/api/recon/stream` | Corpo JSON (ver abaixo); resposta **NDJSON** |
 | `POST` | `/api/ai-reports` | Gera relatórios IA a partir de `payload` (export JSON); opcional webhook |
@@ -255,7 +260,8 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
   "aiProviderMode": "auto",
   "shannonPrecheck": true,
   "shannonSkipDepsVerify": false,
-  "shannonGithubRepos": "https://github.com/org/programa-bounty\norg/outro-repo"
+  "shannonGithubRepos": "https://github.com/org/programa-bounty\norg/outro-repo",
+  "pentestgptUrl": "http://127.0.0.1:8765/validate"
 }
 ```
 
@@ -266,7 +272,8 @@ Campos opcionais frequentes:
 | `shannonPrecheck` | `false` desactiva a validação de dependências Shannon no **servidor** (não recomendado). |
 | `shannonSkipDepsVerify` | `true` — o servidor não bloqueia o recon se o Shannon não estiver pronto. |
 | `shannonGithubRepos` | String multilinha: URLs GitHub e/ou `owner/repo` para **clone manual** (bug bounty). |
-| `modules` | Incluir `"pentestgpt_validate"` para validação HTTP pós-`score` (requer `GHOSTRECON_PENTESTGPT_URL`). |
+| `pentestgptUrl` | Opcional: URL do `POST` de validação **neste run** (sobrepõe `GHOSTRECON_PENTESTGPT_URL` se for `http://` ou `https://`). |
+| `modules` | Incluir `"pentestgpt_validate"` para validação HTTP pós-`score` (requer URL no `.env` ou `pentestgptUrl`). |
 
 Cabeçalho: `X-CSRF-Token: <token>`.
 
@@ -296,6 +303,7 @@ Cabeçalho: `X-CSRF-Token: <token>`.
 | `GHOSTRECON_PENTESTGPT_HOME` | Raiz do clone GreyDGL (capabilities) |
 | `GHOSTRECON_PENTESTGPT_ENABLED` / `GHOSTRECON_PENTESTGPT_TIMEOUT_MS` | Activar serviço e timeout HTTP |
 | `GHOSTRECON_PENTESTGPT_BRIDGE_PORT` / `GHOSTRECON_PENTESTGPT_BRIDGE_MODEL` | Ponte `pentestgpt-ghost-bridge.mjs` (OpenRouter) |
+| `GHOSTRECON_PENTESTGPT_BRIDGE_SYSTEM_PROMPT` | Opcional: substitui o prompt bug bounty da ponte |
 | `GOOGLE_CSE_KEY` / `GOOGLE_CSE_CX` | Google Programmable Search (módulo `google_cse`) |
 | `GHOSTRECON_DB` | Caminho SQLite global (default `data/bugbounty.db`) |
 | `DATABASE_URL` | Postgres directo (prioridade sobre API Supabase) |
@@ -339,7 +347,7 @@ Limites numéricos (timeouts, concorrência, caps de URLs, etc.) estão centrali
 npm install
 npm start          # produção
 npm run dev        # reload com --watch
-npm test           # testes em server/tests/
+npm test           # testes em server/tests/ (incl. pentestgpt-capabilities, pentestgpt-local)
 npm run test:ai    # smoke das APIs IA (script separado)
 ```
 
@@ -392,7 +400,8 @@ GHOSTRECON/
     ├── load-env.js            # Carrega .env da raiz do repo
     ├── config.js              # Limites, regex “interesting”, UA
     ├── scripts/               # pentestgpt-ghost-bridge.mjs (ponte HTTP opcional)
-    └── modules/               # …, pentestgpt-local, pentestgpt-capabilities, …
+    ├── modules/               # …, pentestgpt-local.js, pentestgpt-capabilities.js, …
+    └── tests/                 # pentestgpt-capabilities.test.js, pentestgpt-local.test.js, …
 ```
 
 ---
@@ -401,7 +410,7 @@ GHOSTRECON/
 
 - **Novos dorks**: `server/modules/dorks.js` + checkbox em `index.html` com `class="mod"` e o mesmo `value`.
 - **Nova fonte passiva**: novo módulo em `modules/`, import e chamada em `runPipeline` com eventos `pipe`/`log` coerentes.
-- **Shannon / PentestGPT**: ver `PLANO_IAS_LOCAIS_GHOSTRECON.md`; rotas `GET /api/capabilities`, `POST /api/shannon/prep` (CSRF); novos env em `.env.example`.
+- **Shannon / PentestGPT**: ver `PLANO_IAS_LOCAIS_GHOSTRECON.md`; rotas `GET /api/capabilities`, `POST /api/shannon/prep`, `POST /api/pentestgpt-ping` (CSRF); novos env em `.env.example`.
 - **Limites**: `server/config.js`.
 
 ---

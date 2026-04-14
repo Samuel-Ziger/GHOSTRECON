@@ -73,7 +73,7 @@ import {
   shannonPullUpstreamWorkerImage,
 } from './modules/shannon-capabilities.js';
 import { runShannonOnClone, shannonMaxClonesPerRun } from './modules/shannon-runner.js';
-import { runPentestGptValidation } from './modules/pentestgpt-local.js';
+import { runPentestGptValidation, pentestGptHealthUrl, resolvePentestGptUrl } from './modules/pentestgpt-local.js';
 import { getPentestGptCapabilities } from './modules/pentestgpt-capabilities.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 
@@ -273,6 +273,7 @@ async function runPipeline(ctx) {
     shannonPrecheck = true,
     shannonSkipDepsVerify = false,
     shannonGithubRepos = null,
+    pentestgptUrl: pentestgptUrlOverride = null,
   } = ctx;
   const runtimeProfile = resolveReconProfile(profile);
   const domainStr = exactMatch ? `"${domain}"` : domain;
@@ -1629,7 +1630,7 @@ async function runPipeline(ctx) {
         kaliMode: Boolean(kaliMode),
         modules: modulesForDb,
       });
-      const pg = await runPentestGptValidation(pgPayload, { log });
+      const pg = await runPentestGptValidation(pgPayload, { log, urlOverride: pentestgptUrlOverride });
       pentestgptSummary = pg.summary || null;
       if (pg.findings?.length) {
         for (const f of pg.findings) addFinding(f, null);
@@ -1942,6 +1943,7 @@ app.post('/api/recon/stream', async (req, res) => {
       shannonPrecheck,
       shannonSkipDepsVerify,
       shannonGithubRepos: req.body?.shannonGithubRepos,
+      pentestgptUrl: req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl) : null,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
@@ -1972,7 +1974,14 @@ app.get('/api/capabilities', async (_req, res) => {
     try {
       pentestgpt = await getPentestGptCapabilities({ ghostRoot: ROOT });
     } catch (e) {
-      pentestgpt = { ok: false, home: '', checks: {}, message: e?.message || String(e), prepHints: {} };
+      pentestgpt = {
+        ok: false,
+        home: '',
+        checks: {},
+        message: e?.message || String(e),
+        prepHints: {},
+        http: { configured: false, preview: '' },
+      };
     }
     res.json({ ...cap, ai: aiKeysConfigured(), shannon, pentestgpt });
   } catch (e) {
@@ -1984,6 +1993,55 @@ app.get('/api/capabilities', async (_req, res) => {
       shannon: null,
       pentestgpt: null,
     });
+  }
+});
+
+app.post('/api/pentestgpt-ping', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const raw = req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl).trim() : '';
+  const url = resolvePentestGptUrl(raw || null);
+  if (!url) {
+    res.status(400).json({
+      ok: false,
+      error: 'Sem URL de validação: define GHOSTRECON_PENTESTGPT_URL no .env ou envia pentestgptUrl no corpo.',
+    });
+    return;
+  }
+  const health = pentestGptHealthUrl(url);
+  if (!health) {
+    res.status(400).json({ ok: false, error: 'URL inválida (só http/https).' });
+    return;
+  }
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
+  try {
+    const fr = await fetch(health, { method: 'GET', signal: ac.signal, redirect: 'manual' });
+    const text = await fr.text();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      /* texto plano */
+    }
+    res.json({
+      ok: fr.ok,
+      healthUrl: health,
+      validateUrlPreview: url.slice(0, 120),
+      status: fr.status,
+      body: parsed ?? text.slice(0, 400),
+    });
+  } catch (e) {
+    res.json({
+      ok: false,
+      healthUrl: health,
+      validateUrlPreview: url.slice(0, 120),
+      error: e?.name === 'AbortError' ? 'Timeout ao contactar /health' : e?.message || String(e),
+    });
+  } finally {
+    clearTimeout(timer);
   }
 });
 

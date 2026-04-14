@@ -1552,6 +1552,15 @@
           <span class="checkbox-text">Validação PentestGPT (HTTP)</span>
           <span class="tag tag-med">POST</span>
         </label>
+        <label for="pentestgptUrlOverride" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">URL POST (opcional — sobrepõe .env neste run)</label>
+        <input type="url" id="pentestgptUrlOverride" class="domain-input" style="width:100%;margin-top:4px;font-size:11px" placeholder="http://127.0.0.1:8765/validate" autocomplete="off" spellcheck="false">
+        <label class="checkbox-item" style="margin-top:6px">
+          <input type="checkbox" id="pentestgptUrlRemember">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Lembrar URL neste browser</span>
+          <span class="tag tag-low">LS</span>
+        </label>
+        <button type="button" class="gh-open-btn" id="pentestgptPingBtn" style="margin-top:6px">Testar ponte (GET /health no servidor)</button>
       </div>
     </div>
   </aside>
@@ -2560,6 +2569,19 @@ async function startRecon() {
       }
     }
 
+    const pgMod = selectedMods.includes('pentestgpt_validate');
+    const pgUrlUi = (document.getElementById('pentestgptUrlOverride')?.value || '').trim();
+    const pgHttpEnv = Boolean(window.__pentestgptCap?.http?.configured);
+    if (pgMod && !pgUrlUi && !pgHttpEnv) {
+      const cont = window.confirm(
+        'PentestGPT (HTTP): não há GHOSTRECON_PENTESTGPT_URL no servidor e o campo «URL POST» está vazio. O passo será ignorado no fim do pipeline. Continuar mesmo assim?',
+      );
+      if (!cont) {
+        finishOk();
+        return;
+      }
+    }
+
     const useOos = selectedMods.includes('out_of_scope');
     const oosText = (document.getElementById('outOfScopeInput')?.value || '').trim();
     const projectName = (document.getElementById('projectNameInput')?.value || '').trim();
@@ -2593,6 +2615,7 @@ async function startRecon() {
       };
       const shannonGhManual = (document.getElementById('shannonGithubReposInput')?.value || '').trim();
       if (shannonGhManual) streamBody.shannonGithubRepos = shannonGhManual;
+      if (pgUrlUi) streamBody.pentestgptUrl = pgUrlUi;
       if (useOos) streamBody.outOfScope = oosText || '';
       if (projectName) streamBody.projectName = projectName;
 
@@ -2863,15 +2886,18 @@ function applyShannonCapToUI(s) {
 function applyPentestgptCapToUI(p) {
   const el = document.getElementById('pentestgptCapLine');
   if (!el) return;
+  window.__pentestgptCap = p || null;
   if (!p) {
     el.textContent = 'PentestGPT: sem dados do servidor';
     el.style.color = 'var(--text-dim)';
     return;
   }
   const ch = p.checks || {};
-  el.textContent = `PentestGPT upstream: ${p.ok ? '✓ árvore OK' : '✗ incompleto'} · pasta:${ch.pentestgptHome ? '✓' : '✗'} · pyproject:${ch.pyproject ? '✓' : '✗'} · py3.12+:${ch.python312 ? '✓' : '✗'} · uv:${ch.uv ? '✓' : '✗'} · docker:${ch.docker ? '✓' : '✗'}`;
+  const h = p.http || {};
+  const postBit = h.configured ? `POST .env:✓ ${(h.preview || '').slice(0, 48)}` : 'POST .env:✗';
+  el.textContent = `PentestGPT upstream: ${p.ok ? '✓ árvore OK' : '✗ incompleto'} · pasta:${ch.pentestgptHome ? '✓' : '✗'} · pyproject:${ch.pyproject ? '✓' : '✗'} · py3.12+:${ch.python312 ? '✓' : '✗'} · uv:${ch.uv ? '✓' : '✗'} · docker:${ch.docker ? '✓' : '✗'} · ${postBit}`;
   el.style.color = p.ok ? 'var(--accent2)' : 'var(--accent3)';
-  el.title = p.message || '';
+  el.title = [p.message || '', h.preview ? `GHOSTRECON_PENTESTGPT_URL: ${h.preview}` : ''].filter(Boolean).join('\n');
 }
 
 async function refreshShannonCapabilities() {
@@ -2909,6 +2935,65 @@ document.getElementById('shannonPrepPullBtn')?.addEventListener('click', async (
     }
   } catch (e) {
     addLog(`Shannon prep: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+});
+
+(function initPentestgptUrlField() {
+  const inp = document.getElementById('pentestgptUrlOverride');
+  const remember = document.getElementById('pentestgptUrlRemember');
+  if (!inp) return;
+  try {
+    const stored = localStorage.getItem('ghostrecon_pentestgpt_url_override');
+    if (stored) inp.value = stored;
+    if (remember) remember.checked = Boolean(stored);
+  } catch {
+    /* private mode */
+  }
+  remember?.addEventListener('change', () => {
+    try {
+      if (remember.checked && inp.value.trim()) localStorage.setItem('ghostrecon_pentestgpt_url_override', inp.value.trim());
+      else localStorage.removeItem('ghostrecon_pentestgpt_url_override');
+    } catch {
+      /* ignore */
+    }
+  });
+  inp.addEventListener('blur', () => {
+    const r = document.getElementById('pentestgptUrlRemember');
+    if (r?.checked && inp.value.trim()) {
+      try {
+        localStorage.setItem('ghostrecon_pentestgpt_url_override', inp.value.trim());
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+})();
+
+document.getElementById('pentestgptPingBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('pentestgptPingBtn');
+  if (!btn) return;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = 'A testar…';
+  try {
+    const tok = await ensureCsrfToken();
+    const pentestgptUrl = (document.getElementById('pentestgptUrlOverride')?.value || '').trim();
+    const res = await fetch(apiUrl('/api/pentestgpt-ping'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': tok },
+      body: JSON.stringify({ pentestgptUrl: pentestgptUrl || undefined }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (j.ok) {
+      addLog(`PentestGPT ponte: OK — ${j.healthUrl || ''} (HTTP ${j.status})`, 'success');
+    } else {
+      addLog(`PentestGPT ponte: ${j.error || `falhou (HTTP ${res.status})`}`, 'error');
+    }
+  } catch (e) {
+    addLog(`PentestGPT ponte: ${e.message}`, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = prev;
@@ -3145,7 +3230,7 @@ function closeModulesHelpModal() {
     <div class="findings-help-dialog-head">
       <h2 id="modulesHelpTitle">MÓDULOS — GUIA</h2>
       <p class="findings-help-intro">
-        Cada caixa envia o respetivo <code>value</code> no array <code>modules</code> do <code>POST /api/recon/stream</code>. Combina só o que o programa de bounty permite. Tags <strong>HIGH/MED/LOW</strong> indicam sensibilidade aproximada; <strong>API/CLI</strong> indicam dependências externas.
+        Cada caixa com classe <code>mod</code> envia o respetivo <code>value</code> no array <code>modules</code> do <code>POST /api/recon/stream</code>. As opções de <strong>IA (relatórios)</strong> no fim da lista usam outros campos do corpo (<code>autoAiReports</code>, <code>aiProviderMode</code>) — vê a secção IA abaixo. Combina só o que o programa de bounty permite. Tags <strong>HIGH/MED/LOW</strong> indicam sensibilidade aproximada; <strong>API/CLI</strong> indicam dependências externas.
       </p>
     </div>
     <div class="findings-help-scroll">
@@ -3243,8 +3328,33 @@ function closeModulesHelpModal() {
         <dd>Enumeração extra de subdomínios no sistema com ferramentas no PATH — só com <strong>Modo Kali</strong> ligado.</dd>
       </dl>
 
+      <h3 class="findings-help-section-title">// Shannon (white-box local)</h3>
+      <p class="findings-help-section-intro"><strong>O que faz:</strong> o Shannon (Keygraph) corre em <strong>Docker</strong> uma análise <strong>white-box</strong> sobre código-fonte — clona repositórios Git (do programa de bounty ou sugeridos pelo recon), executa o workflow (Temporal) e gera um <strong>relatório de avaliação de segurança</strong> no workspace. Complementa o recon OSINT/web; não substitui dorks nem scans de superfície.</p>
+      <p class="findings-help-section-intro" style="margin-top:6px"><strong>O que recebes no Ghost:</strong> por repositório processado aparece um cartão <strong>intel</strong> — em sucesso, com título tipo «Shannon white-box: <code>org/repo</code>», meta com <code>workspace</code>, <strong>caminho do ficheiro Markdown</strong> do relatório e um <strong>excerto</strong> do texto; em falha, cartão com fase/erro e dica no <strong>log</strong>. Podes abrir a <strong>Web UI do Temporal</strong> (quando o pipeline mostra o link) para acompanhar o workflow. O relatório completo fica no disco do workspace Shannon (ficheiro longo tipo assessment).</p>
+      <p class="findings-help-section-intro" style="margin-top:6px">Módulo <code>shannon_whitebox</code> em <code>modules</code>. Código em <code>IAs/shannon</code> (não versionado no Git do Ghost): <code>pnpm build</code>, <code>./shannon build</code>, imagem <code>shannon-worker</code>. A linha <strong>Shannon: …</strong> na sidebar resume Docker / pasta / CLI / imagem.</p>
+      <dl class="findings-help-dl">
+        <dt>Módulo Shannon white-box</dt>
+        <dd>Envia <code>shannon_whitebox</code> em <code>modules</code>. O servidor pode <strong>recusar</strong> o <code>POST /api/recon/stream</code> se as dependências falharem (excepto «Omitir verificação»). No browser, o pré-check opcional volta a consultar <code>/api/capabilities</code> e pode sugerir <code>docker pull</code>.</dd>
+        <dt>Repos GitHub (manual)</dt>
+        <dd>Textarea com URLs de programa (<code>https://github.com/…</code>), <code>owner/repo</code> ou uma linha por entrada — junta-se à pesquisa API e entra no clone local com prioridade. Útil em bug bounty quando queres <strong>só</strong> esses repos (com Shannon sozinho, até 10 válidos).</dd>
+        <dt>Temporal / monitor</dt>
+        <dd>Quando o fluxo expõe URL da Web UI do Temporal, o log pode abrir o monitor — útil para acompanhar o workflow Shannon.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">// PentestGPT (pós-recon HTTP)</h3>
+      <p class="findings-help-section-intro"><strong>O que faz:</strong> <strong>depois</strong> de todo o recon e da priorização (<code>score</code>), o servidor envia por <strong>POST</strong> um JSON com o resumo do run (alvo, estatísticas, amostra de findings, correlação) para o URL que configurares — em geral uma <strong>ponte</strong> que chama um LLM (ex.: OpenRouter) para <strong>triagem</strong> e texto orientado a <strong>bug bounty</strong> (o serviço não «ataca» o alvo; interpreta dados já recolhidos). Isto é independente do agente <strong>TUI/Python</strong> do clone GreyDGL em <code>IAs/PentestGPT</code> (Docker + <code>make connect</code>); esse repositório é o fluxo upstream «oficial», enquanto o módulo da UI usa só HTTP.</p>
+      <p class="findings-help-section-intro" style="margin-top:6px"><strong>O que recebes no Ghost:</strong> o pipeline tenta mapear a resposta para <strong>novos achados</strong> (prioridade/tipo conforme o JSON). Se vier sobretudo texto agregado, podes ver um cartão <strong>intel</strong> «PentestGPT (resumo)» com esse texto; tudo entra na <strong>lista de findings</strong> e no <strong>gravado do run</strong> (SQLite / cloud) como os outros itens. O passo <code>pentestgpt</code> na barra do pipeline mostra quando corre ou salta.</p>
+      <dl class="findings-help-dl">
+        <dt>Validação PentestGPT (HTTP)</dt>
+        <dd>Define <code>GHOSTRECON_PENTESTGPT_URL</code> no <code>.env</code> (ex.: <code>http://127.0.0.1:8765/validate</code>) e corre a ponte <code>node server/scripts/pentestgpt-ghost-bridge.mjs</code> (ou <code>npm run pentestgpt-bridge</code>) com <code>OPENROUTER_API_KEY</code>. Sem URL (nem override no campo da sidebar), o passo é <strong>ignorado</strong>. <code>GHOSTRECON_PENTESTGPT_ENABLED=0</code> força skip.</dd>
+        <dt>URL POST opcional · Lembrar · Testar ponte</dt>
+        <dd>O campo «URL POST» envia <code>pentestgptUrl</code> no stream e <strong>sobrepõe</strong> o <code>.env</code> nessa corrida. «Lembrar» grava em <code>localStorage</code>. «Testar ponte» chama o servidor (<code>POST /api/pentestgpt-ping</code>), que faz <code>GET …/health</code> na mesma origem — evita bloqueios de CORS no browser.</dd>
+        <dt>Linha PentestGPT: … POST .env</dt>
+        <dd>A primeira parte descreve a <strong>árvore</strong> upstream em disco (pyproject, Python 3.12+, uv, Docker). A parte <code>POST .env</code> indica se <code>GHOSTRECON_PENTESTGPT_URL</code> está definida no <strong>servidor</strong> (não reflecte só o campo opcional).</dd>
+      </dl>
+
       <h3 class="findings-help-section-title">// IA · relatórios (Gemini + Claude)</h3>
-      <p class="findings-help-section-intro">Com <strong>Confirmo envio para APIs externas</strong>: ao terminar cada recon (ou cada alvo na fila), o servidor envia o JSON desse run às APIs configuradas e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco; os próximos passos também são ecoados no log do terminal. Sem a confirmação não há chamadas. <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code> desliga a geração automática no servidor mesmo com a caixa marcada. Chaves: <code>GEMINI_API_KEY</code> ou <code>GOOGLE_AI_API_KEY</code>; segundo relatório via <code>OPENROUTER_API_KEY</code> (recomendado) ou <code>ANTHROPIC_API_KEY</code> se não houver OpenRouter. Cumpre sempre o programa de bounty.</p>
+      <p class="findings-help-section-intro">As caixas <strong>Confirmo envio para APIs externas</strong> e <strong>LM Studio no final (pré-check obrigatório)</strong> <em>não</em> usam a classe <code>mod</code> — não aparecem em <code>modules[]</code>; enviam <code>autoAiReports</code> e <code>aiProviderMode</code> no corpo do recon. Com confirmação: ao terminar cada recon (ou cada alvo na fila), o servidor envia o JSON do run às APIs configuradas e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco; os próximos passos também são ecoados no log do terminal. Sem confirmação não há chamadas cloud. <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code> desliga a geração automática no servidor mesmo com a caixa marcada. Chaves: <code>GEMINI_API_KEY</code> ou <code>GOOGLE_AI_API_KEY</code>; segundo relatório via <code>OPENROUTER_API_KEY</code> (recomendado) ou <code>ANTHROPIC_API_KEY</code> se não houver OpenRouter. Com <strong>só LM Studio</strong>, a ordem no servidor mantém-se (Gemini → OpenRouter → Claude); LM Studio só entra se <strong>todas</strong> as anteriores falharem — antes do recon corre <code>GET /api/ai/lmstudio-check</code>. Cumpre sempre o programa de bounty.</p>
     </div>
   </div>
 </div>
