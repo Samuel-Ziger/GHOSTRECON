@@ -48,3 +48,47 @@ export async function githubCodeSearch(domain, token) {
     })),
   };
 }
+
+export async function githubRepoSearch(domain, token, opts = {}) {
+  const perPage = Math.max(1, Math.min(Number(opts.perPage) || 5, 20));
+  const q = encodeURIComponent(`${domain} in:name,description,readme`);
+  const url = `https://api.github.com/search/repositories?q=${q}&sort=updated&order=desc&per_page=${perPage}`;
+  const tok = trimToken(token);
+  const headers = {
+    'User-Agent': UA,
+    Accept: 'application/vnd.github+json',
+  };
+  if (tok) headers.Authorization = `Bearer ${tok}`;
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(30000) });
+  if (res.status === 403 || res.status === 401) {
+    let detail = '';
+    try {
+      const errBody = await res.clone().json();
+      if (errBody?.message) detail = ` — ${String(errBody.message).slice(0, 200)}`;
+    } catch {
+      /* ignore */
+    }
+    const hint = tok
+      ? 'Token rejeitado (expirado/revogado ou fine-grained sem permissões) ou rate limit.'
+      : 'Sem GITHUB_TOKEN no processo (reinicia o servidor depois de editar .env) ou rate limit por IP.';
+    return { ok: false, note: `GitHub API ${res.status}: ${hint}${detail}` };
+  }
+  if (!res.ok) return { ok: false, note: `HTTP ${res.status}` };
+  const data = await res.json();
+  const items = data.items || [];
+  return {
+    ok: true,
+    total: data.total_count ?? items.length,
+    items: items.map((it) => ({
+      full_name: it.full_name,
+      html_url: it.html_url,
+      clone_url: it.clone_url,
+      default_branch: it.default_branch || 'main',
+      private: Boolean(it.private),
+      archived: Boolean(it.archived),
+      stargazers_count: Number(it.stargazers_count) || 0,
+      updated_at: it.updated_at || null,
+      description: it.description || '',
+    })),
+  };
+}

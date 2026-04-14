@@ -1506,6 +1506,12 @@
           <span class="checkbox-text">Confirmo envio para APIs externas</span>
           <span class="tag tag-high">IA</span>
         </label>
+        <label class="checkbox-item" title="Se ativo: tenta LM Studio primeiro para o relatório IA; se falhar, segue para Gemini/OpenRouter/Claude. Antes do recon, valida a conexão com LM Studio.">
+          <input type="checkbox" id="modAiLmStudioOnly">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Priorizar LM Studio (pré-check obrigatório)</span>
+          <span class="tag tag-med">LOCAL</span>
+        </label>
       </div>
     </div>
   </aside>
@@ -2286,6 +2292,8 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           else if (ev.openrouter?.error) addLog(`IA OpenRouter ✗ ${ev.openrouter.error}`, 'warn');
           if (ev.claude?.ok) addLog('IA Claude (Anthropic) ✓ (automático)', 'success');
           else if (ev.claude?.error) addLog(`IA Claude ✗ ${ev.claude.error}`, 'warn');
+          if (ev.lmstudio?.ok) addLog('IA LM Studio (local) ✓ (automático)', 'success');
+          else if (ev.lmstudio?.error) addLog(`IA LM Studio ✗ ${ev.lmstudio.error}`, 'warn');
         }
         if (ev.phase === 'error' && ev.message) addLog(`IA: ${ev.message}`, 'error');
       }
@@ -2400,6 +2408,8 @@ async function startRecon() {
 
   const exact = document.getElementById('exactMatch').checked;
   const selectedMods = [...document.querySelectorAll('.mod:checked')].map(x => x.value);
+  const aiReportsEnabled = Boolean(document.getElementById('modAiReports')?.checked);
+  const lmStudioOnly = Boolean(document.getElementById('modAiLmStudioOnly')?.checked);
 
   addLog(
     targets.length > 1
@@ -2429,6 +2439,17 @@ async function startRecon() {
   };
 
   try {
+    if (aiReportsEnabled && lmStudioOnly) {
+      addLog('IA LM Studio (modo prioritário): a validar conexão antes do recon…', 'info');
+      const ping = await fetch(apiUrl('/api/ai/lmstudio-check'));
+      const out = await ping.json().catch(() => ({}));
+      if (!ping.ok || !out?.ok) {
+        finishErr(`LM Studio indisponível: ${out?.error || `HTTP ${ping.status}`}. Corrija e tente novamente.`);
+        return;
+      }
+      addLog(`LM Studio OK (${out.model || 'modelo local'}) — recon vai priorizar LM Studio para relatório IA.`, 'success');
+    }
+
     const useOos = selectedMods.includes('out_of_scope');
     const oosText = (document.getElementById('outOfScopeInput')?.value || '').trim();
     const projectName = (document.getElementById('projectNameInput')?.value || '').trim();
@@ -2455,7 +2476,8 @@ async function startRecon() {
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
         profile: getReconProfile(),
         auth: getOptionalAuthConfig(),
-        autoAiReports: Boolean(document.getElementById('modAiReports')?.checked),
+        autoAiReports: aiReportsEnabled,
+        aiProviderMode: lmStudioOnly ? 'lmstudio_only' : 'auto',
       };
       if (useOos) streamBody.outOfScope = oosText || '';
       if (projectName) streamBody.projectName = projectName;
@@ -2676,6 +2698,27 @@ function syncOutOfScopeUi() {
 }
 document.getElementById('modOutOfScope')?.addEventListener('change', syncOutOfScopeUi);
 syncOutOfScopeUi();
+
+function syncAiModeUi() {
+  const ai = document.getElementById('modAiReports');
+  const lm = document.getElementById('modAiLmStudioOnly');
+  if (!ai || !lm) return;
+  if (!ai.checked) {
+    lm.checked = false;
+    lm.disabled = true;
+  } else {
+    lm.disabled = false;
+  }
+}
+document.getElementById('modAiReports')?.addEventListener('change', syncAiModeUi);
+document.getElementById('modAiLmStudioOnly')?.addEventListener('change', () => {
+  const ai = document.getElementById('modAiReports');
+  const lm = document.getElementById('modAiLmStudioOnly');
+  if (lm?.checked && ai && !ai.checked) ai.checked = true;
+  syncAiModeUi();
+});
+syncAiModeUi();
+
 document.getElementById('batchModeToggle')?.addEventListener('change', syncBatchWrapVisibility);
 syncBatchWrapVisibility();
 document.getElementById('domainInput')?.addEventListener('input', updateGhPreview);
@@ -2709,14 +2752,14 @@ async function fetchKaliCapabilities() {
       line.style.color = c.kali ? 'var(--accent2)' : 'var(--text-dim)';
       line.textContent = c.kali ? `Disponível — ${parts.join(' ')}` : `${c.message || 'Indisponível'} — ${parts.join(' ')}`;
     }
-    window.__aiKeys = c.ai || { gemini: false, openrouter: false, claude: false, both: false, any: false };
+    window.__aiKeys = c.ai || { gemini: false, openrouter: false, claude: false, lmstudio: false, both: false, any: false };
     const aiEl = document.getElementById('aiKeysLine');
     if (aiEl) {
       const a = window.__aiKeys;
       const sec = a.openrouter ? 'OpenRouter' : 'Anthropic';
       const secOk = Boolean(a.openrouter || a.claude);
-      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · ${sec} ${secOk ? '✓' : '✗'} — .env: GEMINI + OPENROUTER_API_KEY (prioritário) ou ANTHROPIC_API_KEY`;
-      aiEl.style.color = a.both ? 'var(--accent2)' : 'var(--accent4)';
+      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · ${sec} ${secOk ? '✓' : '✗'} · LM Studio ${a.lmstudio ? '✓' : '✗'} — .env: GEMINI/OPENROUTER/ANTHROPIC e/ou LM Studio local`;
+      aiEl.style.color = (a.both || a.lmstudio) ? 'var(--accent2)' : 'var(--accent4)';
     }
     if (c.kali) {
       window.__kaliScanAvailable = true;
@@ -2736,7 +2779,7 @@ async function fetchKaliCapabilities() {
       toggle.disabled = true;
       toggle.checked = false;
     }
-    window.__aiKeys = { gemini: false, openrouter: false, claude: false, both: false, any: false };
+    window.__aiKeys = { gemini: false, openrouter: false, claude: false, lmstudio: false, both: false, any: false };
     const aiEl = document.getElementById('aiKeysLine');
     if (aiEl) {
       aiEl.textContent = 'APIs IA: indisponível (servidor offline).';

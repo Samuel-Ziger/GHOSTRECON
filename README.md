@@ -147,10 +147,13 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 
 ### 25. Relatórios IA (opcional)
 
-- Chaves: `GEMINI_API_KEY` ou `GOOGLE_AI_API_KEY`, `OPENROUTER_API_KEY` (ou `ANTHROPIC_API_KEY` directo), modelos configuráveis, retries Gemini, limites de caracteres do Markdown.
+- Chaves: `GEMINI_API_KEY` ou `GOOGLE_AI_API_KEY`, `OPENROUTER_API_KEY` (ou `ANTHROPIC_API_KEY` directo), e opcionalmente provider local via LM Studio; modelos configuráveis, retries (Gemini/OpenRouter), limites de caracteres do Markdown.
 - UI: checkbox de confirmação + `autoAiReports` no POST; servidor pode gerar ficheiros **Markdown** (relatório + próximos passos) e emitir eventos `ai_report`; o conteúdo de “próximos passos” pode ser ecoado no log NDJSON.
+- Resiliência IA: Gemini e OpenRouter fazem retentativas em `429` e `5xx` (inclui `503`) com `Retry-After` + backoff; se OpenRouter falhar e existir `ANTHROPIC_API_KEY`, há fallback para Claude directo no mesmo run.
+- Cascata de execução (run automático): Gemini primeiro (até 3 tentativas com espera fixa, padrão 60s), depois OpenRouter (1 tentativa), depois Claude (1 tentativa), depois LM Studio local (1 tentativa), e termina.
+- UI: opção **"Priorizar LM Studio (pré-check obrigatório)"** abaixo de "Confirmo envio". Quando ativa, o servidor tenta LM Studio primeiro; se falhar, segue fallback para Gemini/OpenRouter/Claude.
 - **`GHOSTRECON_AI_AUTO=0`**: desliga geração automática no fim do pipeline (podes usar `POST /api/ai-reports` com payload exportado).
-- **`GET /api/capabilities`**: inclui `ai: { gemini, openrouter, claude, any }`.
+- **`GET /api/capabilities`**: inclui `ai: { gemini, openrouter, claude, lmstudio, any }`.
 
 ### 26. Webhook
 
@@ -212,6 +215,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 | `GET` | `/api/health` | `{ ok, service }` |
 | `GET` | `/api/csrf-token` | Token CSRF (vinculado ao IP, TTL ~2 h) |
 | `GET` | `/api/capabilities` | Kali, ferramentas no PATH, chaves IA configuradas |
+| `GET` | `/api/ai/lmstudio-check` | Testa conexão com LM Studio local (pré-check da UI) |
 | `POST` | `/api/recon/stream` | Corpo JSON (ver abaixo); resposta **NDJSON** |
 | `POST` | `/api/ai-reports` | Gera relatórios IA a partir de `payload` (export JSON); opcional webhook |
 | `GET` | `/api/runs?limit=` | Lista runs |
@@ -231,11 +235,16 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
   "auth": { "headers": {}, "cookie": "" },
   "outOfScope": "staging.example.com, *.cdn.example.com",
   "projectName": "cliente_x",
-  "autoAiReports": false
+  "autoAiReports": false,
+  "aiProviderMode": "auto"
 }
 ```
 
 Cabeçalho: `X-CSRF-Token: <token>`.
+
+`aiProviderMode`:
+- `auto` (default): cascata Gemini → OpenRouter → Claude → LM Studio
+- `lmstudio_only`: tenta LM Studio primeiro; se falhar, segue fallback cloud
 
 ---
 
@@ -266,10 +275,13 @@ Cabeçalho: `X-CSRF-Token: <token>`.
 | `GHOSTRECON_WHOIS_SUBDOMAINS_MAX` | Extra whois |
 | `GHOSTRECON_SUBFINDER_TIMEOUT_MS` / `GHOSTRECON_AMASS_TIMEOUT_MS` | Timeouts enum |
 | `GEMINI_API_KEY` / `GOOGLE_AI_API_KEY` | IA Gemini |
-| `GHOSTRECON_GEMINI_MODEL` / `GHOSTRECON_GEMINI_MAX_RETRIES` | Gemini |
+| `GHOSTRECON_GEMINI_MODEL` / `GHOSTRECON_GEMINI_MAX_RETRIES` | Gemini (retries em 429/5xx/timeout) |
 | `OPENROUTER_API_KEY` | IA via OpenRouter |
-| `GHOSTRECON_OPENROUTER_MODEL` / `GHOSTRECON_OPENROUTER_HTTP_REFERER` / `GHOSTRECON_OPENROUTER_APP_TITLE` | OpenRouter |
+| `GHOSTRECON_OPENROUTER_MODEL` / `GHOSTRECON_OPENROUTER_HTTP_REFERER` / `GHOSTRECON_OPENROUTER_APP_TITLE` / `GHOSTRECON_OPENROUTER_MAX_RETRIES` | OpenRouter |
+| `GHOSTRECON_AI_FALLBACK_WAIT_SEC` | Espera fixa entre tentativas Gemini na cascata (default `60`) |
 | `ANTHROPIC_API_KEY` / `GHOSTRECON_CLAUDE_MODEL` | Claude directo (se sem OpenRouter) |
+| `GHOSTRECON_LMSTUDIO_ENABLED` / `GHOSTRECON_LMSTUDIO_BASE_URL` / `GHOSTRECON_LMSTUDIO_MODEL` / `GHOSTRECON_LMSTUDIO_API_KEY` | LM Studio local (OpenAI-compatible) |
+| `GHOSTRECON_LMSTUDIO_MAX_TOKENS` / `GHOSTRECON_LMSTUDIO_TEMPERATURE` | Ajustes de geração no LM Studio |
 | `GHOSTRECON_AI_AUTO` | `0` desliga IA automática no fim do recon |
 | `GHOSTRECON_AI_RELATORIO_MAX_CHARS` / `GHOSTRECON_AI_PROXIMOS_MAX_CHARS` | Truncagem Markdown IA |
 

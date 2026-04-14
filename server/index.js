@@ -26,7 +26,8 @@ import { fetchWaybackUrls, filterInterestingUrls, extractJsUrls } from './module
 import { extractParamsFromUrls } from './modules/params.js';
 import { analyzeJsUrl } from './modules/js-analyzer.js';
 import { scanSecrets } from './modules/secrets.js';
-import { githubCodeSearch } from './modules/github.js';
+import { githubCodeSearch, githubRepoSearch } from './modules/github.js';
+import { cloneGithubReposForTarget, githubCloneConfig } from './modules/github-clone.js';
 import { buildDorks } from './modules/dorks.js';
 import { scoreEndpointPath, scoreParamName } from './modules/scoring.js';
 import { correlate } from './modules/correlation.js';
@@ -60,7 +61,12 @@ import {
 import { collectUniqueIpv4, shodanHostSummary } from './modules/ip-intel.js';
 import { googleCseSearch } from './modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
-import { runDualAiReports, aiKeysConfigured, pickAiReportForWebhook } from './modules/ai-dual-report.js';
+import {
+  runDualAiReports,
+  aiKeysConfigured,
+  pickAiReportForWebhook,
+  probeLmStudioConnection,
+} from './modules/ai-dual-report.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -178,6 +184,9 @@ function emitIaProximosPassosToLog(aiOut, log) {
   if (aiOut.claude?.ok && aiOut.claude.proximosPath) {
     parts.push({ label: 'Claude (Anthropic) — próximos passos', path: aiOut.claude.proximosPath });
   }
+  if (aiOut.lmstudio?.ok && aiOut.lmstudio.proximosPath) {
+    parts.push({ label: 'LM Studio (local) — próximos passos', path: aiOut.lmstudio.proximosPath });
+  }
   if (!parts.length) return;
   log('═══ DECISÃO / PRÓXIMOS PASSOS (IA) ═══', 'section');
   for (const { label, path: fpath } of parts) {
@@ -252,6 +261,7 @@ async function runPipeline(ctx) {
     outOfScope: outOfScopeClientRaw = null,
     projectName: projectNameRaw = '',
     autoAiReports = false,
+    aiProviderMode = 'auto',
   } = ctx;
   const runtimeProfile = resolveReconProfile(profile);
   const domainStr = exactMatch ? `"${domain}"` : domain;
@@ -1105,6 +1115,76 @@ async function runPipeline(ctx) {
     } else {
       log(gh.note || 'Sem resultados GitHub ou limite atingido', 'info');
     }
+
+    log('GitHub Repo Search (candidatos para clone local)...', 'info');
+    const ghRepos = await githubRepoSearch(domain, process.env.GITHUB_TOKEN, { perPage: 8 });
+    if (ghRepos.ok && ghRepos.items?.length) {
+      const codeRepos = (gh.items || []).map((x) => String(x.repo || '').trim()).filter(Boolean);
+      const repoMap = new Map();
+      for (const r of ghRepos.items || []) {
+        if (!r?.full_name) continue;
+        repoMap.set(r.full_name, r);
+      }
+      for (const fullName of codeRepos) {
+        if (repoMap.has(fullName)) continue;
+        repoMap.set(fullName, {
+          full_name: fullName,
+          clone_url: `https://github.com/${fullName}.git`,
+          html_url: `https://github.com/${fullName}`,
+        });
+      }
+      const repoCandidates = [...repoMap.values()];
+      log(`GitHub repos candidatos: ${repoCandidates.length}`, 'success');
+
+      const cloneCfg = githubCloneConfig();
+      if (cloneCfg.enabled) {
+        log(
+          `Clone local ativo: até ${cloneCfg.maxRepos} repo(s), timeout ${cloneCfg.cloneTimeoutMs}ms, retenção ${Math.round(cloneCfg.retentionMs / (24 * 60 * 60 * 1000))} dia(s)`,
+          'info',
+        );
+      } else {
+        log('Clone local desativado (GHOSTRECON_GITHUB_CLONE_ENABLED=1 para ativar).', 'info');
+      }
+
+      try {
+        const cloned = await cloneGithubReposForTarget({
+          targetDomain: domain,
+          repos: repoCandidates,
+          log,
+        });
+        if (cloned.skipped) {
+          // clone desativado por config
+        } else {
+          if (cloned.cloned?.length) {
+            for (const item of cloned.cloned) {
+              addFinding({
+                type: 'intel',
+                prio: 'low',
+                score: 38,
+                value: `GitHub clone local: ${item.full_name}`,
+                meta: `path=${item.local_path} • size=${Math.round((item.size_bytes || 0) / (1024 * 1024))}MB`,
+                url: `https://github.com/${item.full_name}`,
+              });
+            }
+            log(`Clone local concluído: ${cloned.cloned.length} repo(s) em ${cloned.base_dir}`, 'success');
+          } else {
+            log('Clone local: nenhum repositório clonado nesta execução.', 'info');
+          }
+          if (cloned.failed?.length) {
+            for (const item of cloned.failed.slice(0, 4)) {
+              log(`Clone falhou (${item.full_name}): ${item.error}`, 'warn');
+            }
+            if (cloned.failed.length > 4) {
+              log(`+${cloned.failed.length - 4} falha(s) de clone adicionais`, 'warn');
+            }
+          }
+        }
+      } catch (e) {
+        log(`Clone local GitHub: ${e.message}`, 'warn');
+      }
+    } else {
+      log(ghRepos.note || 'GitHub Repo Search sem resultados', 'info');
+    }
   }
   if (modules.includes('pastebin')) {
     log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
@@ -1495,7 +1575,12 @@ async function runPipeline(ctx) {
       modules: modulesForDb,
     });
     try {
-      const aiOut = await runDualAiReports(aiPayload, { projectName: pn, targetDomain: domain });
+      const aiOut = await runDualAiReports(aiPayload, {
+        projectName: pn,
+        targetDomain: domain,
+        aiProviderMode,
+        onStatus: (message, level = 'info') => log(message, level),
+      });
       pipelineAiOut = aiOut;
       emit({
         type: 'ai_report',
@@ -1506,13 +1591,8 @@ async function runPipeline(ctx) {
         gemini: { ok: Boolean(aiOut.gemini?.ok), error: aiOut.gemini?.error || null },
         openrouter: { ok: Boolean(aiOut.openrouter?.ok), error: aiOut.openrouter?.error || null },
         claude: { ok: Boolean(aiOut.claude?.ok), error: aiOut.claude?.error || null },
+        lmstudio: { ok: Boolean(aiOut.lmstudio?.ok), error: aiOut.lmstudio?.error || null },
       });
-      if (aiOut.gemini?.ok) log('IA Gemini ✓ relatório + próximos passos gravados.', 'success');
-      else if (aiKeysConfigured().gemini) log(`IA Gemini ✗ ${aiOut.gemini?.error || 'falhou'}`, 'warn');
-      if (aiOut.openrouter?.ok) log('IA OpenRouter ✓ relatório + próximos passos gravados.', 'success');
-      else if (aiKeysConfigured().openrouter) log(`IA OpenRouter ✗ ${aiOut.openrouter?.error || 'falhou'}`, 'warn');
-      if (aiOut.claude?.ok) log('IA Claude (Anthropic) ✓ relatório + próximos passos gravados.', 'success');
-      else if (aiKeysConfigured().claude) log(`IA Claude ✗ ${aiOut.claude?.error || 'falhou'}`, 'warn');
       emitIaProximosPassosToLog(aiOut, log);
     } catch (e) {
       emit({
@@ -1647,6 +1727,7 @@ app.post('/api/recon/stream', async (req, res) => {
       outOfScope: req.body?.outOfScope,
       projectName: req.body?.projectName,
       autoAiReports: Boolean(req.body?.autoAiReports),
+      aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
@@ -1690,7 +1771,11 @@ app.post('/api/ai-reports', async (req, res) => {
     return;
   }
   try {
-    const out = await runDualAiReports(payload, { projectName, targetDomain });
+    const out = await runDualAiReports(payload, {
+      projectName,
+      targetDomain,
+      aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
+    });
     const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
     if (whUrl) {
       const picked = pickAiReportForWebhook(out);
@@ -1707,6 +1792,15 @@ app.post('/api/ai-reports', async (req, res) => {
     res.json({ ok: true, ...out });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get('/api/ai/lmstudio-check', async (_req, res) => {
+  try {
+    const out = await probeLmStudioConnection();
+    res.json(out);
+  } catch (e) {
+    res.status(503).json({ ok: false, error: e?.message || String(e) });
   }
 });
 
