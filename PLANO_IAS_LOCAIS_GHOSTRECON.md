@@ -7,7 +7,7 @@ Elevar o nivel tecnico do pipeline adicionando duas IAs locais:
 1. **Shannon (white-box)**: analisa codigo-fonte de repositorios encontrados durante o recon e (no produto original) valida dinamicamente contra a aplicacao em execucao.
 2. **PentestGPT (validacao pos-recon)**: revisa achados finais para aumentar precisao e reduzir ruido.
 
-**Estado do documento:** a maior parte do fluxo Shannon + PentestGPT esta **implementada**; restam melhorias opcionais (TTL workspaces Shannon, testes extra, refinamento do contrato HTTP PentestGPT). A secao [Estado actual da implementacao](#estado-actual-da-implementacao-no-ghostrecon) resume o codigo actual.
+**Estado do documento:** Shannon **runner** completo; PentestGPT no Ghost tem **duas camadas**: (A) **HTTP pos-recon** já ligada ao pipeline; (B) **upstream GreyDGL** em `IAs/PentestGPT/` — agente autónomo Docker/TUI, **distinto** da revisão leve de achados. A Fase 3 do plano detalha B e a ponte oficial.
 
 **Congelamento para testes:** o codigo Shannon upstream **nao** vai no Git do GHOSTRECON (`IAs/shannon/` no `.gitignore`); clona o Keygraph Shannon em `IAs/shannon/` conforme `IAs/README.md`, depois corre recon com modulo `shannon_whitebox` e clone activo.
 
@@ -32,21 +32,34 @@ Elevar o nivel tecnico do pipeline adicionando duas IAs locais:
 - **`server/index.js`**: apos fase `secrets` e clones GitHub, chama `runShannonOnClone` quando o modulo esta activo e `GHOSTRECON_SHANNON_AUTO_RUN` nao desactiva o runner.
 - **`index.html`**: grupo Shannon + no **pipeline bar** no `pipe-shannon`; checkboxes e `shannonPrecheck` / `shannonSkipDepsVerify` no body do stream; textarea **Repos GitHub (manual)** → campo `shannonGithubRepos` (URLs ou `owner/repo`, varias linhas).
 - **`server/tests/shannon-runner.test.js`**: testes de paths e `waitForShannonWorkflowEnd`.
-- **`.gitignore`**: `IAs/shannon/workspaces/`, `IAs/shannon/credentials/`.
+- **`.gitignore`**: pasta inteira `IAs/shannon/` (e `IAs/PentestGPT/`) — clones locais não versionados.
 - **`.env.example`**: `GHOSTRECON_SHANNON_*` (home, timeouts, max clones, report max chars, pipeline testing, auto run).
 
-### PentestGPT — validacao HTTP pos-recon (feito)
+### PentestGPT — Fase 3 no GHOSTRECON (HTTP + diagnostico upstream)
 
-- **`server/modules/pentestgpt-local.js`**: `runPentestGptValidation(payload)` — POST JSON para `GHOSTRECON_PENTESTGPT_URL` com `ghostPayload` (mesmo shape que export IA); interpreta `summary`, `validatedFindings`, `falsePositives` de forma tolerante.
-- **`server/index.js`**: se `modules` incluir `pentestgpt_validate`, apos `pipe('score','done')` corre validacao, injecta findings e actualiza `stats.high`; evento `pipe('pentestgpt', …)`.
-- **`index.html`**: modulo `pentestgpt_validate` e no `pipe-pentestgpt`.
-- **`server/modules/webhook-notify.js`**: Discord inclui linhas opcionais **Shannon** e **PentestGPT** quando ha resumo; JSON generico inclui `shannonSummary` / `pentestgptSummary` no payload.
+**3a — Validacao HTTP pos-recon (feito, generico)**
 
-### O que falta (opcional / hardening)
+- **`server/modules/pentestgpt-local.js`**: `runPentestGptValidation(payload)` — `POST` para `GHOSTRECON_PENTESTGPT_URL` com corpo `{ schemaVersion: 2, source, ghostPayload }`; resposta tolerante (`summary`, `validatedFindings`, `falsePositives`).
+- **`server/index.js`**: modulo `pentestgpt_validate` apos `score`; `pipe('pentestgpt')`; actualiza `stats.high` e findings.
+- **`index.html`**: checkbox + `pipe-pentestgpt`; linha **`pentestgptCapLine`** alimentada por `GET /api/capabilities` → `pentestgpt`.
+- **`server/modules/pentestgpt-capabilities.js`**: `getPentestGptCapabilities({ ghostRoot })` — verifica se `IAs/PentestGPT/` existe (`pyproject.toml`, `Dockerfile`, `Makefile`), **Python 3.12+**, opcionalmente **uv** e **docker** (para o fluxo oficial `make install` / `make connect`).
+- **`GET /api/capabilities`**: inclui objeto **`pentestgpt`** (paralelo a `shannon`).
+- **`server/scripts/pentestgpt-ghost-bridge.mjs`**: servico **Node** opcional em `127.0.0.1:8765` — `POST /validate` recebe `ghostPayload`, chama **OpenRouter** (`OPENROUTER_API_KEY`, modelo `GHOSTRECON_PENTESTGPT_BRIDGE_MODEL`) e devolve JSON compativel com o parser do Ghost; **não** executa o agente Python PentestGPT (útil para testar o módulo sem Docker do upstream).
+- **`server/modules/webhook-notify.js`**: Discord / JSON com resumos Shannon + PentestGPT quando existirem.
 
-1. **Workspaces Shannon**: politica de retencao / prune alinhada ao clone (30 dias) se acumularem em disco.
-2. **PentestGPT**: documentar ou codificar um **schema** fixo do teu servico HTTP (o Ghost aceita JSON flexivel).
-3. **Testes**: mais cobertura em `pentestgpt-local` (mock fetch) e integracao e2e opcional.
+**3b — Upstream PentestGPT (GreyDGL, MIT) em `IAs/PentestGPT/` (operacao manual)**
+
+- **Natureza**: agente **autónomo** orientado a **CTF / máquinas / challenges** (`pentestgpt --target …`, TUI, `make connect` em Docker). **Não** foi desenhado como “revisor de lista de findings OSINT” — o fluxo oficial é Docker-first + `uv` + credenciais (Anthropic, OpenRouter, Claude OAuth, etc.).
+- **Integracao possivel com o Ghost (futuro / avancado)**:
+  - **Curto prazo**: manter **3a** (`GHOSTRECON_PENTESTGPT_URL`) apontando para o **bridge** ou outro microservico teu que chame LLM com o `ghostPayload`.
+  - **Medio prazo**: subprocesso `uv run pentestgpt --target https://ALVO --non-interactive --instruction "$(resumo dos achados)"` com timeout longo e captura de stdout — **sem garantia** de JSON estruturado; custo e tempo elevados; overlap conceptual com Shannon no alvo HTTP.
+  - **Longo prazo**: servico HTTP **dentro** do ecossistema PentestGPT (contrib upstream) que aceite o contrato `ghostPayload` — requer evolucao do projecto GreyDGL.
+
+**3c — O que falta (opcional)**
+
+1. TTL workspaces Shannon; testes mock `pentestgpt-local`.
+2. Schema OpenAPI fixo para o `POST` de validacao (opcional).
+3. **Spawn** controlado do CLI PentestGPT (3b medio prazo) + testes de integracao.
 
 ---
 
@@ -125,6 +138,31 @@ O Ghost deve, apos `COMPLETED`, ler esse Markdown (e opcionalmente os parciais),
 
 ---
 
+## PentestGPT no repositorio (`IAs/PentestGPT/`)
+
+O codigo em `IAs/PentestGPT/` corresponde ao **PentestGPT** publicado na USENIX Security 2024 (**GreyDGL/PentestGPT**, MIT): agente de **pentest / CTF** com **TUI** (Textual), **Docker** como fluxo principal, **Python 3.12+**, dependencias `claude-agent-sdk`, etc.
+
+### Entrada oficial (CLI)
+
+- Comando: `pentestgpt` (definido em `pyproject.toml` → `pentestgpt.interface.main:main`).
+- Argumentos tipicos: `--target <URL|IP|path>`, `--instruction "..."`, `--non-interactive` (sem TUI, tenta resolver o desafio), `--model`, sessoes `--resume` / `--session-id`.
+- O modo **non-interactive** chama `run_pentest()` no core — orientado a **capturar flags** em CTFs, nao a devolver JSON estruturado para consumo automatico pelo Ghost.
+
+### Fluxo Docker (Makefile)
+
+- `make install` — `uv sync` + `docker compose build`.
+- `make config` — autenticacao (Anthropic, OpenRouter, Claude OAuth, LLM local).
+- `make connect` — anexa ao contentor `pentestgpt` (uso interactivo principal).
+
+### Relacao com o GHOSTRECON
+
+| Objectivo no Ghost | Usar |
+|--------------------|------|
+| Revisar achados OSINT apos `score` (leve, JSON) | **`GHOSTRECON_PENTESTGPT_URL`** + `pentestgpt-local.js` — p.ex. **`server/scripts/pentestgpt-ghost-bridge.mjs`** (OpenRouter) ou qualquer API tua. |
+| Correr o **agente** PentestGPT no alvo | **Manual** em `IAs/PentestGPT/` (`make connect` / CLI); integracao **spawn** no pipeline fica como evolucao (ver Fase 3b/3c acima). |
+
+---
+
 ## Fluxo proposto (alto nivel) — actual
 
 1. O Ghost executa recon normal.
@@ -138,11 +176,12 @@ O Ghost deve, apos `COMPLETED`, ler esse Markdown (e opcionalmente os parciais),
 
 ## Onde esta o codigo (referencia)
 
-- `server/index.js` — pipeline, Shannon gate, `runShannonOnClone`, PentestGPT pos-`score`, webhook.
-- `server/modules/shannon-capabilities.js`, `shannon-runner.js`, `pentestgpt-local.js`
-- `server/modules/github.js`, `github-clone.js`, `webhook-notify.js`, `ai-dual-report.js`
-- `index.html` — modulos, pipeline bar, pre-check Shannon
-- `IAs/shannon/` — Shannon Lite (upstream)
+- `server/index.js` — pipeline, Shannon gate, `runShannonOnClone`, PentestGPT pos-`score`, webhook, `GET /api/capabilities` (`shannon` + `pentestgpt`).
+- `server/modules/shannon-capabilities.js`, `shannon-runner.js`, `pentestgpt-local.js`, `pentestgpt-capabilities.js`
+- `server/scripts/pentestgpt-ghost-bridge.mjs` — ponte HTTP opcional para testar `pentestgpt_validate`
+- `server/modules/github.js`, `github-clone.js`, `github-manual-repos.js`, `webhook-notify.js`, `ai-dual-report.js`
+- `index.html` — modulos, pipeline bar, pre-check Shannon, linhas de capabilities Shannon/PentestGPT
+- `IAs/shannon/` — Shannon Lite (upstream); `IAs/PentestGPT/` — PentestGPT GreyDGL (upstream)
 
 ---
 
@@ -154,8 +193,7 @@ O Ghost deve, apos `COMPLETED`, ler esse Markdown (e opcionalmente os parciais),
 
 ### 2) Shannon: codigo + workspaces
 
-- Manter `IAs/shannon/` buildavel.
-- **Feito:** `.gitignore` em `IAs/shannon/workspaces/` e `IAs/shannon/credentials/`.
+- Manter `IAs/shannon/` buildavel (clone local; pasta ignorada no Git do GHOSTRECON).
 
 ### 3) Execucao de processos
 
@@ -184,6 +222,7 @@ O Ghost deve, apos `COMPLETED`, ler esse Markdown (e opcionalmente os parciais),
 | Modulo `shannon_whitebox` | Incluido em `modules[]`; no `pipeline-bar`, no `pipe-shannon`. |
 | `shannonPrecheck` / `shannonSkipDepsVerify` | Corpo do `POST /api/recon/stream`. |
 | `GET /api/capabilities` → `shannon` | Estado Docker / build / imagem. |
+| `GET /api/capabilities` → `pentestgpt` | Pasta `IAs/PentestGPT`, pyproject, Python 3.12+, uv, docker. |
 | `POST /api/shannon/prep` | `{ pullUpstream: true }` + `dockerPullLog`. |
 | Modulo `pentestgpt_validate` | Pos-`score`; requer `GHOSTRECON_PENTESTGPT_URL`; `pipe-pentestgpt`. |
 
@@ -213,7 +252,13 @@ Recomendacao: PentestGPT primeiro; Hexstrike como segunda opiniao opcional.
 
 ### Fase 3 — PentestGPT
 
-**Feito** (`pentestgpt-local.js`, modulo UI, integracao pos-`score`, envs).
+| Sub-fase | Estado |
+|----------|--------|
+| 3a HTTP pos-recon (`pentestgpt-local`, modulo UI, webhook, `ghostPayload`) | **Feito** |
+| 3a1 Diagnostico `getPentestGptCapabilities` + `capabilities.pentestgpt` + linha UI | **Feito** |
+| 3a2 Script `server/scripts/pentestgpt-ghost-bridge.mjs` (OpenRouter → JSON) | **Feito** |
+| 3b Agente upstream Docker/CLI em `IAs/PentestGPT/` | **Manual** (clone + make); nao acoplado ao `runPipeline` |
+| 3c Spawn / servidor nativo PentestGPT com contrato Ghost | **Futuro** |
 
 ### Fase 4 — Persistencia e hardening
 
@@ -228,10 +273,10 @@ Recomendacao: PentestGPT primeiro; Hexstrike como segunda opiniao opcional.
 - [x] `getShannonCapabilities` + `GHOSTRECON_SHANNON_HOME` em `.env.example`.
 - [x] UI modulo `shannon_whitebox` + pre-check + omitir verificacao + log `dockerPullLog`.
 - [x] `POST /api/shannon/prep` + CSRF.
-- [x] `.gitignore`: `IAs/shannon/workspaces/`, `IAs/shannon/credentials/`.
+- [x] `.gitignore`: `IAs/shannon/`, `IAs/PentestGPT/` (pastas upstream completas).
 - [x] `server/modules/shannon-runner.js` + testes basicos.
-- [x] PentestGPT: modulo + POST + findings + webhook Discord.
-- [ ] Opcional: TTL workspaces Shannon; testes mock `pentestgpt-local`; schema HTTP documentado lado servidor receptor.
+- [x] PentestGPT 3a: modulo + POST + findings + webhook + capabilities + bridge Node.
+- [ ] Opcional: TTL workspaces Shannon; testes mock `pentestgpt-local`; spawn CLI PentestGPT (3c).
 
 ---
 
@@ -245,11 +290,13 @@ Recomendacao: PentestGPT primeiro; Hexstrike como segunda opiniao opcional.
 
 - `GHOSTRECON_SHANNON_HOME`, `GHOSTRECON_SHANNON_AUTO_RUN`, `GHOSTRECON_SHANNON_MAX_CLONES_PER_RUN`, `GHOSTRECON_SHANNON_START_TIMEOUT_MS`, `GHOSTRECON_SHANNON_WORKFLOW_TIMEOUT_MS`, `GHOSTRECON_SHANNON_PIPELINE_TESTING`, `GHOSTRECON_SHANNON_REPORT_MAX_CHARS`, etc. (ver `.env.example`).
 
-**PentestGPT**
+**PentestGPT (HTTP + bridge)**
 
-- `GHOSTRECON_PENTESTGPT_URL` — URL completa do POST (obrigatorio para correr).
+- `GHOSTRECON_PENTESTGPT_URL` — URL completa do POST (obrigatorio para o modulo correr), ex. `http://127.0.0.1:8765/validate`.
 - `GHOSTRECON_PENTESTGPT_ENABLED` — default activo; `0` desliga.
 - `GHOSTRECON_PENTESTGPT_TIMEOUT_MS` — default 120000 (max 600000).
+- `GHOSTRECON_PENTESTGPT_HOME` — path absoluto ao clone GreyDGL (default `IAs/PentestGPT`; usado por `getPentestGptCapabilities`).
+- `GHOSTRECON_PENTESTGPT_BRIDGE_PORT` / `GHOSTRECON_PENTESTGPT_BRIDGE_MODEL` — porto e modelo OpenRouter para **`pentestgpt-ghost-bridge.mjs`** (le `OPENROUTER_API_KEY` do `.env`).
 
 **Credenciais Shannon**
 
@@ -260,4 +307,4 @@ Recomendacao: PentestGPT primeiro; Hexstrike como segunda opiniao opcional.
 ## Resultado esperado
 
 - **Shannon**: gate + prep + UI + **runner** com poll de `workflow.log` e ingestao do relatorio em `.shannon/deliverables/`.
-- **PentestGPT**: camada final via **HTTP configuravel**; o operador expoe um endpoint que consome `ghostPayload` e devolve JSON interpretado pelo Ghost.
+- **PentestGPT (no Ghost)**: camada final via **HTTP** (`ghostPayload` → JSON); ponte oficial em **`server/scripts/pentestgpt-ghost-bridge.mjs`** ou servico proprio. O **agente** upstream em `IAs/PentestGPT/` e um fluxo **Docker/CLI** separado (ver seccao dedicada).

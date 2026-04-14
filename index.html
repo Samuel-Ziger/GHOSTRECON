@@ -1544,7 +1544,8 @@
 
       <div class="module-group">
         <div class="module-group-title">// PentestGPT (pós-recon)</div>
-        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Após priorização, o servidor envia um POST JSON para <code>GHOSTRECON_PENTESTGPT_URL</code> (serviço teu: PentestGPT, LM Studio, proxy). Sem URL configurada, o passo é ignorado.</p>
+        <div id="pentestgptCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">PentestGPT: a carregar…</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Após priorização, o servidor envia um POST JSON para <code>GHOSTRECON_PENTESTGPT_URL</code> (serviço teu, p.ex. <code>node server/scripts/pentestgpt-ghost-bridge.mjs</code>). O código do agente GreyDGL fica em <code>IAs/PentestGPT/</code> (Docker + <code>make connect</code>) — ver <code>IAs/README.md</code>. Sem URL, o passo é ignorado.</p>
         <label class="checkbox-item">
           <input type="checkbox" class="mod" value="pentestgpt_validate" id="modPentestgptValidate">
           <div class="checkbox-box"></div>
@@ -2859,12 +2860,27 @@ function applyShannonCapToUI(s) {
   el.title = s.message || '';
 }
 
+function applyPentestgptCapToUI(p) {
+  const el = document.getElementById('pentestgptCapLine');
+  if (!el) return;
+  if (!p) {
+    el.textContent = 'PentestGPT: sem dados do servidor';
+    el.style.color = 'var(--text-dim)';
+    return;
+  }
+  const ch = p.checks || {};
+  el.textContent = `PentestGPT upstream: ${p.ok ? '✓ árvore OK' : '✗ incompleto'} · pasta:${ch.pentestgptHome ? '✓' : '✗'} · pyproject:${ch.pyproject ? '✓' : '✗'} · py3.12+:${ch.python312 ? '✓' : '✗'} · uv:${ch.uv ? '✓' : '✗'} · docker:${ch.docker ? '✓' : '✗'}`;
+  el.style.color = p.ok ? 'var(--accent2)' : 'var(--accent3)';
+  el.title = p.message || '';
+}
+
 async function refreshShannonCapabilities() {
   const res = await fetch(apiUrl('/api/capabilities'));
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const c = await res.json();
   window.__shannonCap = c.shannon || null;
   applyShannonCapToUI(c.shannon);
+  applyPentestgptCapToUI(c.pentestgpt);
   return c.shannon;
 }
 
@@ -2938,6 +2954,7 @@ async function fetchKaliCapabilities() {
     }
     window.__shannonCap = c.shannon || null;
     applyShannonCapToUI(c.shannon);
+    applyPentestgptCapToUI(c.pentestgpt);
   } catch (e) {
     if (line) {
       line.style.color = 'var(--accent3)';
@@ -2954,6 +2971,7 @@ async function fetchKaliCapabilities() {
       aiEl.style.color = 'var(--accent3)';
     }
     applyShannonCapToUI(null);
+    applyPentestgptCapToUI(null);
   }
 }
 

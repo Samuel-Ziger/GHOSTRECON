@@ -74,6 +74,7 @@ import {
 } from './modules/shannon-capabilities.js';
 import { runShannonOnClone, shannonMaxClonesPerRun } from './modules/shannon-runner.js';
 import { runPentestGptValidation } from './modules/pentestgpt-local.js';
+import { getPentestGptCapabilities } from './modules/pentestgpt-capabilities.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1967,9 +1968,22 @@ app.get('/api/capabilities', async (_req, res) => {
     } catch (e) {
       shannon = { ok: false, home: '', checks: {}, message: e?.message || String(e), prepHints: {} };
     }
-    res.json({ ...cap, ai: aiKeysConfigured(), shannon });
+    let pentestgpt = null;
+    try {
+      pentestgpt = await getPentestGptCapabilities({ ghostRoot: ROOT });
+    } catch (e) {
+      pentestgpt = { ok: false, home: '', checks: {}, message: e?.message || String(e), prepHints: {} };
+    }
+    res.json({ ...cap, ai: aiKeysConfigured(), shannon, pentestgpt });
   } catch (e) {
-    res.status(500).json({ kali: false, message: e.message, tools: {}, ai: aiKeysConfigured(), shannon: null });
+    res.status(500).json({
+      kali: false,
+      message: e.message,
+      tools: {},
+      ai: aiKeysConfigured(),
+      shannon: null,
+      pentestgpt: null,
+    });
   }
 });
 
