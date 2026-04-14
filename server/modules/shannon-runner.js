@@ -41,6 +41,41 @@ export function shannonEmitOpenTemporalUrl() {
   return parseBoolEnv(process.env.GHOSTRECON_SHANNON_OPEN_TEMPORAL_UI, true);
 }
 
+/** Espelha o output do CLI na stream NDJSON (log) da UI. `GHOSTRECON_SHANNON_MIRROR_CLI=0` desliga. */
+export function shannonMirrorCliToGhostLog() {
+  return parseBoolEnv(process.env.GHOSTRECON_SHANNON_MIRROR_CLI, true);
+}
+
+function stripAnsi(text) {
+  return String(text).replace(/\u001b\[[\d;?]*[ -/]*[@-~]/g, '');
+}
+
+/**
+ * Acumula chunks e emite linhas completas via `onLine` (NDJSON `log` no Ghost).
+ * @param {(line: string) => void} onLine
+ */
+function createCliLineForwarder(onLine) {
+  let buf = '';
+  return {
+    push(chunk) {
+      buf += stripAnsi(String(chunk)).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      for (;;) {
+        const i = buf.indexOf('\n');
+        if (i < 0) break;
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        const out = line.length > 2400 ? `${line.slice(0, 2400)}…` : line;
+        onLine(out.length ? out : ' ');
+      }
+    },
+    flush() {
+      const t = buf.trimEnd();
+      buf = '';
+      if (t) onLine(t.length > 2400 ? `${t.slice(0, 2400)}…` : t);
+    },
+  };
+}
+
 /**
  * Extrai a primeira URL Temporal do buffer; dedupe por `seen`.
  * @param {string} buffer
@@ -176,6 +211,20 @@ export async function runShannonOnClone(opts) {
     log?.(`Shannon: start → workspace=${workspaceId}`, 'info');
     log?.(`Shannon: URL=${targetUrl} repo=${clonePath}`, 'info');
 
+    const mirrorCli = shannonMirrorCliToGhostLog();
+    const cliSink =
+      mirrorCli && emit
+        ? (line) => emit({ type: 'shannon_cli', line })
+        : mirrorCli && typeof log === 'function'
+          ? (line) => log(line, 'info')
+          : null;
+    const fwdOut = cliSink ? createCliLineForwarder(cliSink) : null;
+    const fwdErr = cliSink ? createCliLineForwarder(cliSink) : null;
+
+    if (mirrorCli && emit) {
+      emit({ type: 'log', msg: '── Shannon CLI (espelho stdout/stderr) ──', level: 'section' });
+    }
+
     const child = spawn(process.execPath, [shannonScript, ...args], {
       cwd: shannonHome,
       env: { ...process.env, SHANNON_LOCAL: '1' },
@@ -199,11 +248,15 @@ export async function runShannonOnClone(opts) {
     };
 
     child.stdout?.on('data', (d) => {
-      stdout += String(d);
+      const s = String(d);
+      stdout += s;
+      fwdOut?.push(s);
       tryEmitTemporalFromChildOutput();
     });
     child.stderr?.on('data', (d) => {
-      stderr += String(d);
+      const s = String(d);
+      stderr += s;
+      fwdErr?.push(s);
       tryEmitTemporalFromChildOutput();
     });
 
@@ -225,6 +278,9 @@ export async function runShannonOnClone(opts) {
         resolve(code ?? 0);
       });
     });
+
+    fwdOut?.flush();
+    fwdErr?.flush();
 
     if (startExit !== 0) {
       const tail = `${stderr}\n${stdout}`.trim().slice(-4000);

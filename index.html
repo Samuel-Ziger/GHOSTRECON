@@ -664,6 +664,22 @@
   .term-find .term-prefix { color: #ff88dd; }
   .term-section { color: var(--text-dim); border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
 
+  .term-line.term-shannon-cli {
+    display: block;
+    margin: 0;
+    padding-left: 2px;
+  }
+  .term-shannon-pre {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.35;
+    white-space: pre;
+    overflow-x: auto;
+    word-break: normal;
+    color: var(--text-bright);
+  }
+
   .cursor {
     display: inline-block;
     width: 8px;
@@ -1916,6 +1932,23 @@ setInterval(() => {
 // ─── LOG SYSTEM ──────────────────────────────────────────
 let logStarted = false;
 
+/** Saída espelhada do CLI Shannon (sem prefixo de tempo — alinha arte ASCII). */
+function addLogShannonCliLine(line) {
+  const el = document.getElementById('termContent');
+  if (!logStarted) {
+    el.innerHTML = '';
+    logStarted = true;
+  }
+  const div = document.createElement('div');
+  div.className = 'term-line term-shannon-cli';
+  const pre = document.createElement('pre');
+  pre.className = 'term-shannon-pre';
+  pre.textContent = line === ' ' ? ' ' : String(line ?? '');
+  div.appendChild(pre);
+  el.appendChild(div);
+  el.parentElement.scrollTop = el.parentElement.scrollHeight;
+}
+
 function addLog(msg, type = 'info') {
   const el = document.getElementById('termContent');
   if (!logStarted) { el.innerHTML = ''; logStarted = true; }
@@ -2330,6 +2363,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
 
+      if (ev.type === 'shannon_cli' && ev.line != null) addLogShannonCliLine(ev.line);
       if (ev.type === 'log') addLog(ev.msg, ev.level || 'info');
       if (ev.type === 'progress') setProgress(ev.pct);
       if (ev.type === 'pipe') setPipe(ev.name, ev.state);
