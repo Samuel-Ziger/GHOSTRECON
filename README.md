@@ -2,6 +2,8 @@
 
 Framework de **OSINT e reconhecimento** orientado a **bug bounty** e pentest autorizado. Combina recolha **passiva** (Certificate Transparency, arquivos web, DNS, cabeçalhos, TLS, APIs públicas) com fases **semi‑ativas** (HTTP GET de probing, verificação heurística com evidência) e, opcionalmente, **modo Kali** (nmap, nuclei, ffuf, wpscan, dalfox, whois, searchsploit). Inclui **priorização**, **correlação**, **templates de relatório**, **deduplicação** de achados, persistência em **SQLite** ou **Postgres/Supabase**, **comparação entre runs**, **webhooks** (incluindo **Discord**), e **relatórios em Markdown gerados por IA** (Gemini, OpenRouter ou Anthropic).
 
+Opcionalmente integra **clone local de repositórios GitHub** (com URLs manuais na UI para programas de bug bounty), **Shannon Lite** em `IAs/shannon/` (white-box: `shannon start`, poll de `workflow.log`, relatório em `.shannon/deliverables/`, abertura da **Temporal Web UI** no browser), e **validação HTTP pós-recon** (**PentestGPT** ou qualquer serviço que aceite o payload exportado).
+
 A interface é uma página estática **`index.html`** servida pelo **Express**; o pipeline corre no servidor e envia eventos em **NDJSON** para o browser.
 
 ---
@@ -90,9 +92,11 @@ Activada se qualquer um de: `security_headers`, `robots_sitemap`, `wellknown_*`.
 - `dorks.js` gera queries por categoria (directory, config, login, passwords, etc. conforme checkboxes). Cada dork é enviado ao cliente como evento `dork` **e** gravado como finding `dork`.
 - **Google CSE** (`google_cse` + `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX`): executa até `googleCseMaxQueries` queries com delay; URLs cujo host está no escopo viram `endpoint`.
 
-### 16. GitHub e Pastebin
+### 16. GitHub, clone local e Pastebin
 
-- **GitHub** (`github`): Code Search API com token opcional `GITHUB_TOKEN`; resultados como `secret` (revisão manual).
+- **GitHub** (`github`): **Code Search** com token opcional `GITHUB_TOKEN` — findings `secret` (revisão manual). **Repo Search** sugere repositórios candidatos.
+- **Clone local** (`GHOSTRECON_GITHUB_CLONE_ENABLED`, pasta `clone/` na raiz, ignorada no Git): até `GHOSTRECON_CLONE_MAX_REPOS` repos com `git clone --depth 1`, limites de tamanho/timeout e **retenção** (`GHOSTRECON_CLONE_RETENTION_DAYS`, default 30 dias). Os clones bem-sucedidos geram findings `intel` com o caminho no disco e alimentam o **Shannon white-box** quando esse módulo está activo.
+- **Repos manuais (UI Shannon)**: campo de texto `shannonGithubRepos` no `POST /api/recon/stream` — uma **URL** `https://github.com/org/repo` (ou ramos `/tree/...`), **`org/repo`**, ou várias linhas / separadas por vírgula ou `;`. São fundidos na lista de candidatos ao clone (entradas manuais têm prioridade sobre a mesma `full_name`). Com **só** o módulo **Shannon white-box** (sem «GitHub leaks»), o servidor pode clonar **apenas** esses repos, útil quando o programa fornece o link do código.
 - **Pastebin** (`pastebin`): não há API fiável — apenas log a orientar uso dos dorks.
 
 ### 17. Validação de secrets (`secret_validation`)
@@ -153,11 +157,19 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - Cascata de execução (run automático): **Gemini** (até 3 tentativas, espera fixa padrão 60s entre falhas) → **OpenRouter** (1 tentativa) → **Claude** (1 tentativa) → **LM Studio** (último recurso, se activo no `.env`).
 - UI: opção **"LM Studio no final (pré-check obrigatório)"** — valida o LM Studio antes do recon; no servidor o LM Studio **só corre** se todos os providers cloud anteriores falharem (útil porque modelos locais podem demorar muito em *reasoning*).
 - **`GHOSTRECON_AI_AUTO=0`**: desliga geração automática no fim do pipeline (podes usar `POST /api/ai-reports` com payload exportado).
-- **`GET /api/capabilities`**: inclui `ai: { gemini, openrouter, claude, lmstudio, any }` e, quando existe `IAs/shannon`, o bloco `shannon` (Docker, build CLI, imagem worker). Módulo **`pentestgpt_validate`**: após priorização, POST para `GHOSTRECON_PENTESTGPT_URL` (ver `.env.example`).
+- **`GET /api/capabilities`**: inclui `ai: { gemini, openrouter, claude, lmstudio, any }` e, quando existe `IAs/shannon`, o bloco `shannon` (Docker, build CLI, imagem `shannon-worker`, etc.).
 
-### 26. Webhook
+### 26. Shannon Lite (white-box), Temporal e PentestGPT (opcional)
 
-- **`GHOSTRECON_WEBHOOK_URL`**: após gravar run, envia resumo (JSON genérico **ou** mensagem formatada **Discord**).
+- **Código Shannon**: não está versionado neste repo. Clona o upstream em **`IAs/shannon/`** (instruções em **`IAs/README.md`**; detalhe de arquitectura em **`PLANO_IAS_LOCAIS_GHOSTRECON.md`**). Requer Docker, build (`pnpm` / `./shannon build`) e credencial de IA no ecossistema Shannon (ex. `ANTHROPIC_API_KEY` no `.env` do Shannon).
+- **Módulo `shannon_whitebox`**: após a fase **secrets**, se existirem clones neste run e **`GHOSTRECON_SHANNON_AUTO_RUN`** não for `0`, o servidor corre **`shannon start`** (via `node …/shannon`) com `-u https://<alvo>/`, `-r <clone absoluto>`, `-w ghostrecon-…`, opcional **`--pipeline-testing`** (`GHOSTRECON_SHANNON_PIPELINE_TESTING=1`). Uma **fila global** serializa scans. O fim do trabalho segue **`workflow.log`** no workspace (não o exit imediato do processo `start`). Lê **`comprehensive_security_assessment_report.md`** em `<clone>/.shannon/deliverables/` e emite findings `intel`.
+- **UI / pré-check**: linha de estado Shannon, `shannonPrecheck` (default activo) e `shannonSkipDepsVerify` no POST; se o pré-check falhar, o recon é recusado com `error` NDJSON. Botão **Docker pull** chama `POST /api/shannon/prep` e imprime `dockerPullLog` no terminal. **`GHOSTRECON_SHANNON_HOME`**: path absoluto alternativo ao Shannon.
+- **Temporal Web UI**: quando o CLI imprime `http://localhost:8233/...`, o servidor envia **`open_url`** na stream; a UI abre numa nova aba (como os dorks). Desliga com **`GHOSTRECON_SHANNON_OPEN_TEMPORAL_UI=0`**.
+- **PentestGPT / validação HTTP**: módulo **`pentestgpt_validate`**. Após **`score`**, `POST` JSON para **`GHOSTRECON_PENTESTGPT_URL`** com `ghostPayload` (mesmo shape que o export para IA). Resposta tolerante: `summary`, `validatedFindings`, `falsePositives`. **`GHOSTRECON_PENTESTGPT_ENABLED`**, **`GHOSTRECON_PENTESTGPT_TIMEOUT_MS`**. Sem URL, o passo é ignorado.
+
+### 27. Webhook
+
+- **`GHOSTRECON_WEBHOOK_URL`**: após gravar run, envia resumo (JSON genérico **ou** mensagem formatada **Discord**). No Discord, o resumo pode incluir linhas opcionais **Shannon** e **PentestGPT** quando há texto resumido; o JSON genérico inclui `shannonSummary` e `pentestgptSummary` no payload.
 - Após IA: segundo POST — Discord com **embeds** (relatório + próximos passos) ou JSON `kind: ai_report`.
 
 ---
@@ -169,6 +181,8 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - **Nome de projeto**: pasta local opcional para SQLite espelhado.
 - **Modo Kali**, módulos por categorias (Fontes, OSINT, Secrets, etc.).
 - **Fila de dorks**: delay e máximo de abas para abrir Google no browser.
+- **Shannon (sidebar)**: módulo **`shannon_whitebox`**, pré-check de dependências, omitir verificação, **repos GitHub (manual)** (textarea → `shannonGithubRepos`), botão **Docker pull** (prep), barra de pipeline com **`pipe-shannon`**.
+- **PentestGPT (sidebar)**: módulo **`pentestgpt_validate`** e **`pipe-pentestgpt`** na barra.
 - **Dismiss** de findings por fingerprint (`localStorage`).
 - **Exportação** no browser: **JSON** (payload alinhado com o servidor para IA), **Markdown**, **TXT**.
 - **Auth opcional**: `localStorage` `ghostrecon_auth_json` → enviado como `auth` (headers + cookie) para probe/verify.
@@ -216,7 +230,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 | `GET` | `/api/health` | `{ ok, service }` |
 | `GET` | `/api/csrf-token` | Token CSRF (vinculado ao IP, TTL ~2 h) |
 | `GET` | `/api/capabilities` | Kali, PATH, chaves IA, objeto `shannon` (Shannon Lite local) |
-| `POST` | `/api/shannon/prep` | CSRF; `{ "pullUpstream": true }` → `docker pull` com `dockerPullLog` na resposta |
+| `POST` | `/api/shannon/prep` | Header `X-CSRF-Token`; corpo `{ "pullUpstream": true }` → `docker pull keygraph/shannon:latest`; resposta inclui `dockerPullLog` |
 | `GET` | `/api/ai/lmstudio-check` | Testa conexão com LM Studio local (pré-check da UI) |
 | `POST` | `/api/recon/stream` | Corpo JSON (ver abaixo); resposta **NDJSON** |
 | `POST` | `/api/ai-reports` | Gera relatórios IA a partir de `payload` (export JSON); opcional webhook |
@@ -233,14 +247,26 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
   "exactMatch": false,
   "kaliMode": false,
   "profile": "standard",
-  "modules": ["subdomains", "wayback", "security_headers"],
+  "modules": ["subdomains", "wayback", "security_headers", "github", "shannon_whitebox", "pentestgpt_validate"],
   "auth": { "headers": {}, "cookie": "" },
   "outOfScope": "staging.example.com, *.cdn.example.com",
   "projectName": "cliente_x",
   "autoAiReports": false,
-  "aiProviderMode": "auto"
+  "aiProviderMode": "auto",
+  "shannonPrecheck": true,
+  "shannonSkipDepsVerify": false,
+  "shannonGithubRepos": "https://github.com/org/programa-bounty\norg/outro-repo"
 }
 ```
+
+Campos opcionais frequentes:
+
+| Campo | Descrição |
+|--------|-----------|
+| `shannonPrecheck` | `false` desactiva a validação de dependências Shannon no **servidor** (não recomendado). |
+| `shannonSkipDepsVerify` | `true` — o servidor não bloqueia o recon se o Shannon não estiver pronto. |
+| `shannonGithubRepos` | String multilinha: URLs GitHub e/ou `owner/repo` para **clone manual** (bug bounty). |
+| `modules` | Incluir `"pentestgpt_validate"` para validação HTTP pós-`score` (requer `GHOSTRECON_PENTESTGPT_URL`). |
 
 Cabeçalho: `X-CSRF-Token: <token>`.
 
@@ -256,7 +282,18 @@ Cabeçalho: `X-CSRF-Token: <token>`.
 |----------|-----|
 | `PORT` | Porta HTTP (default `3847`) |
 | `HOST` | Bind address (default `127.0.0.1`) |
-| `GITHUB_TOKEN` | Rate limit GitHub Code Search |
+| `GITHUB_TOKEN` | Rate limit GitHub Code Search e Repo Search |
+| `GHOSTRECON_GITHUB_CLONE_ENABLED` | `1` (default) ou `0` — clone local de repos candidatos para `clone/` |
+| `GHOSTRECON_CLONE_DIR` / `GHOSTRECON_CLONE_MAX_REPOS` / `GHOSTRECON_CLONE_MAX_SIZE_MB` / `GHOSTRECON_CLONE_TIMEOUT_MS` / `GHOSTRECON_CLONE_RETENTION_DAYS` | Pasta, quantidade, MB máx., timeout clone, dias de retenção |
+| `GHOSTRECON_SHANNON_HOME` | Path absoluto ao root do Shannon Lite (default `IAs/shannon` sob a raiz do GHOSTRECON) |
+| `GHOSTRECON_SHANNON_AUTO_RUN` | `0` — não executar `./shannon start` após clone (só diagnóstico / clone) |
+| `GHOSTRECON_SHANNON_MAX_CLONES_PER_RUN` | Máximo de clones a analisar com Shannon por run (default 1, cap 5) |
+| `GHOSTRECON_SHANNON_START_TIMEOUT_MS` / `GHOSTRECON_SHANNON_WORKFLOW_TIMEOUT_MS` | Timeout do arranque do CLI e espera pelo `workflow.log` |
+| `GHOSTRECON_SHANNON_PIPELINE_TESTING` | `1` — passa `--pipeline-testing` ao Shannon (mais rápido para desenvolvimento) |
+| `GHOSTRECON_SHANNON_REPORT_MAX_CHARS` | Truncagem ao ler o relatório Markdown consolidado |
+| `GHOSTRECON_SHANNON_OPEN_TEMPORAL_UI` | `0` — não emitir `open_url` para a Temporal Web UI |
+| `GHOSTRECON_PENTESTGPT_URL` | URL do `POST` de validação pós-recon (módulo `pentestgpt_validate`) |
+| `GHOSTRECON_PENTESTGPT_ENABLED` / `GHOSTRECON_PENTESTGPT_TIMEOUT_MS` | Activar serviço e timeout HTTP |
 | `GOOGLE_CSE_KEY` / `GOOGLE_CSE_CX` | Google Programmable Search (módulo `google_cse`) |
 | `GHOSTRECON_DB` | Caminho SQLite global (default `data/bugbounty.db`) |
 | `DATABASE_URL` | Postgres directo (prioridade sobre API Supabase) |
@@ -343,12 +380,18 @@ GHOSTRECON/
 ├── .env.example
 ├── Dockerfile
 ├── README.md
+├── PLANO_IAS_LOCAIS_GHOSTRECON.md   # Plano Shannon / PentestGPT / clone
+├── IAs/
+│   └── README.md              # Como clonar Shannon (pasta IAs/shannon/ ignorada no Git)
+├── clone/                     # Clones git (ignorado no Git; criado em runtime)
 ├── supabase/                  # CLI, migrações, SQL para editor
 └── server/
     ├── index.js               # Express, rotas, pipeline
     ├── load-env.js            # Carrega .env da raiz do repo
     ├── config.js              # Limites, regex “interesting”, UA
-    └── modules/               # Um ficheiro por domínio (subdomains, probe, verify, kali-scan, …)
+    └── modules/               # subdomains, probe, verify, kali-scan, github, github-clone,
+                               # github-manual-repos, shannon-capabilities, shannon-runner,
+                               # pentestgpt-local, webhook-notify, …
 ```
 
 ---
@@ -357,10 +400,11 @@ GHOSTRECON/
 
 - **Novos dorks**: `server/modules/dorks.js` + checkbox em `index.html` com `class="mod"` e o mesmo `value`.
 - **Nova fonte passiva**: novo módulo em `modules/`, import e chamada em `runPipeline` com eventos `pipe`/`log` coerentes.
+- **Shannon / PentestGPT**: ver `PLANO_IAS_LOCAIS_GHOSTRECON.md`; rotas `GET /api/capabilities`, `POST /api/shannon/prep` (CSRF); novos env em `.env.example`.
 - **Limites**: `server/config.js`.
 
 ---
 
 ## Aviso legal
 
-Utiliza apenas contra alvos **autorizados**. O modo passivo ainda gera tráfego HTTP e consultas a terceiros (crt.sh, Archive.org, Google APIs, GitHub, etc.); o **modo Kali** é **intrusivo**. Cumpre os termos dos programas de bug bounty e a legislação aplicável.
+Utiliza apenas contra alvos **autorizados**. O modo passivo ainda gera tráfego HTTP e consultas a terceiros (crt.sh, Archive.org, Google APIs, GitHub, etc.); o **modo Kali** é **intrusivo**. O **Shannon Lite** executa análise white-box e fluxos de pentest autónomo (Docker, Temporal, possíveis testes activos contra a aplicação) — só com programa e permissões explícitas. Cumpre os termos dos programas de bug bounty e a legislação aplicável.
