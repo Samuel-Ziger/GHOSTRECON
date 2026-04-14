@@ -1559,7 +1559,7 @@ async function runPipeline(ctx) {
 
   if (autoAiReports && aiAutoReportsServerAllowed() && aiKeysConfigured().any) {
     emit({ type: 'ai_report', phase: 'start', target: domain });
-    log('IA: recon concluído — a gerar relatórios (Gemini e/ou Claude) com o JSON deste run…', 'info');
+    log('IA: recon concluído — a gerar relatórios (Gemini → OpenRouter → Claude → LM Studio) com o JSON deste run…', 'info');
     const pn = String(projectNameRaw || '').trim();
     const aiPayload = buildPipelineExportPayloadForAi({
       target: domain,

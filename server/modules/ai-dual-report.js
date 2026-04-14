@@ -48,6 +48,26 @@ Regras: usar só dados do JSON, sem inventar, português, conciso.
 Limites: relatorio <= ${maxRelatorio} chars; proximos_passos <= ${maxProximos} chars.`;
 }
 
+function lmStudioMaxOutputTokensForCtx(nCtx) {
+  const req = Number(
+    process.env.GHOSTRECON_LMSTUDIO_MAX_OUTPUT_TOKENS ?? process.env.GHOSTRECON_LMSTUDIO_MAX_TOKENS ?? 1024,
+  );
+  const cap = Math.max(256, nCtx - 1536);
+  return Math.max(128, Math.min(req, cap));
+}
+
+/**
+ * Orçamento conservador de caracteres (JSON + instrução user) para caber no n_ctx do LM Studio.
+ * Tokens reais variam; usa margem para system + reasoning.
+ */
+function lmStudioSafeMaxChars() {
+  const nCtx = Math.max(2048, Math.min(262144, Number(process.env.GHOSTRECON_LMSTUDIO_N_CTX || 4096)));
+  const maxOut = lmStudioMaxOutputTokensForCtx(nCtx);
+  const promptTokBudget = Math.max(256, nCtx - maxOut - 400);
+  const est = Math.floor(promptTokBudget * Number(process.env.GHOSTRECON_LMSTUDIO_CHARS_PER_TOKEN || 1.45));
+  return Math.max(1200, Math.min(200000, est));
+}
+
 const MAX_PAYLOAD_CHARS = 900_000;
 
 function shrinkPayload(obj) {
@@ -311,12 +331,15 @@ export async function callClaude(userText, apiKey, model) {
 
 /** OpenAI-compatible local endpoint (LM Studio). */
 export async function callLmStudio(userText, model, opts = {}) {
-  const system = opts.systemPrompt != null ? opts.systemPrompt : buildAiSystemPrompt();
+  const system =
+    opts.systemPrompt != null ? opts.systemPrompt : buildAiSystemPromptCompact();
   const baseUrl = String(process.env.GHOSTRECON_LMSTUDIO_BASE_URL || 'http://127.0.0.1:1234/v1').trim();
   const apiKey = String(process.env.GHOSTRECON_LMSTUDIO_API_KEY || '').trim();
-  const maxTokens = Math.max(
-    256,
-    Math.min(16384, Number(process.env.GHOSTRECON_LMSTUDIO_MAX_TOKENS || 8192)),
+  const nCtx = Math.max(2048, Math.min(262144, Number(process.env.GHOSTRECON_LMSTUDIO_N_CTX || 4096)));
+  const maxTokens = lmStudioMaxOutputTokensForCtx(nCtx);
+  const timeoutMs = Math.max(
+    30000,
+    Math.min(3600000, Number(process.env.GHOSTRECON_LMSTUDIO_TIMEOUT_MS || 900000)),
   );
   const temperature = Number.isFinite(Number(process.env.GHOSTRECON_LMSTUDIO_TEMPERATURE))
     ? Math.max(0, Math.min(2, Number(process.env.GHOSTRECON_LMSTUDIO_TEMPERATURE)))
@@ -336,7 +359,7 @@ export async function callLmStudio(userText, model, opts = {}) {
       temperature,
       max_tokens: maxTokens,
     }),
-    signal: AbortSignal.timeout(180000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -350,7 +373,13 @@ export async function callLmStudio(userText, model, opts = {}) {
   else if (Array.isArray(content)) {
     t = content.map((p) => (typeof p === 'string' ? p : p?.text || '')).join('');
   }
-  if (!t) throw new Error('LM Studio sem texto na resposta');
+  if (!t) {
+    const err = new Error(
+      'LM Studio sem texto na resposta (content vazio; modelo pode estar em reasoning longo ou pedido foi cancelado por timeout).',
+    );
+    err.lmStudioEmptyResponse = true;
+    throw err;
+  }
   return t;
 }
 
@@ -370,7 +399,28 @@ export async function probeLmStudioConnection() {
 
 function isLmStudioContextError(err) {
   const msg = String(err?.message || err || '').toLowerCase();
-  return msg.includes('n_keep') || msg.includes('n_ctx') || msg.includes('context length');
+  return (
+    msg.includes('n_keep')
+    || msg.includes('n_ctx')
+    || msg.includes('context length')
+    || msg.includes('exceeds the available context')
+    || msg.includes('available context size')
+    || msg.includes('channel error')
+  );
+}
+
+function isLmStudioRetryablePayloadError(err) {
+  if (!err) return false;
+  if (err.name === 'AbortError') return true;
+  if (err.lmStudioEmptyResponse) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return (
+    isLmStudioContextError(err)
+    || msg.includes('timeout')
+    || msg.includes('sem texto na resposta')
+    || msg.includes('disconnected')
+    || msg.includes('abort')
+  );
 }
 
 /** Conteúdo user só com o JSON (system já leva as regras no Claude). */
@@ -387,8 +437,10 @@ function clampText(s, max = 240) {
   return t.length > max ? `${t.slice(0, Math.max(0, max - 1))}…` : t;
 }
 
-function shrinkPayloadForLmStudio(obj, maxChars = 14000) {
-  const max = Math.max(4000, Math.min(120000, Number(maxChars) || 14000));
+function shrinkPayloadForLmStudio(obj, maxChars) {
+  const cap = lmStudioSafeMaxChars();
+  const requested = Number.isFinite(Number(maxChars)) ? Number(maxChars) : cap;
+  const max = Math.max(800, Math.min(120000, Math.min(requested, cap)));
   let o = JSON.parse(JSON.stringify(obj));
   if (!Array.isArray(o.findings)) o.findings = [];
   let s = JSON.stringify(o);
@@ -446,7 +498,8 @@ function resolveOutputDir(projectName, targetDomain) {
 
 /**
  * @param {object} payload — export completo do pipeline (UI)
- * @returns {{ outputDir: string, gemini: object, openrouter: object, claude: object, pipelineJsonPath: string }}
+ * @param {string} [aiProviderMode] — reservado; `lmstudio_only` na UI só activa pré-check (ordem no servidor: cloud → LM no fim).
+ * @returns {{ outputDir: string, gemini: object, openrouter: object, claude: object, lmstudio: object, pipelineJsonPath: string }}
  */
 export async function runDualAiReports(payload, { projectName, targetDomain, onStatus, aiProviderMode } = {}) {
   const geminiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_AI_API_KEY?.trim();
@@ -461,7 +514,7 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
     process.env.GHOSTRECON_OPENROUTER_MODEL?.trim() || 'anthropic/claude-3.5-sonnet';
   const claudeModel = process.env.GHOSTRECON_CLAUDE_MODEL?.trim() || 'claude-3-5-sonnet-20241022';
   const lmStudioModel = process.env.GHOSTRECON_LMSTUDIO_MODEL?.trim() || 'local-model';
-  const mode = String(aiProviderMode || 'auto').trim().toLowerCase();
+  void aiProviderMode;
 
   const { payload: p, json: jsonStr } = shrinkPayload(payload);
   const outputDir = resolveOutputDir(projectName, targetDomain);
@@ -471,7 +524,11 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
 
   const userBlockGemini = buildUserContent(jsonStr);
   const secondUser = buildClaudeUserPayloadJsonOnly(jsonStr);
-  const lmStudioInputChars = Number(process.env.GHOSTRECON_LMSTUDIO_MAX_INPUT_CHARS || 14000);
+  const lmCap = lmStudioSafeMaxChars();
+  const lmStudioInputCharsRaw = Number(process.env.GHOSTRECON_LMSTUDIO_MAX_INPUT_CHARS);
+  const lmStudioInputChars = Number.isFinite(lmStudioInputCharsRaw)
+    ? Math.min(lmCap, lmStudioInputCharsRaw)
+    : lmCap;
   const secondUserLmStudio = buildClaudeUserPayloadJsonOnly(
     shrinkPayloadForLmStudio(p, lmStudioInputChars),
   );
@@ -535,16 +592,18 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
 
   const lmTryChars = [
     lmStudioInputChars,
-    Math.min(lmStudioInputChars, 7000),
-    Math.min(lmStudioInputChars, 3500),
-  ].filter((v, i, arr) => v > 0 && arr.indexOf(v) === i);
+    Math.floor(lmStudioInputChars * 0.55),
+    Math.floor(lmStudioInputChars * 0.32),
+    Math.min(2200, lmCap),
+  ].filter((v, i, arr) => v >= 800 && arr.indexOf(v) === i);
 
   const tryLmStudioReport = async () => {
     let lastErr = null;
     for (let i = 0; i < lmTryChars.length; i++) {
       const maxChars = lmTryChars[i];
-      const userText = i === 0 ? secondUserLmStudio : buildClaudeUserPayloadJsonOnly(shrinkPayloadForLmStudio(p, maxChars));
-      const systemPrompt = i === 0 ? buildAiSystemPrompt() : buildAiSystemPromptCompact();
+      const userText =
+        i === 0 ? secondUserLmStudio : buildClaudeUserPayloadJsonOnly(shrinkPayloadForLmStudio(p, maxChars));
+      const systemPrompt = buildAiSystemPromptCompact();
       try {
         const raw = await callLmStudio(userText, lmStudioModel, { systemPrompt });
         fs.writeFileSync(path.join(outputDir, 'lmstudio_raw.txt'), raw, 'utf8');
@@ -554,10 +613,15 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
         return true;
       } catch (e) {
         lastErr = e;
-        if (!isLmStudioContextError(e)) break;
+        if (!isLmStudioRetryablePayloadError(e)) break;
         if (i < lmTryChars.length - 1) {
+          const reason = isLmStudioContextError(e)
+            ? 'contexto excedido'
+            : e?.name === 'AbortError' || String(e?.message || '').toLowerCase().includes('timeout')
+              ? 'timeout'
+              : 'resposta inválida ou vazia';
           status(
-            `IA LM Studio: contexto excedido (tentativa ${i + 1}/${lmTryChars.length}). A reduzir payload e tentar novamente…`,
+            `IA LM Studio: ${reason} (tentativa ${i + 1}/${lmTryChars.length}). A reduzir payload ou aguardar nova tentativa…`,
             'warn',
           );
         }
@@ -574,73 +638,45 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
     return false;
   };
 
-  // Modo "lmstudio_only" agora significa: tentar LM Studio primeiro;
-  // se falhar, seguir para os providers cloud em cascata.
-  if (mode === 'lmstudio_only' && lmStudioEnabled) {
-    status('IA LM Studio: tentativa prioritária (antes dos providers cloud)…', 'info');
-    try {
-      const ok = await tryLmStudioReport();
-      if (ok) {
-      status('IA LM Studio: sucesso. Providers cloud não serão executados.', 'success');
-      } else {
-        status(`IA LM Studio: falhou (${result.lmstudio.error}). A continuar com fallback cloud…`, 'warn');
-      }
-    } catch (e) {
-      result.lmstudio = {
-        ok: false,
-        error: e?.message || String(e),
-        relatorio: null,
-        proximos_passos: null,
-        relatorioPath: null,
-        proximosPath: null,
-      };
-      status(`IA LM Studio: falhou (${result.lmstudio.error}). A continuar com fallback cloud…`, 'warn');
-    }
-  }
+  const cloudOk = () =>
+    result.gemini.ok === true || result.openrouter.ok === true || result.claude.ok === true;
 
+  // Cascata: 1) Gemini (3×)  2) OpenRouter  3) Claude  4) LM Studio (lento — só se clouds falharem)
+  // Modo UI `lmstudio_only`: obriga pré-check no cliente; no servidor LM fica sempre no fim.
+
+  // 1) Gemini
   if (geminiKey) {
-    if (mode === 'lmstudio_only' && result.lmstudio.ok) {
-      result.gemini = {
-        ok: false,
-        error: 'Não executado (LM Studio já respondeu com sucesso).',
-        relatorio: null,
-        proximos_passos: null,
-        relatorioPath: null,
-        proximosPath: null,
-      };
-    } else {
-      let geminiLastErr = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        status(`IA Gemini: tentativa ${attempt}/3…`, 'info');
-        try {
-          const raw = await callGeminiOnce(userBlockGemini, geminiKey, geminiModel);
-          fs.writeFileSync(path.join(outputDir, 'gemini_raw.txt'), raw, 'utf8');
-          const parsed = extractJsonObject(raw);
-          const paths = writePair('gemini', parsed);
-          result.gemini = { ok: true, error: null, ...paths };
-          geminiLastErr = null;
-          break;
-        } catch (e) {
-          geminiLastErr = e;
-          if (attempt < 3) {
-            status(
-              `IA Gemini: falhou na tentativa ${attempt}/3 (${e?.message || e}). A aguardar ${fallbackWaitSec}s para nova tentativa…`,
-              'warn',
-            );
-            await sleepSec(fallbackWaitSec);
-          }
+    let geminiLastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      status(`IA Gemini: tentativa ${attempt}/3…`, 'info');
+      try {
+        const raw = await callGeminiOnce(userBlockGemini, geminiKey, geminiModel);
+        fs.writeFileSync(path.join(outputDir, 'gemini_raw.txt'), raw, 'utf8');
+        const parsed = extractJsonObject(raw);
+        const paths = writePair('gemini', parsed);
+        result.gemini = { ok: true, error: null, ...paths };
+        geminiLastErr = null;
+        break;
+      } catch (e) {
+        geminiLastErr = e;
+        if (attempt < 3) {
+          status(
+            `IA Gemini: falhou na tentativa ${attempt}/3 (${e?.message || e}). A aguardar ${fallbackWaitSec}s para nova tentativa…`,
+            'warn',
+          );
+          await sleepSec(fallbackWaitSec);
         }
       }
-      if (geminiLastErr) {
-        result.gemini = {
-          ok: false,
-          error: geminiLastErr.message,
-          relatorio: null,
-          proximos_passos: null,
-          relatorioPath: null,
-          proximosPath: null,
-        };
-      }
+    }
+    if (geminiLastErr) {
+      result.gemini = {
+        ok: false,
+        error: geminiLastErr.message,
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
     }
   } else {
     result.gemini = {
@@ -653,73 +689,37 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
     };
   }
 
-  // Cascata solicitada:
-  // 1) Gemini (até 3 tentativas, espera fixa entre falhas)
-  // 2) OpenRouter (1 tentativa)
-  // 3) Claude (1 tentativa)
-  const shouldTryOpenRouter =
-    !(mode === 'lmstudio_only' && result.lmstudio.ok) && result.gemini.ok !== true;
-  if (shouldTryOpenRouter && openrouterKey) {
-    status('IA OpenRouter: a tentar fallback (1 tentativa)…', 'info');
-    try {
-      const raw = await callOpenRouterOnce(secondUser, openrouterKey, openrouterModel);
-      fs.writeFileSync(path.join(outputDir, 'openrouter_raw.txt'), raw, 'utf8');
-      const parsed = extractJsonObject(raw);
-      const paths = writePair('openrouter', parsed);
-      result.openrouter = { ok: true, error: null, ...paths };
-    } catch (e) {
+  // 2) OpenRouter
+  if (openrouterKey) {
+    if (result.gemini.ok) {
       result.openrouter = {
         ok: false,
-        error: e.message,
+        error: 'Não executado (Gemini já respondeu com sucesso).',
         relatorio: null,
         proximos_passos: null,
         relatorioPath: null,
         proximosPath: null,
       };
+    } else {
+      status('IA OpenRouter: tentativa 1/1…', 'info');
+      try {
+        const raw = await callOpenRouterOnce(secondUser, openrouterKey, openrouterModel);
+        fs.writeFileSync(path.join(outputDir, 'openrouter_raw.txt'), raw, 'utf8');
+        const parsed = extractJsonObject(raw);
+        const paths = writePair('openrouter', parsed);
+        result.openrouter = { ok: true, error: null, ...paths };
+      } catch (e) {
+        result.openrouter = {
+          ok: false,
+          error: e.message,
+          relatorio: null,
+          proximos_passos: null,
+          relatorioPath: null,
+          proximosPath: null,
+        };
+      }
     }
-  } else if (!shouldTryOpenRouter && openrouterKey) {
-    result.openrouter = {
-      ok: false,
-      error: 'Não executado (Gemini já respondeu com sucesso).',
-      relatorio: null,
-      proximos_passos: null,
-      relatorioPath: null,
-      proximosPath: null,
-    };
-  }
-
-  const shouldTryClaude =
-    !(mode === 'lmstudio_only' && result.lmstudio.ok)
-    && result.gemini.ok !== true
-    && result.openrouter.ok !== true;
-  if (shouldTryClaude && claudeKey) {
-    status('IA Claude: a tentar fallback final (1 tentativa)…', 'info');
-    try {
-      const raw = await callClaude(secondUser, claudeKey, claudeModel);
-      fs.writeFileSync(path.join(outputDir, 'claude_raw.txt'), raw, 'utf8');
-      const parsed = extractJsonObject(raw);
-      const paths = writePair('claude', parsed);
-      result.claude = { ok: true, error: null, ...paths };
-    } catch (e) {
-      result.claude = {
-        ok: false,
-        error: e.message,
-        relatorio: null,
-        proximos_passos: null,
-        relatorioPath: null,
-        proximosPath: null,
-      };
-    }
-  } else if (!shouldTryClaude && claudeKey) {
-    result.claude = {
-      ok: false,
-      error: 'Não executado (provider anterior já respondeu com sucesso).',
-      relatorio: null,
-      proximos_passos: null,
-      relatorioPath: null,
-      proximosPath: null,
-    };
-  } else if (shouldTryOpenRouter && !openrouterKey && !claudeKey) {
+  } else {
     result.openrouter = {
       ok: false,
       error: 'OPENROUTER_API_KEY não definido',
@@ -728,6 +728,39 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
       relatorioPath: null,
       proximosPath: null,
     };
+  }
+
+  // 3) Claude (Anthropic direct)
+  if (claudeKey) {
+    if (result.gemini.ok || result.openrouter.ok) {
+      result.claude = {
+        ok: false,
+        error: 'Não executado (provider cloud anterior já respondeu com sucesso).',
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
+    } else {
+      status('IA Claude: tentativa 1/1…', 'info');
+      try {
+        const raw = await callClaude(secondUser, claudeKey, claudeModel);
+        fs.writeFileSync(path.join(outputDir, 'claude_raw.txt'), raw, 'utf8');
+        const parsed = extractJsonObject(raw);
+        const paths = writePair('claude', parsed);
+        result.claude = { ok: true, error: null, ...paths };
+      } catch (e) {
+        result.claude = {
+          ok: false,
+          error: e.message,
+          relatorio: null,
+          proximos_passos: null,
+          relatorioPath: null,
+          proximosPath: null,
+        };
+      }
+    }
+  } else {
     result.claude = {
       ok: false,
       error: 'ANTHROPIC_API_KEY não definido',
@@ -738,23 +771,21 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
     };
   }
 
-  const shouldTryLmStudio =
-    mode === 'lmstudio_only'
-      ? false
-      : result.gemini.ok !== true && result.openrouter.ok !== true && result.claude.ok !== true;
+  // 4) LM Studio (último recurso — modelos locais podem demorar muito em "reasoning")
+  const shouldTryLmStudio = !cloudOk();
   if (shouldTryLmStudio && lmStudioEnabled) {
-    status('IA LM Studio: a tentar fallback local (1 tentativa)…', 'info');
+    status('IA LM Studio: fallback local (último passo)…', 'info');
     await tryLmStudioReport();
-  } else if (mode !== 'lmstudio_only' && !shouldTryLmStudio && lmStudioEnabled) {
+  } else if (!shouldTryLmStudio && lmStudioEnabled) {
     result.lmstudio = {
       ok: false,
-      error: 'Não executado (provider anterior já respondeu com sucesso).',
+      error: 'Não executado (um provider cloud já respondeu com sucesso).',
       relatorio: null,
       proximos_passos: null,
       relatorioPath: null,
       proximosPath: null,
     };
-  } else if (mode !== 'lmstudio_only' && shouldTryLmStudio && !lmStudioEnabled) {
+  } else if (shouldTryLmStudio && !lmStudioEnabled) {
     result.lmstudio = {
       ok: false,
       error: 'LM Studio desativado (define GHOSTRECON_LMSTUDIO_ENABLED=1 e GHOSTRECON_LMSTUDIO_MODEL).',
@@ -791,9 +822,9 @@ export function aiKeysConfigured() {
   return {
     gemini: g,
     openrouter: o,
-    claude: !o && c,
+    claude: Boolean(c),
     lmstudio: l,
     any: g || o || c || l,
-    both: g && (o || c),
+    both: [g, o, c].filter(Boolean).length >= 2,
   };
 }

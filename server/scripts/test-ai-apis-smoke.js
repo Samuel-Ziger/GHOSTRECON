@@ -1,5 +1,5 @@
 /**
- * Smoke test: verifica se Gemini e o segundo provider (OpenRouter ou Anthropic) respondem.
+ * Smoke test: verifica providers IA na ordem Gemini → OpenRouter → Claude → LM Studio.
  * Uso: node server/scripts/test-ai-apis-smoke.js
  */
 import '../load-env.js';
@@ -56,7 +56,11 @@ async function main() {
       okAll = false;
       console.log('FALHOU —', e?.message || e);
     }
-  } else if (claudeKey) {
+  } else {
+    console.log('OpenRouter: omitido (sem OPENROUTER_API_KEY)');
+  }
+
+  if (claudeKey) {
     process.stdout.write(`Claude Anthropic (${claudeModel})… `);
     try {
       const t = await callClaude(PING, claudeKey, claudeModel);
@@ -67,7 +71,7 @@ async function main() {
       console.log('FALHOU —', e?.message || e);
     }
   } else {
-    console.log('Segundo provider: omitido (sem OPENROUTER_API_KEY nem ANTHROPIC_API_KEY)');
+    console.log('Claude: omitido (sem ANTHROPIC_API_KEY)');
   }
 
   if (lmStudioEnabled) {

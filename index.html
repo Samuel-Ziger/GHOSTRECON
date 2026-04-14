@@ -1497,8 +1497,8 @@
       </div>
 
       <div class="module-group">
-        <div class="module-group-title">// IA · relatórios (Gemini + OpenRouter)</div>
-        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Com <strong>Confirmo envio</strong> activo: ao terminar <em>cada</em> recon (ou cada alvo na fila), o servidor envia o JSON desse run para Gemini e para o segundo modelo via <strong>OpenRouter</strong> (se <code>OPENROUTER_API_KEY</code> existir; senão Anthropic direct com <code>ANTHROPIC_API_KEY</code>) e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco. Sem a confirmação, não há chamadas às APIs. Para desligar a geração automática no servidor (mesmo com a caixa marcada), usa <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code>. Respeita as regras do programa de bounty.</p>
+        <div class="module-group-title">// IA · relatórios (cloud + LM Studio)</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Com <strong>Confirmo envio</strong> activo: ao terminar <em>cada</em> recon (ou cada alvo na fila), o servidor envia o JSON desse run pela cascata <strong>Gemini</strong> → <strong>OpenRouter</strong> → <strong>Claude (Anthropic)</strong> → <strong>LM Studio</strong> (último recurso, se configurado) e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown no disco. Sem a confirmação, não há chamadas às APIs. Para desligar a geração automática no servidor (mesmo com a caixa marcada), usa <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code>. Respeita as regras do programa de bounty.</p>
         <div id="aiKeysLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">APIs IA: a carregar…</div>
         <label class="checkbox-item">
           <input type="checkbox" id="modAiReports">
@@ -1506,10 +1506,10 @@
           <span class="checkbox-text">Confirmo envio para APIs externas</span>
           <span class="tag tag-high">IA</span>
         </label>
-        <label class="checkbox-item" title="Se ativo: tenta LM Studio primeiro para o relatório IA; se falhar, segue para Gemini/OpenRouter/Claude. Antes do recon, valida a conexão com LM Studio.">
+        <label class="checkbox-item" title="Se ativo: antes do recon valida o LM Studio; no fim do recon o servidor só usa LM Studio se Gemini, OpenRouter e Claude falharem (LM local pode demorar vários minutos).">
           <input type="checkbox" id="modAiLmStudioOnly">
           <div class="checkbox-box"></div>
-          <span class="checkbox-text">Priorizar LM Studio (pré-check obrigatório)</span>
+          <span class="checkbox-text">LM Studio no final (pré-check obrigatório)</span>
           <span class="tag tag-med">LOCAL</span>
         </label>
       </div>
@@ -2440,14 +2440,14 @@ async function startRecon() {
 
   try {
     if (aiReportsEnabled && lmStudioOnly) {
-      addLog('IA LM Studio (modo prioritário): a validar conexão antes do recon…', 'info');
+      addLog('IA LM Studio (fallback local): a validar conexão antes do recon…', 'info');
       const ping = await fetch(apiUrl('/api/ai/lmstudio-check'));
       const out = await ping.json().catch(() => ({}));
       if (!ping.ok || !out?.ok) {
         finishErr(`LM Studio indisponível: ${out?.error || `HTTP ${ping.status}`}. Corrija e tente novamente.`);
         return;
       }
-      addLog(`LM Studio OK (${out.model || 'modelo local'}) — recon vai priorizar LM Studio para relatório IA.`, 'success');
+      addLog(`LM Studio OK (${out.model || 'modelo local'}) — ordem: Gemini → OpenRouter → Claude; LM Studio só se todas falharem.`, 'success');
     }
 
     const useOos = selectedMods.includes('out_of_scope');
@@ -2756,9 +2756,8 @@ async function fetchKaliCapabilities() {
     const aiEl = document.getElementById('aiKeysLine');
     if (aiEl) {
       const a = window.__aiKeys;
-      const sec = a.openrouter ? 'OpenRouter' : 'Anthropic';
-      const secOk = Boolean(a.openrouter || a.claude);
-      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · ${sec} ${secOk ? '✓' : '✗'} · LM Studio ${a.lmstudio ? '✓' : '✗'} — .env: GEMINI/OPENROUTER/ANTHROPIC e/ou LM Studio local`;
+      const cloudOk = Boolean(a.claude || a.gemini || a.openrouter);
+      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · OpenRouter ${a.openrouter ? '✓' : '✗'} · Claude ${a.claude ? '✓' : '✗'} · LM Studio ${a.lmstudio ? '✓' : '✗'}${cloudOk ? '' : ' (sem cloud)'} — .env: GEMINI / OPENROUTER / ANTHROPIC e opcional LM Studio`;
       aiEl.style.color = (a.both || a.lmstudio) ? 'var(--accent2)' : 'var(--accent4)';
     }
     if (c.kali) {

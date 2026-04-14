@@ -149,9 +149,9 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 
 - Chaves: `GEMINI_API_KEY` ou `GOOGLE_AI_API_KEY`, `OPENROUTER_API_KEY` (ou `ANTHROPIC_API_KEY` directo), e opcionalmente provider local via LM Studio; modelos configuráveis, retries (Gemini/OpenRouter), limites de caracteres do Markdown.
 - UI: checkbox de confirmação + `autoAiReports` no POST; servidor pode gerar ficheiros **Markdown** (relatório + próximos passos) e emitir eventos `ai_report`; o conteúdo de “próximos passos” pode ser ecoado no log NDJSON.
-- Resiliência IA: Gemini e OpenRouter fazem retentativas em `429` e `5xx` (inclui `503`) com `Retry-After` + backoff; se OpenRouter falhar e existir `ANTHROPIC_API_KEY`, há fallback para Claude directo no mesmo run.
-- Cascata de execução (run automático): Gemini primeiro (até 3 tentativas com espera fixa, padrão 60s), depois OpenRouter (1 tentativa), depois Claude (1 tentativa), depois LM Studio local (1 tentativa), e termina.
-- UI: opção **"Priorizar LM Studio (pré-check obrigatório)"** abaixo de "Confirmo envio". Quando ativa, o servidor tenta LM Studio primeiro; se falhar, segue fallback para Gemini/OpenRouter/Claude.
+- Resiliência IA: Gemini e OpenRouter fazem retentativas em `429` e `5xx` (inclui `503`) com `Retry-After` + backoff; Claude e LM Studio seguem a política de tentativas descrita abaixo.
+- Cascata de execução (run automático): **Gemini** (até 3 tentativas, espera fixa padrão 60s entre falhas) → **OpenRouter** (1 tentativa) → **Claude** (1 tentativa) → **LM Studio** (último recurso, se activo no `.env`).
+- UI: opção **"LM Studio no final (pré-check obrigatório)"** — valida o LM Studio antes do recon; no servidor o LM Studio **só corre** se todos os providers cloud anteriores falharem (útil porque modelos locais podem demorar muito em *reasoning*).
 - **`GHOSTRECON_AI_AUTO=0`**: desliga geração automática no fim do pipeline (podes usar `POST /api/ai-reports` com payload exportado).
 - **`GET /api/capabilities`**: inclui `ai: { gemini, openrouter, claude, lmstudio, any }`.
 
@@ -244,7 +244,7 @@ Cabeçalho: `X-CSRF-Token: <token>`.
 
 `aiProviderMode`:
 - `auto` (default): cascata Gemini → OpenRouter → Claude → LM Studio
-- `lmstudio_only`: tenta LM Studio primeiro; se falhar, segue fallback cloud
+- `lmstudio_only`: igual a `auto` na ordem de execução; na UI activa só o **pré-check** do LM Studio antes do recon (o LM continua no fim da cascata)
 
 ---
 
@@ -279,9 +279,10 @@ Cabeçalho: `X-CSRF-Token: <token>`.
 | `OPENROUTER_API_KEY` | IA via OpenRouter |
 | `GHOSTRECON_OPENROUTER_MODEL` / `GHOSTRECON_OPENROUTER_HTTP_REFERER` / `GHOSTRECON_OPENROUTER_APP_TITLE` / `GHOSTRECON_OPENROUTER_MAX_RETRIES` | OpenRouter |
 | `GHOSTRECON_AI_FALLBACK_WAIT_SEC` | Espera fixa entre tentativas Gemini na cascata (default `60`) |
-| `ANTHROPIC_API_KEY` / `GHOSTRECON_CLAUDE_MODEL` | Claude directo (se sem OpenRouter) |
+| `ANTHROPIC_API_KEY` / `GHOSTRECON_CLAUDE_MODEL` | Claude directo (terceiro na cascata, após Gemini e OpenRouter) |
 | `GHOSTRECON_LMSTUDIO_ENABLED` / `GHOSTRECON_LMSTUDIO_BASE_URL` / `GHOSTRECON_LMSTUDIO_MODEL` / `GHOSTRECON_LMSTUDIO_API_KEY` | LM Studio local (OpenAI-compatible) |
-| `GHOSTRECON_LMSTUDIO_MAX_TOKENS` / `GHOSTRECON_LMSTUDIO_TEMPERATURE` | Ajustes de geração no LM Studio |
+| `GHOSTRECON_LMSTUDIO_N_CTX` / `GHOSTRECON_LMSTUDIO_MAX_OUTPUT_TOKENS` (ou `GHOSTRECON_LMSTUDIO_MAX_TOKENS`) / `GHOSTRECON_LMSTUDIO_TIMEOUT_MS` / `GHOSTRECON_LMSTUDIO_TEMPERATURE` | Contexto, saída e tempo limite no LM Studio |
+| `GHOSTRECON_LMSTUDIO_MAX_INPUT_CHARS` / `GHOSTRECON_LMSTUDIO_CHARS_PER_TOKEN` | Limite opcional do JSON local (senão calcula a partir de `N_CTX`) |
 | `GHOSTRECON_AI_AUTO` | `0` desliga IA automática no fim do recon |
 | `GHOSTRECON_AI_RELATORIO_MAX_CHARS` / `GHOSTRECON_AI_PROXIMOS_MAX_CHARS` | Truncagem Markdown IA |
 
