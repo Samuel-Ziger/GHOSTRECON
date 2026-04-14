@@ -89,6 +89,7 @@ export async function waitForShannonWorkflowEnd(shannonHome, workspaceId, onLog)
   const logFile = workflowLogPath(shannonHome, workspaceId);
   const deadline = Date.now() + shannonWorkflowWaitTimeoutMs();
   let lastSize = 0;
+  let lastKeepalive = Date.now();
 
   while (Date.now() < deadline) {
     try {
@@ -106,11 +107,19 @@ export async function waitForShannonWorkflowEnd(shannonHome, workspaceId, onLog)
           if (line.length > 400) onLog(`${line.slice(0, 400)}…`, 'info');
           else onLog(line, 'info');
         }
+        lastKeepalive = Date.now();
       }
     } catch {
       /* ficheiro ainda não existe */
     }
     await sleep(2500);
+    if (onLog && Date.now() - lastKeepalive > 45000) {
+      lastKeepalive = Date.now();
+      onLog(
+        'Shannon: a aguardar workflow.log (workflow ainda a correr — mantém esta página aberta; pode demorar vários minutos).',
+        'info',
+      );
+    }
   }
   return { outcome: 'timeout', logPath: logFile, tail: '' };
 }

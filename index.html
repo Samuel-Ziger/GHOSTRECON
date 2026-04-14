@@ -1611,10 +1611,6 @@
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
-        <div class="pipe-node" id="pipe-shannon">SHANNON</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
         <div class="pipe-node" id="pipe-verify">VERIFY</div>
         <div class="pipe-arrow">──▶</div>
       </div>
@@ -1628,6 +1624,10 @@
       </div>
       <div class="pipe-step">
         <div class="pipe-node" id="pipe-score">PRIORITIZE</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-node" id="pipe-shannon">SHANNON</div>
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
@@ -2208,7 +2208,7 @@ function refreshFindingsList() {
 }
 
 function resetPipelineVisual() {
-  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','shannon','verify','kali','assets','score','pentestgpt'].forEach(n => setPipe(n, ''));
+  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','verify','kali','assets','score','shannon','pentestgpt'].forEach(n => setPipe(n, ''));
 }
 
 let dorkActiveTabs = 0;
@@ -2224,9 +2224,19 @@ function tryOpenNextDork() {
     return;
   }
   const u = dorkUrlQueue.shift();
-  dorkActiveTabs++;
   const w = window.open(u, '_blank', 'noopener,noreferrer');
-  if (!w) addLog('Popup bloqueado — permita pop-ups para abrir dorks automaticamente', 'warn');
+  if (!w) {
+    dorkUrlQueue.length = 0;
+    if (!window.__dorkPopupBlockedWarned) {
+      window.__dorkPopupBlockedWarned = true;
+      addLog(
+        'Popup bloqueado — dorks automáticos cancelados (fila limpa). Permite pop-ups para este site ou desliga «Abrir dorks» e corre de novo.',
+        'warn',
+      );
+    }
+    return;
+  }
+  dorkActiveTabs++;
   setTimeout(() => {
     dorkActiveTabs = Math.max(0, dorkActiveTabs - 1);
     tryOpenNextDork();
@@ -2298,7 +2308,18 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
   let buf = '';
   let failed = false;
   outer: while (true) {
-    const { done, value } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (e) {
+      addLog(
+        `Stream NDJSON interrompida (${e?.message || e}). Mantém a aba aberta durante Shannon longo; evita suspender o portátil. Recarrega e tenta de novo se o servidor ainda corre.`,
+        'error',
+      );
+      failed = true;
+      break outer;
+    }
+    const { done, value } = chunk;
     if (done) break;
     buf += dec.decode(value, { stream: true });
     let idx;
@@ -2338,7 +2359,10 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         const lab = ev.label ? String(ev.label) : 'Link';
         addLog(`${lab}: ${u}`, 'info');
         const w = window.open(u, '_blank', 'noopener,noreferrer');
-        if (!w) addLog('Popup bloqueado — permita pop-ups para abrir o monitor (Temporal / Shannon)', 'warn');
+        if (!w && !window.__shannonTemporalPopupWarned) {
+          window.__shannonTemporalPopupWarned = true;
+          addLog('Popup bloqueado — copia o URL do log acima para abrir a Temporal Web UI (Shannon).', 'warn');
+        }
       }
       if (ev.type === 'intel' && ev.line) {
         const raw = ev.line;
@@ -2456,6 +2480,8 @@ async function startRecon() {
   findings = [];
   dorkUrlQueue = [];
   dorkActiveTabs = 0;
+  window.__dorkPopupBlockedWarned = false;
+  window.__shannonTemporalPopupWarned = false;
   document.getElementById('findingsList').innerHTML = '';
   Object.keys(stats).forEach(k => {
     stats[k] = 0;

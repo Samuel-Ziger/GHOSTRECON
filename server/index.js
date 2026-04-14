@@ -1276,73 +1276,10 @@ async function runPipeline(ctx) {
   if (!modules.includes('shannon_whitebox')) {
     emit({ type: 'pipe', name: 'shannon', state: 'skip' });
   } else {
-    if (shannonSkipDepsVerify) {
-      log('Shannon white-box: verificação de dependências omitida pelo utilizador.', 'warn');
-    } else {
-      log('Shannon white-box: dependências já validadas no início do pedido HTTP.', 'info');
-    }
-    const autoOff = Boolean(String(process.env.GHOSTRECON_SHANNON_AUTO_RUN || '1').trim().match(/^(0|false|no)$/i));
-    if (autoOff) {
-      log('Shannon: GHOSTRECON_SHANNON_AUTO_RUN=0 — não executar ./shannon start (só diagnóstico / clone).', 'info');
-      emit({ type: 'pipe', name: 'shannon', state: 'skip' });
-    } else if (!githubClonedItems.length) {
-      log(
-        'Shannon: nenhum clone local neste run — activa o módulo GitHub + clone (GHOSTRECON_GITHUB_CLONE_ENABLED) para analisar código.',
-        'warn',
-      );
-      emit({ type: 'pipe', name: 'shannon', state: 'skip' });
-    } else {
-      pipe('shannon', 'active');
-      const max = shannonMaxClonesPerRun();
-      const slice = githubClonedItems.slice(0, max);
-      log(`Shannon: a correr até ${slice.length} scan(s) (máx. por run = ${max})…`, 'info');
-      for (const item of slice) {
-        try {
-          const out = await runShannonOnClone({
-            ghostRoot: ROOT,
-            domain,
-            clonePath: item.local_path,
-            repoFullName: item.full_name,
-            log,
-            emit,
-          });
-          if (out.ok && out.report?.ok) {
-            const excerpt = String(out.report.content || '')
-              .replace(/\s+/g, ' ')
-              .trim()
-              .slice(0, 480);
-            addFinding(
-              {
-                type: 'intel',
-                prio: 'high',
-                score: 72,
-                value: `Shannon white-box: ${item.full_name}`,
-                meta: `workspace=${out.workspaceId} • report=${out.report.path} • excerpt=${excerpt}`,
-                url: `https://github.com/${item.full_name}`,
-              },
-              null,
-            );
-          } else {
-            const hint = out.detail || out.logTail || out.note || JSON.stringify({ phase: out.phase, exitCode: out.exitCode });
-            log(`Shannon falhou (${item.full_name}): ${String(hint).slice(0, 600)}`, 'warn');
-            addFinding(
-              {
-                type: 'intel',
-                prio: 'med',
-                score: 48,
-                value: `Shannon falhou: ${item.full_name}`,
-                meta: `workspace=${out.workspaceId || '—'} • phase=${out.phase || '—'} • ${String(hint).slice(0, 400)}`,
-                url: `https://github.com/${item.full_name}`,
-              },
-              null,
-            );
-          }
-        } catch (e) {
-          log(`Shannon: excepção (${item.full_name}): ${e.message}`, 'error');
-        }
-      }
-      pipe('shannon', 'done');
-    }
+    log(
+      'Shannon white-box: fase após PRIORITIZE e antes de PentestGPT HTTP (verify/Kali/score correm primeiro).',
+      'info',
+    );
   }
 
   // ── VERIFY (evidence-guided) ─────────────────
@@ -1609,11 +1546,84 @@ async function runPipeline(ctx) {
     emit({ type: 'intel', line: `REPORT: ${tpl.title}` });
   }
   pipe('score', 'done');
-  progress(100);
+  progress(97);
+
+  // Shannon white-box: após priorização/correlação (payload PentestGPT inclui achados Shannon).
+  if (modules.includes('shannon_whitebox')) {
+    if (shannonSkipDepsVerify) {
+      log('Shannon white-box: verificação de dependências omitida pelo utilizador.', 'warn');
+    } else {
+      log('Shannon white-box: dependências já validadas no início do pedido HTTP.', 'info');
+    }
+    const autoOff = Boolean(String(process.env.GHOSTRECON_SHANNON_AUTO_RUN || '1').trim().match(/^(0|false|no)$/i));
+    if (autoOff) {
+      log('Shannon: GHOSTRECON_SHANNON_AUTO_RUN=0 — não executar ./shannon start (só diagnóstico / clone).', 'info');
+      emit({ type: 'pipe', name: 'shannon', state: 'skip' });
+    } else if (!githubClonedItems.length) {
+      log(
+        'Shannon: nenhum clone local neste run — activa o módulo GitHub + clone (GHOSTRECON_GITHUB_CLONE_ENABLED) para analisar código.',
+        'warn',
+      );
+      emit({ type: 'pipe', name: 'shannon', state: 'skip' });
+    } else {
+      pipe('shannon', 'active');
+      const max = shannonMaxClonesPerRun();
+      const slice = githubClonedItems.slice(0, max);
+      log(`Shannon: a correr até ${slice.length} scan(s) (máx. por run = ${max})…`, 'info');
+      for (const item of slice) {
+        try {
+          const out = await runShannonOnClone({
+            ghostRoot: ROOT,
+            domain,
+            clonePath: item.local_path,
+            repoFullName: item.full_name,
+            log,
+            emit,
+          });
+          if (out.ok && out.report?.ok) {
+            const excerpt = String(out.report.content || '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 480);
+            addFinding(
+              {
+                type: 'intel',
+                prio: 'high',
+                score: 72,
+                value: `Shannon white-box: ${item.full_name}`,
+                meta: `workspace=${out.workspaceId} • report=${out.report.path} • excerpt=${excerpt}`,
+                url: `https://github.com/${item.full_name}`,
+              },
+              null,
+            );
+          } else {
+            const hint = out.detail || out.logTail || out.note || JSON.stringify({ phase: out.phase, exitCode: out.exitCode });
+            log(`Shannon falhou (${item.full_name}): ${String(hint).slice(0, 600)}`, 'warn');
+            addFinding(
+              {
+                type: 'intel',
+                prio: 'med',
+                score: 48,
+                value: `Shannon falhou: ${item.full_name}`,
+                meta: `workspace=${out.workspaceId || '—'} • phase=${out.phase || '—'} • ${String(hint).slice(0, 400)}`,
+                url: `https://github.com/${item.full_name}`,
+              },
+              null,
+            );
+          }
+        } catch (e) {
+          log(`Shannon: excepção (${item.full_name}): ${e.message}`, 'error');
+        }
+      }
+      pipe('shannon', 'done');
+      applyPrioritizationV2(findings);
+    }
+  }
 
   const modulesForDb = kaliMode ? [...modules, '__kali_scan__'] : modules;
 
   let pentestgptSummary = null;
+  progress(98);
   if (modules.includes('pentestgpt_validate')) {
     pipe('pentestgpt', 'active');
     try {
@@ -1654,6 +1664,7 @@ async function runPipeline(ctx) {
     emit({ type: 'pipe', name: 'pentestgpt', state: 'skip' });
   }
 
+  progress(100);
   stats.high = findings.filter((f) => f.prio === 'high').length;
   emit({ type: 'stats', stats: { ...stats } });
 
