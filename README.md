@@ -153,7 +153,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - Cascata de execução (run automático): **Gemini** (até 3 tentativas, espera fixa padrão 60s entre falhas) → **OpenRouter** (1 tentativa) → **Claude** (1 tentativa) → **LM Studio** (último recurso, se activo no `.env`).
 - UI: opção **"LM Studio no final (pré-check obrigatório)"** — valida o LM Studio antes do recon; no servidor o LM Studio **só corre** se todos os providers cloud anteriores falharem (útil porque modelos locais podem demorar muito em *reasoning*).
 - **`GHOSTRECON_AI_AUTO=0`**: desliga geração automática no fim do pipeline (podes usar `POST /api/ai-reports` com payload exportado).
-- **`GET /api/capabilities`**: inclui `ai: { gemini, openrouter, claude, lmstudio, any }`.
+- **`GET /api/capabilities`**: inclui `ai: { gemini, openrouter, claude, lmstudio, any }` e, quando existe `IAs/shannon`, o bloco `shannon` (Docker, build CLI, imagem worker). Módulo **`pentestgpt_validate`**: após priorização, POST para `GHOSTRECON_PENTESTGPT_URL` (ver `.env.example`).
 
 ### 26. Webhook
 
@@ -192,10 +192,11 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 |------|--------|
 | `log` | Mensagens (níveis info/warn/success/error/section/find) |
 | `progress` | Percentagem da barra |
-| `pipe` | Estado de fase (`input`, `subdomains`, `alive`, `surface`, `urls`, `params`, `js`, `dorks`, `secrets`, `verify`, `kali`, `assets`, `score`, …) |
+| `pipe` | Estado de fase (`input`, `subdomains`, `alive`, `surface`, `urls`, `params`, `js`, `dorks`, `secrets`, `shannon`, `verify`, `kali`, `assets`, `score`, `pentestgpt`, …) |
 | `stats` | Contadores (subs, endpoints, params, secrets, dorks, high) |
 | `finding` | Achado com `fingerprint` |
 | `dork` | Query + URL Google |
+| `open_url` | Abre `url` numa nova aba (`noopener`) — usado p.ex. para Temporal Web UI quando o Shannon imprime o link |
 | `intel` | Linha livre (checklist, sugestões, REPORT) |
 | `report_template` | Template estruturado |
 | `priority_pass` | Top alvos de alta probabilidade |
@@ -214,7 +215,8 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 | `GET` | `/` | Serve `index.html` |
 | `GET` | `/api/health` | `{ ok, service }` |
 | `GET` | `/api/csrf-token` | Token CSRF (vinculado ao IP, TTL ~2 h) |
-| `GET` | `/api/capabilities` | Kali, ferramentas no PATH, chaves IA configuradas |
+| `GET` | `/api/capabilities` | Kali, PATH, chaves IA, objeto `shannon` (Shannon Lite local) |
+| `POST` | `/api/shannon/prep` | CSRF; `{ "pullUpstream": true }` → `docker pull` com `dockerPullLog` na resposta |
 | `GET` | `/api/ai/lmstudio-check` | Testa conexão com LM Studio local (pré-check da UI) |
 | `POST` | `/api/recon/stream` | Corpo JSON (ver abaixo); resposta **NDJSON** |
 | `POST` | `/api/ai-reports` | Gera relatórios IA a partir de `payload` (export JSON); opcional webhook |

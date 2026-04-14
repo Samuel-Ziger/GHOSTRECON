@@ -34,7 +34,7 @@ function logWebhookHttpError(res, detail) {
 export async function postDiscordReconSummary(webhookUrl, payload) {
   const u = String(webhookUrl || '').trim();
   if (!u || !isDiscordWebhookUrl(u)) return;
-  const { target, runId, stats, highCount } = payload;
+  const { target, runId, stats, highCount, shannonSummary, pentestgptSummary } = payload;
   const lines = [
     '**GHOSTRECON** — recon gravado',
     `**Alvo:** \`${String(target || '').slice(0, 200)}\` · **run** #${runId}`,
@@ -45,6 +45,14 @@ export async function postDiscordReconSummary(webhookUrl, payload) {
     );
   }
   if (highCount != null) lines.push(`Achados **high**: **${highCount}**`);
+  if (shannonSummary) {
+    lines.push(`**Shannon:** ${String(shannonSummary).slice(0, 500)}${String(shannonSummary).length > 500 ? '…' : ''}`);
+  }
+  if (pentestgptSummary) {
+    lines.push(
+      `**PentestGPT:** ${String(pentestgptSummary).slice(0, 500)}${String(pentestgptSummary).length > 500 ? '…' : ''}`,
+    );
+  }
   let content = lines.join('\n');
   if (content.length > 1900) content = `${content.slice(0, 1890)}…`;
 
@@ -151,6 +159,8 @@ export async function postReconWebhook(webhookUrl, payload) {
       runId: payload.runId,
       stats: payload.stats,
       highCount: payload.highCount,
+      shannonSummary: payload.shannonSummary,
+      pentestgptSummary: payload.pentestgptSummary,
     });
     return;
   }

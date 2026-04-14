@@ -28,6 +28,7 @@ import { analyzeJsUrl } from './modules/js-analyzer.js';
 import { scanSecrets } from './modules/secrets.js';
 import { githubCodeSearch, githubRepoSearch } from './modules/github.js';
 import { cloneGithubReposForTarget, githubCloneConfig } from './modules/github-clone.js';
+import { parseGithubManualRepoList } from './modules/github-manual-repos.js';
 import { buildDorks } from './modules/dorks.js';
 import { scoreEndpointPath, scoreParamName } from './modules/scoring.js';
 import { correlate } from './modules/correlation.js';
@@ -67,6 +68,12 @@ import {
   pickAiReportForWebhook,
   probeLmStudioConnection,
 } from './modules/ai-dual-report.js';
+import {
+  getShannonCapabilities,
+  shannonPullUpstreamWorkerImage,
+} from './modules/shannon-capabilities.js';
+import { runShannonOnClone, shannonMaxClonesPerRun } from './modules/shannon-runner.js';
+import { runPentestGptValidation } from './modules/pentestgpt-local.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -262,6 +269,9 @@ async function runPipeline(ctx) {
     projectName: projectNameRaw = '',
     autoAiReports = false,
     aiProviderMode = 'auto',
+    shannonPrecheck = true,
+    shannonSkipDepsVerify = false,
+    shannonGithubRepos = null,
   } = ctx;
   const runtimeProfile = resolveReconProfile(profile);
   const domainStr = exactMatch ? `"${domain}"` : domain;
@@ -1094,6 +1104,26 @@ async function runPipeline(ctx) {
 
   // ── GITHUB API (opcional) ───────────────────
   pipe('secrets', 'active');
+  /** Clones bem-sucedidos neste run (para Shannon white-box). */
+  let githubClonedItems = [];
+  const manualGithubRepos = parseGithubManualRepoList(shannonGithubRepos);
+  if (manualGithubRepos.length) {
+    log(`GitHub: ${manualGithubRepos.length} repositório(s) indicado(s) manualmente (UI Shannon)`, 'info');
+  }
+
+  const recordClonedFindings = (clonedList) => {
+    for (const item of clonedList) {
+      addFinding({
+        type: 'intel',
+        prio: 'low',
+        score: 38,
+        value: `GitHub clone local: ${item.full_name}`,
+        meta: `path=${item.local_path} • size=${Math.round((item.size_bytes || 0) / (1024 * 1024))}MB`,
+        url: `https://github.com/${item.full_name}`,
+      });
+    }
+  };
+
   if (modules.includes('github')) {
     log('GitHub Code Search (API pública, rate limit)...', 'info');
     const gh = await githubCodeSearch(domain, process.env.GITHUB_TOKEN);
@@ -1118,22 +1148,31 @@ async function runPipeline(ctx) {
 
     log('GitHub Repo Search (candidatos para clone local)...', 'info');
     const ghRepos = await githubRepoSearch(domain, process.env.GITHUB_TOKEN, { perPage: 8 });
+    const codeRepos = (gh.items || []).map((x) => String(x.repo || '').trim()).filter(Boolean);
+    const repoMap = new Map();
+
     if (ghRepos.ok && ghRepos.items?.length) {
-      const codeRepos = (gh.items || []).map((x) => String(x.repo || '').trim()).filter(Boolean);
-      const repoMap = new Map();
       for (const r of ghRepos.items || []) {
         if (!r?.full_name) continue;
         repoMap.set(r.full_name, r);
       }
-      for (const fullName of codeRepos) {
-        if (repoMap.has(fullName)) continue;
-        repoMap.set(fullName, {
-          full_name: fullName,
-          clone_url: `https://github.com/${fullName}.git`,
-          html_url: `https://github.com/${fullName}`,
-        });
-      }
-      const repoCandidates = [...repoMap.values()];
+    }
+
+    for (const fullName of codeRepos) {
+      if (!fullName || repoMap.has(fullName)) continue;
+      repoMap.set(fullName, {
+        full_name: fullName,
+        clone_url: `https://github.com/${fullName}.git`,
+        html_url: `https://github.com/${fullName}`,
+      });
+    }
+
+    for (const m of manualGithubRepos) {
+      repoMap.set(m.full_name, m);
+    }
+
+    const repoCandidates = [...repoMap.values()];
+    if (repoCandidates.length) {
       log(`GitHub repos candidatos: ${repoCandidates.length}`, 'success');
 
       const cloneCfg = githubCloneConfig();
@@ -1156,16 +1195,8 @@ async function runPipeline(ctx) {
           // clone desativado por config
         } else {
           if (cloned.cloned?.length) {
-            for (const item of cloned.cloned) {
-              addFinding({
-                type: 'intel',
-                prio: 'low',
-                score: 38,
-                value: `GitHub clone local: ${item.full_name}`,
-                meta: `path=${item.local_path} • size=${Math.round((item.size_bytes || 0) / (1024 * 1024))}MB`,
-                url: `https://github.com/${item.full_name}`,
-              });
-            }
+            githubClonedItems = cloned.cloned;
+            recordClonedFindings(cloned.cloned);
             log(`Clone local concluído: ${cloned.cloned.length} repo(s) em ${cloned.base_dir}`, 'success');
           } else {
             log('Clone local: nenhum repositório clonado nesta execução.', 'info');
@@ -1183,8 +1214,41 @@ async function runPipeline(ctx) {
         log(`Clone local GitHub: ${e.message}`, 'warn');
       }
     } else {
-      log(ghRepos.note || 'GitHub Repo Search sem resultados', 'info');
+      log(ghRepos.note || 'GitHub Repo Search sem resultados (e sem repos manuais válidos)', 'info');
     }
+  } else if (manualGithubRepos.length && modules.includes('shannon_whitebox')) {
+    const cloneCfg = githubCloneConfig();
+    if (!cloneCfg.enabled) {
+      log('Repos GitHub manuais: clone local desativado — define GHOSTRECON_GITHUB_CLONE_ENABLED=1.', 'warn');
+    } else {
+      log(
+        `Clone só de repos manuais (${manualGithubRepos.length}) — módulo «GitHub leaks» desligado; Shannon white-box activo.`,
+        'info',
+      );
+      try {
+        const cloned = await cloneGithubReposForTarget({
+          targetDomain: domain,
+          repos: manualGithubRepos,
+          log,
+        });
+        if (!cloned.skipped && cloned.cloned?.length) {
+          githubClonedItems = cloned.cloned;
+          recordClonedFindings(cloned.cloned);
+          log(`Clone local concluído: ${cloned.cloned.length} repo(s) em ${cloned.base_dir}`, 'success');
+        } else if (!cloned.skipped && cloned.failed?.length) {
+          for (const item of cloned.failed.slice(0, 4)) {
+            log(`Clone falhou (${item.full_name}): ${item.error}`, 'warn');
+          }
+        }
+      } catch (e) {
+        log(`Clone local GitHub (manual): ${e.message}`, 'warn');
+      }
+    }
+  } else if (manualGithubRepos.length) {
+    log(
+      'Repos GitHub na caixa manual ignorados: activa «GitHub leaks» ou «Shannon white-box» para clonar.',
+      'info',
+    );
   }
   if (modules.includes('pastebin')) {
     log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
@@ -1206,6 +1270,78 @@ async function runPipeline(ctx) {
     log(`Secret validation: ${e.message}`, 'warn');
   }
   pipe('secrets', 'done');
+
+  if (!modules.includes('shannon_whitebox')) {
+    emit({ type: 'pipe', name: 'shannon', state: 'skip' });
+  } else {
+    if (shannonSkipDepsVerify) {
+      log('Shannon white-box: verificação de dependências omitida pelo utilizador.', 'warn');
+    } else {
+      log('Shannon white-box: dependências já validadas no início do pedido HTTP.', 'info');
+    }
+    const autoOff = Boolean(String(process.env.GHOSTRECON_SHANNON_AUTO_RUN || '1').trim().match(/^(0|false|no)$/i));
+    if (autoOff) {
+      log('Shannon: GHOSTRECON_SHANNON_AUTO_RUN=0 — não executar ./shannon start (só diagnóstico / clone).', 'info');
+      emit({ type: 'pipe', name: 'shannon', state: 'skip' });
+    } else if (!githubClonedItems.length) {
+      log(
+        'Shannon: nenhum clone local neste run — activa o módulo GitHub + clone (GHOSTRECON_GITHUB_CLONE_ENABLED) para analisar código.',
+        'warn',
+      );
+      emit({ type: 'pipe', name: 'shannon', state: 'skip' });
+    } else {
+      pipe('shannon', 'active');
+      const max = shannonMaxClonesPerRun();
+      const slice = githubClonedItems.slice(0, max);
+      log(`Shannon: a correr até ${slice.length} scan(s) (máx. por run = ${max})…`, 'info');
+      for (const item of slice) {
+        try {
+          const out = await runShannonOnClone({
+            ghostRoot: ROOT,
+            domain,
+            clonePath: item.local_path,
+            repoFullName: item.full_name,
+            log,
+            emit,
+          });
+          if (out.ok && out.report?.ok) {
+            const excerpt = String(out.report.content || '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 480);
+            addFinding(
+              {
+                type: 'intel',
+                prio: 'high',
+                score: 72,
+                value: `Shannon white-box: ${item.full_name}`,
+                meta: `workspace=${out.workspaceId} • report=${out.report.path} • excerpt=${excerpt}`,
+                url: `https://github.com/${item.full_name}`,
+              },
+              null,
+            );
+          } else {
+            const hint = out.detail || out.logTail || out.note || JSON.stringify({ phase: out.phase, exitCode: out.exitCode });
+            log(`Shannon falhou (${item.full_name}): ${String(hint).slice(0, 600)}`, 'warn');
+            addFinding(
+              {
+                type: 'intel',
+                prio: 'med',
+                score: 48,
+                value: `Shannon falhou: ${item.full_name}`,
+                meta: `workspace=${out.workspaceId || '—'} • phase=${out.phase || '—'} • ${String(hint).slice(0, 400)}`,
+                url: `https://github.com/${item.full_name}`,
+              },
+              null,
+            );
+          }
+        } catch (e) {
+          log(`Shannon: excepção (${item.full_name}): ${e.message}`, 'error');
+        }
+      }
+      pipe('shannon', 'done');
+    }
+  }
 
   // ── VERIFY (evidence-guided) ─────────────────
   pipe('verify', 'active');
@@ -1474,6 +1610,51 @@ async function runPipeline(ctx) {
   progress(100);
 
   const modulesForDb = kaliMode ? [...modules, '__kali_scan__'] : modules;
+
+  let pentestgptSummary = null;
+  if (modules.includes('pentestgpt_validate')) {
+    pipe('pentestgpt', 'active');
+    try {
+      const pgPayload = buildPipelineExportPayloadForAi({
+        target: domain,
+        projectName: String(projectNameRaw || '').trim(),
+        stats,
+        findings,
+        correlation: corr,
+        reportTemplates,
+        runId: null,
+        storage: storageLabel(),
+        intelMerge: null,
+        kaliMode: Boolean(kaliMode),
+        modules: modulesForDb,
+      });
+      const pg = await runPentestGptValidation(pgPayload, { log });
+      pentestgptSummary = pg.summary || null;
+      if (pg.findings?.length) {
+        for (const f of pg.findings) addFinding(f, null);
+      } else if (pg.summary && !pg.skipped) {
+        addFinding(
+          {
+            type: 'intel',
+            prio: 'med',
+            score: 44,
+            value: 'PentestGPT (resumo)',
+            meta: String(pg.summary).slice(0, 900),
+          },
+          null,
+        );
+      }
+    } catch (e) {
+      log(`PentestGPT: ${e.message}`, 'warn');
+    }
+    pipe('pentestgpt', 'done');
+  } else {
+    emit({ type: 'pipe', name: 'pentestgpt', state: 'skip' });
+  }
+
+  stats.high = findings.filter((f) => f.prio === 'high').length;
+  emit({ type: 'stats', stats: { ...stats } });
+
   const saved = await saveRun({
     target: domain,
     exactMatch,
@@ -1643,6 +1824,13 @@ async function runPipeline(ctx) {
     } catch (e) {
       console.warn('[GHOSTRECON webhook diff]', e?.message || e);
     }
+    const shannonSummary =
+      findings
+        .filter((f) => f?.type === 'intel' && /shannon/i.test(`${f.value || ''} ${f.meta || ''}`))
+        .map((f) => `${String(f.value || '').slice(0, 140)} — ${String(f.meta || '').slice(0, 120)}`)
+        .slice(0, 4)
+        .join(' | ') || null;
+
     void postReconWebhook(whUrl, {
       target: domain,
       runId,
@@ -1653,6 +1841,8 @@ async function runPipeline(ctx) {
       highCount: findings.filter((f) => f.prio === 'high').length,
       findingsByType,
       runDiffSummary,
+      shannonSummary,
+      pentestgptSummary,
     });
   }
 
@@ -1715,6 +1905,26 @@ app.post('/api/recon/stream', async (req, res) => {
 
   const domain = normDomain(domainRaw);
 
+  const shannonPrecheck = req.body?.shannonPrecheck !== false;
+  const shannonSkipDepsVerify = Boolean(req.body?.shannonSkipDepsVerify);
+  if (modules.includes('shannon_whitebox') && shannonPrecheck && !shannonSkipDepsVerify) {
+    try {
+      const sc = await getShannonCapabilities({ ghostRoot: ROOT });
+      if (!sc.ok) {
+        send({
+          type: 'error',
+          message: `Shannon: dependências incompletas — ${sc.message}`,
+        });
+        res.end();
+        return;
+      }
+    } catch (e) {
+      send({ type: 'error', message: `Shannon: falha ao verificar dependências — ${e?.message || e}` });
+      res.end();
+      return;
+    }
+  }
+
   try {
     await runPipeline({
       domain,
@@ -1728,6 +1938,9 @@ app.post('/api/recon/stream', async (req, res) => {
       projectName: req.body?.projectName,
       autoAiReports: Boolean(req.body?.autoAiReports),
       aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
+      shannonPrecheck,
+      shannonSkipDepsVerify,
+      shannonGithubRepos: req.body?.shannonGithubRepos,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
@@ -1748,9 +1961,50 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/capabilities', async (_req, res) => {
   try {
     const cap = await getKaliCapabilities();
-    res.json({ ...cap, ai: aiKeysConfigured() });
+    let shannon = null;
+    try {
+      shannon = await getShannonCapabilities({ ghostRoot: ROOT });
+    } catch (e) {
+      shannon = { ok: false, home: '', checks: {}, message: e?.message || String(e), prepHints: {} };
+    }
+    res.json({ ...cap, ai: aiKeysConfigured(), shannon });
   } catch (e) {
-    res.status(500).json({ kali: false, message: e.message, tools: {}, ai: aiKeysConfigured() });
+    res.status(500).json({ kali: false, message: e.message, tools: {}, ai: aiKeysConfigured(), shannon: null });
+  }
+});
+
+app.post('/api/shannon/prep', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const pullUpstream = Boolean(req.body?.pullUpstream);
+  if (!pullUpstream) {
+    res.status(400).json({
+      ok: false,
+      error: 'Define pullUpstream: true para puxar keygraph/shannon:latest (opcional; modo local usa shannon-worker).',
+    });
+    return;
+  }
+  try {
+    const out = await shannonPullUpstreamWorkerImage();
+    if (!out.ok) {
+      res.status(500).json({
+        ok: false,
+        error: out.note || 'docker pull falhou',
+        dockerPullLog: out.dockerPullLog,
+      });
+      return;
+    }
+    const shannon = await getShannonCapabilities({ ghostRoot: ROOT });
+    res.json({
+      ok: true,
+      note: out.note,
+      dockerPullLog: out.dockerPullLog,
+      shannon,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 

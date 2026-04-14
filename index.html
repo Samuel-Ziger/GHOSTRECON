@@ -1513,6 +1513,45 @@
           <span class="tag tag-med">LOCAL</span>
         </label>
       </div>
+
+      <div class="module-group">
+        <div class="module-group-title">// Shannon (white-box local)</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Requer <strong>Docker</strong> e build em <code>IAs/shannon</code> (<code>pnpm install && pnpm build && ./shannon build</code>). Com a verificação activa, o <strong>servidor</strong> recusa o recon se faltar algo. O botão de pull só ajuda o fluxo <em>npx</em>; no modo local a imagem é <code>shannon-worker</code>.</p>
+        <div id="shannonCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">Shannon: a carregar…</div>
+        <label class="checkbox-item">
+          <input type="checkbox" class="mod" value="shannon_whitebox" id="modShannonWhitebox">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Módulo Shannon white-box</span>
+          <span class="tag tag-high">DOCKER</span>
+        </label>
+        <label class="checkbox-item" title="Se desmarcado, o servidor não valida deps no POST (não recomendado).">
+          <input type="checkbox" id="shannonPrecheckVerify" checked>
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Verificar dependências Shannon antes do recon</span>
+          <span class="tag tag-med">CHK</span>
+        </label>
+        <label class="checkbox-item" title="Ignora a validação no servidor — só uses se tiveres a certeza que Docker + Shannon estão prontos.">
+          <input type="checkbox" id="shannonSkipDepsVerify">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Omitir verificação (confio nas dependências)</span>
+          <span class="tag tag-high">SKIP</span>
+        </label>
+        <label for="shannonGithubReposInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Repos GitHub (manual)</label>
+        <textarea id="shannonGithubReposInput" class="domain-input" rows="4" style="width:100%;margin-top:4px;resize:vertical;min-height:72px;font-size:11px;line-height:1.35" placeholder="https://github.com/org/programa&#10;org/outro-repo"></textarea>
+        <p class="gh-hint" style="font-size:9px;margin-top:4px;margin-bottom:0">Bug bounty: cola o link do programa ou vários (<strong>um por linha</strong>, ou <code>owner/repo</code>). Junta-se à pesquisa API e entra no <strong>clone local</strong> (prioridade nas entradas manuais). Com só Shannon activo (sem «GitHub leaks»), clona apenas estas linhas — até 10 válidas.</p>
+        <button type="button" class="gh-open-btn" id="shannonPrepPullBtn" style="margin-top:6px">Docker pull: keygraph/shannon:latest</button>
+      </div>
+
+      <div class="module-group">
+        <div class="module-group-title">// PentestGPT (pós-recon)</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Após priorização, o servidor envia um POST JSON para <code>GHOSTRECON_PENTESTGPT_URL</code> (serviço teu: PentestGPT, LM Studio, proxy). Sem URL configurada, o passo é ignorado.</p>
+        <label class="checkbox-item">
+          <input type="checkbox" class="mod" value="pentestgpt_validate" id="modPentestgptValidate">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Validação PentestGPT (HTTP)</span>
+          <span class="tag tag-med">POST</span>
+        </label>
+      </div>
     </div>
   </aside>
 
@@ -1562,6 +1601,10 @@
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
+        <div class="pipe-node" id="pipe-shannon">SHANNON</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
         <div class="pipe-node" id="pipe-verify">VERIFY</div>
         <div class="pipe-arrow">──▶</div>
       </div>
@@ -1575,6 +1618,10 @@
       </div>
       <div class="pipe-step">
         <div class="pipe-node" id="pipe-score">PRIORITIZE</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-node" id="pipe-pentestgpt">PENTESTGPT</div>
       </div>
     </div>
 
@@ -1883,6 +1930,17 @@ function addLog(msg, type = 'info') {
   el.parentElement.scrollTop = el.parentElement.scrollHeight;
 }
 
+/** Regista no terminal a saída do `docker pull` (resposta do servidor, linha a linha). */
+function addLogDockerPullOutput(logText, title = 'docker pull (saída)') {
+  if (logText == null || !String(logText).trim()) return;
+  addLog(`── ${title} ──`, 'section');
+  for (const line of String(logText).split('\n')) {
+    const t = line.replace(/\r$/, '');
+    if (!t.trim()) continue;
+    addLog(t.length > 2400 ? `${t.slice(0, 2400)}…` : t, 'info');
+  }
+}
+
 async function ensureCsrfToken(force = false) {
   if (csrfToken && !force) return csrfToken;
   const res = await fetch(apiUrl('/api/csrf-token'));
@@ -2140,7 +2198,7 @@ function refreshFindingsList() {
 }
 
 function resetPipelineVisual() {
-  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','verify','kali','assets','score'].forEach(n => setPipe(n, ''));
+  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','shannon','verify','kali','assets','score','pentestgpt'].forEach(n => setPipe(n, ''));
 }
 
 let dorkActiveTabs = 0;
@@ -2265,6 +2323,13 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         refreshFindingsList();
       }
       if (ev.type === 'dork' && ev.googleUrl) enqueueDorkTab(ev.googleUrl);
+      if (ev.type === 'open_url' && ev.url) {
+        const u = String(ev.url).trim();
+        const lab = ev.label ? String(ev.label) : 'Link';
+        addLog(`${lab}: ${u}`, 'info');
+        const w = window.open(u, '_blank', 'noopener,noreferrer');
+        if (!w) addLog('Popup bloqueado — permita pop-ups para abrir o monitor (Temporal / Shannon)', 'warn');
+      }
       if (ev.type === 'intel' && ev.line) {
         const raw = ev.line;
         const ln = (raw.startsWith('☐') || raw.startsWith('🔎')) ? raw : `⚡ ${raw}`;
@@ -2450,6 +2515,50 @@ async function startRecon() {
       addLog(`LM Studio OK (${out.model || 'modelo local'}) — ordem: Gemini → OpenRouter → Claude; LM Studio só se todas falharem.`, 'success');
     }
 
+    const shannonMod = selectedMods.includes('shannon_whitebox');
+    const shannonPrecheck = document.getElementById('shannonPrecheckVerify')?.checked !== false;
+    const shannonSkipDepsVerify = Boolean(document.getElementById('shannonSkipDepsVerify')?.checked);
+
+    if (shannonMod && shannonPrecheck && !shannonSkipDepsVerify) {
+      addLog('Shannon: a verificar dependências…', 'info');
+      try {
+        let s = await refreshShannonCapabilities();
+        if (!s?.ok) {
+          const detail = s?.message || 'Dependências Shannon incompletas.';
+          const wantPull = window.confirm(
+            `${detail}\n\nOK = tentar agora docker pull keygraph/shannon:latest (pode demorar; modo local em IAs/shannon costuma precisar de ./shannon build).\nCancelar = abortar o recon.`,
+          );
+          if (wantPull) {
+            const tok = await ensureCsrfToken();
+            const pr = await fetch(apiUrl('/api/shannon/prep'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': tok },
+              body: JSON.stringify({ pullUpstream: true }),
+            });
+            const prj = await pr.json().catch(() => ({}));
+            if (!pr.ok || !prj.ok) {
+              addLog(`Shannon prep: ${prj.error || pr.status}`, 'error');
+              addLogDockerPullOutput(prj.dockerPullLog);
+            } else {
+              addLog(prj.note || 'docker pull concluído', 'success');
+              addLogDockerPullOutput(prj.dockerPullLog);
+            }
+            s = await refreshShannonCapabilities();
+          }
+          if (!s?.ok) {
+            addLog(`Shannon: recon cancelado — ${s?.message || detail}`, 'error');
+            finishOk();
+            return;
+          }
+        }
+        addLog('Shannon: dependências OK (pré-check no browser).', 'success');
+      } catch (e) {
+        addLog(`Shannon: verificação falhou — ${e.message}`, 'error');
+        finishOk();
+        return;
+      }
+    }
+
     const useOos = selectedMods.includes('out_of_scope');
     const oosText = (document.getElementById('outOfScopeInput')?.value || '').trim();
     const projectName = (document.getElementById('projectNameInput')?.value || '').trim();
@@ -2478,7 +2587,11 @@ async function startRecon() {
         auth: getOptionalAuthConfig(),
         autoAiReports: aiReportsEnabled,
         aiProviderMode: lmStudioOnly ? 'lmstudio_only' : 'auto',
+        shannonPrecheck,
+        shannonSkipDepsVerify,
       };
+      const shannonGhManual = (document.getElementById('shannonGithubReposInput')?.value || '').trim();
+      if (shannonGhManual) streamBody.shannonGithubRepos = shannonGhManual;
       if (useOos) streamBody.outOfScope = oosText || '';
       if (projectName) streamBody.projectName = projectName;
 
@@ -2732,6 +2845,60 @@ document.getElementById('ghCustomQuery')?.addEventListener('keydown', e => {
 
 updateGhPreview();
 
+function applyShannonCapToUI(s) {
+  const el = document.getElementById('shannonCapLine');
+  if (!el) return;
+  if (!s) {
+    el.textContent = 'Shannon: sem dados do servidor';
+    el.style.color = 'var(--text-dim)';
+    return;
+  }
+  const ch = s.checks || {};
+  el.textContent = `Shannon: ${s.ok ? '✓ OK' : '✗ incompleto'} · docker:${ch.docker ? '✓' : '✗'} · pasta:${ch.shannonHome ? '✓' : '✗'} · cli:${ch.cliBuilt ? '✓' : '✗'} · imagem shannon-worker:${ch.workerImage ? '✓' : '✗'}`;
+  el.style.color = s.ok ? 'var(--accent2)' : 'var(--accent3)';
+  el.title = s.message || '';
+}
+
+async function refreshShannonCapabilities() {
+  const res = await fetch(apiUrl('/api/capabilities'));
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const c = await res.json();
+  window.__shannonCap = c.shannon || null;
+  applyShannonCapToUI(c.shannon);
+  return c.shannon;
+}
+
+document.getElementById('shannonPrepPullBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('shannonPrepPullBtn');
+  if (!btn) return;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = 'A puxar imagem…';
+  try {
+    const tok = await ensureCsrfToken();
+    const res = await fetch(apiUrl('/api/shannon/prep'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': tok },
+      body: JSON.stringify({ pullUpstream: true }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) {
+      addLog(`Shannon prep: ${j.error || res.status}`, 'error');
+      addLogDockerPullOutput(j.dockerPullLog);
+    } else {
+      addLog(`Shannon prep: ${j.note || 'OK'}`, 'success');
+      addLogDockerPullOutput(j.dockerPullLog);
+      applyShannonCapToUI(j.shannon);
+      window.__shannonCap = j.shannon;
+    }
+  } catch (e) {
+    addLog(`Shannon prep: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+});
+
 async function fetchKaliCapabilities() {
   const line = document.getElementById('kaliCapLine');
   const toggle = document.getElementById('kaliModeToggle');
@@ -2769,6 +2936,8 @@ async function fetchKaliCapabilities() {
         toggle.checked = false;
       }
     }
+    window.__shannonCap = c.shannon || null;
+    applyShannonCapToUI(c.shannon);
   } catch (e) {
     if (line) {
       line.style.color = 'var(--accent3)';
@@ -2784,6 +2953,7 @@ async function fetchKaliCapabilities() {
       aiEl.textContent = 'APIs IA: indisponível (servidor offline).';
       aiEl.style.color = 'var(--accent3)';
     }
+    applyShannonCapToUI(null);
   }
 }
 

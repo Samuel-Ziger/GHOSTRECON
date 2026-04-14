@@ -8,6 +8,11 @@ data/ai_reports/
 # SQLite por projeto/escopo (não versionar)
 escopo/
 clone/
+
+# Clones locais em IAs/ (instruções em IAs/README.md)
+IAs/shannon/
+IAs/PentestGPT/
+
 .env
 .env.local
 
