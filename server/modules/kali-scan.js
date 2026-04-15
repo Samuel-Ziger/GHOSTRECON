@@ -4,7 +4,13 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawn } from 'node:child_process';
 import { limits } from '../config.js';
-import { runWpscanJson, extractWpscanFindings } from './wpscan.js';
+import {
+  runWpscanJson,
+  extractWpscanFindings,
+  isWpscanApiTokenConfigured,
+  isWpscanApiRequired,
+  countWpvulndbFindings,
+} from './wpscan.js';
 
 const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt',
@@ -691,19 +697,44 @@ export async function runKaliAggressiveScan({
     const detectionMode = process.env.GHOSTRECON_WPSCAN_DETECTION_MODE || 'mixed';
     const timeoutMs = Number(process.env.GHOSTRECON_WPSCAN_TIMEOUT_MS || 240000);
 
-    log('═══ wpscan (WordPress enumeration) ═══', 'section');
+    log('═══ WPScan — ferramenta wpscan (WordPress) ═══', 'section');
     const targets = Array.isArray(wordpressTargets) ? wordpressTargets : null;
 
     if (!targets || targets.length === 0) {
-      log('wpscan: WordPress não confirmado no passivo — skip', 'info');
+      log('[WPScan] WordPress não confirmado no passivo — wpscan não executado', 'info');
+    } else if (isWpscanApiRequired() && !isWpscanApiTokenConfigured()) {
+      log(
+        '[WPScan] SKIP — token obrigatório (GHOSTRECON_WPSCAN_REQUIRE_API≠0). Define WPSCAN_API_TOKEN ou GHOSTRECON_WPSCAN_API_TOKEN no .env (wpscan.com/register). Para permitir scan sem WPVulnDB: GHOSTRECON_WPSCAN_REQUIRE_API=0',
+        'warn',
+      );
     } else {
+      if (isWpscanApiTokenConfigured()) {
+        log(
+          '[WPScan] WPVulnDB ligado — WPSCAN_API_TOKEN / GHOSTRECON_WPSCAN_API_TOKEN (CVEs conhecidos no JSON)',
+          'success',
+        );
+      } else {
+        log(
+          '[WPScan] WPVulnDB desligado — sem token; só enumeração core/tema/plugins. Recomendado: WPSCAN_API_TOKEN no .env',
+          'warn',
+        );
+      }
       const uniqTargets = [...new Set(targets)].slice(0, 6);
-      log(`wpscan: ${uniqTargets.length} target(s) (WordPress)`, 'info');
+      log(`[WPScan] ${uniqTargets.length} alvo(s) WordPress — a iniciar wpscan em cada URL`, 'info');
       for (const t of uniqTargets) {
+        log(`[WPScan] ▶︎ alvo: ${t}`, 'info');
         const res = await runWpscanJson({ targetUrl: t, detectionMode, timeoutMs, log });
         if (res?.json) {
           const findings = extractWpscanFindings({ targetUrl: t, wpscanJson: res.json });
-          if (findings.length) log(`wpscan ${t} → ${findings.length} finding(s)`, 'success');
+          const vulnN = Number.isFinite(res.vulnDbCount) ? res.vulnDbCount : countWpvulndbFindings(res.json);
+          if (findings.length) {
+            log(
+              `[WPScan] ✓ concluído ${t} → ${findings.length} achado(s) na lista (${vulnN} entrada(s) WPVulnDB/CVE no JSON)`,
+              'success',
+            );
+          } else {
+            log(`[WPScan] ✓ concluído ${t} → sem achados extraídos (JSON OK)`, 'info');
+          }
           for (const f of findings) addFinding(f, null);
         } else {
           addFinding({
@@ -714,9 +745,10 @@ export async function runKaliAggressiveScan({
             meta: res?.error || 'unknown error',
             url: t,
           });
-          log(`wpscan ${t}: sem JSON (${res?.error || 'unknown'})`, 'warn');
+          log(`[WPScan] ✗ ${t}: sem JSON válido (${res?.error || 'unknown'})`, 'warn');
         }
       }
+      log('[WPScan] Fim da fase wpscan (todos os alvos WordPress desta corrida)', 'info');
     }
   }
 

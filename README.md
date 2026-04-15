@@ -124,7 +124,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - **ffuf** (módulo `kali_ffuf`): wordlist Seclists/dirb, só **HTTP 200**, várias bases (domínio + portas 80/443 descobertas), threads `GHOSTRECON_FFUF_THREADS`.
 - **nuclei** (módulo `kali_nuclei`): lista de alvos; perfil `GHOSTRECON_NUCLEI_PROFILE` (`safe`, `bb-passive`, `bb-active`, `high-impact`); depois, se houver **sinais** XSS/SQLi passivos, corre tags `xss` / `sqli` sobre URLs com query (até 30).
 - **dalfox**: se `dalfox` no PATH **e** sinais XSS, até `GHOSTRECON_DALFOX_MAX_URLS` URLs (default 12), timeout `GHOSTRECON_DALFOX_TIMEOUT_MS` → findings `dalfox`.
-- **wpscan**: só se WordPress foi detectado no probe (`tech`) e `wpscan` existe; JSON parseado para core/tema/plugins.
+- **wpscan**: só se WordPress foi detectado no probe (`tech`) e `wpscan` existe; por defeito **só corre com** `WPSCAN_API_TOKEN` (WPVulnDB para CVEs); `GHOSTRECON_WPSCAN_REQUIRE_API=0` permite enumeração sem token. Logs prefixados `[WPScan]` na consola NDJSON.
 - **whois**: domínio raiz + amostra de subdomínios (limite via env ou `config.js`).
 
 ### 22. Asset discovery e takeover
@@ -323,7 +323,9 @@ Cabeçalho: `X-CSRF-Token: <token>`.
 | `GHOSTRECON_NUCLEI_PROFILE` | `safe` / `bb-passive` / `bb-active` / `high-impact` |
 | `GHOSTRECON_FFUF_THREADS` | Threads ffuf (1–64) |
 | `GHOSTRECON_DALFOX_MAX_URLS` / `GHOSTRECON_DALFOX_TIMEOUT_MS` | dalfox |
-| `GHOSTRECON_WPSCAN_*` | Modo e timeout wpscan |
+| `WPSCAN_API_TOKEN` ou `GHOSTRECON_WPSCAN_API_TOKEN` | WPVulnDB no wpscan (CVEs); **por defeito o scan não corre sem token** |
+| `GHOSTRECON_WPSCAN_REQUIRE_API` | `0` = permitir wpscan sem token (só enumeração); omitido ou ≠`0` = exige token |
+| `GHOSTRECON_WPSCAN_DETECTION_MODE` / `GHOSTRECON_WPSCAN_TIMEOUT_MS` | Modo e timeout wpscan |
 | `GHOSTRECON_WHOIS_SUBDOMAINS_MAX` | Extra whois |
 | `GHOSTRECON_SUBFINDER_TIMEOUT_MS` / `GHOSTRECON_AMASS_TIMEOUT_MS` | Timeouts enum |
 | `GEMINI_API_KEY` / `GOOGLE_AI_API_KEY` | IA Gemini |

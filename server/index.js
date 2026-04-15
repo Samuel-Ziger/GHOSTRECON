@@ -76,6 +76,7 @@ import { runShannonOnClone, shannonMaxClonesPerRun } from './modules/shannon-run
 import { runPentestGptValidation, pentestGptHealthUrl, resolvePentestGptUrl } from './modules/pentestgpt-local.js';
 import { getPentestGptCapabilities } from './modules/pentestgpt-capabilities.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
+import { withProvenance } from './modules/finding-provenance.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -227,7 +228,7 @@ function buildPipelineExportPayloadForAi({
   kaliMode,
   modules,
 }) {
-  const findingsExport = findings.map((f) => ({
+    const findingsExport = findings.map((f) => ({
     type: f.type,
     priority: f.prio,
     score: f.score || 0,
@@ -238,6 +239,7 @@ function buildPipelineExportPayloadForAi({
     compositeScore: f.compositeScore,
     attackTier: f.attackTier,
     priorityWhy: f.priorityWhy,
+    provenance: f.provenance && (f.provenance.how || f.provenance.relation) ? { ...f.provenance } : undefined,
   }));
   return {
     schemaVersion: 1,
@@ -386,6 +388,7 @@ async function runPipeline(ctx) {
     }
 
     const capped = allSubs.filter((s) => s !== domain).slice(0, 150);
+    const vtHostSet = new Set(vtHostnames.map((h) => String(h).trim().toLowerCase()));
     log(`Resolvendo DNS (máx. ${capped.length} hosts)...`, 'info');
     for (const host of capped) {
       const r = await resolves(host);
@@ -394,15 +397,33 @@ async function runPipeline(ctx) {
         const { score, prio } = { score: 52, prio: 'med' };
         const hn = String(host).trim().toLowerCase();
         const viaSubfinder = subfinderHostsNorm.has(hn);
+        const fromVt = vtHostSet.has(hn);
+        const sources = [];
+        if (runCrtSubdomains) sources.push('Certificate Transparency (crt.sh)');
+        if (vtHostnames.length) sources.push('API VirusTotal');
+        if (runKaliSubfinderAmass && modules.includes('subfinder')) sources.push('subfinder (Kali)');
+        if (runKaliSubfinderAmass && modules.includes('amass')) sources.push('amass (Kali)');
+        const how =
+          (sources.length > 0
+            ? `Nomes candidatos obtidos com: ${sources.join(', ')}. `
+            : '') +
+          'Este nome foi confirmado com consulta DNS recursiva (A/AAAA).';
+        const relation =
+          `**${host}** pertence ao âmbito do alvo **${domain}** (subdomínio ou host relacionado). ` +
+          `Os registos DNS provam que o nome resolve na Internet — integra a superfície do recon.` +
+          (fromVt ? ' Consta também da lista VirusTotal para este domínio.' : '');
         addFinding(
-          {
-            type: 'subdomain',
-            prio,
-            score,
-            value: host,
-            meta: `DNS: ${r.records.join(', ')}${viaSubfinder ? ' · tool=subfinder' : ''}`,
-            url: `https://${host}`,
-          },
+          withProvenance(
+            {
+              type: 'subdomain',
+              prio,
+              score,
+              value: host,
+              meta: `DNS: ${r.records.join(', ')}${viaSubfinder ? ' · tool=subfinder' : ''}`,
+              url: `https://${host}`,
+            },
+            { how, relation },
+          ),
           'subs',
         );
         subdomainsAlive.push(host);
@@ -549,14 +570,20 @@ async function runPipeline(ctx) {
         seenEp.add(href);
         const { score, prio } = scoreEndpointPath(u.pathname);
         addFinding(
-          {
-            type: 'endpoint',
-            prio,
-            score: Math.max(score, 42),
-            value: href,
-            meta: `HTML surface • ${pageHost}`,
-            url: href,
-          },
+          withProvenance(
+            {
+              type: 'endpoint',
+              prio,
+              score: Math.max(score, 42),
+              value: href,
+              meta: `HTML surface • ${pageHost}`,
+              url: href,
+            },
+            {
+              how: `Link extraído do HTML da resposta HTTP (atributos href / action) ao analisar a página **${pageHost}**.`,
+              relation: `URL no âmbito do alvo **${domain}** (mesmo host ou host autorizado no recon). Indica superfície navegável descoberta a partir de conteúdo já obtido.`,
+            },
+          ),
           'endpoints',
         );
         surfaceN++;
@@ -765,21 +792,28 @@ async function runPipeline(ctx) {
           const hn = s.hostnames?.length ? s.hostnames.join(', ') : '—';
           const vn = s.vulns?.length ? s.vulns.join(', ') : '';
           addFinding(
-            {
-              type: 'intel',
-              prio: s.vulns?.length ? 'high' : 'med',
-              score: s.vulns?.length ? 74 : 50,
-              value: `Shodan host ${ip}`,
-              meta: [
-                s.org && `org: ${s.org}`,
-                `ports: ${portStr}`,
-                `hostnames: ${hn}`,
-                vn && `cve/tags: ${vn}`,
-              ]
-                .filter(Boolean)
-                .join(' · '),
-              url: `https://www.shodan.io/host/${ip}`,
-            },
+            withProvenance(
+              {
+                type: 'intel',
+                prio: s.vulns?.length ? 'high' : 'med',
+                score: s.vulns?.length ? 74 : 50,
+                value: `Shodan host ${ip}`,
+                meta: [
+                  s.org && `org: ${s.org}`,
+                  `ports: ${portStr}`,
+                  `hostnames: ${hn}`,
+                  vn && `cve/tags: ${vn}`,
+                ]
+                  .filter(Boolean)
+                  .join(' · '),
+                url: `https://www.shodan.io/host/${ip}`,
+              },
+              {
+                how: `API Shodan (GET /shodan/host/{ip}) com a tua chave. O **${ip}** foi escolhido após resolver IPv4 de hosts do alvo **${domain}** em DNS.`,
+                relation:
+                  'O IP aparece porque um ou mais hostnames do recon resolvem para ele. O Shodan mostra portos/serviços e hostnames historicamente vistos — liga o endereço à superfície exposta na Internet relacionada ao programa.',
+              },
+            ),
             null,
           );
         }
@@ -898,14 +932,20 @@ async function runPipeline(ctx) {
     seenEp.add(rawUrl);
     const src = waybackSet.has(rawUrl) ? 'Wayback' : ccSet.has(rawUrl) ? 'Common Crawl' : 'arquivo web';
     addFinding(
-      {
-        type: 'endpoint',
-        prio,
-        score,
-        value: rawUrl,
-        meta: `Score ${score}/100 • ${src}`,
-        url: rawUrl,
-      },
+      withProvenance(
+        {
+          type: 'endpoint',
+          prio,
+          score,
+          value: rawUrl,
+          meta: `Score ${score}/100 • ${src}`,
+          url: rawUrl,
+        },
+        {
+          how: `URL recolhida do corpus passivo (**${src}** / CDX ou índice), filtrada pelo escopo *.${domain} e heurísticas de caminho.`,
+          relation: `Endereço histórico ou indexado associado ao domínio alvo **${domain}**. Pode ou não responder hoje; confirma manualmente antes de reportar.`,
+        },
+      ),
       'endpoints',
     );
   }
@@ -920,14 +960,20 @@ async function runPipeline(ctx) {
     const vuln =
       ['redirect', 'url', 'file', 'path', 'callback'].includes(name.toLowerCase()) ? ' → Open Redirect/SSRF?' : '';
     addFinding(
-      {
-        type: 'param',
-        prio,
-        score,
-        value: `?${name}=`,
-        meta: `~${count} ocorrências em URLs${vuln}`,
-        url: sampleUrl || undefined,
-      },
+      withProvenance(
+        {
+          type: 'param',
+          prio,
+          score,
+          value: `?${name}=`,
+          meta: `~${count} ocorrências em URLs${vuln}`,
+          url: sampleUrl || undefined,
+        },
+        {
+          how: 'Nome de parâmetro de query extraído do agregado de URLs do recon (Wayback, CSE, HTML, JS, etc.).',
+          relation: `Parâmetro observado em URLs cujo host está no âmbito do alvo **${domain}** — candidato a testes manuais no programa.`,
+        },
+      ),
       'params',
     );
 

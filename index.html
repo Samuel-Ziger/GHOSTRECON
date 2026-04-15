@@ -1028,6 +1028,35 @@
     color: var(--text-dim);
   }
 
+  .finding-provenance {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-left: 2px solid rgba(100, 180, 200, 0.45);
+    background: rgba(30, 40, 50, 0.35);
+    border-radius: 0 4px 4px 0;
+    font-size: 10px;
+    line-height: 1.45;
+    color: var(--text-dim);
+  }
+  .finding-provenance-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: rgba(120, 200, 210, 0.85);
+    margin-bottom: 3px;
+  }
+  .finding-provenance-label + .finding-provenance-text {
+    margin-bottom: 8px;
+  }
+  .finding-provenance-label:last-of-type + .finding-provenance-text {
+    margin-bottom: 0;
+  }
+  .finding-provenance-text strong {
+    color: var(--text-bright);
+    font-weight: 600;
+  }
+
   .finding-actions {
     margin-top: 8px;
     display: flex;
@@ -2038,6 +2067,17 @@ function addFinding(f) {
   if (findingMatchesFilter(f)) renderFinding(f);
 }
 
+/** Escapa HTML e converte **negrito** para <strong> (texto de proveniência do servidor). */
+function formatProvenanceHtml(s) {
+  if (!s) return '';
+  const esc = String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  return esc.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+
 function renderFinding(f) {
   const list = document.getElementById('findingsList');
   const card = document.createElement('div');
@@ -2093,6 +2133,34 @@ function renderFinding(f) {
     meta.className = 'finding-meta';
     meta.textContent = f.meta;
     card.appendChild(meta);
+  }
+
+  const how = f.provenance && f.provenance.how;
+  const rel = f.provenance && f.provenance.relation;
+  if (how || rel) {
+    const prov = document.createElement('div');
+    prov.className = 'finding-provenance';
+    if (how) {
+      const lb = document.createElement('div');
+      lb.className = 'finding-provenance-label';
+      lb.textContent = 'Como foi encontrado';
+      const tx = document.createElement('div');
+      tx.className = 'finding-provenance-text';
+      tx.innerHTML = formatProvenanceHtml(how);
+      prov.appendChild(lb);
+      prov.appendChild(tx);
+    }
+    if (rel) {
+      const lb2 = document.createElement('div');
+      lb2.className = 'finding-provenance-label';
+      lb2.textContent = 'Relação ao alvo';
+      const tx2 = document.createElement('div');
+      tx2.className = 'finding-provenance-text';
+      tx2.innerHTML = formatProvenanceHtml(rel);
+      prov.appendChild(lb2);
+      prov.appendChild(tx2);
+    }
+    card.appendChild(prov);
   }
 
   const actions = document.createElement('div');
@@ -2743,6 +2811,9 @@ function exportJSON() {
       meta: f.meta || '',
       url: f.url || '',
       fingerprint: f.fingerprint || '',
+      provenance: f.provenance && (f.provenance.how || f.provenance.relation)
+        ? { how: f.provenance.how || '', relation: f.provenance.relation || '' }
+        : undefined,
     })),
   };
   const name = multi
@@ -2774,6 +2845,8 @@ function exportMarkdown() {
       md += `- **${f.type}** — \`${String(f.value).replace(/`/g, "'")}\`\n`;
       if (f.meta) md += `  - _${String(f.meta).replace(/_/g, '\\_')}_\n`;
       if (f.url) md += `  - URL: ${f.url}\n`;
+      if (f.provenance?.how) md += `  - Como: ${String(f.provenance.how).replace(/\n/g, ' ')}\n`;
+      if (f.provenance?.relation) md += `  - Relação ao alvo: ${String(f.provenance.relation).replace(/\n/g, ' ')}\n`;
     });
     md += '\n';
   }
@@ -2788,6 +2861,8 @@ function exportMarkdown() {
     md += `## ${type.toUpperCase()}\n`;
     items.forEach((f) => {
       md += `- **[${f.prio.toUpperCase()}]** \`${String(f.value).replace(/`/g, "'")}\`${f.meta ? ` — ${String(f.meta).replace(/`/g, "'")}` : ''}\n`;
+      if (f.provenance?.how) md += `  - Como: ${String(f.provenance.how).replace(/\*\*/g, '').replace(/\n/g, ' ')}\n`;
+      if (f.provenance?.relation) md += `  - Relação: ${String(f.provenance.relation).replace(/\*\*/g, '').replace(/\n/g, ' ')}\n`;
     });
     md += '\n';
   }
@@ -2809,7 +2884,10 @@ function exportTXT() {
   if (high.length) {
     txt += `--- ALTO RISCO ---\n`;
     high.forEach((f) => {
-      txt += `[${f.type}] ${f.value}\n  ${f.meta || ''}\n  ${f.url || ''}\n\n`;
+      txt += `[${f.type}] ${f.value}\n  ${f.meta || ''}\n  ${f.url || ''}\n`;
+      if (f.provenance?.how) txt += `  Como: ${f.provenance.how.replace(/\*\*/g, '')}\n`;
+      if (f.provenance?.relation) txt += `  Relação ao alvo: ${f.provenance.relation.replace(/\*\*/g, '')}\n`;
+      txt += '\n';
     });
   }
   if (reproUrls.length) {
@@ -2822,6 +2900,8 @@ function exportTXT() {
   txt += `--- TODOS OS ACHADOS ---\n`;
   findings.forEach((f) => {
     txt += `[${f.prio.toUpperCase()}] [${f.type}] ${f.value}\n  → ${f.meta || ''}\n`;
+    if (f.provenance?.how) txt += `  Como: ${f.provenance.how.replace(/\*\*/g, '')}\n`;
+    if (f.provenance?.relation) txt += `  Relação ao alvo: ${f.provenance.relation.replace(/\*\*/g, '')}\n`;
   });
   const txtName = multi
     ? `ghostrecon_fila_${batchTargetsSnapshot.length}_${Date.now()}.txt`
@@ -3223,7 +3303,7 @@ function closeModulesHelpModal() {
         <dt>NUCLEI</dt>
         <dd>Resultados do <strong>Nuclei</strong> (incluindo passagens com tags XSS/SQLi quando há candidatos no corpus).</dd>
         <dt>WPSCAN</dt>
-        <dd>Enumeração <strong>WPScan</strong> (WordPress) só quando o recon passivo já indicou WordPress e a ferramenta existe no Kali.</dd>
+        <dd>Enumeração <strong>WPScan</strong> (WordPress) só quando o recon passivo já indicou WordPress e a ferramenta existe no Kali. Por defeito exige <code>WPSCAN_API_TOKEN</code> (WPVulnDB); <code>GHOSTRECON_WPSCAN_REQUIRE_API=0</code> permite scan só com enumeração. Os eventos na consola usam o prefixo <code>[WPScan]</code>.</dd>
         <dt>DALFOX</dt>
         <dd>Resultados do <strong>Dalfox</strong> (XSS) no modo Kali, quando o pipeline activa essa fase.</dd>
         <dt>XSS</dt>
