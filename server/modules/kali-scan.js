@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { limits } from '../config.js';
 import {
   runWpscanJson,
@@ -17,6 +18,10 @@ const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/common.txt',
   '/usr/share/wordlists/dirb/common.txt',
 ];
+
+const XSS_VIBES_DIR = join(process.cwd(), 'Xss', 'xss_vibes');
+const XSS_VIBES_MAIN = join(XSS_VIBES_DIR, 'main.py');
+const XSS_VIBES_PAYLOADS = join(XSS_VIBES_DIR, 'payloads.json');
 
 function sanitizeHost(h) {
   if (typeof h !== 'string' || h.length > 253 || h.length < 3) return null;
@@ -48,6 +53,8 @@ export async function getKaliCapabilities() {
   }
 
   const qualifyDistro = distroKali || force;
+  const python3 = await pathWhich('python3');
+  const python = python3 ? false : await pathWhich('python');
   const tools = {
     nmap: await pathWhich('nmap'),
     nuclei: await pathWhich('nuclei'),
@@ -56,6 +63,9 @@ export async function getKaliCapabilities() {
     wpscan: await pathWhich('wpscan'),
     whois: await pathWhich('whois'),
     dalfox: await pathWhich('dalfox'),
+    python3,
+    python,
+    xss_vibes: (python3 || python) && fs.existsSync(XSS_VIBES_MAIN) && fs.existsSync(XSS_VIBES_PAYLOADS),
   };
 
   const ready = qualifyDistro && tools.nmap;
@@ -76,9 +86,12 @@ export async function getKaliCapabilities() {
   };
 }
 
-function runProc(cmd, args, timeoutMs) {
+function runProc(cmd, args, timeoutMs, spawnOpts = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...spawnOpts,
+    });
     const out = [];
     const err = [];
     let killed = false;
@@ -383,6 +396,83 @@ async function runDalfoxUrl(url, log) {
   }
 }
 
+function stripAnsi(text) {
+  return String(text || '').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function parseXssVibesTextForHits(text, limit = 20) {
+  const clean = stripAnsi(text);
+  const lines = clean
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/VULNERABLE:/i.test(line)) continue;
+    const fromMsg = line.match(/VULNERABLE:\s*(https?:\/\/\S+)/i)?.[1];
+    const nextUrl = lines
+      .slice(i + 1, i + 6)
+      .find((x) => /^https?:\/\/\S+/i.test(x))
+      ?.match(/^(https?:\/\/\S+)/i)?.[1];
+    const finalUrl = fromMsg || nextUrl || null;
+    if (finalUrl && !hits.includes(finalUrl)) hits.push(finalUrl);
+    if (hits.length >= limit) break;
+  }
+  return hits;
+}
+
+async function runXssVibesBatch({ urls, cap, log }) {
+  const uniq = [...new Set((urls || []).filter((u) => /^https?:\/\//i.test(String(u))))];
+  if (!uniq.length) return { ok: true, hits: [], message: 'sem URLs válidas' };
+  const maxUrls = Math.max(1, Number(process.env.GHOSTRECON_XSS_VIBES_MAX_URLS || 25));
+  const selected = uniq.slice(0, maxUrls);
+  const threads = Math.min(10, Math.max(1, Number(process.env.GHOSTRECON_XSS_VIBES_THREADS || 6)));
+  const timeoutMs = Math.max(30_000, Number(process.env.GHOSTRECON_XSS_VIBES_TIMEOUT_MS || 300_000));
+  const pyCmd = cap?.tools?.python3 ? 'python3' : cap?.tools?.python ? 'python' : null;
+  if (!pyCmd) return { ok: false, hits: [], error: 'python3/python não encontrado no PATH' };
+  if (!fs.existsSync(XSS_VIBES_MAIN)) return { ok: false, hits: [], error: `xss_vibes não encontrado: ${XSS_VIBES_MAIN}` };
+
+  const dir = await mkdtemp(join(tmpdir(), 'ghxv-'));
+  const inFile = join(dir, 'targets.txt');
+  const outFile = join(dir, 'xss_vibes_hits.txt');
+  await writeFile(inFile, selected.join('\n'), 'utf8');
+  const args = [XSS_VIBES_MAIN, '-f', inFile, '-o', outFile, '-t', String(threads)];
+
+  if (typeof log === 'function') {
+    log(`[xss_vibes] Executando ferramenta: ${pyCmd} main.py -f targets.txt -o xss_vibes_hits.txt -t ${threads}`, 'info');
+    log(`[xss_vibes] Alvos com query: ${selected.length} (limite=${maxUrls})`, 'info');
+  }
+
+  try {
+    const proc = await runProc(pyCmd, args, timeoutMs, { cwd: XSS_VIBES_DIR });
+    const mixed = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
+    let hits = [];
+    try {
+      const rawOut = await readFile(outFile, 'utf8');
+      hits = rawOut
+        .split('\n')
+        .map((s) => s.trim())
+        .filter((s) => /^https?:\/\//i.test(s));
+    } catch {
+      /* output opcional */
+    }
+    if (!hits.length) hits = parseXssVibesTextForHits(mixed);
+    hits = [...new Set(hits)];
+    if (proc.code !== 0 && typeof log === 'function') {
+      log(`[xss_vibes] terminou com código ${proc.code}`, 'warn');
+    }
+    if (typeof log === 'function') {
+      log(`[xss_vibes] conclusão: ${hits.length} possível(is) XSS`, hits.length ? 'warn' : 'info');
+    }
+    return { ok: true, hits, stdout: mixed.slice(0, 6000) };
+  } catch (e) {
+    return { ok: false, hits: [], error: String(e?.message || e) };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 function pickFirstMatch(re, text) {
   const m = String(text || '').match(re);
   return m?.[1] ? String(m[1]).trim() : null;
@@ -398,6 +488,139 @@ function pickAllMatches(re, text, limit = 8) {
     if (out.length >= limit) break;
   }
   return out;
+}
+
+function isFtpServiceRow(row) {
+  if (!row) return false;
+  const name = String(row.name || '').toLowerCase();
+  const product = String(row.product || '').toLowerCase();
+  return row.proto === 'tcp' && (String(row.port) === '21' || name.includes('ftp') || product.includes('ftp'));
+}
+
+async function tryFtpAnonymousLogin({
+  host,
+  port = 21,
+  timeoutMs = 12_000,
+  passCandidates = ['', 'anonymous@ghostrecon.local'],
+}) {
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host, port: Number(port) || 21 });
+    sock.setEncoding('utf8');
+    sock.setTimeout(timeoutMs);
+
+    let buf = '';
+    let done = false;
+    let sentUser = false;
+    let sentPass = false;
+    let passIndex = -1;
+    const triedPasses = [];
+    let banner = '';
+    let userReply = '';
+    let passReply = '';
+
+    const nextPass = () => {
+      const idx = passIndex + 1;
+      if (idx >= passCandidates.length) return false;
+      passIndex = idx;
+      const candidate = String(passCandidates[passIndex] ?? '');
+      triedPasses.push(candidate);
+      sock.write(`PASS ${candidate}\r\n`);
+      sentPass = true;
+      return true;
+    };
+
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      try {
+        sock.end();
+      } catch {
+        /* ignore */
+      }
+      resolve(result);
+    };
+
+    const onLine = (line) => {
+      const m = String(line).match(/^(\d{3})([\s-])(.*)$/);
+      if (!m) return;
+      const code = Number(m[1]);
+      const sep = m[2];
+      const msg = m[3] || '';
+      if (!banner && code === 220 && sep === ' ') banner = msg;
+
+      // Resposta multiline usa "123-"; só tratamos a linha final "123 ".
+      if (sep !== ' ') return;
+
+      if (!sentUser && code === 220) {
+        sock.write('USER anonymous\r\n');
+        sentUser = true;
+        return;
+      }
+
+      if (sentUser && !sentPass) {
+        userReply = `${code} ${msg}`.trim();
+        if (code === 230) {
+          sock.write('QUIT\r\n');
+          finish({
+            ok: true,
+            host,
+            port,
+            banner,
+            userReply,
+            passReply: '',
+            passUsed: '(none-required)',
+            triedPasses,
+          });
+          return;
+        }
+        if (code === 331) {
+          if (!nextPass()) {
+            finish({ ok: false, host, port, banner, userReply, passReply: '', triedPasses });
+          }
+          return;
+        }
+        if (code >= 500) {
+          finish({ ok: false, host, port, banner, userReply, passReply: '', triedPasses });
+        }
+        return;
+      }
+
+      if (sentPass) {
+        passReply = `${code} ${msg}`.trim();
+        if (code === 230) {
+          sock.write('QUIT\r\n');
+          finish({
+            ok: true,
+            host,
+            port,
+            banner,
+            userReply,
+            passReply,
+            passUsed: String(passCandidates[passIndex] ?? ''),
+            triedPasses,
+          });
+          return;
+        }
+        if (code >= 500 || code === 530) {
+          if (nextPass()) return;
+          finish({ ok: false, host, port, banner, userReply, passReply, triedPasses });
+        }
+      }
+    };
+
+    sock.on('data', (chunk) => {
+      buf += chunk;
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop() || '';
+      for (const line of lines) onLine(line);
+    });
+
+    sock.on('timeout', () => finish({ ok: false, host, port, error: `timeout ${timeoutMs}ms` }));
+    sock.on('error', (e) => finish({ ok: false, host, port, error: e?.message || String(e) }));
+    sock.on('close', () => {
+      if (!done) finish({ ok: false, host, port, error: 'connection closed' });
+    });
+  });
 }
 
 function parseWhoisText(domainOrHost, whoisText) {
@@ -486,6 +709,7 @@ export async function runKaliAggressiveScan({
     `http://${domain}/`,
   ];
   const seenQueries = new Set();
+  const ftpChecked = new Set();
 
   if (cap.tools.nmap) {
     try {
@@ -504,6 +728,52 @@ export async function runKaliAggressiveScan({
           meta: row.searchBlob || row.name || 'nmap',
           url,
         });
+
+        if (isFtpServiceRow(row)) {
+          const k = `${row.host}:${row.port}`;
+          if (!ftpChecked.has(k)) {
+            ftpChecked.add(k);
+            const ftpTimeout = Math.max(4000, Number(process.env.GHOSTRECON_FTP_ANON_TIMEOUT_MS || 12000));
+            log(`[FTP] Teste de login anônimo em ${k} (PASS vazio, depois e-mail)`, 'info');
+            try {
+              const r = await tryFtpAnonymousLogin({
+                host: row.host,
+                port: Number(row.port) || 21,
+                timeoutMs: ftpTimeout,
+              });
+              if (r.ok) {
+                addFinding({
+                  type: 'security',
+                  prio: 'high',
+                  score: 91,
+                  value: `FTP anonymous login enabled @ ${k}`,
+                  meta: [
+                    'service=ftp',
+                    r.banner ? `banner=${String(r.banner).slice(0, 90)}` : null,
+                    r.userReply ? `user=${r.userReply}` : null,
+                    r.passReply ? `pass=${r.passReply}` : null,
+                    r.passUsed === '' ? 'auth=anonymous-empty-pass' : r.passUsed ? `auth=anonymous-pass:${r.passUsed}` : null,
+                    Array.isArray(r.triedPasses) && r.triedPasses.length
+                      ? `tried=${r.triedPasses.map((p) => (p === '' ? '<empty>' : p)).join(',')}`
+                      : null,
+                    'evidence=active_check',
+                  ]
+                    .filter(Boolean)
+                    .join(' • '),
+                  url: null,
+                });
+                const authHow =
+                  r.passUsed === '' ? 'PASS <empty>' : r.passUsed ? `PASS ${r.passUsed}` : 'sem PASS';
+                log(`[FTP] ⚠ login anônimo permitido em ${k} (${authHow})`, 'warn');
+              } else {
+                const why = r.error || r.passReply || r.userReply || 'negado';
+                log(`[FTP] ${k} sem login anônimo (${String(why).slice(0, 120)})`, 'info');
+              }
+            } catch (e) {
+              log(`[FTP] erro no teste ${k}: ${e?.message || e}`, 'warn');
+            }
+          }
+        }
 
         if (cap.tools.searchsploit && row.searchBlob && seenQueries.size < 12) {
           const key = row.searchBlob.toLowerCase().slice(0, 60);
@@ -775,6 +1045,31 @@ export async function runKaliAggressiveScan({
     }
   } else if (cap.tools.dalfox && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     log('dalfox: skip (sem sinais XSS passivos)', 'info');
+  }
+
+  // Executa após a etapa XSS (nuclei/dalfox): scanner xss_vibes externo.
+  if (cap.tools.xss_vibes && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+    log(`═══ xss_vibes (XSS) em URLs com parâmetros (${paramUrls.length}) ═══`, 'section');
+    const r = await runXssVibesBatch({ urls: paramUrls, cap, log });
+    if (!r.ok) {
+      log(`[xss_vibes] erro: ${r.error || 'falha desconhecida'}`, 'warn');
+    } else {
+      for (const hit of r.hits) {
+        addFinding({
+          type: 'xss',
+          prio: 'high',
+          score: 93,
+          value: `xss_vibes hit @ ${hit}`,
+          meta: 'scanner=xss_vibes • confidence=tool_output',
+          url: hit,
+        });
+      }
+      if (r.hits.length) log(`[xss_vibes] ${r.hits.length} hit(s) adicionado(s) como finding XSS`, 'warn');
+    }
+  } else if (cap.tools.xss_vibes && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+    log('[xss_vibes] skip (sem sinais XSS passivos)', 'info');
+  } else if (!cap.tools.xss_vibes) {
+    log('[xss_vibes] indisponível (python + Xss/xss_vibes/main.py/payloads.json)', 'info');
   }
 
   log('═══ Fim modo Kali ═══', 'section');

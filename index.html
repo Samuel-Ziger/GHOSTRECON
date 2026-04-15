@@ -3155,6 +3155,7 @@ async function fetchKaliCapabilities() {
       `nuclei:${t.nuclei ? '✓' : '✗'}`,
       `searchsploit:${t.searchsploit ? '✓' : '✗'}`,
       `dalfox:${t.dalfox ? '✓' : '✗'}`,
+      `xss_vibes:${t.xss_vibes ? '✓' : '✗'}`,
     ];
     if (line) {
       line.style.color = c.kali ? 'var(--accent2)' : 'var(--text-dim)';
@@ -3306,6 +3307,8 @@ function closeModulesHelpModal() {
         <dd>Enumeração <strong>WPScan</strong> (WordPress) só quando o recon passivo já indicou WordPress e a ferramenta existe no Kali. Por defeito exige <code>WPSCAN_API_TOKEN</code> (WPVulnDB); <code>GHOSTRECON_WPSCAN_REQUIRE_API=0</code> permite scan só com enumeração. Os eventos na consola usam o prefixo <code>[WPScan]</code>.</dd>
         <dt>DALFOX</dt>
         <dd>Resultados do <strong>Dalfox</strong> (XSS) no modo Kali, quando o pipeline activa essa fase.</dd>
+        <dt>XSS_VIBES</dt>
+        <dd>Após a fase XSS do modo Kali, o servidor pode executar <strong>xss_vibes</strong> (pasta <code>Xss/xss_vibes</code>) e adicionar os hits como findings <code>xss</code> com meta <code>scanner=xss_vibes</code>.</dd>
         <dt>XSS</dt>
         <dd>Achados classificados como XSS (ex.: templates Nuclei ou fase Verify).</dd>
         <dt>SQLI</dt>

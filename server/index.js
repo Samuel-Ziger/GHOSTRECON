@@ -1427,7 +1427,7 @@ async function runPipeline(ctx) {
       }
       if (!xssSignals && !sqliSignals) {
         log(
-          'Scan agressivo XSS/SQLi: sem sinais (URLs com parâmetros típicos nem candidatos intel) — nuclei tags xss/sqli e dalfox em skip',
+          'Scan agressivo XSS/SQLi: sem sinais (URLs com parâmetros típicos nem candidatos intel) — nuclei tags xss/sqli, dalfox e xss_vibes em skip',
           'info',
         );
       } else {

@@ -120,10 +120,12 @@ Activada se qualquer um de: `security_headers`, `robots_sitemap`, `wellknown_*`.
 Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no PATH.
 
 - **nmap**: XML parseado → findings `nmap`; argumentos via `GHOSTRECON_NMAP_ARGS` (default `-sV -Pn -T4 --host-timeout 180s`).
+- **FTP anônimo (pós-nmap)**: quando há serviço FTP (ex.: `21/tcp`), tenta login `USER anonymous`; se permitir, cria finding `security` high.
 - **searchsploit**: até 12 queries únicas derivadas de produto/versão do nmap → findings `exploit`.
 - **ffuf** (módulo `kali_ffuf`): wordlist Seclists/dirb, só **HTTP 200**, várias bases (domínio + portas 80/443 descobertas), threads `GHOSTRECON_FFUF_THREADS`.
 - **nuclei** (módulo `kali_nuclei`): lista de alvos; perfil `GHOSTRECON_NUCLEI_PROFILE` (`safe`, `bb-passive`, `bb-active`, `high-impact`); depois, se houver **sinais** XSS/SQLi passivos, corre tags `xss` / `sqli` sobre URLs com query (até 30).
 - **dalfox**: se `dalfox` no PATH **e** sinais XSS, até `GHOSTRECON_DALFOX_MAX_URLS` URLs (default 12), timeout `GHOSTRECON_DALFOX_TIMEOUT_MS` → findings `dalfox`.
+- **xss_vibes**: se `Xss/xss_vibes` + Python estiverem disponíveis **e** houver sinais XSS, roda após a fase XSS no Kali; logs prefixados `[xss_vibes]`; hits entram como findings `xss`.
 - **wpscan**: só se WordPress foi detectado no probe (`tech`) e `wpscan` existe; por defeito **só corre com** `WPSCAN_API_TOKEN` (WPVulnDB para CVEs); `GHOSTRECON_WPSCAN_REQUIRE_API=0` permite enumeração sem token. Logs prefixados `[WPScan]` na consola NDJSON.
 - **whois**: domínio raiz + amostra de subdomínios (limite via env ou `config.js`).
 
@@ -320,9 +322,11 @@ Cabeçalho: `X-CSRF-Token: <token>`.
 | `GHOSTRECON_STEALTH` | `1` = stealth como módulo sempre activo |
 | `GHOSTRECON_FORCE_KALI` | `1` = assumir ambiente Kali |
 | `GHOSTRECON_NMAP_ARGS` | Argumentos nmap |
+| `GHOSTRECON_FTP_ANON_TIMEOUT_MS` | Timeout do teste de login FTP anônimo (default `12000`) |
 | `GHOSTRECON_NUCLEI_PROFILE` | `safe` / `bb-passive` / `bb-active` / `high-impact` |
 | `GHOSTRECON_FFUF_THREADS` | Threads ffuf (1–64) |
 | `GHOSTRECON_DALFOX_MAX_URLS` / `GHOSTRECON_DALFOX_TIMEOUT_MS` | dalfox |
+| `GHOSTRECON_XSS_VIBES_MAX_URLS` / `GHOSTRECON_XSS_VIBES_THREADS` / `GHOSTRECON_XSS_VIBES_TIMEOUT_MS` | scanner `Xss/xss_vibes` (pós-XSS no Kali) |
 | `WPSCAN_API_TOKEN` ou `GHOSTRECON_WPSCAN_API_TOKEN` | WPVulnDB no wpscan (CVEs); **por defeito o scan não corre sem token** |
 | `GHOSTRECON_WPSCAN_REQUIRE_API` | `0` = permitir wpscan sem token (só enumeração); omitido ou ≠`0` = exige token |
 | `GHOSTRECON_WPSCAN_DETECTION_MODE` / `GHOSTRECON_WPSCAN_TIMEOUT_MS` | Modo e timeout wpscan |
