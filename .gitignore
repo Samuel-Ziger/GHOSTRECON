@@ -1,4 +1,8 @@
 node_modules/
+
+# Clone local MITRE CTI (pesado); o mapa fixo está em mitre-attack/recon-bundle.json
+mitre-attack/cti/
+
 data/*.db
 data/*.db-*
 

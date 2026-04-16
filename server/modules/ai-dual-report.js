@@ -462,6 +462,8 @@ function shrinkPayloadForLmStudio(obj, maxChars) {
       value: clampText(f?.value, 180),
       meta: clampText(f?.meta, 180),
       url: clampText(f?.url, 140),
+      owasp: Array.isArray(f?.owasp) && f.owasp.length ? f.owasp : undefined,
+      mitre: Array.isArray(f?.mitre) && f.mitre.length ? f.mitre : undefined,
     }));
     o._truncated = { note: 'payload simplificado para LM Studio', kept: o.findings.length };
     s = JSON.stringify(o);

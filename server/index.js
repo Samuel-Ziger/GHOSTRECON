@@ -81,7 +81,8 @@ import { serializeFindingsForRunSnapshot } from './modules/finding-serialize.js'
 import { buildReconCoverageSnapshot } from './modules/recon-coverage.js';
 import { runHighPrioHttpRecheck } from './modules/recheck-high.js';
 import { runOptionalPlaywrightXssProbe } from './modules/browser-xss-verify.js';
-import { applyOwaspTagsToFindings } from './modules/owasp-top10.js';
+import { applyOwaspTagsToFindings, inferOwaspTags } from './modules/owasp-top10.js';
+import { applyMitreTagsToFindings, inferMitreTechniqueIds } from './modules/mitre-recon.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -265,6 +266,7 @@ function buildPipelineExportPayloadForAi({
       provenance: f.provenance && (f.provenance.how || f.provenance.relation) ? { ...f.provenance } : undefined,
       verification: verificationOut,
       owasp: Array.isArray(f.owasp) && f.owasp.length ? f.owasp : undefined,
+      mitre: Array.isArray(f.mitre) && f.mitre.length ? f.mitre : undefined,
     };
   });
   return {
@@ -336,7 +338,12 @@ async function runPipeline(ctx) {
     if (statKey) stats[statKey] = (stats[statKey] || 0) + 1;
     findings.push(f);
     if (f.prio === 'high') stats.high += 1;
-    emit({ type: 'finding', finding: f });
+    emit({
+      type: 'finding',
+      finding: f,
+      mitreHints: inferMitreTechniqueIds(f),
+      owaspHints: inferOwaspTags(f),
+    });
     emit({ type: 'stats', stats: { ...stats } });
   };
 
@@ -1790,8 +1797,10 @@ async function runPipeline(ctx) {
   emit({ type: 'stats', stats: { ...stats } });
 
   applyOwaspTagsToFindings(findings);
+  applyMitreTagsToFindings(findings);
   emit({ type: 'findings_rescore', findings: [...findings] });
   log('OWASP Top 10 (2025): etiquetas heurísticas aplicadas a cada achado', 'info');
+  log('MITRE ATT&CK (recon): mapa fixo aplicado quando recon-bundle.json existe', 'info');
 
   const findingsSnapshotJson = serializeFindingsForRunSnapshot(findings);
   const saved = await saveRun({

@@ -1045,6 +1045,23 @@
     cursor: default;
   }
 
+  .finding-mitre {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .mitre-tag {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(230, 160, 80, 0.12);
+    border: 1px solid rgba(230, 170, 90, 0.38);
+    color: #e8c49a;
+    font-family: var(--mono);
+    cursor: default;
+  }
+
   .finding-provenance {
     margin-top: 8px;
     padding: 8px 10px;
@@ -1358,7 +1375,17 @@
         <div class="progress-pct" id="progressPct">0%</div>
       </div>
 
-      <button class="run-btn" id="runBtn" onclick="startRecon()">▶ RUN RECON</button>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px">
+        <button class="run-btn" id="runBtn" onclick="startRecon()">▶ RUN RECON</button>
+        <button
+          type="button"
+          class="find-btn"
+          id="mitreMapBtn"
+          disabled
+          title="Disponível após iniciar RUN RECON — abre o mapa MITRE ao vivo noutra aba"
+          onclick="openMitreMapPage()"
+        >🗺 Mapa MITRE (ao vivo)</button>
+      </div>
 
       <div class="section-label" style="margin-top:18px">Histórico (SQLite)</div>
       <div id="runsHistory" style="font-family:var(--mono);font-size:10px;color:var(--text-dim);max-height:120px;overflow-y:auto;line-height:1.5">
@@ -2172,6 +2199,19 @@ function renderFinding(f) {
     card.appendChild(ow);
   }
 
+  if (f.mitre && f.mitre.length) {
+    const mt = document.createElement('div');
+    mt.className = 'finding-mitre';
+    for (const tag of f.mitre) {
+      const sp = document.createElement('span');
+      sp.className = 'mitre-tag';
+      sp.textContent = tag.id || '?';
+      sp.title = tag.label || `${tag.id} — ${tag.title || ''}`;
+      mt.appendChild(sp);
+    }
+    card.appendChild(mt);
+  }
+
   const how = f.provenance && f.provenance.how;
   const rel = f.provenance && f.provenance.relation;
   if (how || rel) {
@@ -2448,6 +2488,55 @@ async function downloadRunFromApi(id) {
   } catch {}
 }
 
+function mitreLivePost(msg) {
+  try {
+    if (window.__mitreLiveBc) window.__mitreLiveBc.postMessage(msg);
+  } catch (_) {}
+}
+
+function closeMitreLiveQuiet() {
+  try {
+    window.__mitreLiveBc?.close();
+  } catch (_) {}
+  window.__mitreLiveBc = null;
+  window.__mitreLiveSessionId = null;
+  const btn = document.getElementById('mitreMapBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.title = 'Disponível após iniciar RUN RECON — abre o mapa MITRE ao vivo noutra aba';
+  }
+}
+
+function closeMitreLive() {
+  mitreLivePost({ type: 'run_end' });
+  closeMitreLiveQuiet();
+}
+
+function initMitreLiveSession() {
+  closeMitreLiveQuiet();
+  if (typeof BroadcastChannel === 'undefined') return;
+  window.__mitreLiveSessionId = crypto.randomUUID();
+  window.__mitreLiveBc = new BroadcastChannel('ghostrecon-mitre-' + window.__mitreLiveSessionId);
+  const btn = document.getElementById('mitreMapBtn');
+  if (btn) {
+    btn.disabled = false;
+    btn.title = 'Abre o mapa MITRE ao vivo (BroadcastChannel — mesma sessão de recon)';
+  }
+  mitreLivePost({ type: 'target', domain: targetDomain });
+}
+
+function openMitreMapPage() {
+  const id = window.__mitreLiveSessionId;
+  if (!id) {
+    addLog('Mapa MITRE: inicia RUN RECON primeiro (a sessão ao vivo cria-se ao começar o pipeline).', 'warn');
+    return;
+  }
+  const u = new URL('mitre-map.html', window.location.href);
+  u.hash = id;
+  const w = window.open(u.href, '_blank', 'noopener,noreferrer');
+  if (!w) addLog('Mapa MITRE: popup bloqueado — permite popups para este site ou abre manualmente: ' + u.href, 'warn');
+}
+
 // ─── MAIN RECON PIPELINE (backend NDJSON) ─────────────────
 /**
  * @param batchPreserveCount ao receber findings_rescore, manter os primeiros N (achados dos alvos anteriores na fila)
@@ -2469,6 +2558,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         `Stream NDJSON interrompida (${e?.message || e}). Mantém a aba aberta durante Shannon longo; evita suspender o portátil. Recarrega e tenta de novo se o servidor ainda corre.`,
         'error',
       );
+      mitreLivePost({ type: 'run_end' });
       failed = true;
       break outer;
     }
@@ -2486,7 +2576,10 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       if (ev.type === 'shannon_cli' && ev.line != null) addLogShannonCliLine(ev.line);
       if (ev.type === 'log') addLog(ev.msg, ev.level || 'info');
       if (ev.type === 'progress') setProgress(ev.pct);
-      if (ev.type === 'pipe') setPipe(ev.name, ev.state);
+      if (ev.type === 'pipe') {
+        setPipe(ev.name, ev.state);
+        mitreLivePost({ type: 'pipe', name: ev.name, state: ev.state, target: targetDomain });
+      }
       if (ev.type === 'stats' && ev.stats) {
         if (statsBaseline) {
           Object.keys(ev.stats).forEach((k) => {
@@ -2497,7 +2590,25 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           Object.keys(ev.stats).forEach((k) => updateStat(k, ev.stats[k]));
         }
       }
-      if (ev.type === 'finding' && ev.finding) addFinding(ev.finding);
+      if (ev.type === 'finding' && ev.finding) {
+        addFinding(ev.finding);
+        const mh = Array.isArray(ev.mitreHints) ? ev.mitreHints : [];
+        const oh = Array.isArray(ev.owaspHints) ? ev.owaspHints : [];
+        mitreLivePost({
+          type: 'finding_card',
+          ts: Date.now(),
+          finding: {
+            type: ev.finding.type,
+            prio: ev.finding.prio,
+            value: String(ev.finding.value || '').slice(0, 220),
+            meta: String(ev.finding.meta || '').slice(0, 160),
+          },
+          mitreHints: mh,
+          owaspHints: oh.map((x) =>
+            x && typeof x === 'object' ? { id: x.id, title: x.title, label: x.label } : x,
+          ),
+        });
+      }
       if (ev.type === 'findings_rescore' && Array.isArray(ev.findings)) {
         const incoming = ev.findings.filter((x) => !isFingerprintDismissed(x.fingerprint));
         if (batchPreserveCount > 0) {
@@ -2506,6 +2617,32 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           findings = incoming;
         }
         refreshFindingsList();
+        const mitreIds = [];
+        const owaspIds = [];
+        const owaspDetails = [];
+        for (const f of incoming) {
+          if (Array.isArray(f.mitre)) {
+            for (const t of f.mitre) {
+              if (t && t.id) mitreIds.push(t.id);
+            }
+          }
+          if (Array.isArray(f.owasp)) {
+            for (const t of f.owasp) {
+              if (t && t.id && !owaspIds.includes(t.id)) {
+                owaspIds.push(t.id);
+                owaspDetails.push({ id: t.id, title: t.title || '', label: t.label || '' });
+              }
+            }
+          }
+        }
+        if (mitreIds.length || owaspIds.length) {
+          mitreLivePost({
+            type: 'findings_rescore',
+            mitreIds,
+            owaspIds,
+            owaspDetails: owaspDetails.slice(0, 48),
+          });
+        }
       }
       if (ev.type === 'recon_coverage' && ev.snapshot) {
         window.__lastReconCoverage = ev.snapshot;
@@ -2563,6 +2700,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       }
       if (ev.type === 'error') {
         addLog(ev.message || 'Erro no servidor', 'error');
+        mitreLivePost({ type: 'run_end' });
         failed = true;
         break outer;
       }
@@ -2692,6 +2830,7 @@ async function startRecon() {
   addLog('Conectando ao pipeline local (servidor Node)...', 'info');
 
   const finishOk = () => {
+    closeMitreLive();
     btn.textContent = '▶ RUN RECON';
     btn.classList.remove('running');
     document.getElementById('statusText').textContent =
@@ -2701,6 +2840,7 @@ async function startRecon() {
 
   const finishErr = (msg) => {
     addLog(msg, 'error');
+    closeMitreLive();
     btn.textContent = '▶ RUN RECON';
     btn.classList.remove('running');
     document.getElementById('statusText').textContent = 'ERRO';
@@ -2791,6 +2931,8 @@ async function startRecon() {
 
     for (let i = 0; i < targets.length; i++) {
       targetDomain = targets[i];
+      if (i === 0) initMitreLiveSession();
+      else mitreLivePost({ type: 'target', domain: targetDomain });
       const batchPreserveFindingsBeforeRun = findings.length;
       if (targets.length > 1) {
         document.getElementById('statusText').textContent = `FILA ${i + 1}/${targets.length} · ${targetDomain}`;
@@ -2902,6 +3044,7 @@ function mapFindingForJsonExport(f) {
       : undefined,
     verification,
     owasp: Array.isArray(f.owasp) && f.owasp.length ? f.owasp : undefined,
+    mitre: Array.isArray(f.mitre) && f.mitre.length ? f.mitre : undefined,
   };
 }
 

@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GHOSTRECON · MITRE + OWASP (linha do tempo)</title>
+  <style>
+    :root {
+      --bg: #0b0e12;
+      --panel: #121820;
+      --panel2: #0e1218;
+      --border: #263041;
+      --text: #d2dae6;
+      --dim: #6d7b8f;
+      --live: #e84d4d;
+      --live-dim: rgba(232, 77, 77, 0.35);
+      --done: #3dd68c;
+      --mitre: #e8a87c;
+      --owasp: #7ec8ff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    header {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 14px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .pill {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--dim);
+    }
+    .pill.waiting { border-color: #4a4a38; color: #c9c08a; }
+    .pill.live { border-color: #6a3030; color: #ff9a9a; animation: pulse 1.1s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.78; } }
+    .pill.err { color: #ff8a80; border-color: #633; }
+    .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+    main { padding: 14px 18px 100px; max-width: 1400px; margin: 0 auto; }
+    .hint {
+      font-size: 12px;
+      color: var(--dim);
+      margin: 0 0 14px;
+      max-width: 960px;
+      line-height: 1.55;
+    }
+    .layout-main {
+      display: grid;
+      grid-template-columns: minmax(220px, 270px) 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+    @media (max-width: 880px) {
+      .layout-main { grid-template-columns: 1fr; }
+    }
+
+    /* ── Timeline (estilo “trilho” ATT&CK / fases) ── */
+    .timeline-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 10px 12px 14px;
+      position: relative;
+    }
+    .timeline-panel h2 {
+      margin: 0 0 10px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--dim);
+      font-weight: 600;
+    }
+    .tl-rail {
+      position: absolute;
+      left: 21px;
+      top: 38px;
+      bottom: 12px;
+      width: 2px;
+      background: linear-gradient(180deg, var(--border), #1a2535);
+      border-radius: 1px;
+    }
+    .tl-nodes { position: relative; padding-left: 22px; }
+    .tl-node {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin-bottom: 6px;
+      min-height: 26px;
+    }
+    .tl-dot {
+      flex-shrink: 0;
+      width: 10px;
+      height: 10px;
+      margin-top: 4px;
+      margin-left: -15px;
+      border-radius: 50%;
+      background: #2a3545;
+      border: 2px solid #3d4d62;
+      z-index: 1;
+    }
+    .tl-node.pending .tl-dot { background: #1c2430; border-color: #3a4555; }
+    .tl-node.active .tl-dot {
+      background: var(--live);
+      border-color: #ff9090;
+      box-shadow: 0 0 10px var(--live-dim);
+    }
+    .tl-node.done .tl-dot { background: #1e3d2f; border-color: var(--done); }
+    .tl-node.skip .tl-dot { background: #2a2520; border-color: #665544; }
+    .tl-body { flex: 1; min-width: 0; }
+    .tl-name {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: #b8c4d4;
+      word-break: break-all;
+    }
+    .tl-node.active .tl-name { color: #ffc8c8; }
+    .tl-status { font-size: 9px; color: var(--dim); margin-top: 1px; }
+
+    /* ── Ramificações / achados ── */
+    .feed-panel h2 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--dim);
+    }
+    .feed-scroll {
+      max-height: min(52vh, 520px);
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel2);
+      padding: 8px;
+    }
+    .branch-card {
+      position: relative;
+      margin-bottom: 8px;
+      padding-left: 12px;
+      border-left: 3px solid #3a4a60;
+      background: rgba(20, 26, 34, 0.65);
+      border-radius: 0 6px 6px 0;
+      padding: 8px 10px 10px 14px;
+    }
+    .branch-card.hot-mitre { border-left-color: #c45c40; }
+    .branch-head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      align-items: center;
+      font-family: var(--mono);
+      font-size: 10px;
+      margin-bottom: 4px;
+    }
+    .fh-type { color: #9ecfff; text-transform: uppercase; }
+    .fh-prio { padding: 1px 5px; border-radius: 3px; font-size: 9px; }
+    .fh-prio.high { background: rgba(255,80,80,0.2); color: #ff9d9d; }
+    .fh-prio.med { background: rgba(255,180,80,0.15); color: #ffd08a; }
+    .fh-prio.low { background: rgba(120,200,120,0.12); color: #a8e0b0; }
+    .fh-time { color: var(--dim); margin-left: auto; }
+    .branch-value {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: #e4eaf2;
+      word-break: break-all;
+      margin-bottom: 4px;
+    }
+    .branch-meta { font-size: 9px; color: var(--dim); margin-bottom: 6px; word-break: break-word; }
+    .branch-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+    .tag-mitre {
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(232, 168, 124, 0.12);
+      border: 1px solid rgba(232, 168, 124, 0.35);
+      color: var(--mitre);
+    }
+    .tag-owasp {
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(126, 200, 255, 0.1);
+      border: 1px solid rgba(126, 200, 255, 0.32);
+      color: var(--owasp);
+    }
+    .tag-empty { font-size: 9px; color: var(--dim); font-style: italic; }
+
+    /* ── Grelha tácticas (subconjunto bundle) ── */
+    .tactics-below { margin-top: 18px; }
+    .tactics-below h2 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--dim);
+    }
+    .tactics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 10px;
+    }
+    .tactic {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .tactic.live { border-color: rgba(232, 77, 77, 0.5); box-shadow: 0 0 0 1px rgba(232, 77, 77, 0.1); }
+    .tactic-h {
+      padding: 8px 10px;
+      font-family: var(--mono);
+      font-size: 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .tactic-h strong { color: #eef3f8; }
+    .tactic-h span { color: var(--dim); font-size: 9px; }
+    .tactic-body { padding: 6px 8px 8px; max-height: 200px; overflow-y: auto; }
+    .chip {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 2px 5px;
+      margin: 2px 2px 0 0;
+      border-radius: 3px;
+      border: 1px solid #3a4555;
+      color: #8a9aac;
+      cursor: default;
+    }
+    .chip.hit {
+      background: rgba(201, 92, 64, 0.18);
+      border-color: rgba(201, 92, 64, 0.5);
+      color: #ffc4b8;
+    }
+
+    /* ── JSON ao vivo ── */
+    .json-section {
+      margin-top: 22px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .json-section > summary {
+      padding: 10px 14px;
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: #9fb8d4;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .json-section > summary::-webkit-details-marker { display: none; }
+    .json-section > summary::before { content: '▸'; font-size: 10px; opacity: 0.7; }
+    .json-section[open] > summary::before { content: '▾'; }
+    #jsonLive {
+      margin: 0;
+      padding: 12px 14px 16px;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.4;
+      color: #b8ccd8;
+      background: #0a0d11;
+      border-top: 1px solid var(--border);
+      max-height: 45vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .pipe-hint {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      padding: 8px 0 0;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MITRE + OWASP · linha do tempo do recon</h1>
+    <span id="statePill" class="pill waiting">À espera…</span>
+    <span class="sub" id="targetLine"></span>
+  </header>
+  <main>
+    <p class="hint">
+      Vista alinhada ao <strong>ATT&CK</strong> (tácticas do teu <code>recon-bundle.json</code>): à esquerda, a
+      <strong>linha do tempo</strong> das fases do pipeline; à direita, <strong>ramificações</strong> por cada achado com
+      etiquetas <strong>MITRE</strong> (heurística em tempo real) e <strong>OWASP Top 10 2025</strong> (heurística).
+      Em baixo, o <strong>JSON ao vivo</strong> agrega o estado (útil para export / IA / depuração). Liga à aba principal via
+      <code>BroadcastChannel</code> (mesmo browser).
+    </p>
+
+    <div class="layout-main">
+      <aside class="timeline-panel" aria-label="Linha do tempo do pipeline">
+        <h2>Fases do pipeline</h2>
+        <div class="tl-rail" aria-hidden="true"></div>
+        <div class="tl-nodes" id="timelineNodes"></div>
+        <div class="pipe-hint" id="pipeHint"></div>
+      </aside>
+
+      <section class="feed-panel">
+        <h2>Ramificações (achados)</h2>
+        <div class="feed-scroll" id="feedRoot"></div>
+      </section>
+    </div>
+
+    <div class="tactics-below">
+      <h2>Matriz tácticas (subconjunto recon)</h2>
+      <div id="tacticsRoot" class="tactics"></div>
+    </div>
+
+    <details class="json-section" id="jsonDetails" open>
+      <summary>JSON ao vivo (<code>ghostrecon_mitre_live_state</code>)</summary>
+      <pre id="jsonLive">{}</pre>
+    </details>
+  </main>
+
+  <script>
+    const PHASE_TO_TACTIC = {
+      'initial-access': 'TA0001',
+      'resource-development': 'TA0042',
+      reconnaissance: 'TA0043',
+    };
+
+    const PIPE_TACTICS = {
+      kali: ['TA0001'],
+      verify: ['TA0001', 'TA0043'],
+      pentestgpt: ['TA0001', 'TA0043'],
+      assets: ['TA0042', 'TA0043'],
+    };
+
+    const PIPE_ORDER = [
+      'input',
+      'subdomains',
+      'dns_enrichment',
+      'rdap',
+      'alive',
+      'surface',
+      'urls',
+      'params',
+      'js',
+      'dorks',
+      'secrets',
+      'verify',
+      'kali',
+      'assets',
+      'score',
+      'shannon',
+      'pentestgpt',
+    ];
+
+    const sessionId = (location.hash || '').replace(/^#/, '').trim();
+    const statePill = document.getElementById('statePill');
+    const targetLine = document.getElementById('targetLine');
+    const timelineNodes = document.getElementById('timelineNodes');
+    const feedRoot = document.getElementById('feedRoot');
+    const tacticsRoot = document.getElementById('tacticsRoot');
+    const pipeHint = document.getElementById('pipeHint');
+    const jsonLive = document.getElementById('jsonLive');
+
+    if (!sessionId) {
+      statePill.textContent = 'Sem sessão';
+      statePill.className = 'pill err';
+      feedRoot.innerHTML =
+        '<p class="err" style="padding:12px;color:#ff8a80">Abre a partir do GHOSTRECON (botão «Mapa MITRE») ou usa <code>mitre-map.html#&lt;uuid&gt;</code>.</p>';
+    } else {
+      /** @type {Map<string, string>} */
+      const pipeStates = new Map();
+      /** @type {Map<string, HTMLElement>} */
+      const pipeRowEls = new Map();
+      const mitreHitSet = new Set();
+      const owaspHitSet = new Set();
+      /** @type {Map<string, HTMLElement>} */
+      const chipById = new Map();
+      /** @type {Map<string, HTMLElement>} */
+      const tacticElByTa = new Map();
+      /** @type {Map<string, { name: string, url?: string }>} */
+      const techMeta = new Map();
+
+      let liveTarget = '';
+      let lastPipeLabel = '';
+      /** @type {object[]} */
+      const events = [];
+      const MAX_EVENTS = 200;
+      const MAX_FEED_CARDS = 100;
+      let bundleMeta = { loaded: false };
+      let jsonScheduled = false;
+
+      function setLiveTactics(taList, active) {
+        for (const [, el] of tacticElByTa) el.classList.remove('live');
+        if (!active || !taList?.length) return;
+        for (const ta of taList) {
+          const el = tacticElByTa.get(ta);
+          if (el) el.classList.add('live');
+        }
+      }
+
+      function applyHits() {
+        for (const [id, el] of chipById) {
+          if (mitreHitSet.has(id)) el.classList.add('hit');
+          else el.classList.remove('hit');
+        }
+      }
+
+      function addMitreHits(ids) {
+        let ch = false;
+        for (const id of ids || []) {
+          if (typeof id === 'string' && id.startsWith('T')) {
+            if (!mitreHitSet.has(id)) ch = true;
+            mitreHitSet.add(id);
+          }
+        }
+        if (ch) applyHits();
+      }
+
+      function addOwaspHits(rows) {
+        let ch = false;
+        for (const row of rows || []) {
+          const id = typeof row === 'string' ? row : row?.id;
+          if (id && /^A\d{2}$/.test(id)) {
+            if (!owaspHitSet.has(id)) ch = true;
+            owaspHitSet.add(id);
+          }
+        }
+        return ch;
+      }
+
+      function pushEvent(ev) {
+        events.push(ev);
+        while (events.length > MAX_EVENTS) events.shift();
+      }
+
+      function scheduleJsonRefresh() {
+        if (jsonScheduled) return;
+        jsonScheduled = true;
+        requestAnimationFrame(() => {
+          jsonScheduled = false;
+          jsonLive.textContent = JSON.stringify(buildLiveJson(), null, 2);
+        });
+      }
+
+      function buildLiveJson() {
+        const milestones = {};
+        for (const p of PIPE_ORDER) milestones[p] = pipeStates.get(p) || 'pending';
+        for (const [k, v] of pipeStates) {
+          if (!milestones[k]) milestones[k] = v;
+        }
+        const mitreTechniques = [...mitreHitSet]
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+          .map((id) => {
+            const m = techMeta.get(id);
+            return { id, name: m?.name || null, url: m?.url || null };
+          });
+        const owasp = [...owaspHitSet].sort().map((id) => ({ id, label: `OWASP Top 10 2025 — ${id}` }));
+        return {
+          schemaVersion: 2,
+          kind: 'ghostrecon_mitre_live_state',
+          target: liveTarget || null,
+          updatedAt: new Date().toISOString(),
+          bundle: bundleMeta,
+          pipelineMilestones: milestones,
+          mitreTechniquesHit: mitreTechniques,
+          owaspHit: owasp,
+          timelineEvents: events.slice(-120),
+          note:
+            'mitreTechniquesHit acumula heurísticas dos achados + passo final findings_rescore. OWASP idem. Não substitui relatório humano.',
+        };
+      }
+
+      function resetForNewTarget(domain) {
+        liveTarget = domain || '';
+        targetLine.textContent = liveTarget ? `Alvo: ${liveTarget}` : '';
+        feedRoot.innerHTML = '';
+        events.length = 0;
+        mitreHitSet.clear();
+        owaspHitSet.clear();
+        for (const p of PIPE_ORDER) pipeStates.set(p, 'pending');
+        for (const [p, el] of pipeRowEls) {
+          el.className = 'tl-node pending';
+          const st = el.querySelector('.tl-status');
+          if (st) st.textContent = 'pendente';
+        }
+        applyHits();
+        scheduleJsonRefresh();
+      }
+
+      function updatePipeRow(name, state) {
+        let row = pipeRowEls.get(name);
+        if (!row) {
+          row = document.createElement('div');
+          row.className = 'tl-node pending';
+          row.dataset.pipe = name;
+          row.innerHTML = '<span class="tl-dot"></span><div class="tl-body"><div class="tl-name"></div><div class="tl-status">pendente</div></div>';
+          row.querySelector('.tl-name').textContent = name;
+          timelineNodes.appendChild(row);
+          pipeRowEls.set(name, row);
+          pipeStates.set(name, 'pending');
+        }
+        const st = state === 'active' ? 'active' : state === 'done' ? 'done' : state === 'skip' ? 'skip' : 'pending';
+        pipeStates.set(name, st);
+        row.className = `tl-node ${st}`;
+        const lab = row.querySelector('.tl-status');
+        if (lab) lab.textContent = st === 'active' ? 'a correr…' : st === 'done' ? 'concluído' : st === 'skip' ? 'ignorado' : 'pendente';
+      }
+
+      function appendFindingCard(payload) {
+        const { finding, mitreHints, owaspHints, ts } = payload;
+        const card = document.createElement('div');
+        const hasM = Array.isArray(mitreHints) && mitreHints.length;
+        card.className = 'branch-card' + (hasM ? ' hot-mitre' : '');
+        const t = ts ? new Date(ts) : new Date();
+        const timeStr = t.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const pr = String(finding?.prio || '').toLowerCase();
+        const prClass = pr === 'high' || pr === 'low' || pr === 'med' ? pr : 'med';
+        const tags = [];
+        if (hasM) for (const id of mitreHints) tags.push(`<span class="tag-mitre" title="MITRE">${id}</span>`);
+        if (Array.isArray(owaspHints) && owaspHints.length) {
+          for (const o of owaspHints) {
+            const oid = o && typeof o === 'object' ? o.id : o;
+            if (oid) tags.push(`<span class="tag-owasp" title="${(o && o.title) || ''}">${oid}</span>`);
+          }
+        }
+        if (!tags.length) tags.push('<span class="tag-empty">sem etiquetas heurísticas</span>');
+        card.innerHTML = `
+          <div class="branch-head">
+            <span class="fh-type">${escapeHtml(String(finding?.type || '?'))}</span>
+            <span class="fh-prio ${prClass}">${escapeHtml(String(finding?.prio || '—').toUpperCase())}</span>
+            <span class="fh-time">${timeStr}</span>
+          </div>
+          <div class="branch-value">${escapeHtml(String(finding?.value || ''))}</div>
+          ${finding?.meta ? `<div class="branch-meta">${escapeHtml(String(finding.meta))}</div>` : ''}
+          <div class="branch-tags">${tags.join('')}</div>
+        `;
+        feedRoot.appendChild(card);
+        while (feedRoot.children.length > MAX_FEED_CARDS) feedRoot.removeChild(feedRoot.firstChild);
+        feedRoot.scrollTop = feedRoot.scrollHeight;
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function renderTacticGrid(bundle) {
+        const tactics = bundle.tactics || [];
+        const techniques = bundle.techniques || [];
+        const byTa = new Map();
+        for (const t of tactics) byTa.set(t.id, []);
+        techMeta.clear();
+        for (const tech of techniques) {
+          techMeta.set(tech.id, { name: tech.name, url: tech.url });
+          const phases = tech.phases || [];
+          for (const ph of phases) {
+            const ta = PHASE_TO_TACTIC[ph];
+            if (ta && byTa.has(ta)) {
+              byTa.get(ta).push(tech);
+              break;
+            }
+          }
+        }
+        tacticsRoot.innerHTML = '';
+        chipById.clear();
+        tacticElByTa.clear();
+        for (const tac of tactics) {
+          const list = byTa.get(tac.id) || [];
+          list.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+          const wrap = document.createElement('div');
+          wrap.className = 'tactic';
+          wrap.dataset.ta = tac.id;
+          tacticElByTa.set(tac.id, wrap);
+          const h = document.createElement('div');
+          h.className = 'tactic-h';
+          h.innerHTML = `<strong>${tac.id}</strong><span>${escapeHtml(tac.name || '')}</span>`;
+          wrap.appendChild(h);
+          const body = document.createElement('div');
+          body.className = 'tactic-body';
+          for (const tech of list) {
+            const sp = document.createElement('span');
+            sp.className = 'chip';
+            sp.textContent = tech.id;
+            sp.title = tech.name || '';
+            if (tech.url) {
+              sp.style.cursor = 'pointer';
+              sp.onclick = () => window.open(tech.url, '_blank', 'noopener,noreferrer');
+            }
+            chipById.set(tech.id, sp);
+            body.appendChild(sp);
+          }
+          wrap.appendChild(body);
+          tacticsRoot.appendChild(wrap);
+        }
+        bundleMeta = {
+          loaded: true,
+          scope: bundle.scope,
+          phases: bundle.phases,
+          tacticCount: tactics.length,
+          techniqueCount: techniques.length,
+          generatedAt: bundle.generatedAt || null,
+        };
+        applyHits();
+      }
+
+      function buildTimelineSkeleton() {
+        timelineNodes.innerHTML = '';
+        pipeRowEls.clear();
+        for (const p of PIPE_ORDER) updatePipeRow(p, 'pending');
+      }
+
+      function onMessage(ev) {
+        const m = ev.data || {};
+        if (m.type === 'target') {
+          buildTimelineSkeleton();
+          resetForNewTarget(m.domain);
+          pushEvent({ t: Date.now(), kind: 'target', domain: m.domain });
+          scheduleJsonRefresh();
+          return;
+        }
+        if (m.type === 'pipe') {
+          const name = String(m.name || '');
+          const st = String(m.state || '');
+          lastPipeLabel = `${name} · ${st}`;
+          pipeHint.textContent = `Último evento de pipeline: ${lastPipeLabel}`;
+          updatePipeRow(name, st);
+          pushEvent({ t: Date.now(), kind: 'pipe', name, state: st, target: m.target });
+          if (st === 'active') {
+            setLiveTactics((PIPE_TACTICS[name] || ['TA0043']), true);
+            statePill.textContent = 'Recon em curso';
+            statePill.className = 'pill live';
+          } else {
+            setLiveTactics([], false);
+          }
+          scheduleJsonRefresh();
+          return;
+        }
+        if (m.type === 'finding_card') {
+          appendFindingCard(m);
+          addMitreHits(m.mitreHints);
+          addOwaspHits(m.owaspHints);
+          pushEvent({
+            t: m.ts || Date.now(),
+            kind: 'finding',
+            finding: m.finding,
+            mitreHints: m.mitreHints,
+            owaspHints: (m.owaspHints || []).map((x) => (x && x.id ? x.id : x)),
+          });
+          scheduleJsonRefresh();
+          return;
+        }
+        if (m.type === 'mitre_hints') {
+          addMitreHits(m.ids);
+          scheduleJsonRefresh();
+          return;
+        }
+        if (m.type === 'findings_rescore') {
+          addMitreHits(m.mitreIds);
+          if (Array.isArray(m.owaspIds)) addOwaspHits(m.owaspIds);
+          if (Array.isArray(m.owaspDetails)) addOwaspHits(m.owaspDetails);
+          pushEvent({
+            t: Date.now(),
+            kind: 'findings_rescore',
+            mitreIds: m.mitreIds,
+            owaspIds: m.owaspIds,
+          });
+          scheduleJsonRefresh();
+          return;
+        }
+        if (m.type === 'run_end') {
+          statePill.textContent = 'Stream terminado';
+          statePill.className = 'pill';
+          setLiveTactics([], false);
+          pushEvent({ t: Date.now(), kind: 'run_end', lastPipe: lastPipeLabel });
+          scheduleJsonRefresh();
+        }
+      }
+
+      (async () => {
+        try {
+          const res = await fetch('mitre-attack/recon-bundle.json', { cache: 'no-store' });
+          if (!res.ok) throw new Error('recon-bundle.json HTTP ' + res.status);
+          const bundle = await res.json();
+          renderTacticGrid(bundle);
+        } catch (e) {
+          statePill.textContent = 'Erro bundle';
+          statePill.className = 'pill err';
+          tacticsRoot.innerHTML = `<p class="err" style="padding:10px;color:#ff8a80">${escapeHtml(String(e.message || e))}</p>`;
+          return;
+        }
+
+        buildTimelineSkeleton();
+        resetForNewTarget('');
+
+        if (typeof BroadcastChannel === 'undefined') {
+          statePill.textContent = 'Sem BroadcastChannel';
+          statePill.className = 'pill err';
+          return;
+        }
+
+        const ch = new BroadcastChannel('ghostrecon-mitre-' + sessionId);
+        ch.addEventListener('message', onMessage);
+        statePill.textContent = 'Ligado';
+        statePill.className = 'pill waiting';
+        jsonLive.textContent = JSON.stringify(buildLiveJson(), null, 2);
+      })();
+    }
+  </script>
+</body>
+</html>

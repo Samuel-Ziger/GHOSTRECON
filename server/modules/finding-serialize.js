@@ -35,6 +35,7 @@ function cloneFindingForSnapshot(f) {
     priorityWhy: Array.isArray(f.priorityWhy) ? f.priorityWhy.slice(0, 80) : f.priorityWhy,
     provenance: f.provenance,
     owasp: Array.isArray(f.owasp) ? f.owasp : undefined,
+    mitre: Array.isArray(f.mitre) ? f.mitre : undefined,
   };
   if (f.verification) {
     o.verification = {
@@ -55,7 +56,7 @@ function cloneFindingForSnapshot(f) {
 export function serializeFindingsForRunSnapshot(findings, maxBytes = DEFAULT_MAX_BYTES) {
   const lim = Number(process.env.GHOSTRECON_FINDINGS_SNAPSHOT_MAX_BYTES || maxBytes);
   const list = (findings || []).map(cloneFindingForSnapshot);
-  const payload = {
+  let payload = {
     schemaVersion: 1,
     savedAt: new Date().toISOString(),
     count: list.length,

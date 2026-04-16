@@ -6,8 +6,9 @@ const SQLI_PARAM_RE = /^(id|ids|user|user_id|uid|account|order|order_id|page|sor
 const REDIRECT_PARAM_RE = /^(redirect|url|next|return|return_url|dest|target|goto|callback)$/i;
 const IDOR_PARAM_RE = /^(id|user_id|uid|account|order_id|profile_id|invoice_id)$/i;
 const LFI_PARAM_RE = /^(file|path|page|template|include|inc|doc|document|folder|dir|download|view|cat)$/i;
+/** Padrões comuns de erro SQL em respostas HTML/JSON (probe simples com '). */
 const SQL_ERROR_RE =
-  /(sql syntax|mysql_fetch|ora-\d+|sqlite error|sqlstate|postgresql|unclosed quotation|syntax error at or near)/i;
+  /(sql syntax|mysql_fetch|mysqli_(query|sql)|sqlstate\[|PDOException|quoted string not properly terminated|unclosed quotation|syntax error at or near|sqlite error|postgresql|ORA-\d{4,5}|Microsoft OLE DB Provider|ODBC SQL Server Driver|Sybase message|Warning:\s*mysql_|You have an error in your SQL syntax)/i;
 const LFI_UNIX_RE = /(root:x:0:0:|daemon:x:|bin:x:|nobody:x:|\/bin\/bash|\/usr\/sbin\/nologin)/i;
 const LFI_WIN_RE = /(\[extensions\]|\[fonts\]|\[mci extensions\]|for 16-bit app support)/i;
 
@@ -63,6 +64,39 @@ function evidenceHash(evidence) {
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
+export function responseLooksLikeSqlError(text) {
+  return SQL_ERROR_RE.test(String(text || ''));
+}
+
+function sqlErrorResponseSnippet(text) {
+  const s = String(text || '');
+  const m = s.match(SQL_ERROR_RE);
+  if (m && m[0]) return sampleSnippet(s, m[0], 140);
+  return s.slice(0, 220).replace(/\s+/g, ' ').trim();
+}
+
+function collectEndpointUrlsForVerify(findings, maxEndpoints) {
+  const cap = Math.max(1, maxEndpoints);
+  const urls = new Set();
+  for (const f of findings || []) {
+    if (f?.type === 'endpoint' && typeof f.value === 'string' && /^https?:\/\//i.test(f.value)) urls.add(f.value);
+  }
+  for (const f of findings || []) {
+    if (f?.type !== 'param' || typeof f.url !== 'string' || !/^https?:\/\//i.test(f.url)) continue;
+    const m = String(f.value || '').match(/^\?([a-zA-Z_][a-zA-Z0-9_]{0,64})=\s*$/);
+    if (!m) continue;
+    const pName = m[1];
+    if (!SQLI_PARAM_RE.test(pName)) continue;
+    try {
+      const u = new URL(f.url);
+      if (u.searchParams.has(pName)) urls.add(f.url);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [...urls].slice(0, cap);
+}
+
 function pushVerificationFinding(out, kind, classification, score, value, meta, evidence) {
   out.push({
     type: kind,
@@ -81,11 +115,7 @@ function pushVerificationFinding(out, kind, classification, score, value, meta, 
 
 export async function runEvidenceVerification({ findings, auth, log, maxEndpoints = 36, modules = [] }) {
   const out = [];
-  const endpointUrls = [...new Set(
-    (findings || [])
-      .filter((f) => f?.type === 'endpoint' && typeof f.value === 'string' && /^https?:\/\//i.test(f.value))
-      .map((f) => f.value),
-  )].slice(0, Math.max(1, maxEndpoints));
+  const endpointUrls = collectEndpointUrlsForVerify(findings, maxEndpoints);
 
   if (!endpointUrls.length) return out;
   if (typeof log === 'function') log(`Verify: analisando ${endpointUrls.length} endpoint(s)`, 'info');
@@ -140,15 +170,18 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
       if (SQLI_PARAM_RE.test(param)) {
         const b = new URL(u.href);
         const t = new URL(u.href);
-        b.searchParams.set(p, '1');
-        t.searchParams.set(p, "1'");
+        const rawVal = u.searchParams.get(p);
+        const baseVal = rawVal != null && String(rawVal).length > 0 ? String(rawVal) : '1';
+        const testVal = `${baseVal}'`;
+        b.searchParams.set(p, baseVal);
+        t.searchParams.set(p, testVal);
         try {
           const [rb, rt] = await Promise.all([
             fetchText(b.href, { auth, modules }),
             fetchText(t.href, { auth, modules }),
           ]);
-          const errBase = SQL_ERROR_RE.test(rb.text);
-          const errTest = SQL_ERROR_RE.test(rt.text);
+          const errBase = responseLooksLikeSqlError(rb.text);
+          const errTest = responseLooksLikeSqlError(rt.text);
           const statusDiff = rb.status !== rt.status;
           const classification = errTest && !errBase ? 'confirmed' : statusDiff ? 'probable' : 'noisy';
           const score = classification === 'confirmed' ? 95 : classification === 'probable' ? 72 : 34;
@@ -158,14 +191,14 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
             classification,
             score,
             `Verify SQLi ${classification.toUpperCase()} @ ${t.pathname} ?${p}=`,
-            `verify=sqli • param=${p} • sql_error=${errTest ? 'yes' : 'no'} • status_diff=${statusDiff ? 'yes' : 'no'} • confidence=${classification}`,
+            `verify=sqli • param=${p} • probe=${encodeURIComponent(baseVal)}→${encodeURIComponent(testVal)} • sql_error=${errTest ? 'yes' : 'no'} • status_diff=${statusDiff ? 'yes' : 'no'} • confidence=${classification}`,
             {
               source: 'verify-sqli',
               url: t.href,
               method: 'GET',
               status: rt.status,
-              requestSnippet: `${t.pathname}?${p}=1'`,
-              responseSnippet: sampleSnippet(rt.text, 'sql'),
+              requestSnippet: `${t.pathname}?${p}=${testVal}`,
+              responseSnippet: sqlErrorResponseSnippet(rt.text),
               timestamp: nowIso(),
             },
           );
