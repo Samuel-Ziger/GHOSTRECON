@@ -1498,6 +1498,7 @@ async function runPipeline(ctx) {
         runNuclei: runKaliNuclei,
         runFfuf: runKaliFfuf,
         auth,
+        emit,
       });
     } else {
       log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');

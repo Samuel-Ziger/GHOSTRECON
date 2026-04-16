@@ -222,6 +222,30 @@ function exploitUrl(row) {
   return row.url || '';
 }
 
+/**
+ * Query Google sugerida após versão nmap (contexto Exploit-DB), ex.: «exploit pra ssh 9.1».
+ * @param {{ name?: string, product?: string, version?: string }} row
+ * @returns {string|null}
+ */
+export function buildExploitVersionGoogleQuery(row) {
+  const ver = String(row?.version || '').trim();
+  if (!ver || !/\d/.test(ver)) return null;
+  const name = String(row?.name || '').trim().toLowerCase();
+  const product = String(row?.product || '').trim();
+  let short = name.replace(/[^a-z0-9._-]/gi, '');
+  if (!short && product) {
+    short = product
+      .split(/\s+/)[0]
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/gi, '');
+  }
+  if (!short || short.length > 48) return null;
+  const m = ver.match(/^([\d.]+(?:p\d+)?(?:[a-z]+\d*)?)/i);
+  const verNorm = (m && m[1]) || ver.split(/\s+/)[0].slice(0, 20);
+  if (!verNorm) return null;
+  return `exploit pra ${short} ${verNorm}`.replace(/\s+/g, ' ').trim();
+}
+
 async function runFfuf200(baseUrl, log) {
   const wl = WORDLISTS.find((p) => fs.existsSync(p));
   if (!wl) {
@@ -771,6 +795,8 @@ export async function runKaliAggressiveScan({
   runFfuf = false,
   /** Cookie / headers do recon (dalfox `--cookie`, xss_vibes `-H`). */
   auth = null,
+  /** NDJSON: eventos `dork` para fila de Google (pesquisas «exploit pra …» por versão nmap). */
+  emit = null,
 }) {
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
   const hosts = [...new Set(rawHosts)].slice(0, 22);
@@ -784,6 +810,11 @@ export async function runKaliAggressiveScan({
     `http://${domain}/`,
   ];
   const seenQueries = new Set();
+  const seenExploitGoogle = new Set();
+  const exploitGoogleMax = Math.max(
+    1,
+    Math.min(60, Number(process.env.GHOSTRECON_EXPLOIT_GOOGLE_MAX_QUERIES || 25)),
+  );
   const ftpChecked = new Set();
 
   if (cap.tools.nmap) {
@@ -803,6 +834,34 @@ export async function runKaliAggressiveScan({
           meta: row.searchBlob || row.name || 'nmap',
           url,
         });
+
+        const exploitGq = buildExploitVersionGoogleQuery(row);
+        if (exploitGq && typeof emit === 'function' && seenExploitGoogle.size < exploitGoogleMax) {
+          const gk = exploitGq.toLowerCase();
+          if (!seenExploitGoogle.has(gk)) {
+            seenExploitGoogle.add(gk);
+            const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(exploitGq)}`;
+            emit({
+              type: 'dork',
+              googleUrl,
+              query: exploitGq,
+              mod: 'nmap_version_exploit_google',
+              prio: 'med',
+            });
+            addFinding(
+              {
+                type: 'dork',
+                prio: 'med',
+                score: 50,
+                value: exploitGq,
+                meta: 'Categoria: nmap_version_exploit_google • sugestão Google (versão nmap / Exploit-DB contexto)',
+                url: googleUrl,
+              },
+              'dorks',
+            );
+            log(`Google (versão nmap): ${exploitGq}`, 'info');
+          }
+        }
 
         if (isFtpServiceRow(row)) {
           const k = `${row.host}:${row.port}`;

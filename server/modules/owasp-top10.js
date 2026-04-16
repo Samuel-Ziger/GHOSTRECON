@@ -69,6 +69,7 @@ export function inferOwaspTags(f) {
     if (/categoria:\s*github|categoria:\s*passwords/i.test(meta)) add(set, 'A04');
     if (/categoria:\s*(sqlerrors|config|phpinfo|database|backup)/i.test(meta)) add(set, 'A02');
     if (/categoria:\s*(sensitive|login)/i.test(meta)) add(set, 'A01');
+    if (/categoria:\s*nmap_version_exploit_google/i.test(meta)) add(set, 'A06');
     if (!set.size) add(set, 'A06');
   }
 
