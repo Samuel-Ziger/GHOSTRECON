@@ -1028,6 +1028,23 @@
     color: var(--text-dim);
   }
 
+  .finding-owasp {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .owasp-tag {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(100, 200, 255, 0.1);
+    border: 1px solid rgba(100, 200, 255, 0.32);
+    color: #9fd4ff;
+    font-family: var(--mono);
+    cursor: default;
+  }
+
   .finding-provenance {
     margin-top: 8px;
     padding: 8px 10px;
@@ -2140,6 +2157,19 @@ function renderFinding(f) {
     card.appendChild(meta);
   }
 
+  if (f.owasp && f.owasp.length) {
+    const ow = document.createElement('div');
+    ow.className = 'finding-owasp';
+    for (const tag of f.owasp) {
+      const sp = document.createElement('span');
+      sp.className = 'owasp-tag';
+      sp.textContent = tag.id || '?';
+      sp.title = tag.label || `${tag.id}:2025 — ${tag.title || ''}`;
+      ow.appendChild(sp);
+    }
+    card.appendChild(ow);
+  }
+
   const how = f.provenance && f.provenance.how;
   const rel = f.provenance && f.provenance.relation;
   if (how || rel) {
@@ -2850,6 +2880,7 @@ function mapFindingForJsonExport(f) {
       ? { how: f.provenance.how || '', relation: f.provenance.relation || '' }
       : undefined,
     verification,
+    owasp: Array.isArray(f.owasp) && f.owasp.length ? f.owasp : undefined,
   };
 }
 

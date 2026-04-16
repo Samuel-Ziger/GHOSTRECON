@@ -81,6 +81,7 @@ import { serializeFindingsForRunSnapshot } from './modules/finding-serialize.js'
 import { buildReconCoverageSnapshot } from './modules/recon-coverage.js';
 import { runHighPrioHttpRecheck } from './modules/recheck-high.js';
 import { runOptionalPlaywrightXssProbe } from './modules/browser-xss-verify.js';
+import { applyOwaspTagsToFindings } from './modules/owasp-top10.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -263,6 +264,7 @@ function buildPipelineExportPayloadForAi({
       bountyProbability: f.bountyProbability,
       provenance: f.provenance && (f.provenance.how || f.provenance.relation) ? { ...f.provenance } : undefined,
       verification: verificationOut,
+      owasp: Array.isArray(f.owasp) && f.owasp.length ? f.owasp : undefined,
     };
   });
   return {
@@ -1785,6 +1787,10 @@ async function runPipeline(ctx) {
   progress(100);
   stats.high = findings.filter((f) => f.prio === 'high').length;
   emit({ type: 'stats', stats: { ...stats } });
+
+  applyOwaspTagsToFindings(findings);
+  emit({ type: 'findings_rescore', findings: [...findings] });
+  log('OWASP Top 10 (2025): etiquetas heurísticas aplicadas a cada achado', 'info');
 
   const findingsSnapshotJson = serializeFindingsForRunSnapshot(findings);
   const saved = await saveRun({

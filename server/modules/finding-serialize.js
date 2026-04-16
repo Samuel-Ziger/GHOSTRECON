@@ -34,6 +34,7 @@ function cloneFindingForSnapshot(f) {
     bountyProbability: f.bountyProbability,
     priorityWhy: Array.isArray(f.priorityWhy) ? f.priorityWhy.slice(0, 80) : f.priorityWhy,
     provenance: f.provenance,
+    owasp: Array.isArray(f.owasp) ? f.owasp : undefined,
   };
   if (f.verification) {
     o.verification = {
