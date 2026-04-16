@@ -10,7 +10,7 @@ A interface é uma página estática **`index.html`** servida pelo **Express**; 
 
 - **`mitre-attack/recon-bundle.json`**: subconjunto fixo do ATT&CK **Enterprise** (fases *reconnaissance*, *resource-development*, *initial-access*), gerado a partir de um clone local do [MITRE CTI](https://github.com/mitre/cti) em `mitre-attack/cti/` (pasta **ignorada no Git** por ser pesada). Comando: **`npm run mitre:extract`** (`server/scripts/extract-mitre-recon-bundle.mjs`).
 - **`server/modules/mitre-recon.js`**: após o OWASP Top 10 2025, aplica etiquetas **MITRE** a cada finding (`f.mitre`) com o mesmo estilo de objectos que `f.owasp`; incluído em snapshots, export IA e UI.
-- **`mitre-map.html`**: mapa **ao vivo** noutra aba — **linha do tempo horizontal** do pipeline, **ramificações** alternadas (cima / baixo) por achado, quadrados clicáveis (técnica MITRE ou `#n`) com **popup** (explicação + links **attack.mitre.org** e **OWASP**). Sincroniza com a aba principal via **`BroadcastChannel`** (mesmo browser). Na sidebar, durante o recon, o botão **«Mapa MITRE (ao vivo)»** fica disponível.
+- **`mitre-map.html`**: mapa **ao vivo** noutra aba — **linha do tempo horizontal** do pipeline, **ramificações** alternadas (cima / baixo) por achado, quadrados clicáveis (técnica MITRE ou `#n`) com **popup** (explicação + links **attack.mitre.org** e **OWASP**). Cada card pode mostrar **link direto do achado** (quando houver URL em `value/meta`) e o modal inclui bloco de **serviço identificado** (ex.: WAF/Cloudflare, Nginx, Apache, WordPress, Jenkins, etc.) com explicação curta e documentação. Sincroniza com a aba principal via **`BroadcastChannel`** (mesmo browser) e usa fallback de sessão recente via `localStorage` para evitar ficar preso em hash antigo.
 
 ---
 
@@ -197,7 +197,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - **PentestGPT (sidebar)**: módulo **`pentestgpt_validate`**, linha **`pentestgptCapLine`** (árvore upstream **e** indicador **`POST .env`**), campo **URL POST** opcional + **Lembrar** + **Testar ponte**, **`pipe-pentestgpt`** na barra.
 - **Guia de módulos**: botão **?** junto a «Modules» — pop-up com descrição de cada módulo, **Shannon** / **PentestGPT** (função + resultados no Ghost) e nota sobre opções de **IA**.
 - **Dismiss** de findings por fingerprint (`localStorage`).
-- **Mapa MITRE (ao vivo)**: durante o recon, botão **«Mapa MITRE (ao vivo)»** abre **`mitre-map.html`** (nova aba); requer popups permitidos ou abrir manualmente o URL indicado no log se o browser bloquear.
+- **Mapa MITRE (ao vivo)**: durante o recon, botão **«Mapa MITRE (ao vivo)»** abre **`mitre-map.html`** (nova aba); o botão na sidebar tem estilo dedicado (neon/cyber), só fica ativo quando a sessão live existe e requer popups permitidos (ou abrir manualmente o URL indicado no log se o browser bloquear).
 - **Exportação** no browser: **JSON** (payload alinhado com o servidor para IA), **Markdown**, **TXT**.
 - **Auth opcional**: `localStorage` `ghostrecon_auth_json` → enviado como `auth` (headers + cookie) para probe/verify.
 - **API base**: por defeito mesma origem; outra porta: `localStorage.setItem('ghostrecon_api_base', 'http://127.0.0.1:PORTO')`.

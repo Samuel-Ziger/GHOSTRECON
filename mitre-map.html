@@ -3,100 +3,294 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GHOSTRECON · MITRE + OWASP (linha do tempo)</title>
+  <title>GHOSTRECON · MITRE + OWASP</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #0b0e12;
-      --panel: #121820;
-      --panel2: #0e1218;
-      --border: #263041;
-      --text: #d2dae6;
-      --dim: #6d7b8f;
-      --live: #e84d4d;
-      --live-dim: rgba(232, 77, 77, 0.35);
-      --done: #3dd68c;
-      --mitre: #e8a87c;
-      --owasp: #7ec8ff;
-      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --bg:        #050709;
+      --bg2:       #080c10;
+      --panel:     #0b1017;
+      --panel2:    #0d1219;
+      --border:    #1a2535;
+      --border2:   #243347;
+      --text:      #c8d8e8;
+      --dim:       #4a5d72;
+      --dim2:      #607888;
+      --live:      #ff3c3c;
+      --live-dim:  rgba(255,60,60,.3);
+      --done:      #00e87a;
+      --done-dim:  rgba(0,232,122,.18);
+      --mitre:     #ff9d4d;
+      --mitre-dim: rgba(255,157,77,.18);
+      --owasp:     #4dc8ff;
+      --owasp-dim: rgba(77,200,255,.15);
+      --acc:       #00c8ff;
+      --acc-dim:   rgba(0,200,255,.12);
+      --mono:      'Share Tech Mono', ui-monospace, monospace;
+      --sans:      'Rajdhani', system-ui, sans-serif;
+      --scan:      repeating-linear-gradient(
+                     0deg,
+                     transparent,
+                     transparent 2px,
+                     rgba(0,0,0,.18) 2px,
+                     rgba(0,0,0,.18) 4px
+                   );
     }
-    * { box-sizing: border-box; }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
     body {
       margin: 0;
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: var(--mono);
       background: var(--bg);
       color: var(--text);
-      font-size: 13px;
-      line-height: 1.45;
+      font-size: 12px;
+      line-height: 1.5;
+      min-height: 100vh;
+      overflow-x: hidden;
     }
+
+    /* ─── scanline overlay ─── */
+    body::before {
+      content: '';
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      background: var(--scan);
+      z-index: 9999;
+      opacity: .35;
+    }
+
+    /* ─── ambient glow bg ─── */
+    body::after {
+      content: '';
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 40% at 10% 0%, rgba(0,200,255,.05) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 35% at 90% 100%, rgba(0,232,122,.04) 0%, transparent 55%);
+      z-index: 0;
+    }
+
+    /* ─── HEADER ─── */
     header {
-      padding: 12px 18px;
-      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 0 20px;
+      height: 52px;
+      background: rgba(5,7,9,.92);
+      backdrop-filter: blur(12px) saturate(1.4);
+      border-bottom: 1px solid var(--border2);
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      gap: 8px 14px;
+      gap: 14px;
     }
-    h1 { margin: 0; font-size: 15px; font-weight: 600; }
+
+    header::before {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--acc), var(--done), transparent);
+      opacity: .25;
+    }
+
+    .logo-ghost {
+      flex-shrink: 0;
+      width: 32px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: ghost-float 2.4s ease-in-out infinite;
+    }
+
+    .logo-ghost svg {
+      display: block;
+      filter: drop-shadow(0 0 8px rgba(0, 200, 255, 0.35));
+    }
+
+    .logo-ghost .ghost-anim {
+      transform-origin: 24px 26px;
+      animation: ghost-sway 2.4s ease-in-out infinite;
+    }
+
+    @keyframes ghost-float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-3px); }
+    }
+
+    @keyframes ghost-sway {
+      0%, 100% { transform: rotate(-4deg); }
+      50% { transform: rotate(4deg); }
+    }
+
+    .logo-ghost .ghost-eye {
+      transform-origin: center;
+      transform-box: fill-box;
+      animation: ghost-blink 4.5s ease-in-out infinite;
+    }
+
+    .logo-ghost .ghost-eye-r { animation-delay: 0.05s; }
+
+    @keyframes ghost-blink {
+      0%, 48%, 52%, 100% { transform: scaleY(1); }
+      50% { transform: scaleY(0.12); }
+    }
+
+    h1 {
+      margin: 0;
+      font-family: var(--sans);
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: #e8f2ff;
+    }
+
+    h1 span { color: var(--acc); }
+
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
     .pill {
       font-family: var(--mono);
       font-size: 10px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      color: var(--dim);
-    }
-    .pill.waiting { border-color: #4a4a38; color: #c9c08a; }
-    .pill.live { border-color: #6a3030; color: #ff9a9a; animation: pulse 1.1s ease-in-out infinite; }
-    @keyframes pulse { 50% { opacity: 0.78; } }
-    .pill.err { color: #ff8a80; border-color: #633; }
-    .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); }
-    main { padding: 14px 18px 100px; max-width: 1200px; margin: 0 auto; }
-    .hint {
-      font-size: 12px;
-      color: var(--dim);
-      margin: 0 0 16px;
-      line-height: 1.55;
-    }
-    section.block { margin-bottom: 22px; }
-    section.block > h2 {
-      margin: 0 0 10px;
-      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 2px;
+      border: 1px solid var(--border2);
+      color: var(--dim2);
+      background: var(--panel);
+      letter-spacing: .06em;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--dim);
-      font-weight: 600;
     }
 
-    /* ── Pipeline horizontal ── */
+    .pill.waiting { border-color: #3a3a20; color: #b8a860; background: rgba(58,58,32,.35); }
+    .pill.live {
+      border-color: rgba(255,60,60,.5);
+      color: #ff9090;
+      background: rgba(255,60,60,.08);
+      animation: blink 1s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: .55; } }
+    .pill.err { color: #ff7070; border-color: #662222; background: rgba(102,34,34,.25); }
+
+    .target-badge {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--acc);
+      background: var(--acc-dim);
+      border: 1px solid rgba(0,200,255,.2);
+      padding: 3px 10px;
+      border-radius: 2px;
+      letter-spacing: .04em;
+    }
+
+    /* ─── MAIN ─── */
+    main {
+      position: relative;
+      z-index: 1;
+      padding: 18px 20px 100px;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: var(--dim2);
+      margin: 0 0 20px;
+      line-height: 1.65;
+      padding: 10px 14px;
+      border-left: 2px solid rgba(0,200,255,.25);
+      background: rgba(0,200,255,.03);
+      border-radius: 0 4px 4px 0;
+    }
+
+    .hint strong { color: #9ec8e4; }
+    .hint code {
+      background: rgba(0,200,255,.1);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 10px;
+      color: var(--acc);
+    }
+
+    /* ─── SECTION ─── */
+    section.block { margin-bottom: 24px; }
+
+    section.block > h2 {
+      margin: 0 0 10px;
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .15em;
+      color: var(--dim);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    section.block > h2::before {
+      content: '';
+      display: inline-block;
+      width: 14px; height: 2px;
+      background: var(--acc);
+      opacity: .5;
+      border-radius: 1px;
+    }
+
+    section.block > h2::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+      margin-left: 4px;
+    }
+
+    /* ─── PIPELINE ─── */
     .pipe-milestones-wrap {
       position: relative;
       background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 14px 10px 18px;
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      padding: 20px 14px 20px;
       overflow-x: auto;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 4px 24px rgba(0,0,0,.4);
     }
+
+    .pipe-milestones-wrap::-webkit-scrollbar { height: 4px; }
+    .pipe-milestones-wrap::-webkit-scrollbar-track { background: var(--bg2); }
+    .pipe-milestones-wrap::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
     .pipe-rail-h {
       position: absolute;
-      left: 14px;
-      right: 14px;
-      top: 36px;
-      height: 3px;
-      background: linear-gradient(90deg, #2a3545, #3d4f66, #2a3545);
-      border-radius: 2px;
+      left: 28px; right: 28px;
+      top: 38px;
+      height: 2px;
+      background: linear-gradient(90deg,
+        transparent 0%,
+        var(--border2) 8%,
+        rgba(0,200,255,.2) 50%,
+        var(--border2) 92%,
+        transparent 100%);
       pointer-events: none;
     }
+
     .pipe-milestones-h {
       display: flex;
       flex-direction: row;
-      align-items: flex-start;
       gap: 0;
       min-width: min-content;
       padding-top: 4px;
     }
+
     .pipe-ms {
       flex: 0 0 auto;
-      width: 72px;
+      width: 74px;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -104,51 +298,82 @@
       position: relative;
       z-index: 1;
     }
+
     .pipe-ms-dot {
-      width: 11px;
-      height: 11px;
+      width: 12px; height: 12px;
       border-radius: 50%;
-      background: #1c2430;
-      border: 2px solid #455a70;
-      margin-bottom: 6px;
+      background: var(--bg2);
+      border: 2px solid var(--border2);
+      margin-bottom: 8px;
+      transition: all .25s ease;
     }
-    .pipe-ms.pending .pipe-ms-dot { background: #1c2430; border-color: #3a4555; }
+
+    .pipe-ms.pending .pipe-ms-dot { background: var(--bg2); border-color: #1e2d3d; }
+
     .pipe-ms.active .pipe-ms-dot {
       background: var(--live);
-      border-color: #ffb0b0;
-      box-shadow: 0 0 12px var(--live-dim);
+      border-color: #ff8080;
+      box-shadow: 0 0 0 4px var(--live-dim), 0 0 16px var(--live);
+      animation: pulse-dot 1s ease-in-out infinite;
     }
-    .pipe-ms.done .pipe-ms-dot { background: #1e4d35; border-color: var(--done); }
-    .pipe-ms.skip .pipe-ms-dot { background: #2a2520; border-color: #665544; }
+
+    @keyframes pulse-dot {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.2); }
+    }
+
+    .pipe-ms.done .pipe-ms-dot {
+      background: var(--done-dim);
+      border-color: var(--done);
+      box-shadow: 0 0 8px rgba(0,232,122,.3);
+    }
+
+    .pipe-ms.skip .pipe-ms-dot { background: #1a1a14; border-color: #3a3520; }
+
     .pipe-ms-name {
       font-family: var(--mono);
       font-size: 8px;
-      color: #9fb0c4;
+      color: var(--dim2);
       line-height: 1.2;
       word-break: break-all;
       max-width: 68px;
+      transition: color .25s;
     }
-    .pipe-ms.active .pipe-ms-name { color: #ffd4d4; }
+
+    .pipe-ms.active .pipe-ms-name { color: #ffb0b0; }
+    .pipe-ms.done .pipe-ms-name { color: rgba(0,232,122,.8); }
+
     .pipe-ms-st {
-      font-size: 8px;
+      font-size: 9px;
       color: var(--dim);
       margin-top: 3px;
     }
+
+    .pipe-ms.done .pipe-ms-st { color: var(--done); }
+    .pipe-ms.active .pipe-ms-st { color: var(--live); }
+
     .pipe-hint {
       font-family: var(--mono);
       font-size: 10px;
       color: var(--dim);
-      margin-top: 8px;
+      margin-top: 10px;
+      padding-left: 2px;
     }
 
-    /* ── Ramificações: trilho horizontal + cima / baixo ── */
+    /* ─── BRANCHES ─── */
     .branches-wrap {
       background: var(--panel2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 16px 8px 20px;
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      padding: 0 12px 4px;
       overflow-x: auto;
+      box-shadow: 0 4px 24px rgba(0,0,0,.35);
     }
+
+    .branches-wrap::-webkit-scrollbar { height: 4px; }
+    .branches-wrap::-webkit-scrollbar-track { background: var(--bg2); }
+    .branches-wrap::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
     .h-flow-cards {
       display: flex;
       flex-direction: row;
@@ -156,183 +381,298 @@
       gap: 0;
       min-width: min-content;
       position: relative;
-      padding: 8px 4px 4px;
+      padding: 10px 2px 6px;
     }
+
     .h-flow-cards::after {
       content: '';
       position: absolute;
-      left: 8px;
-      right: 8px;
+      left: 10px; right: 10px;
       top: 50%;
-      height: 3px;
+      height: 2px;
       margin-top: -1px;
-      background: linear-gradient(90deg, #283545, #3d5268, #283545);
-      border-radius: 2px;
+      background: linear-gradient(90deg,
+        transparent 0%,
+        var(--border2) 5%,
+        rgba(0,200,255,.15) 50%,
+        var(--border2) 95%,
+        transparent 100%);
       z-index: 0;
       pointer-events: none;
     }
+
     .h-seg {
       position: relative;
       z-index: 1;
       flex: 0 0 auto;
-      width: 118px;
+      width: 124px;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      min-height: 168px;
-      padding: 0 4px;
+      min-height: 176px;
+      padding: 0 6px;
     }
-    /* Cima: cartão → conector → quadrado (quadrado junto ao trilho horizontal) */
-    .h-seg-up {
-      justify-content: flex-end;
-      padding-bottom: 2px;
-    }
-    /* Baixo: quadrado → conector → cartão */
-    .h-seg-down {
-      justify-content: flex-start;
-      padding-top: 2px;
-    }
+
+    .h-seg-up { justify-content: flex-end; padding-bottom: 4px; }
+    .h-seg-down { justify-content: flex-start; padding-top: 4px; }
+
     .h-mini-card {
       width: 100%;
-      max-width: 112px;
-      background: rgba(18, 24, 32, 0.92);
-      border: 1px solid #3a4a5e;
-      border-radius: 6px;
-      padding: 6px 7px 8px;
+      max-width: 116px;
+      background: rgba(10,16,24,.9);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: 8px 8px 9px;
       font-family: var(--mono);
       font-size: 9px;
-      color: #c5d2e2;
-      line-height: 1.35;
+      color: #b0c0d4;
+      line-height: 1.4;
       word-break: break-word;
+      transition: border-color .2s, box-shadow .2s;
+      position: relative;
+      overflow: hidden;
     }
-    .h-mini-card .t { color: #8ecfff; text-transform: uppercase; font-size: 8px; }
-    .h-mini-card .v { margin-top: 4px; color: #e8eef5; max-height: 52px; overflow: hidden; }
+
+    .h-mini-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0,200,255,.25), transparent);
+    }
+
+    .h-mini-card:hover {
+      border-color: rgba(0,200,255,.3);
+      box-shadow: 0 0 14px rgba(0,200,255,.08);
+    }
+
+    .h-mini-card .t {
+      color: var(--owasp);
+      text-transform: uppercase;
+      font-size: 8px;
+      letter-spacing: .05em;
+      opacity: .8;
+    }
+
+    .h-mini-card .v {
+      margin-top: 5px;
+      color: #d0dce8;
+      max-height: 52px;
+      overflow: hidden;
+    }
+
+    .h-mini-card .pr { margin-top: 5px; font-size: 8px; color: var(--dim); letter-spacing: .05em; }
+    .h-mini-card .lnk {
+      margin-top: 6px;
+      font-size: 8px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .h-mini-card .lnk a {
+      color: var(--acc);
+      text-decoration: none;
+      border-bottom: 1px dashed rgba(0,200,255,.35);
+    }
+    .h-mini-card .lnk a:hover {
+      color: #fff;
+      border-bottom-color: rgba(255,255,255,.45);
+    }
+
     .h-vline {
       width: 2px;
-      flex: 0 0 22px;
-      min-height: 22px;
-      background: linear-gradient(180deg, #4a5f78, #2e3c4d);
+      flex: 0 0 24px;
+      min-height: 24px;
       border-radius: 1px;
     }
+
     .h-seg-up .h-vline {
-      background: linear-gradient(180deg, #c4785a55, #4a5f78);
+      background: linear-gradient(180deg, rgba(255,157,77,.2), rgba(0,200,255,.35));
     }
+
     .h-seg-down .h-vline {
-      background: linear-gradient(180deg, #4a5f78, #c4785a55);
+      background: linear-gradient(180deg, rgba(0,200,255,.35), rgba(255,157,77,.2));
     }
+
+    /* ─── MITRE node button ─── */
     .mitre-node-btn {
-      width: 36px;
-      height: 36px;
-      padding: 2px;
-      margin: 0;
-      border-radius: 6px;
-      border: 2px solid rgba(232, 168, 124, 0.55);
-      background: linear-gradient(160deg, #2a2220, #1a1518);
+      width: 40px; height: 40px;
+      border-radius: 4px;
+      border: 1.5px solid rgba(255,157,77,.45);
+      background: linear-gradient(145deg, #1a1208, #0e0d0a);
       color: var(--mitre);
       font-family: var(--mono);
       font-size: 8px;
       font-weight: 700;
-      line-height: 1.05;
+      line-height: 1.1;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       text-align: center;
-      word-break: break-all;
-      transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
-    }
-    .mitre-node-btn:hover {
-      transform: scale(1.06);
-      border-color: #e8b090;
-      box-shadow: 0 0 14px rgba(232, 168, 124, 0.25);
-    }
-    .mitre-node-btn.num-only {
-      font-size: 11px;
-      color: #b8c8dc;
-      border-color: #4a5f78;
-    }
-
-    /* ── Matriz tácticas ── */
-    .tactics {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 10px;
-    }
-    .tactic {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
+      transition: transform .15s, border-color .15s, box-shadow .15s;
+      position: relative;
       overflow: hidden;
     }
-    .tactic.live { border-color: rgba(232, 77, 77, 0.5); box-shadow: 0 0 0 1px rgba(232, 77, 77, 0.1); }
+
+    .mitre-node-btn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,157,77,.1), transparent);
+      opacity: 0;
+      transition: opacity .15s;
+    }
+
+    .mitre-node-btn:hover {
+      transform: scale(1.1);
+      border-color: var(--mitre);
+      box-shadow: 0 0 18px rgba(255,157,77,.35), inset 0 0 8px rgba(255,157,77,.08);
+    }
+
+    .mitre-node-btn:hover::after { opacity: 1; }
+
+    .mitre-node-btn.num-only {
+      font-size: 12px;
+      color: var(--dim2);
+      border-color: var(--border2);
+      background: var(--panel);
+    }
+
+    .mitre-node-btn.num-only:hover {
+      border-color: var(--acc);
+      box-shadow: 0 0 14px var(--acc-dim);
+      color: var(--acc);
+    }
+
+    /* ─── TACTICS GRID ─── */
+    .tactics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .tactic {
+      background: var(--panel);
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      overflow: hidden;
+      transition: border-color .2s, box-shadow .2s;
+    }
+
+    .tactic.live {
+      border-color: rgba(255,60,60,.4);
+      box-shadow: 0 0 20px rgba(255,60,60,.08), inset 0 0 24px rgba(255,60,60,.03);
+    }
+
     .tactic-h {
-      padding: 8px 10px;
-      font-family: var(--mono);
-      font-size: 10px;
+      padding: 8px 12px;
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .06em;
       border-bottom: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
+      align-items: center;
       gap: 6px;
+      background: rgba(0,0,0,.2);
     }
-    .tactic-h strong { color: #eef3f8; }
-    .tactic-h span { color: var(--dim); font-size: 9px; }
-    .tactic-body { padding: 6px 8px 8px; max-height: 200px; overflow-y: auto; }
+
+    .tactic-h strong { color: var(--acc); font-family: var(--mono); font-size: 10px; }
+    .tactic-h span { color: var(--dim2); font-size: 10px; font-family: var(--mono); }
+
+    .tactic-body {
+      padding: 8px 10px 10px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .tactic-body::-webkit-scrollbar { width: 3px; }
+    .tactic-body::-webkit-scrollbar-track { background: transparent; }
+    .tactic-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 1px; }
+
     .chip {
       display: inline-block;
       font-family: var(--mono);
       font-size: 9px;
-      padding: 2px 5px;
+      padding: 2px 6px;
       margin: 2px 2px 0 0;
-      border-radius: 3px;
-      border: 1px solid #3a4555;
-      color: #8a9aac;
+      border-radius: 2px;
+      border: 1px solid var(--border);
+      color: var(--dim2);
       cursor: default;
-    }
-    .chip.hit {
-      background: rgba(201, 92, 64, 0.18);
-      border-color: rgba(201, 92, 64, 0.5);
-      color: #ffc4b8;
+      transition: all .15s;
     }
 
+    .chip:hover { border-color: var(--border2); color: var(--text); }
+
+    .chip.hit {
+      background: rgba(255,100,60,.12);
+      border-color: rgba(255,100,60,.4);
+      color: #ffb8a8;
+      cursor: pointer;
+    }
+
+    /* ─── JSON ─── */
     .json-section {
-      margin-top: 22px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
+      margin-top: 24px;
+      border: 1px solid var(--border2);
+      border-radius: 6px;
       background: var(--panel);
       overflow: hidden;
     }
+
     .json-section > summary {
       padding: 10px 14px;
       cursor: pointer;
       font-family: var(--mono);
-      font-size: 11px;
-      color: #9fb8d4;
+      font-size: 10px;
+      color: var(--dim2);
       list-style: none;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      letter-spacing: .04em;
+      transition: color .15s;
     }
+
     .json-section > summary::-webkit-details-marker { display: none; }
-    .json-section > summary::before { content: '▸ '; opacity: 0.7; }
-    .json-section[open] > summary::before { content: '▾ '; }
+    .json-section > summary::before {
+      content: '▸';
+      font-size: 9px;
+      opacity: .6;
+      transition: transform .15s;
+    }
+    .json-section[open] > summary::before { transform: rotate(90deg); }
+    .json-section > summary:hover { color: var(--acc); }
+
     #jsonLive {
       margin: 0;
-      padding: 12px 14px 16px;
+      padding: 14px 16px 18px;
       font-family: var(--mono);
       font-size: 10px;
-      line-height: 1.4;
-      color: #b8ccd8;
-      background: #0a0d11;
+      line-height: 1.5;
+      color: rgba(0,200,255,.6);
+      background: #030507;
       border-top: 1px solid var(--border);
-      max-height: 42vh;
+      max-height: 40vh;
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-all;
     }
 
-    /* ── Modal ── */
+    #jsonLive::-webkit-scrollbar { width: 4px; height: 4px; }
+    #jsonLive::-webkit-scrollbar-track { background: transparent; }
+    #jsonLive::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+    /* ─── MODAL ─── */
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(4, 6, 10, 0.72);
+      background: rgba(2,4,8,.78);
+      backdrop-filter: blur(8px);
       z-index: 1000;
       display: flex;
       align-items: center;
@@ -340,94 +680,211 @@
       padding: 20px;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.18s ease;
+      transition: opacity .2s ease;
     }
-    .modal-backdrop.open {
-      opacity: 1;
-      pointer-events: auto;
-    }
+
+    .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+
     .modal-panel {
       width: 100%;
-      max-width: 480px;
-      max-height: min(86vh, 640px);
+      max-width: 500px;
+      max-height: min(88vh, 660px);
       overflow: auto;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+      background: #0c1218;
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.7), 0 0 0 1px rgba(0,200,255,.06);
       position: relative;
-      padding: 16px 18px 18px;
+      padding: 20px 22px 22px;
+      transform: translateY(10px);
+      transition: transform .2s ease;
     }
+
+    .modal-backdrop.open .modal-panel { transform: translateY(0); }
+
+    .modal-panel::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--mitre), var(--acc), transparent);
+      opacity: .6;
+      border-radius: 8px 8px 0 0;
+    }
+
+    .modal-panel::-webkit-scrollbar { width: 4px; }
+    .modal-panel::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
     .modal-close {
       position: absolute;
-      top: 8px;
-      right: 10px;
-      width: 32px;
-      height: 32px;
-      border: none;
-      border-radius: 6px;
-      background: #2a3344;
-      color: #dde6f0;
-      font-size: 20px;
+      top: 10px; right: 12px;
+      width: 28px; height: 28px;
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--dim2);
+      font-size: 16px;
       line-height: 1;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all .15s;
     }
-    .modal-close:hover { background: #3a4558; }
+
+    .modal-close:hover { background: var(--border2); color: var(--text); border-color: var(--acc); }
+
     .modal-panel h3 {
-      margin: 0 36px 10px 0;
-      font-size: 14px;
-      color: #eef3f8;
+      margin: 0 40px 12px 0;
+      font-family: var(--sans);
+      font-size: 16px;
+      font-weight: 700;
+      color: #e8f0fa;
+      letter-spacing: .05em;
     }
+
     .modal-panel .lead {
       font-family: var(--mono);
       font-size: 10px;
-      color: var(--dim);
-      margin-bottom: 12px;
+      color: var(--dim2);
+      margin-bottom: 6px;
       word-break: break-all;
     }
+
+    .modal-panel .lead strong { color: var(--acc); }
+
     .modal-panel h4 {
-      margin: 14px 0 8px;
+      margin: 16px 0 8px;
+      font-family: var(--sans);
       font-size: 11px;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: #9fb8d4;
+      letter-spacing: .1em;
+      color: var(--dim2);
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
+
+    .modal-panel h4::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
     .modal-panel ul {
       margin: 0;
-      padding-left: 18px;
+      padding: 0;
+      list-style: none;
       font-size: 12px;
-      color: #c8d4e4;
+      color: var(--text);
     }
-    .modal-panel li { margin-bottom: 8px; }
+
+    .modal-panel li {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      background: rgba(0,0,0,.3);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    .modal-panel li strong { color: var(--mitre); font-family: var(--mono); font-size: 11px; }
+
     .modal-panel a {
-      color: #8ecfff;
+      display: inline-block;
+      color: var(--acc);
+      font-family: var(--mono);
+      font-size: 10px;
+      margin-top: 5px;
+      text-decoration: none;
+      border-bottom: 1px solid rgba(0,200,255,.25);
       word-break: break-all;
+      transition: color .15s, border-color .15s;
     }
+
+    .modal-panel a:hover { color: #fff; border-color: rgba(255,255,255,.4); }
+
     .modal-panel .ex {
-      font-size: 11px;
-      color: #aebccc;
+      font-size: 10px;
+      color: var(--dim2);
       line-height: 1.5;
-      margin: 4px 0 0;
+      margin: 5px 0 0;
     }
-    .err { color: #ff8a80; }
+
+    .err { color: #ff7070; }
+
+    /* ─── EMPTY STATE ─── */
+    .empty-state {
+      padding: 28px 16px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--dim);
+      font-family: var(--mono);
+    }
+
+    .empty-state::before { content: '// '; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .logo-ghost,
+      .logo-ghost .ghost-anim,
+      .logo-ghost .ghost-eye {
+        animation: none !important;
+      }
+      .pill.live { animation: none; }
+      .pipe-ms.active .pipe-ms-dot { animation: none; }
+      body::before { opacity: 0.12; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>MITRE + OWASP · linha do tempo</h1>
-    <span id="statePill" class="pill waiting">À espera…</span>
-    <span class="sub" id="targetLine"></span>
+    <div class="logo-ghost" aria-hidden="true" title="GHOSTRECON">
+      <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" width="28" height="30" focusable="false">
+        <defs>
+          <linearGradient id="logoGhostGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e8fbff" />
+            <stop offset="45%" stop-color="#5ee0ff" />
+            <stop offset="100%" stop-color="#00a8d4" />
+          </linearGradient>
+          <linearGradient id="logoGhostSheen" x1="15%" y1="0%" x2="75%" y2="85%">
+            <stop offset="0%" stop-color="rgba(255,255,255,0.38)" />
+            <stop offset="45%" stop-color="rgba(255,255,255,0)" />
+            <stop offset="100%" stop-color="rgba(0,45,70,0.22)" />
+          </linearGradient>
+        </defs>
+        <g class="ghost-anim">
+          <path
+            fill="url(#logoGhostGrad)"
+            stroke="rgba(0,200,255,0.42)"
+            stroke-width="0.55"
+            d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
+          />
+          <path
+            fill="url(#logoGhostSheen)"
+            d="M 24 8 C 15 8 9 15 9 23.5 V 33 Q 16 28 24 32 Q 32 28 39 33 V 23.5 C 39 15 33 8 24 8 Z"
+            opacity="0.88"
+          />
+          <ellipse class="ghost-eye" cx="17" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+          <ellipse class="ghost-eye ghost-eye-r" cx="31" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+        </g>
+      </svg>
+    </div>
+    <h1>GHOST<span>RECON</span> · MITRE + OWASP</h1>
+    <div class="header-right">
+      <span id="targetLine" class="target-badge" style="display:none"></span>
+      <span id="statePill" class="pill waiting">À espera</span>
+    </div>
   </header>
+
   <main>
     <p class="hint">
-      <strong>Pipeline</strong> em linha horizontal (fases). Cada <strong>achado</strong> gera um segmento: ramo
-      <strong>para cima</strong> ou <strong>para baixo</strong> em alternância. O <strong>quadrado</strong> mostra a técnica MITRE principal (ex.
-      <code>T1595</code>) ou o número do achado; ao clicar abre o detalhe com links para <strong>ATT&CK</strong> e
-      <strong>OWASP</strong>.
+      <strong>Pipeline</strong> horizontal por fases. Cada <strong>achado</strong> gera um ramo <strong>↑ cima</strong> / <strong>↓ baixo</strong> em alternância.
+      O <strong>quadrado laranja</strong> mostra a técnica MITRE (<code>T1595</code>) ou nº do achado — clique para ver os links <strong>ATT&amp;CK</strong> e <strong>OWASP</strong>.
     </p>
 
     <section class="block" aria-label="Fases do pipeline">
-      <h2>Pipeline (horizontal)</h2>
+      <h2>Pipeline</h2>
       <div class="pipe-milestones-wrap">
         <div class="pipe-rail-h" aria-hidden="true"></div>
         <div id="pipeMilestonesH" class="pipe-milestones-h"></div>
@@ -436,19 +893,21 @@
     </section>
 
     <section class="block" aria-label="Ramificações">
-      <h2>Ramificações (clique no quadrado)</h2>
+      <h2>Ramificações</h2>
       <div class="branches-wrap">
-        <div id="feedRoot" class="h-flow-cards"></div>
+        <div id="feedRoot" class="h-flow-cards">
+          <div class="empty-state">Aguardando achados…</div>
+        </div>
       </div>
     </section>
 
     <section class="block">
-      <h2>Matriz tácticas (bundle)</h2>
+      <h2>Matriz tácticas</h2>
       <div id="tacticsRoot" class="tactics"></div>
     </section>
 
     <details class="json-section" id="jsonDetails" open>
-      <summary>JSON ao vivo (<code>ghostrecon_mitre_live_state</code>)</summary>
+      <summary>JSON live — <code>ghostrecon_mitre_live_state</code></summary>
       <pre id="jsonLive">{}</pre>
     </details>
   </main>
@@ -467,99 +926,112 @@
       'resource-development': 'TA0042',
       reconnaissance: 'TA0043',
     };
-
     const PIPE_TACTICS = {
       kali: ['TA0001'],
-      verify: ['TA0001', 'TA0043'],
-      pentestgpt: ['TA0001', 'TA0043'],
-      assets: ['TA0042', 'TA0043'],
+      verify: ['TA0001','TA0043'],
+      pentestgpt: ['TA0001','TA0043'],
+      assets: ['TA0042','TA0043'],
     };
-
     const PIPE_ORDER = [
-      'input',
-      'subdomains',
-      'dns_enrichment',
-      'rdap',
-      'alive',
-      'surface',
-      'urls',
-      'params',
-      'js',
-      'dorks',
-      'secrets',
-      'verify',
-      'kali',
-      'assets',
-      'score',
-      'shannon',
-      'pentestgpt',
+      'input','subdomains','dns_enrichment','rdap','alive','surface','urls',
+      'params','js','dorks','secrets','verify','kali','assets','score','shannon','pentestgpt',
     ];
-
-    /** OWASP Top 10 2025 (GHOSTRECON) — títulos alinhados ao servidor; links OWASP Top 10 2021 como referência próxima. */
     const OWASP_TOP10_2025 = {
-      A01: { title: 'Broken Access Control', url: 'https://owasp.org/Top10/A01_2021-Broken_Access_Control/' },
-      A02: { title: 'Security Misconfiguration', url: 'https://owasp.org/Top10/A05_2021-Security_Misconfiguration/' },
-      A03: { title: 'Software Supply Chain Failures', url: 'https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/' },
-      A04: { title: 'Cryptographic Failures', url: 'https://owasp.org/Top10/A02_2021-Cryptographic_Failures/' },
-      A05: { title: 'Injection', url: 'https://owasp.org/Top10/A03_2021-Injection/' },
-      A06: { title: 'Insecure Design', url: 'https://owasp.org/Top10/A04_2021-Insecure_Design/' },
-      A07: { title: 'Authentication Failures', url: 'https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/' },
-      A08: { title: 'Software or Data Integrity Failures', url: 'https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/' },
-      A09: { title: 'Security Logging and Alerting Failures', url: 'https://owasp.org/Top10/A09_2021-Security_Logging_and_Monitoring_Failures/' },
-      A10: { title: 'Mishandling of Exceptional Conditions', url: 'https://owasp.org/www-project-top-ten/' },
+      A01:{title:'Broken Access Control',url:'https://owasp.org/Top10/A01_2021-Broken_Access_Control/'},
+      A02:{title:'Security Misconfiguration',url:'https://owasp.org/Top10/A05_2021-Security_Misconfiguration/'},
+      A03:{title:'Software Supply Chain Failures',url:'https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/'},
+      A04:{title:'Cryptographic Failures',url:'https://owasp.org/Top10/A02_2021-Cryptographic_Failures/'},
+      A05:{title:'Injection',url:'https://owasp.org/Top10/A03_2021-Injection/'},
+      A06:{title:'Insecure Design',url:'https://owasp.org/Top10/A04_2021-Insecure_Design/'},
+      A07:{title:'Authentication Failures',url:'https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/'},
+      A08:{title:'Software or Data Integrity Failures',url:'https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/'},
+      A09:{title:'Security Logging and Alerting Failures',url:'https://owasp.org/Top10/A09_2021-Security_Logging_and_Monitoring_Failures/'},
+      A10:{title:'Mishandling of Exceptional Conditions',url:'https://owasp.org/www-project-top-ten/'},
     };
 
     function mitreTechniqueUrl(id) {
-      const s = String(id || '');
+      const s = String(id||'');
       if (!s.startsWith('T')) return 'https://attack.mitre.org/';
-      const parts = s.split('.');
-      if (parts.length === 1) return `https://attack.mitre.org/techniques/${s}/`;
-      return `https://attack.mitre.org/techniques/${parts[0]}/${s}/`;
+      const p = s.split('.');
+      return p.length===1 ? `https://attack.mitre.org/techniques/${s}/`
+                          : `https://attack.mitre.org/techniques/${p[0]}/${s}/`;
     }
 
     function owaspEntry(id) {
-      const k = String(id || '').toUpperCase();
-      return OWASP_TOP10_2025[k] || { title: 'OWASP Top 10', url: 'https://owasp.org/www-project-top-ten/' };
+      const k = String(id||'').toUpperCase();
+      return OWASP_TOP10_2025[k] || {title:'OWASP Top 10',url:'https://owasp.org/www-project-top-ten/'};
     }
 
-    const sessionId = (location.hash || '').replace(/^#/, '').trim();
-    const statePill = document.getElementById('statePill');
-    const targetLine = document.getElementById('targetLine');
-    const pipeMilestonesH = document.getElementById('pipeMilestonesH');
-    const feedRoot = document.getElementById('feedRoot');
-    const tacticsRoot = document.getElementById('tacticsRoot');
-    const pipeHint = document.getElementById('pipeHint');
-    const jsonLive = document.getElementById('jsonLive');
-    const modalBackdrop = document.getElementById('modalBackdrop');
-    const modalBody = document.getElementById('modalBody');
-    const modalTitle = document.getElementById('modalTitle');
-    const modalClose = document.getElementById('modalClose');
+    const MITRE_LIVE_SESSION_STORAGE_KEY = 'ghostrecon_mitre_live_session_id';
+    const sessionIdFromHash = (location.hash||'').replace(/^#/,'').trim();
+    let sessionIdFromStorage = '';
+    try {
+      sessionIdFromStorage = localStorage.getItem(MITRE_LIVE_SESSION_STORAGE_KEY) || '';
+    } catch (_) {}
+    // Prioriza a sessão mais recente do index.html para evitar ficar preso num hash antigo.
+    let sessionId = sessionIdFromStorage || sessionIdFromHash;
+    if (!sessionId && sessionIdFromHash) sessionId = sessionIdFromHash;
+    if (sessionId && sessionId !== sessionIdFromHash) {
+      try {
+        const nextUrl = new URL(location.href);
+        nextUrl.hash = sessionId;
+        history.replaceState(null, '', nextUrl.toString());
+      } catch (_) {}
+    }
+    const statePill    = document.getElementById('statePill');
+    const targetLine   = document.getElementById('targetLine');
+    const pipeMsH      = document.getElementById('pipeMilestonesH');
+    const feedRoot     = document.getElementById('feedRoot');
+    const tacticsRoot  = document.getElementById('tacticsRoot');
+    const pipeHint     = document.getElementById('pipeHint');
+    const jsonLive     = document.getElementById('jsonLive');
+    const modalBackdrop= document.getElementById('modalBackdrop');
+    const modalBody    = document.getElementById('modalBody');
+    const modalTitle   = document.getElementById('modalTitle');
+    const modalClose   = document.getElementById('modalClose');
+
+    /** Preenche só o DOM da pipeline (pendente), sem estado ao vivo — útil sem sessão ou antes do bundle. */
+    function fillPipelineMilestonesPendingOnly(container) {
+      if (!container) return;
+      container.innerHTML = '';
+      for (const p of PIPE_ORDER) {
+        const el = document.createElement('div');
+        el.className = 'pipe-ms pending';
+        el.dataset.pipe = p;
+        el.innerHTML =
+          '<span class="pipe-ms-dot"></span><span class="pipe-ms-name"></span><span class="pipe-ms-st">—</span>';
+        el.querySelector('.pipe-ms-name').textContent = p;
+        container.appendChild(el);
+      }
+    }
 
     if (!sessionId) {
       statePill.textContent = 'Sem sessão';
       statePill.className = 'pill err';
-      feedRoot.innerHTML =
-        '<p class="err" style="padding:12px">Abre a partir do GHOSTRECON (botão «Mapa MITRE») ou <code>mitre-map.html#&lt;uuid&gt;</code>.</p>';
+      targetLine.style.display = 'none';
+      feedRoot.innerHTML = '<p class="err empty-state">Abre a partir do GHOSTRECON (botão «Mapa MITRE») ou <code>mitre-map.html#&lt;uuid&gt;</code>.</p>';
+      fillPipelineMilestonesPendingOnly(pipeMsH);
+      if (pipeHint) pipeHint.textContent = 'Sem sessão ao vivo — os marcos mostram a ordem típica do pipeline.';
     } else {
-      const pipeStates = new Map();
-      const pipeRowEls = new Map();
+      const pipeStates  = new Map();
+      const pipeRowEls  = new Map();
       const mitreHitSet = new Set();
       const owaspHitSet = new Set();
-      const chipById = new Map();
-      const tacticElByTa = new Map();
-      const techMeta = new Map();
+      const chipById    = new Map();
+      const tacticElByTa= new Map();
+      const techMeta    = new Map();
 
       let liveTarget = '';
       let lastPipeLabel = '';
       const events = [];
       const MAX_EVENTS = 200;
       const MAX_SEGMENTS = 80;
-      let bundleMeta = { loaded: false };
+      let bundleMeta = {loaded:false};
       let jsonScheduled = false;
       let findingSeq = 0;
 
       function setLiveTactics(taList, active) {
-        for (const [, el] of tacticElByTa) el.classList.remove('live');
+        for (const [,el] of tacticElByTa) el.classList.remove('live');
         if (!active || !taList?.length) return;
         for (const ta of taList) {
           const el = tacticElByTa.get(ta);
@@ -568,7 +1040,7 @@
       }
 
       function applyHits() {
-        for (const [id, el] of chipById) {
+        for (const [id,el] of chipById) {
           if (mitreHitSet.has(id)) el.classList.add('hit');
           else el.classList.remove('hit');
         }
@@ -576,75 +1048,63 @@
 
       function addMitreHits(ids) {
         let ch = false;
-        for (const id of ids || []) {
-          if (typeof id === 'string' && id.startsWith('T')) {
-            if (!mitreHitSet.has(id)) ch = true;
-            mitreHitSet.add(id);
-          }
+        for (const id of ids||[]) {
+          if (typeof id==='string'&&id.startsWith('T')) { if (!mitreHitSet.has(id)) ch=true; mitreHitSet.add(id); }
         }
         if (ch) applyHits();
       }
 
       function addOwaspHits(rows) {
-        for (const row of rows || []) {
-          const id = typeof row === 'string' ? row : row?.id;
-          if (id && /^A\d{2}$/.test(id)) owaspHitSet.add(id);
+        for (const row of rows||[]) {
+          const id = typeof row==='string'?row:row?.id;
+          if (id&&/^A\d{2}$/.test(id)) owaspHitSet.add(id);
         }
       }
 
       function pushEvent(ev) {
         events.push(ev);
-        while (events.length > MAX_EVENTS) events.shift();
+        while (events.length>MAX_EVENTS) events.shift();
       }
 
       function scheduleJsonRefresh() {
         if (jsonScheduled) return;
         jsonScheduled = true;
-        requestAnimationFrame(() => {
+        requestAnimationFrame(()=>{
           jsonScheduled = false;
-          jsonLive.textContent = JSON.stringify(buildLiveJson(), null, 2);
+          jsonLive.textContent = JSON.stringify(buildLiveJson(),null,2);
         });
       }
 
       function buildLiveJson() {
         const milestones = {};
-        for (const p of PIPE_ORDER) milestones[p] = pipeStates.get(p) || 'pending';
-        for (const [k, v] of pipeStates) {
-          if (!milestones[k]) milestones[k] = v;
-        }
-        const mitreTechniques = [...mitreHitSet]
-          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-          .map((id) => {
-            const m = techMeta.get(id);
-            return { id, name: m?.name || null, url: m?.url || mitreTechniqueUrl(id) };
-          });
-        const owasp = [...owaspHitSet].sort().map((id) => ({ id, ...owaspEntry(id) }));
-        return {
-          schemaVersion: 2,
-          kind: 'ghostrecon_mitre_live_state',
-          target: liveTarget || null,
-          updatedAt: new Date().toISOString(),
-          bundle: bundleMeta,
-          pipelineMilestones: milestones,
-          mitreTechniquesHit: mitreTechniques,
-          owaspHit: owasp,
-          timelineEvents: events.slice(-120),
-        };
+        for (const p of PIPE_ORDER) milestones[p] = pipeStates.get(p)||'pending';
+        for (const [k,v] of pipeStates) if (!milestones[k]) milestones[k]=v;
+        const mitreTechniques = [...mitreHitSet].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(id=>{
+          const m = techMeta.get(id);
+          return {id, name:m?.name||null, url:m?.url||mitreTechniqueUrl(id)};
+        });
+        const owasp = [...owaspHitSet].sort().map(id=>({id,...owaspEntry(id)}));
+        return {schemaVersion:2,kind:'ghostrecon_mitre_live_state',note:'Estado ao vivo do mapa MITRE/OWASP para integração ou debug.',target:liveTarget||null,updatedAt:new Date().toISOString(),bundle:bundleMeta,pipelineMilestones:milestones,mitreTechniquesHit:mitreTechniques,owaspHit:owasp,timelineEvents:events.slice(-120)};
       }
 
       function resetForNewTarget(domain) {
-        liveTarget = domain || '';
-        targetLine.textContent = liveTarget ? `Alvo: ${liveTarget}` : '';
-        feedRoot.innerHTML = '';
+        liveTarget = domain||'';
+        if (liveTarget) {
+          targetLine.textContent = liveTarget;
+          targetLine.style.display = '';
+        } else {
+          targetLine.style.display = 'none';
+        }
+        feedRoot.innerHTML = '<div class="empty-state">Aguardando achados…</div>';
         events.length = 0;
         mitreHitSet.clear();
         owaspHitSet.clear();
         findingSeq = 0;
-        for (const p of PIPE_ORDER) pipeStates.set(p, 'pending');
-        for (const [, el] of pipeRowEls) {
-          el.className = 'pipe-ms pending';
-          const st = el.querySelector('.pipe-ms-st');
-          if (st) st.textContent = '—';
+        for (const p of PIPE_ORDER) pipeStates.set(p,'pending');
+        for (const [,el] of pipeRowEls) {
+          el.className='pipe-ms pending';
+          const st=el.querySelector('.pipe-ms-st');
+          if (st) st.textContent='—';
         }
         applyHits();
         scheduleJsonRefresh();
@@ -654,308 +1114,318 @@
         let el = pipeRowEls.get(name);
         if (!el) {
           el = document.createElement('div');
-          el.className = 'pipe-ms pending';
-          el.dataset.pipe = name;
-          el.innerHTML =
-            '<span class="pipe-ms-dot"></span><span class="pipe-ms-name"></span><span class="pipe-ms-st">—</span>';
-          el.querySelector('.pipe-ms-name').textContent = name;
-          pipeMilestonesH.appendChild(el);
-          pipeRowEls.set(name, el);
-          pipeStates.set(name, 'pending');
+          el.className='pipe-ms pending';
+          el.dataset.pipe=name;
+          el.innerHTML='<span class="pipe-ms-dot"></span><span class="pipe-ms-name"></span><span class="pipe-ms-st">—</span>';
+          el.querySelector('.pipe-ms-name').textContent=name;
+          pipeMsH.appendChild(el);
+          pipeRowEls.set(name,el);
+          pipeStates.set(name,'pending');
         }
-        const st = state === 'active' ? 'active' : state === 'done' ? 'done' : state === 'skip' ? 'skip' : 'pending';
-        pipeStates.set(name, st);
-        el.className = `pipe-ms ${st}`;
-        const lab = el.querySelector('.pipe-ms-st');
-        if (lab) lab.textContent = st === 'active' ? '●' : st === 'done' ? '✓' : st === 'skip' ? '○' : '—';
+        const st = state==='active'?'active':state==='done'?'done':state==='skip'?'skip':'pending';
+        pipeStates.set(name,st);
+        el.className=`pipe-ms ${st}`;
+        const lab=el.querySelector('.pipe-ms-st');
+        if (lab) lab.textContent=st==='active'?'●':st==='done'?'✓':st==='skip'?'○':'—';
       }
 
       function buildTimelineSkeleton() {
-        pipeMilestonesH.innerHTML = '';
+        pipeMsH.innerHTML='';
         pipeRowEls.clear();
-        for (const p of PIPE_ORDER) updatePipeRow(p, 'pending');
+        for (const p of PIPE_ORDER) updatePipeRow(p,'pending');
       }
 
       function escapeHtml(s) {
-        return String(s)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;');
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+
+      function findingTypeHelp(typeRaw) {
+        const t = String(typeRaw||'').toLowerCase();
+        if (t==='waf') return 'WAF (Web Application Firewall) e um filtro de protecao de aplicacoes web; pode bloquear ou desafiar pedidos suspeitos.';
+        if (t==='param') return 'Parametro potencialmente sensivel. Abre o link para validar contexto, refletir input e testar impacto.';
+        if (t==='endpoint' || t==='url') return 'Endpoint/URL descoberto durante recon; bom ponto para validacao manual e correlacao com autenticacao.';
+        if (t==='xss' || t==='xss_reflection') return 'Possivel superficie de XSS; valida se ha reflexao controlavel e se o contexto permite execucao.';
+        return '';
+      }
+
+      function detectServiceInfo(finding) {
+        const hay = `${finding?.type||''} ${finding?.value||''} ${finding?.meta||''}`.toLowerCase();
+        const catalog = [
+          { re:/cloudflare/, name:'Cloudflare', what:'Plataforma edge/CDN com proxy reverso, mitigacao DDoS e WAF.', doc:'https://developers.cloudflare.com/fundamentals/' },
+          { re:/akamai/, name:'Akamai', what:'Rede de entrega e protecao de aplicacoes com camadas de WAF e bot defense.', doc:'https://techdocs.akamai.com/' },
+          { re:/(aws waf|amazon waf)/, name:'AWS WAF', what:'Firewall de aplicacao web da AWS para regras em ALB, API Gateway e CloudFront.', doc:'https://docs.aws.amazon.com/waf/' },
+          { re:/(f5|big-ip)/, name:'F5 BIG-IP', what:'Plataforma de ADC/WAF usada para balanceamento, protecao e politica de trafego.', doc:'https://clouddocs.f5.com/' },
+          { re:/imperva/, name:'Imperva', what:'Suite de seguranca para aplicacoes e APIs, com WAF e protecao DDoS.', doc:'https://docs.imperva.com/' },
+          { re:/sucuri/, name:'Sucuri', what:'Camada de protecao web com firewall cloud e monitoracao de integridade.', doc:'https://docs.sucuri.net/' },
+          { re:/nginx/, name:'Nginx', what:'Servidor web/proxy reverso usado para publicar apps e distribuir trafego.', doc:'https://nginx.org/en/docs/' },
+          { re:/(apache|httpd)/, name:'Apache HTTP Server', what:'Servidor web tradicional muito comum em stacks LAMP e hospedagens compartilhadas.', doc:'https://httpd.apache.org/docs/' },
+          { re:/(iis|microsoft-iis)/, name:'Microsoft IIS', what:'Servidor web da Microsoft integrado ao ecossistema Windows/ASP.NET.', doc:'https://learn.microsoft.com/iis/' },
+          { re:/wordpress/, name:'WordPress', what:'CMS popular em PHP; a superficie inclui plugins, temas, XML-RPC e REST API.', doc:'https://wordpress.org/documentation/' },
+          { re:/jenkins/, name:'Jenkins', what:'Servidor de CI/CD; exposicao indevida pode abrir risco de execucao remota e vazamento.', doc:'https://www.jenkins.io/doc/' },
+          { re:/grafana/, name:'Grafana', what:'Plataforma de dashboards; paineis e plugins expostos podem revelar informacao sensivel.', doc:'https://grafana.com/docs/' },
+        ];
+        for (const item of catalog) if (item.re.test(hay)) return item;
+        if (/\bwaf\b/.test(hay)) {
+          return { name:'WAF (generico)', what:'Camada de firewall para HTTP/HTTPS que filtra padroes de ataque antes da aplicacao.', doc:'https://owasp.org/www-community/Web_Application_Firewall' };
+        }
+        return null;
+      }
+
+      function extractUrls(text) {
+        const s = String(text||'');
+        const out = [];
+        const re = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+        let m;
+        while ((m = re.exec(s)) !== null) {
+          const clean = m[0].replace(/[),.;]+$/g,'');
+          if (clean) out.push(clean);
+        }
+        return out;
+      }
+
+      function findFindingLinks(finding) {
+        const candidates = [];
+        for (const k of ['url','link','endpoint','value','meta']) {
+          const v = finding?.[k];
+          if (typeof v==='string' && v.trim()) candidates.push(...extractUrls(v));
+        }
+        const uniq = [];
+        const seen = new Set();
+        for (const u of candidates) {
+          if (seen.has(u)) continue;
+          seen.add(u);
+          uniq.push(u);
+        }
+        return uniq.slice(0, 4);
       }
 
       function openModal(payload) {
-        const { seq, badgeLabel, finding, mitreHints, owaspHints } = payload;
-        modalTitle.textContent = `Achado #${seq} · ${finding?.type || '?'}`;
-        const mitreList = (mitreHints || []).filter((x) => typeof x === 'string' && x.startsWith('T'));
-        const owList = Array.isArray(owaspHints) ? owaspHints : [];
+        const {seq,badgeLabel,finding,mitreHints,owaspHints}=payload;
+        modalTitle.textContent=`Achado #${seq} · ${finding?.type||'?'}`;
+        const mitreList=(mitreHints||[]).filter(x=>typeof x==='string'&&x.startsWith('T'));
+        const owList=Array.isArray(owaspHints)?owaspHints:[];
+        const findingLinks = findFindingLinks(finding);
+        const typeHelp = findingTypeHelp(finding?.type);
+        const serviceInfo = detectServiceInfo(finding);
 
-        let mitreHtml = '';
+        let mitreHtml='';
         if (mitreList.length) {
-          mitreHtml = '<h4>MITRE ATT&CK (heurística)</h4><ul>';
+          mitreHtml='<h4>MITRE ATT&amp;CK</h4><ul>';
           for (const tid of mitreList) {
-            const meta = techMeta.get(tid);
-            const name = meta?.name || 'Técnica no bundle recon';
-            const url = meta?.url || mitreTechniqueUrl(tid);
-            mitreHtml += `<li><strong>${escapeHtml(tid)}</strong> — ${escapeHtml(name)}<p class="ex">${escapeHtml(
-              'Indício automático a partir do tipo de achado do GHOSTRECON; confirmação manual na matriz ATT&CK.',
-            )}</p><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Abrir em attack.mitre.org ↗</a></li>`;
+            const meta=techMeta.get(tid);
+            const name=meta?.name||'Técnica no bundle recon';
+            const url=meta?.url||mitreTechniqueUrl(tid);
+            mitreHtml+=`<li><strong>${escapeHtml(tid)}</strong> — ${escapeHtml(name)}<p class="ex">Indício automático a partir do tipo de achado do GHOSTRECON; confirmação manual recomendada.</p><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">attack.mitre.org ↗</a></li>`;
           }
-          mitreHtml += '</ul>';
+          mitreHtml+='</ul>';
         } else {
-          mitreHtml =
-            '<h4>MITRE ATT&CK</h4><p class="ex">Sem técnica MITRE heurística para este achado. Vê a matriz em baixo ou o bundle <code>recon-bundle.json</code>.</p>';
+          mitreHtml='<h4>MITRE ATT&amp;CK</h4><p class="ex" style="padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid #1a2535;border-radius:4px;color:#4a5d72">Sem técnica MITRE heurística. Consulta a matriz abaixo ou o bundle.</p>';
         }
 
-        let owHtml = '';
+        let owHtml='';
         if (owList.length) {
-          owHtml = '<h4>OWASP Top 10 (2025)</h4><ul>';
+          owHtml='<h4>OWASP Top 10 (2025)</h4><ul>';
           for (const o of owList) {
-            const id = o && typeof o === 'object' ? o.id : o;
-            if (!id || !/^A\d{2}$/.test(String(id))) continue;
-            const ent = owaspEntry(id);
-            const title = (o && o.title) || ent.title;
-            owHtml += `<li><strong>${escapeHtml(id)}</strong> — ${escapeHtml(title)}<p class="ex">${escapeHtml(
-              'Etiqueta heurística (OWASP Top 10 2025). Não equivale a auditoria completa da categoria.',
-            )}</p><a href="${escapeHtml(ent.url)}" target="_blank" rel="noopener noreferrer">Documentação OWASP ↗</a></li>`;
+            const id=o&&typeof o==='object'?o.id:o;
+            if (!id||!/^A\d{2}$/.test(String(id))) continue;
+            const ent=owaspEntry(id);
+            const title=(o&&o.title)||ent.title;
+            owHtml+=`<li><strong style="color:var(--owasp)">${escapeHtml(id)}</strong> — ${escapeHtml(title)}<p class="ex">Etiqueta heurística (OWASP Top 10 2025). Não equivale a auditoria completa.</p><a href="${escapeHtml(ent.url)}" target="_blank" rel="noopener noreferrer">owasp.org ↗</a></li>`;
           }
-          owHtml += '</ul>';
+          owHtml+='</ul>';
         } else {
-          owHtml =
-            '<h4>OWASP</h4><p class="ex">Sem etiqueta OWASP heurística neste achado.</p>';
+          owHtml='<h4>OWASP</h4><p class="ex" style="padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid #1a2535;border-radius:4px;color:#4a5d72">Sem etiqueta OWASP heurística neste achado.</p>';
         }
 
-        modalBody.innerHTML = `
-          <p class="lead">Quadrado: <strong>${escapeHtml(badgeLabel)}</strong></p>
-          <p class="lead"><strong>Valor:</strong> ${escapeHtml(String(finding?.value || '—'))}</p>
-          ${finding?.meta ? `<p class="lead"><strong>Meta:</strong> ${escapeHtml(String(finding.meta))}</p>` : ''}
-          ${mitreHtml}
-          ${owHtml}
-        `;
+        const findingLinksHtml = findingLinks.length
+          ? `<h4>Links do achado</h4><ul>${findingLinks.map((u)=>`<li><strong style="color:var(--acc)">URL</strong><a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${escapeHtml(u)}</a></li>`).join('')}</ul>`
+          : '<h4>Links do achado</h4><p class="ex" style="padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid #1a2535;border-radius:4px;color:#4a5d72">Sem URL direta neste item.</p>';
+        const serviceHtml = serviceInfo
+          ? `<h4>Servico identificado</h4><ul><li><strong style="color:var(--acc)">${escapeHtml(serviceInfo.name)}</strong> — ${escapeHtml(serviceInfo.what)}${serviceInfo.doc?`<a href="${escapeHtml(serviceInfo.doc)}" target="_blank" rel="noopener noreferrer">documentacao ↗</a>`:''}</li></ul>`
+          : '';
+
+        modalBody.innerHTML=`
+          <p class="lead">Badge: <strong>${escapeHtml(badgeLabel)}</strong></p>
+          ${typeHelp?`<p class="ex" style="padding:8px 10px;background:rgba(0,200,255,.05);border:1px solid rgba(0,200,255,.25);border-radius:4px"><strong style="color:var(--acc)">${escapeHtml(String(finding?.type||'achado').toUpperCase())}</strong>: ${escapeHtml(typeHelp)}</p>`:''}
+          <p class="lead">Valor: <strong>${escapeHtml(String(finding?.value||'—'))}</strong></p>
+          ${finding?.meta?`<p class="lead">Meta: <strong>${escapeHtml(String(finding.meta))}</strong></p>`:''}
+          ${serviceHtml}
+          ${findingLinksHtml}
+          ${mitreHtml}${owHtml}`;
         modalBackdrop.classList.add('open');
-        modalBackdrop.setAttribute('aria-hidden', 'false');
+        modalBackdrop.setAttribute('aria-hidden','false');
       }
 
       function closeModal() {
         modalBackdrop.classList.remove('open');
-        modalBackdrop.setAttribute('aria-hidden', 'true');
+        modalBackdrop.setAttribute('aria-hidden','true');
       }
 
-      modalClose.addEventListener('click', closeModal);
-      modalBackdrop.addEventListener('click', (e) => {
-        if (e.target === modalBackdrop) closeModal();
-      });
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && modalBackdrop.classList.contains('open')) closeModal();
-      });
+      modalClose.addEventListener('click',closeModal);
+      modalBackdrop.addEventListener('click',e=>{ if(e.target===modalBackdrop) closeModal(); });
+      document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&modalBackdrop.classList.contains('open')) closeModal(); });
 
       function appendFindingBranch(payload) {
-        findingSeq += 1;
-        const seq = findingSeq;
-        const { finding, mitreHints, owaspHints, ts } = payload;
-        const up = seq % 2 === 1;
-        const mitreList = (mitreHints || []).filter((x) => typeof x === 'string' && x.startsWith('T'));
-        const primaryT = mitreList[0] || null;
-        const badgeLabel = primaryT || `#${seq}`;
-        const btnClass = primaryT ? 'mitre-node-btn' : 'mitre-node-btn num-only';
+        // clear empty state
+        const emp = feedRoot.querySelector('.empty-state');
+        if (emp) emp.remove();
 
-        const t = ts ? new Date(ts) : new Date();
-        const timeStr = t.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const pr = String(finding?.prio || '').toLowerCase();
+        findingSeq+=1;
+        const seq=findingSeq;
+        const {finding,mitreHints,owaspHints,ts}=payload;
+        const up=seq%2===1;
+        const mitreList=(mitreHints||[]).filter(x=>typeof x==='string'&&x.startsWith('T'));
+        const primaryT=mitreList[0]||null;
+        const badgeLabel=primaryT||`#${seq}`;
+        const btnClass=primaryT?'mitre-node-btn':'mitre-node-btn num-only';
 
-        const seg = document.createElement('div');
-        seg.className = 'h-seg ' + (up ? 'h-seg-up' : 'h-seg-down');
+        const t=ts?new Date(ts):new Date();
+        const timeStr=t.toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        const pr=String(finding?.prio||'').toLowerCase();
+        const findingLinks = findFindingLinks(finding);
+        const quickLink = findingLinks[0] || '';
 
-        const card = document.createElement('div');
-        card.className = 'h-mini-card';
-        card.innerHTML = `
-          <div class="t">${escapeHtml(String(finding?.type || '?'))} · ${escapeHtml(timeStr)}</div>
-          <div class="v">${escapeHtml(String(finding?.value || '').slice(0, 200))}</div>
-          <div class="t" style="margin-top:6px;color:#8899aa">${escapeHtml(String(pr).toUpperCase())}</div>
-        `;
+        const seg=document.createElement('div');
+        seg.className='h-seg '+(up?'h-seg-up':'h-seg-down');
 
-        const vline = document.createElement('div');
-        vline.className = 'h-vline';
-        vline.setAttribute('aria-hidden', 'true');
+        const card=document.createElement('div');
+        card.className='h-mini-card';
+        card.innerHTML=`
+          <div class="t">${escapeHtml(String(finding?.type||'?'))} · ${escapeHtml(timeStr)}</div>
+          <div class="v">${escapeHtml(String(finding?.value||'').slice(0,200))}</div>
+          <div class="pr">${escapeHtml(String(pr).toUpperCase()||'—')}</div>
+          ${quickLink ? `<div class="lnk"><a href="${escapeHtml(quickLink)}" target="_blank" rel="noopener noreferrer">abrir alvo ↗</a></div>` : ''}`;
 
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = btnClass;
+        const vline=document.createElement('div');
+        vline.className='h-vline';
+        vline.setAttribute('aria-hidden','true');
+
+        const btn=document.createElement('button');
+        btn.type='button';
+        btn.className=btnClass;
         if (primaryT) {
-          const short = primaryT.length > 7 ? `${primaryT.slice(0, 6)}…` : primaryT;
-          btn.textContent = short;
-          btn.title = `${primaryT} — clique para detalhe e links`;
+          const short=primaryT.length>7?`${primaryT.slice(0,6)}…`:primaryT;
+          btn.textContent=short;
+          btn.title=`${primaryT} — clique para detalhe`;
         } else {
-          btn.textContent = `#${seq}`;
-          btn.title = `Achado #${seq} — clique para detalhe`;
+          btn.textContent=`#${seq}`;
+          btn.title=`Achado #${seq}`;
         }
 
-        const modalPayload = { seq, badgeLabel, finding, mitreHints: mitreList, owaspHints: owaspHints || [] };
-        btn.addEventListener('click', () => openModal(modalPayload));
+        const mPayload={seq,badgeLabel,finding,mitreHints:mitreList,owaspHints:owaspHints||[]};
+        btn.addEventListener('click',()=>openModal(mPayload));
 
-        if (up) {
-          seg.appendChild(card);
-          seg.appendChild(vline);
-          seg.appendChild(btn);
-        } else {
-          seg.appendChild(btn);
-          seg.appendChild(vline);
-          seg.appendChild(card);
-        }
+        if (up) { seg.appendChild(card); seg.appendChild(vline); seg.appendChild(btn); }
+        else    { seg.appendChild(btn);  seg.appendChild(vline); seg.appendChild(card); }
 
         feedRoot.appendChild(seg);
-        while (feedRoot.children.length > MAX_SEGMENTS) feedRoot.removeChild(feedRoot.firstChild);
-        feedRoot.scrollLeft = feedRoot.scrollWidth;
+        while (feedRoot.children.length>MAX_SEGMENTS) feedRoot.removeChild(feedRoot.firstChild);
+        feedRoot.scrollLeft=feedRoot.scrollWidth;
       }
 
       function renderTacticGrid(bundle) {
-        const tactics = bundle.tactics || [];
-        const techniques = bundle.techniques || [];
-        const byTa = new Map();
-        for (const t of tactics) byTa.set(t.id, []);
+        const tactics=bundle.tactics||[];
+        const techniques=bundle.techniques||[];
+        const byTa=new Map();
+        for (const t of tactics) byTa.set(t.id,[]);
         techMeta.clear();
         for (const tech of techniques) {
-          techMeta.set(tech.id, { name: tech.name, url: tech.url });
-          const phases = tech.phases || [];
-          for (const ph of phases) {
-            const ta = PHASE_TO_TACTIC[ph];
-            if (ta && byTa.has(ta)) {
-              byTa.get(ta).push(tech);
-              break;
-            }
+          techMeta.set(tech.id,{name:tech.name,url:tech.url});
+          for (const ph of tech.phases||[]) {
+            const ta=PHASE_TO_TACTIC[ph];
+            if (ta&&byTa.has(ta)) { byTa.get(ta).push(tech); break; }
           }
         }
-        tacticsRoot.innerHTML = '';
+        tacticsRoot.innerHTML='';
         chipById.clear();
         tacticElByTa.clear();
         for (const tac of tactics) {
-          const list = byTa.get(tac.id) || [];
-          list.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-          const wrap = document.createElement('div');
-          wrap.className = 'tactic';
-          wrap.dataset.ta = tac.id;
-          tacticElByTa.set(tac.id, wrap);
-          const h = document.createElement('div');
-          h.className = 'tactic-h';
-          h.innerHTML = `<strong>${tac.id}</strong><span>${escapeHtml(tac.name || '')}</span>`;
+          const list=(byTa.get(tac.id)||[]).sort((a,b)=>a.id.localeCompare(b.id,undefined,{numeric:true}));
+          const wrap=document.createElement('div');
+          wrap.className='tactic';
+          wrap.dataset.ta=tac.id;
+          tacticElByTa.set(tac.id,wrap);
+          const h=document.createElement('div');
+          h.className='tactic-h';
+          h.innerHTML=`<strong>${tac.id}</strong><span>${escapeHtml(tac.name||'')}</span>`;
           wrap.appendChild(h);
-          const body = document.createElement('div');
-          body.className = 'tactic-body';
+          const body=document.createElement('div');
+          body.className='tactic-body';
           for (const tech of list) {
-            const sp = document.createElement('span');
-            sp.className = 'chip';
-            sp.textContent = tech.id;
-            sp.title = tech.name || '';
-            if (tech.url) {
-              sp.style.cursor = 'pointer';
-              sp.onclick = () => window.open(tech.url, '_blank', 'noopener,noreferrer');
-            }
-            chipById.set(tech.id, sp);
+            const sp=document.createElement('span');
+            sp.className='chip';
+            sp.textContent=tech.id;
+            sp.title=tech.name||'';
+            if (tech.url) { sp.style.cursor='pointer'; sp.onclick = () => window.open(tech.url,'_blank','noopener,noreferrer'); }
+            chipById.set(tech.id,sp);
             body.appendChild(sp);
           }
           wrap.appendChild(body);
           tacticsRoot.appendChild(wrap);
         }
-        bundleMeta = {
-          loaded: true,
-          scope: bundle.scope,
-          phases: bundle.phases,
-          tacticCount: tactics.length,
-          techniqueCount: techniques.length,
-          generatedAt: bundle.generatedAt || null,
-        };
+        bundleMeta={loaded:true,scope:bundle.scope,phases:bundle.phases,tacticCount:tactics.length,techniqueCount:techniques.length,generatedAt:bundle.generatedAt||null};
         applyHits();
       }
 
       function onMessage(ev) {
-        const m = ev.data || {};
-        if (m.type === 'target') {
-          buildTimelineSkeleton();
-          resetForNewTarget(m.domain);
-          pushEvent({ t: Date.now(), kind: 'target', domain: m.domain });
-          scheduleJsonRefresh();
-          return;
+        const m=ev.data||{};
+        if (m.type==='target') {
+          buildTimelineSkeleton(); resetForNewTarget(m.domain);
+          pushEvent({t:Date.now(),kind:'target',domain:m.domain});
+          scheduleJsonRefresh(); return;
         }
-        if (m.type === 'pipe') {
-          const name = String(m.name || '');
-          const st = String(m.state || '');
-          lastPipeLabel = `${name} · ${st}`;
-          pipeHint.textContent = `Último pipeline: ${lastPipeLabel}`;
-          updatePipeRow(name, st);
-          pushEvent({ t: Date.now(), kind: 'pipe', name, state: st, target: m.target });
-          if (st === 'active') {
-            setLiveTactics(PIPE_TACTICS[name] || ['TA0043'], true);
-            statePill.textContent = 'Recon em curso';
-            statePill.className = 'pill live';
-          } else {
-            setLiveTactics([], false);
-          }
-          scheduleJsonRefresh();
-          return;
+        if (m.type==='pipe') {
+          const name=String(m.name||''); const st=String(m.state||'');
+          lastPipeLabel=`${name} · ${st}`;
+          pipeHint.textContent=`Último pipeline: ${lastPipeLabel}`;
+          updatePipeRow(name,st);
+          pushEvent({t:Date.now(),kind:'pipe',name,state:st,target:m.target});
+          if (st==='active') { setLiveTactics(PIPE_TACTICS[name]||['TA0043'],true); statePill.textContent='Recon em curso'; statePill.className='pill live'; }
+          else setLiveTactics([],false);
+          scheduleJsonRefresh(); return;
         }
-        if (m.type === 'finding_card') {
-          appendFindingBranch(m);
-          addMitreHits(m.mitreHints);
-          addOwaspHits(m.owaspHints);
-          pushEvent({
-            t: m.ts || Date.now(),
-            kind: 'finding',
-            finding: m.finding,
-            mitreHints: m.mitreHints,
-            owaspHints: (m.owaspHints || []).map((x) => (x && x.id ? x.id : x)),
-          });
-          scheduleJsonRefresh();
-          return;
+        if (m.type==='finding_card') {
+          appendFindingBranch(m); addMitreHits(m.mitreHints); addOwaspHits(m.owaspHints);
+          pushEvent({t:m.ts||Date.now(),kind:'finding',finding:m.finding,mitreHints:m.mitreHints,owaspHints:(m.owaspHints||[]).map(x=>(x&&x.id?x.id:x))});
+          scheduleJsonRefresh(); return;
         }
-        if (m.type === 'mitre_hints') {
-          addMitreHits(m.ids);
-          scheduleJsonRefresh();
-          return;
-        }
-        if (m.type === 'findings_rescore') {
+        if (m.type==='mitre_hints') { addMitreHits(m.ids); scheduleJsonRefresh(); return; }
+        if (m.type==='findings_rescore') {
           addMitreHits(m.mitreIds);
           if (Array.isArray(m.owaspIds)) addOwaspHits(m.owaspIds);
           if (Array.isArray(m.owaspDetails)) addOwaspHits(m.owaspDetails);
-          pushEvent({ t: Date.now(), kind: 'findings_rescore', mitreIds: m.mitreIds, owaspIds: m.owaspIds });
-          scheduleJsonRefresh();
-          return;
+          pushEvent({t:Date.now(),kind:'findings_rescore',mitreIds:m.mitreIds,owaspIds:m.owaspIds});
+          scheduleJsonRefresh(); return;
         }
-        if (m.type === 'run_end') {
-          statePill.textContent = 'Stream terminado';
-          statePill.className = 'pill';
-          setLiveTactics([], false);
-          pushEvent({ t: Date.now(), kind: 'run_end', lastPipe: lastPipeLabel });
+        if (m.type==='run_end') {
+          statePill.textContent='Stream terminado'; statePill.className='pill';
+          setLiveTactics([],false);
+          pushEvent({t:Date.now(),kind:'run_end',lastPipe:lastPipeLabel});
           scheduleJsonRefresh();
         }
       }
 
-      (async () => {
-        try {
-          const res = await fetch('mitre-attack/recon-bundle.json', { cache: 'no-store' });
-          if (!res.ok) throw new Error('recon-bundle.json HTTP ' + res.status);
-          const bundle = await res.json();
-          renderTacticGrid(bundle);
-        } catch (e) {
-          statePill.textContent = 'Erro bundle';
-          statePill.className = 'pill err';
-          tacticsRoot.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(String(e.message || e))}</p>`;
-          return;
-        }
-
+      (async()=>{
         buildTimelineSkeleton();
         resetForNewTarget('');
-
-        if (typeof BroadcastChannel === 'undefined') {
-          statePill.textContent = 'Sem BroadcastChannel';
-          statePill.className = 'pill err';
-          return;
+        let bundleOk = false;
+        try {
+          const res=await fetch('mitre-attack/recon-bundle.json',{cache:'no-store'});
+          if (!res.ok) throw new Error('recon-bundle.json HTTP '+res.status);
+          const bundle=await res.json();
+          renderTacticGrid(bundle);
+          bundleOk = true;
+        } catch(e) {
+          tacticsRoot.innerHTML=`<p class="err" style="padding:12px">${escapeHtml(String(e.message||e))}</p>`;
         }
-
-        const ch = new BroadcastChannel('ghostrecon-mitre-' + sessionId);
-        ch.addEventListener('message', onMessage);
-        statePill.textContent = 'Ligado';
+        if (typeof BroadcastChannel==='undefined') {
+          statePill.textContent='Sem BroadcastChannel'; statePill.className='pill err'; return;
+        }
+        const ch=new BroadcastChannel('ghostrecon-mitre-'+sessionId);
+        ch.addEventListener('message',onMessage);
+        statePill.textContent = bundleOk ? 'Ligado' : 'Ligado · sem matriz';
         statePill.className = 'pill waiting';
-        jsonLive.textContent = JSON.stringify(buildLiveJson(), null, 2);
+        jsonLive.textContent=JSON.stringify(buildLiveJson(),null,2);
       })();
     }
   </script>

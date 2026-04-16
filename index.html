@@ -90,31 +90,56 @@
     gap: 12px;
   }
 
-  .logo-icon {
-    width: 36px;
-    height: 36px;
-    border: 1px solid var(--accent);
-    display: grid;
-    place-items: center;
-    position: relative;
-    overflow: hidden;
+  .logo-ghost {
+    flex-shrink: 0;
+    width: 38px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: gr-ghost-float 2.4s ease-in-out infinite;
   }
 
-  .logo-icon::before {
-    content: '';
-    position: absolute;
-    inset: 3px;
-    border: 1px solid var(--accent);
-    opacity: 0.4;
-    animation: iconPulse 2s ease-in-out infinite;
+  .logo-ghost svg {
+    display: block;
+    filter: drop-shadow(0 0 10px rgba(0, 212, 255, 0.35));
   }
 
-  @keyframes iconPulse {
-    0%, 100% { transform: scale(1); opacity: 0.4; }
-    50% { transform: scale(0.8); opacity: 0.8; }
+  .logo-ghost .ghost-anim {
+    transform-origin: 24px 26px;
+    animation: gr-ghost-sway 2.4s ease-in-out infinite;
   }
 
-  .logo-icon svg { width: 18px; height: 18px; fill: var(--accent); }
+  .logo-ghost .ghost-eye {
+    transform-origin: center;
+    transform-box: fill-box;
+    animation: gr-ghost-blink 4.5s ease-in-out infinite;
+  }
+
+  .logo-ghost .ghost-eye-r { animation-delay: 0.05s; }
+
+  @keyframes gr-ghost-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-3px); }
+  }
+
+  @keyframes gr-ghost-sway {
+    0%, 100% { transform: rotate(-4deg); }
+    50% { transform: rotate(4deg); }
+  }
+
+  @keyframes gr-ghost-blink {
+    0%, 48%, 52%, 100% { transform: scaleY(1); }
+    50% { transform: scaleY(0.12); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .logo-ghost,
+    .logo-ghost .ghost-anim,
+    .logo-ghost .ghost-eye {
+      animation: none !important;
+    }
+  }
 
   .logo-text {
     font-family: var(--display);
@@ -324,6 +349,75 @@
     border-color: var(--accent4);
     color: var(--accent4);
     animation: btnPulse 1s ease-in-out infinite;
+  }
+
+  .mitre-map-btn {
+    padding: 10px 12px;
+    min-width: 198px;
+    border: 1px solid rgba(0, 212, 255, 0.45);
+    background: linear-gradient(145deg, rgba(10, 20, 34, 0.95), rgba(8, 14, 26, 0.92));
+    color: var(--text-bright);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, color 0.18s ease;
+  }
+
+  .mitre-map-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(120deg, transparent 0%, rgba(0, 212, 255, 0.2) 50%, transparent 100%);
+    transform: translateX(-120%);
+    transition: transform 0.45s ease;
+    pointer-events: none;
+  }
+
+  .mitre-map-btn:hover:not(:disabled)::before { transform: translateX(120%); }
+
+  .mitre-map-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(0,212,255,0.25), 0 0 20px rgba(0,212,255,0.22);
+    color: #eaf9ff;
+  }
+
+  .mitre-map-btn:active:not(:disabled) { transform: translateY(0) scale(0.99); }
+
+  .mitre-map-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    border-color: var(--border);
+    color: var(--text-dim);
+    box-shadow: none;
+  }
+
+  .mitre-map-btn .mitre-map-btn-icon {
+    font-size: 13px;
+    line-height: 1;
+    filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.45));
+  }
+
+  .mitre-map-btn .mitre-map-btn-text {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    line-height: 1.05;
+    gap: 2px;
+  }
+
+  .mitre-map-btn .mitre-map-btn-text small {
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    color: var(--text-dim);
   }
 
   @keyframes btnPulse {
@@ -1258,8 +1352,36 @@
 <!-- HEADER -->
 <header class="header">
   <div class="logo">
-    <div class="logo-icon">
-      <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+    <div class="logo-ghost" aria-hidden="true" title="GHOSTRECON">
+      <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" width="34" height="36" focusable="false">
+        <defs>
+          <linearGradient id="grLogoGhostGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e8fbff" />
+            <stop offset="45%" stop-color="#5ee0ff" />
+            <stop offset="100%" stop-color="#00a8d4" />
+          </linearGradient>
+          <linearGradient id="grLogoGhostSheen" x1="15%" y1="0%" x2="75%" y2="85%">
+            <stop offset="0%" stop-color="rgba(255,255,255,0.38)" />
+            <stop offset="45%" stop-color="rgba(255,255,255,0)" />
+            <stop offset="100%" stop-color="rgba(0,45,70,0.22)" />
+          </linearGradient>
+        </defs>
+        <g class="ghost-anim">
+          <path
+            fill="url(#grLogoGhostGrad)"
+            stroke="rgba(0,212,255,0.45)"
+            stroke-width="0.55"
+            d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
+          />
+          <path
+            fill="url(#grLogoGhostSheen)"
+            d="M 24 8 C 15 8 9 15 9 23.5 V 33 Q 16 28 24 32 Q 32 28 39 33 V 23.5 C 39 15 33 8 24 8 Z"
+            opacity="0.88"
+          />
+          <ellipse class="ghost-eye" cx="17" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+          <ellipse class="ghost-eye ghost-eye-r" cx="31" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+        </g>
+      </svg>
     </div>
     <div class="logo-text">GHOST<span>RECON</span></div>
   </div>
@@ -1379,12 +1501,12 @@
         <button class="run-btn" id="runBtn" onclick="startRecon()">▶ RUN RECON</button>
         <button
           type="button"
-          class="find-btn"
+          class="mitre-map-btn"
           id="mitreMapBtn"
           disabled
           title="Disponível após iniciar RUN RECON — abre o mapa MITRE ao vivo noutra aba"
           onclick="openMitreMapPage()"
-        >🗺 Mapa MITRE (ao vivo)</button>
+        ><span class="mitre-map-btn-icon" aria-hidden="true">🗺</span><span class="mitre-map-btn-text"><span>Mapa MITRE</span><small>AO VIVO</small></span></button>
       </div>
 
       <div class="section-label" style="margin-top:18px">Histórico (SQLite)</div>
@@ -1670,6 +1792,10 @@
         <div class="pipe-arrow">──▶</div>
       </div>
       <div class="pipe-step">
+        <div class="pipe-node" id="pipe-dns_enrichment">DNS ENRICH</div>
+        <div class="pipe-arrow">──▶</div>
+      </div>
+      <div class="pipe-step">
         <div class="pipe-node" id="pipe-rdap">RDAP</div>
         <div class="pipe-arrow">──▶</div>
       </div>
@@ -1837,6 +1963,7 @@ let currentFilter = 'all';
 let isRunning = false;
 let stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
 let targetDomain = '';
+const MITRE_LIVE_SESSION_STORAGE_KEY = 'ghostrecon_mitre_live_session_id';
 /** Última corrida: um alvo ou vários (export) */
 let batchTargetsSnapshot = [];
 /** Metadados do último `done` do stream (correlação, templates, etc.) */
@@ -2386,7 +2513,25 @@ function refreshFindingsList() {
 }
 
 function resetPipelineVisual() {
-  ['input','subdomains','rdap','alive','surface','urls','params','js','dorks','secrets','verify','kali','assets','score','shannon','pentestgpt'].forEach(n => setPipe(n, ''));
+  [
+    'input',
+    'subdomains',
+    'dns_enrichment',
+    'rdap',
+    'alive',
+    'surface',
+    'urls',
+    'params',
+    'js',
+    'dorks',
+    'secrets',
+    'verify',
+    'kali',
+    'assets',
+    'score',
+    'shannon',
+    'pentestgpt',
+  ].forEach((n) => setPipe(n, ''));
 }
 
 let dorkActiveTabs = 0;
@@ -2517,6 +2662,9 @@ function initMitreLiveSession() {
   if (typeof BroadcastChannel === 'undefined') return;
   window.__mitreLiveSessionId = crypto.randomUUID();
   window.__mitreLiveBc = new BroadcastChannel('ghostrecon-mitre-' + window.__mitreLiveSessionId);
+  try {
+    localStorage.setItem(MITRE_LIVE_SESSION_STORAGE_KEY, window.__mitreLiveSessionId);
+  } catch (_) {}
   const btn = document.getElementById('mitreMapBtn');
   if (btn) {
     btn.disabled = false;
@@ -2526,7 +2674,12 @@ function initMitreLiveSession() {
 }
 
 function openMitreMapPage() {
-  const id = window.__mitreLiveSessionId;
+  let id = window.__mitreLiveSessionId;
+  if (!id) {
+    try {
+      id = localStorage.getItem(MITRE_LIVE_SESSION_STORAGE_KEY) || '';
+    } catch (_) {}
+  }
   if (!id) {
     addLog('Mapa MITRE: inicia RUN RECON primeiro (a sessão ao vivo cria-se ao começar o pipeline).', 'warn');
     return;
