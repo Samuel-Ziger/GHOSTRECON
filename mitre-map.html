@@ -36,11 +36,7 @@
       align-items: center;
       gap: 8px 14px;
     }
-    h1 {
-      margin: 0;
-      font-size: 15px;
-      font-weight: 600;
-    }
+    h1 { margin: 0; font-size: 15px; font-weight: 600; }
     .pill {
       font-family: var(--mono);
       font-size: 10px;
@@ -54,33 +50,15 @@
     @keyframes pulse { 50% { opacity: 0.78; } }
     .pill.err { color: #ff8a80; border-color: #633; }
     .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); }
-    main { padding: 14px 18px 100px; max-width: 1400px; margin: 0 auto; }
+    main { padding: 14px 18px 100px; max-width: 1200px; margin: 0 auto; }
     .hint {
       font-size: 12px;
       color: var(--dim);
-      margin: 0 0 14px;
-      max-width: 960px;
+      margin: 0 0 16px;
       line-height: 1.55;
     }
-    .layout-main {
-      display: grid;
-      grid-template-columns: minmax(220px, 270px) 1fr;
-      gap: 18px;
-      align-items: start;
-    }
-    @media (max-width: 880px) {
-      .layout-main { grid-template-columns: 1fr; }
-    }
-
-    /* ── Timeline (estilo “trilho” ATT&CK / fases) ── */
-    .timeline-panel {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px 10px 12px 14px;
-      position: relative;
-    }
-    .timeline-panel h2 {
+    section.block { margin-bottom: 22px; }
+    section.block > h2 {
       margin: 0 0 10px;
       font-size: 11px;
       text-transform: uppercase;
@@ -88,131 +66,194 @@
       color: var(--dim);
       font-weight: 600;
     }
-    .tl-rail {
-      position: absolute;
-      left: 21px;
-      top: 38px;
-      bottom: 12px;
-      width: 2px;
-      background: linear-gradient(180deg, var(--border), #1a2535);
-      border-radius: 1px;
-    }
-    .tl-nodes { position: relative; padding-left: 22px; }
-    .tl-node {
-      display: flex;
-      gap: 8px;
-      align-items: flex-start;
-      margin-bottom: 6px;
-      min-height: 26px;
-    }
-    .tl-dot {
-      flex-shrink: 0;
-      width: 10px;
-      height: 10px;
-      margin-top: 4px;
-      margin-left: -15px;
-      border-radius: 50%;
-      background: #2a3545;
-      border: 2px solid #3d4d62;
-      z-index: 1;
-    }
-    .tl-node.pending .tl-dot { background: #1c2430; border-color: #3a4555; }
-    .tl-node.active .tl-dot {
-      background: var(--live);
-      border-color: #ff9090;
-      box-shadow: 0 0 10px var(--live-dim);
-    }
-    .tl-node.done .tl-dot { background: #1e3d2f; border-color: var(--done); }
-    .tl-node.skip .tl-dot { background: #2a2520; border-color: #665544; }
-    .tl-body { flex: 1; min-width: 0; }
-    .tl-name {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: #b8c4d4;
-      word-break: break-all;
-    }
-    .tl-node.active .tl-name { color: #ffc8c8; }
-    .tl-status { font-size: 9px; color: var(--dim); margin-top: 1px; }
 
-    /* ── Ramificações / achados ── */
-    .feed-panel h2 {
-      margin: 0 0 8px;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--dim);
-    }
-    .feed-scroll {
-      max-height: min(52vh, 520px);
-      overflow-y: auto;
+    /* ── Pipeline horizontal ── */
+    .pipe-milestones-wrap {
+      position: relative;
+      background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
-      background: var(--panel2);
-      padding: 8px;
+      padding: 14px 10px 18px;
+      overflow-x: auto;
     }
-    .branch-card {
-      position: relative;
-      margin-bottom: 8px;
-      padding-left: 12px;
-      border-left: 3px solid #3a4a60;
-      background: rgba(20, 26, 34, 0.65);
-      border-radius: 0 6px 6px 0;
-      padding: 8px 10px 10px 14px;
+    .pipe-rail-h {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      top: 36px;
+      height: 3px;
+      background: linear-gradient(90deg, #2a3545, #3d4f66, #2a3545);
+      border-radius: 2px;
+      pointer-events: none;
     }
-    .branch-card.hot-mitre { border-left-color: #c45c40; }
-    .branch-head {
+    .pipe-milestones-h {
       display: flex;
-      flex-wrap: wrap;
-      gap: 6px 10px;
+      flex-direction: row;
+      align-items: flex-start;
+      gap: 0;
+      min-width: min-content;
+      padding-top: 4px;
+    }
+    .pipe-ms {
+      flex: 0 0 auto;
+      width: 72px;
+      display: flex;
+      flex-direction: column;
       align-items: center;
-      font-family: var(--mono);
-      font-size: 10px;
-      margin-bottom: 4px;
+      text-align: center;
+      position: relative;
+      z-index: 1;
     }
-    .fh-type { color: #9ecfff; text-transform: uppercase; }
-    .fh-prio { padding: 1px 5px; border-radius: 3px; font-size: 9px; }
-    .fh-prio.high { background: rgba(255,80,80,0.2); color: #ff9d9d; }
-    .fh-prio.med { background: rgba(255,180,80,0.15); color: #ffd08a; }
-    .fh-prio.low { background: rgba(120,200,120,0.12); color: #a8e0b0; }
-    .fh-time { color: var(--dim); margin-left: auto; }
-    .branch-value {
+    .pipe-ms-dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #1c2430;
+      border: 2px solid #455a70;
+      margin-bottom: 6px;
+    }
+    .pipe-ms.pending .pipe-ms-dot { background: #1c2430; border-color: #3a4555; }
+    .pipe-ms.active .pipe-ms-dot {
+      background: var(--live);
+      border-color: #ffb0b0;
+      box-shadow: 0 0 12px var(--live-dim);
+    }
+    .pipe-ms.done .pipe-ms-dot { background: #1e4d35; border-color: var(--done); }
+    .pipe-ms.skip .pipe-ms-dot { background: #2a2520; border-color: #665544; }
+    .pipe-ms-name {
       font-family: var(--mono);
-      font-size: 10px;
-      color: #e4eaf2;
+      font-size: 8px;
+      color: #9fb0c4;
+      line-height: 1.2;
       word-break: break-all;
-      margin-bottom: 4px;
+      max-width: 68px;
     }
-    .branch-meta { font-size: 9px; color: var(--dim); margin-bottom: 6px; word-break: break-word; }
-    .branch-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-    .tag-mitre {
-      font-family: var(--mono);
-      font-size: 9px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      background: rgba(232, 168, 124, 0.12);
-      border: 1px solid rgba(232, 168, 124, 0.35);
-      color: var(--mitre);
-    }
-    .tag-owasp {
-      font-family: var(--mono);
-      font-size: 9px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      background: rgba(126, 200, 255, 0.1);
-      border: 1px solid rgba(126, 200, 255, 0.32);
-      color: var(--owasp);
-    }
-    .tag-empty { font-size: 9px; color: var(--dim); font-style: italic; }
-
-    /* ── Grelha tácticas (subconjunto bundle) ── */
-    .tactics-below { margin-top: 18px; }
-    .tactics-below h2 {
-      margin: 0 0 8px;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+    .pipe-ms.active .pipe-ms-name { color: #ffd4d4; }
+    .pipe-ms-st {
+      font-size: 8px;
       color: var(--dim);
+      margin-top: 3px;
     }
+    .pipe-hint {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      margin-top: 8px;
+    }
+
+    /* ── Ramificações: trilho horizontal + cima / baixo ── */
+    .branches-wrap {
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 8px 20px;
+      overflow-x: auto;
+    }
+    .h-flow-cards {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      gap: 0;
+      min-width: min-content;
+      position: relative;
+      padding: 8px 4px 4px;
+    }
+    .h-flow-cards::after {
+      content: '';
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      top: 50%;
+      height: 3px;
+      margin-top: -1px;
+      background: linear-gradient(90deg, #283545, #3d5268, #283545);
+      border-radius: 2px;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .h-seg {
+      position: relative;
+      z-index: 1;
+      flex: 0 0 auto;
+      width: 118px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 168px;
+      padding: 0 4px;
+    }
+    /* Cima: cartão → conector → quadrado (quadrado junto ao trilho horizontal) */
+    .h-seg-up {
+      justify-content: flex-end;
+      padding-bottom: 2px;
+    }
+    /* Baixo: quadrado → conector → cartão */
+    .h-seg-down {
+      justify-content: flex-start;
+      padding-top: 2px;
+    }
+    .h-mini-card {
+      width: 100%;
+      max-width: 112px;
+      background: rgba(18, 24, 32, 0.92);
+      border: 1px solid #3a4a5e;
+      border-radius: 6px;
+      padding: 6px 7px 8px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: #c5d2e2;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .h-mini-card .t { color: #8ecfff; text-transform: uppercase; font-size: 8px; }
+    .h-mini-card .v { margin-top: 4px; color: #e8eef5; max-height: 52px; overflow: hidden; }
+    .h-vline {
+      width: 2px;
+      flex: 0 0 22px;
+      min-height: 22px;
+      background: linear-gradient(180deg, #4a5f78, #2e3c4d);
+      border-radius: 1px;
+    }
+    .h-seg-up .h-vline {
+      background: linear-gradient(180deg, #c4785a55, #4a5f78);
+    }
+    .h-seg-down .h-vline {
+      background: linear-gradient(180deg, #4a5f78, #c4785a55);
+    }
+    .mitre-node-btn {
+      width: 36px;
+      height: 36px;
+      padding: 2px;
+      margin: 0;
+      border-radius: 6px;
+      border: 2px solid rgba(232, 168, 124, 0.55);
+      background: linear-gradient(160deg, #2a2220, #1a1518);
+      color: var(--mitre);
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 700;
+      line-height: 1.05;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      word-break: break-all;
+      transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .mitre-node-btn:hover {
+      transform: scale(1.06);
+      border-color: #e8b090;
+      box-shadow: 0 0 14px rgba(232, 168, 124, 0.25);
+    }
+    .mitre-node-btn.num-only {
+      font-size: 11px;
+      color: #b8c8dc;
+      border-color: #4a5f78;
+    }
+
+    /* ── Matriz tácticas ── */
     .tactics {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -254,7 +295,6 @@
       color: #ffc4b8;
     }
 
-    /* ── JSON ao vivo ── */
     .json-section {
       margin-top: 22px;
       border: 1px solid var(--border);
@@ -269,13 +309,10 @@
       font-size: 11px;
       color: #9fb8d4;
       list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 8px;
     }
     .json-section > summary::-webkit-details-marker { display: none; }
-    .json-section > summary::before { content: '▸'; font-size: 10px; opacity: 0.7; }
-    .json-section[open] > summary::before { content: '▾'; }
+    .json-section > summary::before { content: '▸ '; opacity: 0.7; }
+    .json-section[open] > summary::before { content: '▾ '; }
     #jsonLive {
       margin: 0;
       padding: 12px 14px 16px;
@@ -285,58 +322,144 @@
       color: #b8ccd8;
       background: #0a0d11;
       border-top: 1px solid var(--border);
-      max-height: 45vh;
+      max-height: 42vh;
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-all;
     }
-    .pipe-hint {
+
+    /* ── Modal ── */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 6, 10, 0.72);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+    }
+    .modal-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .modal-panel {
+      width: 100%;
+      max-width: 480px;
+      max-height: min(86vh, 640px);
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+      position: relative;
+      padding: 16px 18px 18px;
+    }
+    .modal-close {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      width: 32px;
+      height: 32px;
+      border: none;
+      border-radius: 6px;
+      background: #2a3344;
+      color: #dde6f0;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .modal-close:hover { background: #3a4558; }
+    .modal-panel h3 {
+      margin: 0 36px 10px 0;
+      font-size: 14px;
+      color: #eef3f8;
+    }
+    .modal-panel .lead {
       font-family: var(--mono);
       font-size: 10px;
       color: var(--dim);
-      padding: 8px 0 0;
+      margin-bottom: 12px;
+      word-break: break-all;
     }
+    .modal-panel h4 {
+      margin: 14px 0 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #9fb8d4;
+    }
+    .modal-panel ul {
+      margin: 0;
+      padding-left: 18px;
+      font-size: 12px;
+      color: #c8d4e4;
+    }
+    .modal-panel li { margin-bottom: 8px; }
+    .modal-panel a {
+      color: #8ecfff;
+      word-break: break-all;
+    }
+    .modal-panel .ex {
+      font-size: 11px;
+      color: #aebccc;
+      line-height: 1.5;
+      margin: 4px 0 0;
+    }
+    .err { color: #ff8a80; }
   </style>
 </head>
 <body>
   <header>
-    <h1>MITRE + OWASP · linha do tempo do recon</h1>
+    <h1>MITRE + OWASP · linha do tempo</h1>
     <span id="statePill" class="pill waiting">À espera…</span>
     <span class="sub" id="targetLine"></span>
   </header>
   <main>
     <p class="hint">
-      Vista alinhada ao <strong>ATT&CK</strong> (tácticas do teu <code>recon-bundle.json</code>): à esquerda, a
-      <strong>linha do tempo</strong> das fases do pipeline; à direita, <strong>ramificações</strong> por cada achado com
-      etiquetas <strong>MITRE</strong> (heurística em tempo real) e <strong>OWASP Top 10 2025</strong> (heurística).
-      Em baixo, o <strong>JSON ao vivo</strong> agrega o estado (útil para export / IA / depuração). Liga à aba principal via
-      <code>BroadcastChannel</code> (mesmo browser).
+      <strong>Pipeline</strong> em linha horizontal (fases). Cada <strong>achado</strong> gera um segmento: ramo
+      <strong>para cima</strong> ou <strong>para baixo</strong> em alternância. O <strong>quadrado</strong> mostra a técnica MITRE principal (ex.
+      <code>T1595</code>) ou o número do achado; ao clicar abre o detalhe com links para <strong>ATT&CK</strong> e
+      <strong>OWASP</strong>.
     </p>
 
-    <div class="layout-main">
-      <aside class="timeline-panel" aria-label="Linha do tempo do pipeline">
-        <h2>Fases do pipeline</h2>
-        <div class="tl-rail" aria-hidden="true"></div>
-        <div class="tl-nodes" id="timelineNodes"></div>
-        <div class="pipe-hint" id="pipeHint"></div>
-      </aside>
+    <section class="block" aria-label="Fases do pipeline">
+      <h2>Pipeline (horizontal)</h2>
+      <div class="pipe-milestones-wrap">
+        <div class="pipe-rail-h" aria-hidden="true"></div>
+        <div id="pipeMilestonesH" class="pipe-milestones-h"></div>
+      </div>
+      <div class="pipe-hint" id="pipeHint"></div>
+    </section>
 
-      <section class="feed-panel">
-        <h2>Ramificações (achados)</h2>
-        <div class="feed-scroll" id="feedRoot"></div>
-      </section>
-    </div>
+    <section class="block" aria-label="Ramificações">
+      <h2>Ramificações (clique no quadrado)</h2>
+      <div class="branches-wrap">
+        <div id="feedRoot" class="h-flow-cards"></div>
+      </div>
+    </section>
 
-    <div class="tactics-below">
-      <h2>Matriz tácticas (subconjunto recon)</h2>
+    <section class="block">
+      <h2>Matriz tácticas (bundle)</h2>
       <div id="tacticsRoot" class="tactics"></div>
-    </div>
+    </section>
 
     <details class="json-section" id="jsonDetails" open>
       <summary>JSON ao vivo (<code>ghostrecon_mitre_live_state</code>)</summary>
       <pre id="jsonLive">{}</pre>
     </details>
   </main>
+
+  <div id="modalBackdrop" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button type="button" class="modal-close" id="modalClose" aria-label="Fechar">×</button>
+      <h3 id="modalTitle">Detalhe</h3>
+      <div id="modalBody"></div>
+    </div>
+  </div>
 
   <script>
     const PHASE_TO_TACTIC = {
@@ -372,42 +495,68 @@
       'pentestgpt',
     ];
 
+    /** OWASP Top 10 2025 (GHOSTRECON) — títulos alinhados ao servidor; links OWASP Top 10 2021 como referência próxima. */
+    const OWASP_TOP10_2025 = {
+      A01: { title: 'Broken Access Control', url: 'https://owasp.org/Top10/A01_2021-Broken_Access_Control/' },
+      A02: { title: 'Security Misconfiguration', url: 'https://owasp.org/Top10/A05_2021-Security_Misconfiguration/' },
+      A03: { title: 'Software Supply Chain Failures', url: 'https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/' },
+      A04: { title: 'Cryptographic Failures', url: 'https://owasp.org/Top10/A02_2021-Cryptographic_Failures/' },
+      A05: { title: 'Injection', url: 'https://owasp.org/Top10/A03_2021-Injection/' },
+      A06: { title: 'Insecure Design', url: 'https://owasp.org/Top10/A04_2021-Insecure_Design/' },
+      A07: { title: 'Authentication Failures', url: 'https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/' },
+      A08: { title: 'Software or Data Integrity Failures', url: 'https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/' },
+      A09: { title: 'Security Logging and Alerting Failures', url: 'https://owasp.org/Top10/A09_2021-Security_Logging_and_Monitoring_Failures/' },
+      A10: { title: 'Mishandling of Exceptional Conditions', url: 'https://owasp.org/www-project-top-ten/' },
+    };
+
+    function mitreTechniqueUrl(id) {
+      const s = String(id || '');
+      if (!s.startsWith('T')) return 'https://attack.mitre.org/';
+      const parts = s.split('.');
+      if (parts.length === 1) return `https://attack.mitre.org/techniques/${s}/`;
+      return `https://attack.mitre.org/techniques/${parts[0]}/${s}/`;
+    }
+
+    function owaspEntry(id) {
+      const k = String(id || '').toUpperCase();
+      return OWASP_TOP10_2025[k] || { title: 'OWASP Top 10', url: 'https://owasp.org/www-project-top-ten/' };
+    }
+
     const sessionId = (location.hash || '').replace(/^#/, '').trim();
     const statePill = document.getElementById('statePill');
     const targetLine = document.getElementById('targetLine');
-    const timelineNodes = document.getElementById('timelineNodes');
+    const pipeMilestonesH = document.getElementById('pipeMilestonesH');
     const feedRoot = document.getElementById('feedRoot');
     const tacticsRoot = document.getElementById('tacticsRoot');
     const pipeHint = document.getElementById('pipeHint');
     const jsonLive = document.getElementById('jsonLive');
+    const modalBackdrop = document.getElementById('modalBackdrop');
+    const modalBody = document.getElementById('modalBody');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalClose = document.getElementById('modalClose');
 
     if (!sessionId) {
       statePill.textContent = 'Sem sessão';
       statePill.className = 'pill err';
       feedRoot.innerHTML =
-        '<p class="err" style="padding:12px;color:#ff8a80">Abre a partir do GHOSTRECON (botão «Mapa MITRE») ou usa <code>mitre-map.html#&lt;uuid&gt;</code>.</p>';
+        '<p class="err" style="padding:12px">Abre a partir do GHOSTRECON (botão «Mapa MITRE») ou <code>mitre-map.html#&lt;uuid&gt;</code>.</p>';
     } else {
-      /** @type {Map<string, string>} */
       const pipeStates = new Map();
-      /** @type {Map<string, HTMLElement>} */
       const pipeRowEls = new Map();
       const mitreHitSet = new Set();
       const owaspHitSet = new Set();
-      /** @type {Map<string, HTMLElement>} */
       const chipById = new Map();
-      /** @type {Map<string, HTMLElement>} */
       const tacticElByTa = new Map();
-      /** @type {Map<string, { name: string, url?: string }>} */
       const techMeta = new Map();
 
       let liveTarget = '';
       let lastPipeLabel = '';
-      /** @type {object[]} */
       const events = [];
       const MAX_EVENTS = 200;
-      const MAX_FEED_CARDS = 100;
+      const MAX_SEGMENTS = 80;
       let bundleMeta = { loaded: false };
       let jsonScheduled = false;
+      let findingSeq = 0;
 
       function setLiveTactics(taList, active) {
         for (const [, el] of tacticElByTa) el.classList.remove('live');
@@ -437,15 +586,10 @@
       }
 
       function addOwaspHits(rows) {
-        let ch = false;
         for (const row of rows || []) {
           const id = typeof row === 'string' ? row : row?.id;
-          if (id && /^A\d{2}$/.test(id)) {
-            if (!owaspHitSet.has(id)) ch = true;
-            owaspHitSet.add(id);
-          }
+          if (id && /^A\d{2}$/.test(id)) owaspHitSet.add(id);
         }
-        return ch;
       }
 
       function pushEvent(ev) {
@@ -472,9 +616,9 @@
           .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
           .map((id) => {
             const m = techMeta.get(id);
-            return { id, name: m?.name || null, url: m?.url || null };
+            return { id, name: m?.name || null, url: m?.url || mitreTechniqueUrl(id) };
           });
-        const owasp = [...owaspHitSet].sort().map((id) => ({ id, label: `OWASP Top 10 2025 — ${id}` }));
+        const owasp = [...owaspHitSet].sort().map((id) => ({ id, ...owaspEntry(id) }));
         return {
           schemaVersion: 2,
           kind: 'ghostrecon_mitre_live_state',
@@ -485,8 +629,6 @@
           mitreTechniquesHit: mitreTechniques,
           owaspHit: owasp,
           timelineEvents: events.slice(-120),
-          note:
-            'mitreTechniquesHit acumula heurísticas dos achados + passo final findings_rescore. OWASP idem. Não substitui relatório humano.',
         };
       }
 
@@ -497,66 +639,41 @@
         events.length = 0;
         mitreHitSet.clear();
         owaspHitSet.clear();
+        findingSeq = 0;
         for (const p of PIPE_ORDER) pipeStates.set(p, 'pending');
-        for (const [p, el] of pipeRowEls) {
-          el.className = 'tl-node pending';
-          const st = el.querySelector('.tl-status');
-          if (st) st.textContent = 'pendente';
+        for (const [, el] of pipeRowEls) {
+          el.className = 'pipe-ms pending';
+          const st = el.querySelector('.pipe-ms-st');
+          if (st) st.textContent = '—';
         }
         applyHits();
         scheduleJsonRefresh();
       }
 
       function updatePipeRow(name, state) {
-        let row = pipeRowEls.get(name);
-        if (!row) {
-          row = document.createElement('div');
-          row.className = 'tl-node pending';
-          row.dataset.pipe = name;
-          row.innerHTML = '<span class="tl-dot"></span><div class="tl-body"><div class="tl-name"></div><div class="tl-status">pendente</div></div>';
-          row.querySelector('.tl-name').textContent = name;
-          timelineNodes.appendChild(row);
-          pipeRowEls.set(name, row);
+        let el = pipeRowEls.get(name);
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'pipe-ms pending';
+          el.dataset.pipe = name;
+          el.innerHTML =
+            '<span class="pipe-ms-dot"></span><span class="pipe-ms-name"></span><span class="pipe-ms-st">—</span>';
+          el.querySelector('.pipe-ms-name').textContent = name;
+          pipeMilestonesH.appendChild(el);
+          pipeRowEls.set(name, el);
           pipeStates.set(name, 'pending');
         }
         const st = state === 'active' ? 'active' : state === 'done' ? 'done' : state === 'skip' ? 'skip' : 'pending';
         pipeStates.set(name, st);
-        row.className = `tl-node ${st}`;
-        const lab = row.querySelector('.tl-status');
-        if (lab) lab.textContent = st === 'active' ? 'a correr…' : st === 'done' ? 'concluído' : st === 'skip' ? 'ignorado' : 'pendente';
+        el.className = `pipe-ms ${st}`;
+        const lab = el.querySelector('.pipe-ms-st');
+        if (lab) lab.textContent = st === 'active' ? '●' : st === 'done' ? '✓' : st === 'skip' ? '○' : '—';
       }
 
-      function appendFindingCard(payload) {
-        const { finding, mitreHints, owaspHints, ts } = payload;
-        const card = document.createElement('div');
-        const hasM = Array.isArray(mitreHints) && mitreHints.length;
-        card.className = 'branch-card' + (hasM ? ' hot-mitre' : '');
-        const t = ts ? new Date(ts) : new Date();
-        const timeStr = t.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const pr = String(finding?.prio || '').toLowerCase();
-        const prClass = pr === 'high' || pr === 'low' || pr === 'med' ? pr : 'med';
-        const tags = [];
-        if (hasM) for (const id of mitreHints) tags.push(`<span class="tag-mitre" title="MITRE">${id}</span>`);
-        if (Array.isArray(owaspHints) && owaspHints.length) {
-          for (const o of owaspHints) {
-            const oid = o && typeof o === 'object' ? o.id : o;
-            if (oid) tags.push(`<span class="tag-owasp" title="${(o && o.title) || ''}">${oid}</span>`);
-          }
-        }
-        if (!tags.length) tags.push('<span class="tag-empty">sem etiquetas heurísticas</span>');
-        card.innerHTML = `
-          <div class="branch-head">
-            <span class="fh-type">${escapeHtml(String(finding?.type || '?'))}</span>
-            <span class="fh-prio ${prClass}">${escapeHtml(String(finding?.prio || '—').toUpperCase())}</span>
-            <span class="fh-time">${timeStr}</span>
-          </div>
-          <div class="branch-value">${escapeHtml(String(finding?.value || ''))}</div>
-          ${finding?.meta ? `<div class="branch-meta">${escapeHtml(String(finding.meta))}</div>` : ''}
-          <div class="branch-tags">${tags.join('')}</div>
-        `;
-        feedRoot.appendChild(card);
-        while (feedRoot.children.length > MAX_FEED_CARDS) feedRoot.removeChild(feedRoot.firstChild);
-        feedRoot.scrollTop = feedRoot.scrollHeight;
+      function buildTimelineSkeleton() {
+        pipeMilestonesH.innerHTML = '';
+        pipeRowEls.clear();
+        for (const p of PIPE_ORDER) updatePipeRow(p, 'pending');
       }
 
       function escapeHtml(s) {
@@ -565,6 +682,130 @@
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;');
+      }
+
+      function openModal(payload) {
+        const { seq, badgeLabel, finding, mitreHints, owaspHints } = payload;
+        modalTitle.textContent = `Achado #${seq} · ${finding?.type || '?'}`;
+        const mitreList = (mitreHints || []).filter((x) => typeof x === 'string' && x.startsWith('T'));
+        const owList = Array.isArray(owaspHints) ? owaspHints : [];
+
+        let mitreHtml = '';
+        if (mitreList.length) {
+          mitreHtml = '<h4>MITRE ATT&CK (heurística)</h4><ul>';
+          for (const tid of mitreList) {
+            const meta = techMeta.get(tid);
+            const name = meta?.name || 'Técnica no bundle recon';
+            const url = meta?.url || mitreTechniqueUrl(tid);
+            mitreHtml += `<li><strong>${escapeHtml(tid)}</strong> — ${escapeHtml(name)}<p class="ex">${escapeHtml(
+              'Indício automático a partir do tipo de achado do GHOSTRECON; confirmação manual na matriz ATT&CK.',
+            )}</p><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Abrir em attack.mitre.org ↗</a></li>`;
+          }
+          mitreHtml += '</ul>';
+        } else {
+          mitreHtml =
+            '<h4>MITRE ATT&CK</h4><p class="ex">Sem técnica MITRE heurística para este achado. Vê a matriz em baixo ou o bundle <code>recon-bundle.json</code>.</p>';
+        }
+
+        let owHtml = '';
+        if (owList.length) {
+          owHtml = '<h4>OWASP Top 10 (2025)</h4><ul>';
+          for (const o of owList) {
+            const id = o && typeof o === 'object' ? o.id : o;
+            if (!id || !/^A\d{2}$/.test(String(id))) continue;
+            const ent = owaspEntry(id);
+            const title = (o && o.title) || ent.title;
+            owHtml += `<li><strong>${escapeHtml(id)}</strong> — ${escapeHtml(title)}<p class="ex">${escapeHtml(
+              'Etiqueta heurística (OWASP Top 10 2025). Não equivale a auditoria completa da categoria.',
+            )}</p><a href="${escapeHtml(ent.url)}" target="_blank" rel="noopener noreferrer">Documentação OWASP ↗</a></li>`;
+          }
+          owHtml += '</ul>';
+        } else {
+          owHtml =
+            '<h4>OWASP</h4><p class="ex">Sem etiqueta OWASP heurística neste achado.</p>';
+        }
+
+        modalBody.innerHTML = `
+          <p class="lead">Quadrado: <strong>${escapeHtml(badgeLabel)}</strong></p>
+          <p class="lead"><strong>Valor:</strong> ${escapeHtml(String(finding?.value || '—'))}</p>
+          ${finding?.meta ? `<p class="lead"><strong>Meta:</strong> ${escapeHtml(String(finding.meta))}</p>` : ''}
+          ${mitreHtml}
+          ${owHtml}
+        `;
+        modalBackdrop.classList.add('open');
+        modalBackdrop.setAttribute('aria-hidden', 'false');
+      }
+
+      function closeModal() {
+        modalBackdrop.classList.remove('open');
+        modalBackdrop.setAttribute('aria-hidden', 'true');
+      }
+
+      modalClose.addEventListener('click', closeModal);
+      modalBackdrop.addEventListener('click', (e) => {
+        if (e.target === modalBackdrop) closeModal();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modalBackdrop.classList.contains('open')) closeModal();
+      });
+
+      function appendFindingBranch(payload) {
+        findingSeq += 1;
+        const seq = findingSeq;
+        const { finding, mitreHints, owaspHints, ts } = payload;
+        const up = seq % 2 === 1;
+        const mitreList = (mitreHints || []).filter((x) => typeof x === 'string' && x.startsWith('T'));
+        const primaryT = mitreList[0] || null;
+        const badgeLabel = primaryT || `#${seq}`;
+        const btnClass = primaryT ? 'mitre-node-btn' : 'mitre-node-btn num-only';
+
+        const t = ts ? new Date(ts) : new Date();
+        const timeStr = t.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const pr = String(finding?.prio || '').toLowerCase();
+
+        const seg = document.createElement('div');
+        seg.className = 'h-seg ' + (up ? 'h-seg-up' : 'h-seg-down');
+
+        const card = document.createElement('div');
+        card.className = 'h-mini-card';
+        card.innerHTML = `
+          <div class="t">${escapeHtml(String(finding?.type || '?'))} · ${escapeHtml(timeStr)}</div>
+          <div class="v">${escapeHtml(String(finding?.value || '').slice(0, 200))}</div>
+          <div class="t" style="margin-top:6px;color:#8899aa">${escapeHtml(String(pr).toUpperCase())}</div>
+        `;
+
+        const vline = document.createElement('div');
+        vline.className = 'h-vline';
+        vline.setAttribute('aria-hidden', 'true');
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = btnClass;
+        if (primaryT) {
+          const short = primaryT.length > 7 ? `${primaryT.slice(0, 6)}…` : primaryT;
+          btn.textContent = short;
+          btn.title = `${primaryT} — clique para detalhe e links`;
+        } else {
+          btn.textContent = `#${seq}`;
+          btn.title = `Achado #${seq} — clique para detalhe`;
+        }
+
+        const modalPayload = { seq, badgeLabel, finding, mitreHints: mitreList, owaspHints: owaspHints || [] };
+        btn.addEventListener('click', () => openModal(modalPayload));
+
+        if (up) {
+          seg.appendChild(card);
+          seg.appendChild(vline);
+          seg.appendChild(btn);
+        } else {
+          seg.appendChild(btn);
+          seg.appendChild(vline);
+          seg.appendChild(card);
+        }
+
+        feedRoot.appendChild(seg);
+        while (feedRoot.children.length > MAX_SEGMENTS) feedRoot.removeChild(feedRoot.firstChild);
+        feedRoot.scrollLeft = feedRoot.scrollWidth;
       }
 
       function renderTacticGrid(bundle) {
@@ -626,12 +867,6 @@
         applyHits();
       }
 
-      function buildTimelineSkeleton() {
-        timelineNodes.innerHTML = '';
-        pipeRowEls.clear();
-        for (const p of PIPE_ORDER) updatePipeRow(p, 'pending');
-      }
-
       function onMessage(ev) {
         const m = ev.data || {};
         if (m.type === 'target') {
@@ -645,11 +880,11 @@
           const name = String(m.name || '');
           const st = String(m.state || '');
           lastPipeLabel = `${name} · ${st}`;
-          pipeHint.textContent = `Último evento de pipeline: ${lastPipeLabel}`;
+          pipeHint.textContent = `Último pipeline: ${lastPipeLabel}`;
           updatePipeRow(name, st);
           pushEvent({ t: Date.now(), kind: 'pipe', name, state: st, target: m.target });
           if (st === 'active') {
-            setLiveTactics((PIPE_TACTICS[name] || ['TA0043']), true);
+            setLiveTactics(PIPE_TACTICS[name] || ['TA0043'], true);
             statePill.textContent = 'Recon em curso';
             statePill.className = 'pill live';
           } else {
@@ -659,7 +894,7 @@
           return;
         }
         if (m.type === 'finding_card') {
-          appendFindingCard(m);
+          appendFindingBranch(m);
           addMitreHits(m.mitreHints);
           addOwaspHits(m.owaspHints);
           pushEvent({
@@ -681,12 +916,7 @@
           addMitreHits(m.mitreIds);
           if (Array.isArray(m.owaspIds)) addOwaspHits(m.owaspIds);
           if (Array.isArray(m.owaspDetails)) addOwaspHits(m.owaspDetails);
-          pushEvent({
-            t: Date.now(),
-            kind: 'findings_rescore',
-            mitreIds: m.mitreIds,
-            owaspIds: m.owaspIds,
-          });
+          pushEvent({ t: Date.now(), kind: 'findings_rescore', mitreIds: m.mitreIds, owaspIds: m.owaspIds });
           scheduleJsonRefresh();
           return;
         }
@@ -708,7 +938,7 @@
         } catch (e) {
           statePill.textContent = 'Erro bundle';
           statePill.className = 'pill err';
-          tacticsRoot.innerHTML = `<p class="err" style="padding:10px;color:#ff8a80">${escapeHtml(String(e.message || e))}</p>`;
+          tacticsRoot.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(String(e.message || e))}</p>`;
           return;
         }
 
