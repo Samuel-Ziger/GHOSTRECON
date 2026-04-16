@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Ficheiros de alvo / saída locais (ex.: -f urls.txt, -o result.txt)
+urls.txt
+*_hits.txt
+result.txt

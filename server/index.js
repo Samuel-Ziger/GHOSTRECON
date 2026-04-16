@@ -1468,31 +1468,14 @@ async function runPipeline(ctx) {
         if (/XSS candidate param/i.test(v)) xssSignals = true;
         if (/SQLi candidate param/i.test(v)) sqliSignals = true;
       }
-      const xssStrictNames = xssSignals;
-      const strictNamesOnly = String(process.env.GHOSTRECON_KALI_XSS_STRICT_NAMES_ONLY || '')
-        .trim()
-        .match(/^(1|true|yes)$/i);
-      if (
-        !xssSignals &&
-        paramUrlsForKali.length > 0 &&
-        !strictNamesOnly
-      ) {
-        xssSignals = true;
-      }
       if (!xssSignals && !sqliSignals) {
         log(
-          strictNamesOnly && paramUrlsForKali.length
-            ? 'Scan agressivo XSS/SQLi: há URLs com query, mas GHOSTRECON_KALI_XSS_STRICT_NAMES_ONLY=1 — só roda XSS agressivo com nomes típicos (q, search, …) ou intel; dalfox/xss_vibes em skip.'
-            : 'Scan agressivo XSS/SQLi: sem URLs com query no corpus (até 40) nem candidatos intel — nuclei tags xss/sqli, dalfox e xss_vibes em skip.',
+          'Scan agressivo XSS/SQLi: sem sinais (URLs com parâmetros típicos nem candidatos intel) — nuclei tags xss/sqli, dalfox e xss_vibes em skip',
           'info',
         );
       } else {
-        const xssExtra =
-          xssSignals && !xssStrictNames && paramUrlsForKali.length
-            ? ' [XSS: activado por qualquer URL com query no corpus]'
-            : '';
         log(
-          `Scan agressivo: sinais XSS=${xssSignals ? 'sim' : 'não'} SQLi=${sqliSignals ? 'sim' : 'não'}${xssExtra}`,
+          `Scan agressivo: sinais XSS=${xssSignals ? 'sim' : 'não'} SQLi=${sqliSignals ? 'sim' : 'não'}`,
           'info',
         );
       }
