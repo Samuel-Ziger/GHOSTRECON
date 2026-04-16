@@ -847,6 +847,8 @@ export async function runKaliAggressiveScan({
               query: exploitGq,
               mod: 'nmap_version_exploit_google',
               prio: 'med',
+              /** UI: abre mesmo com «Abrir dorks» desligado */
+              forceOpen: true,
             });
             addFinding(
               {

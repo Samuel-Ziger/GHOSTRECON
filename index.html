@@ -1301,7 +1301,7 @@
       </div>
 
       <div class="toggle-row">
-        <span class="toggle-label">Abrir dorks (Google)</span>
+        <span class="toggle-label" title="As pesquisas «exploit pra …» do nmap (modo Kali) abrem sempre, mesmo com isto desligado.">Abrir dorks (Google)</span>
         <label class="toggle">
           <input type="checkbox" id="autoDorks" checked>
           <div class="toggle-track"><div class="toggle-thumb"></div></div>
@@ -1817,6 +1817,8 @@ let lastPipelineBundle = null;
 /** Último snapshot de cobertura emitido pelo pipeline (NDJSON `recon_coverage`). */
 window.__lastReconCoverage = null;
 let dorkUrlQueue = [];
+/** Fila de Google «exploit pra …» (nmap): ignora o toggle «Abrir dorks». */
+let forcedDorkUrlQueue = [];
 let csrfToken = '';
 
 const BATCH_MAX_TARGETS = 25;
@@ -2350,23 +2352,33 @@ function resetPipelineVisual() {
 let dorkActiveTabs = 0;
 
 function tryOpenNextDork() {
-  const auto = document.getElementById('autoDorks')?.checked;
-  if (!auto) return;
   const delay = Math.max(0, parseInt(document.getElementById('dorkDelayMs')?.value, 10) || 1200);
   const maxTabs = Math.max(1, parseInt(document.getElementById('maxDorkTabs')?.value, 10) || 3);
-  if (dorkUrlQueue.length === 0) return;
+  const auto = document.getElementById('autoDorks')?.checked;
+
+  const peek = () => {
+    if (forcedDorkUrlQueue.length) return { q: 'forced', url: forcedDorkUrlQueue[0] };
+    if (auto && dorkUrlQueue.length) return { q: 'normal', url: dorkUrlQueue[0] };
+    return null;
+  };
+
+  const head = peek();
+  if (!head) return;
+
   if (dorkActiveTabs >= maxTabs) {
     setTimeout(tryOpenNextDork, delay);
     return;
   }
-  const u = dorkUrlQueue.shift();
+
+  const u = head.q === 'forced' ? forcedDorkUrlQueue.shift() : dorkUrlQueue.shift();
   const w = window.open(u, '_blank', 'noopener,noreferrer');
   if (!w) {
     dorkUrlQueue.length = 0;
+    forcedDorkUrlQueue.length = 0;
     if (!window.__dorkPopupBlockedWarned) {
       window.__dorkPopupBlockedWarned = true;
       addLog(
-        'Popup bloqueado — dorks automáticos cancelados (fila limpa). Permite pop-ups para este site ou desliga «Abrir dorks» e corre de novo.',
+        'Popup bloqueado — filas de dorks limpas (inclui pesquisas exploit nmap). Permite pop-ups para este site.',
         'warn',
       );
     }
@@ -2382,6 +2394,11 @@ function tryOpenNextDork() {
 
 function enqueueDorkTab(url) {
   dorkUrlQueue.push(url);
+  tryOpenNextDork();
+}
+
+function enqueueForcedDorkTab(url) {
+  forcedDorkUrlQueue.push(url);
   tryOpenNextDork();
 }
 
@@ -2498,7 +2515,10 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           'info',
         );
       }
-      if (ev.type === 'dork' && ev.googleUrl) enqueueDorkTab(ev.googleUrl);
+      if (ev.type === 'dork' && ev.googleUrl) {
+        if (ev.forceOpen) enqueueForcedDorkTab(ev.googleUrl);
+        else enqueueDorkTab(ev.googleUrl);
+      }
       if (ev.type === 'open_url' && ev.url) {
         const u = String(ev.url).trim();
         const lab = ev.label ? String(ev.label) : 'Link';
@@ -2626,6 +2646,7 @@ async function startRecon() {
   logStarted = false;
   findings = [];
   dorkUrlQueue = [];
+  forcedDorkUrlQueue = [];
   dorkActiveTabs = 0;
   window.__dorkPopupBlockedWarned = false;
   window.__shannonTemporalPopupWarned = false;
