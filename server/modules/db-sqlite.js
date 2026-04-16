@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { findingsForRunsTable, fingerprintFinding } from './db-common.js';
+import { parseFindingsSnapshotJson } from './finding-serialize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..', '..');
@@ -52,8 +53,20 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_intel_target ON bounty_intel(target);
   `;
 
+function ensureRunsFindingsJsonColumn(d) {
+  try {
+    const cols = d.prepare(`PRAGMA table_info(runs)`).all();
+    if (!cols.some((c) => c.name === 'findings_json')) {
+      d.exec(`ALTER TABLE runs ADD COLUMN findings_json TEXT`);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 function applySqliteSchema(d) {
   d.exec(SCHEMA_SQL);
+  ensureRunsFindingsJsonColumn(d);
 }
 
 let dbInstance = null;
@@ -164,11 +177,11 @@ export function mergeIntelForTarget(target, runId, findings) {
   return mergeIntelForTargetDb(getDb(), target, runId, findings);
 }
 
-function saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation }) {
+function saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation, findingsJson = null }) {
   const now = new Date().toISOString();
   const insRun = d.prepare(
-    `INSERT INTO runs (target, exact_match, modules_json, stats_json, correlation_json, created_at)
-     VALUES (@target, @exact, @modules, @stats, @corr, @created)`,
+    `INSERT INTO runs (target, exact_match, modules_json, stats_json, correlation_json, findings_json, created_at)
+     VALUES (@target, @exact, @modules, @stats, @corr, @findings_json, @created)`,
   );
   const insFinding = d.prepare(
     `INSERT INTO findings (run_id, type, prio, score, value, meta, url)
@@ -181,6 +194,7 @@ function saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correl
     modules: JSON.stringify(modules),
     stats: JSON.stringify(stats),
     corr: correlation ? JSON.stringify(correlation) : null,
+    findings_json: findingsJson,
     created: now,
   });
   const runId = Number(runResult.lastInsertRowid);
@@ -227,10 +241,10 @@ export function saveRunToProjectDir(projectRootDir, payload) {
   }
 }
 
-export function saveRun({ target, exactMatch, modules, stats, findings, correlation }) {
+export function saveRun({ target, exactMatch, modules, stats, findings, correlation, findingsJson = null }) {
   try {
     const d = getDb();
-    return saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation });
+    return saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation, findingsJson });
   } catch (e) {
     console.error('[GHOSTRECON DB]', e.message);
     return null;
@@ -260,9 +274,11 @@ export function getRunById(id) {
     const d = getDb();
     const run = d.prepare(`SELECT * FROM runs WHERE id = ?`).get(id);
     if (!run) return null;
-    const findings = d
+    const tableFindings = d
       .prepare(`SELECT type, prio, score, value, meta, url FROM findings WHERE run_id = ? ORDER BY id`)
       .all(id);
+    const snap = run.findings_json ? parseFindingsSnapshotJson(run.findings_json) : null;
+    const findings = snap?.length ? snap : tableFindings;
     return {
       id: run.id,
       target: run.target,
@@ -272,6 +288,7 @@ export function getRunById(id) {
       correlation: run.correlation_json ? JSON.parse(run.correlation_json) : null,
       created_at: run.created_at,
       findings,
+      findingsScopeRows: snap?.length ? tableFindings : undefined,
     };
   } catch (e) {
     console.error('[GHOSTRECON DB]', e.message);

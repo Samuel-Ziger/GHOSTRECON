@@ -380,17 +380,85 @@ function parseDalfoxLines(text, limit = 6) {
   return hits;
 }
 
-async function runDalfoxUrl(url, log) {
-  const timeoutMs = Number(process.env.GHOSTRECON_DALFOX_TIMEOUT_MS || 120000);
-  const args = ['url', url, '--silence', '--skip-bav', '--skip-mining-all', '--worker', '40'];
+/** Tenta extrair achados estruturados do stdout JSON / JSONL do dalfox. */
+function extractDalfoxJsonHits(text, limit = 10) {
+  const hits = [];
+  const walk = (obj) => {
+    if (hits.length >= limit) return;
+    if (!obj) return;
+    if (typeof obj === 'string') return;
+    if (Array.isArray(obj)) {
+      for (const x of obj) {
+        walk(x);
+        if (hits.length >= limit) return;
+      }
+      return;
+    }
+    if (typeof obj !== 'object') return;
+    const msg = String(obj.message || obj.msg || obj.data || '');
+    const typ = String(obj.type || obj.Type || '');
+    const hasUrl = Boolean(obj.url || obj.URL || obj.host);
+    if (
+      hasUrl ||
+      /\bvulnerab/i.test(msg) ||
+      /\b(POC|VULN|WEAK)\b/i.test(typ) ||
+      (obj.param && (obj.payload || obj.poc))
+    ) {
+      hits.push(JSON.stringify(obj).slice(0, 400));
+    }
+    for (const v of Object.values(obj)) {
+      if (hits.length >= limit) return;
+      if (v && (typeof v === 'object' || Array.isArray(v))) walk(v);
+    }
+  };
+  const s = String(text || '').trim();
+  if (!s) return hits;
   try {
+    walk(JSON.parse(s));
+  } catch {
+    for (const line of s.split('\n')) {
+      const t = line.trim();
+      if (!t.startsWith('{')) continue;
+      try {
+        walk(JSON.parse(t));
+      } catch {
+        /* ignore */
+      }
+      if (hits.length >= limit) break;
+    }
+  }
+  return hits.slice(0, limit);
+}
+
+async function runDalfoxUrl(url, log, auth = null) {
+  const timeoutMs = Number(process.env.GHOSTRECON_DALFOX_TIMEOUT_MS || 120000);
+  const tail = ['--silence', '--skip-bav', '--skip-mining-all', '--worker', '40'];
+  const authArgs = [];
+  if (auth?.cookie) authArgs.push('--cookie', String(auth.cookie));
+  const ua = auth?.headers?.['User-Agent'] || auth?.headers?.['user-agent'];
+  if (ua) authArgs.push('--user-agent', String(ua));
+
+  const runOnce = async (withJson) => {
+    const args = ['url', url, ...(withJson ? ['--format', 'json'] : []), ...tail, ...authArgs];
     const proc = await runProc('dalfox', args, timeoutMs);
     const text = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
-    const hits = parseDalfoxLines(text);
+    return { proc, text };
+  };
+
+  try {
+    let { proc, text } = await runOnce(true);
+    let hits = extractDalfoxJsonHits(proc.stdout || text);
+    const looksLikeBadFlag =
+      !hits.length && /unknown flag|invalid option|unrecognized.*--format/i.test(text);
+    if (looksLikeBadFlag) {
+      ({ proc, text } = await runOnce(false));
+      hits = extractDalfoxJsonHits(proc.stdout || text);
+    }
+    if (!hits.length) hits = parseDalfoxLines(text);
     if (proc.code !== 0 && typeof log === 'function') {
       log(`dalfox ${url}: código ${proc.code}`, 'warn');
     }
-    return { ok: true, hits };
+    return { ok: true, hits, stdoutFormat: hits.length && /^\s*\{/.test(String(proc.stdout || '').trim()) ? 'json' : 'mixed' };
   } catch (e) {
     return { ok: false, error: String(e?.message || e), hits: [] };
   }
@@ -422,7 +490,7 @@ function parseXssVibesTextForHits(text, limit = 20) {
   return hits;
 }
 
-async function runXssVibesBatch({ urls, cap, log }) {
+async function runXssVibesBatch({ urls, cap, log, auth = null }) {
   const uniq = [...new Set((urls || []).filter((u) => /^https?:\/\//i.test(String(u))))];
   if (!uniq.length) return { ok: true, hits: [], message: 'sem URLs válidas' };
   const maxUrls = Math.max(1, Number(process.env.GHOSTRECON_XSS_VIBES_MAX_URLS || 25));
@@ -438,6 +506,11 @@ async function runXssVibesBatch({ urls, cap, log }) {
   const outFile = join(dir, 'xss_vibes_hits.txt');
   await writeFile(inFile, selected.join('\n'), 'utf8');
   const args = [XSS_VIBES_MAIN, '-f', inFile, '-o', outFile, '-t', String(threads)];
+  const headerParts = [];
+  if (auth?.cookie) headerParts.push(`Cookie: ${String(auth.cookie).replace(/,/g, ';')}`);
+  const ua = auth?.headers?.['User-Agent'] || auth?.headers?.['user-agent'];
+  if (ua) headerParts.push(`User-Agent: ${String(ua).replace(/,/g, ' ')}`);
+  if (headerParts.length) args.push('-H', headerParts.join(','));
 
   if (typeof log === 'function') {
     log(`[xss_vibes] Executando ferramenta: ${pyCmd} main.py -f targets.txt -o xss_vibes_hits.txt -t ${threads}`, 'info');
@@ -696,6 +769,8 @@ export async function runKaliAggressiveScan({
   runNuclei = false,
   /** Só corre ffuf se o módulo UI `kali_ffuf` estiver activo (e modo Kali no servidor). */
   runFfuf = false,
+  /** Cookie / headers do recon (dalfox `--cookie`, xss_vibes `-H`). */
+  auth = null,
 }) {
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
   const hosts = [...new Set(rawHosts)].slice(0, 22);
@@ -1026,7 +1101,7 @@ export async function runKaliAggressiveScan({
     const targets = [...new Set(paramUrls)].slice(0, Number(process.env.GHOSTRECON_DALFOX_MAX_URLS || 12));
     log(`═══ dalfox (XSS) em URLs com parâmetros (${targets.length}) ═══`, 'section');
     for (const u of targets) {
-      const r = await runDalfoxUrl(u, log);
+      const r = await runDalfoxUrl(u, log, auth);
       if (!r.ok) {
         log(`dalfox ${u}: ${r.error}`, 'warn');
         continue;
@@ -1037,7 +1112,7 @@ export async function runKaliAggressiveScan({
           prio: 'high',
           score: 90,
           value: `dalfox hit @ ${u}`,
-          meta: `scanner=dalfox • confidence=tool_output • ${h}`,
+          meta: `scanner=dalfox • format=${r.stdoutFormat || 'mixed'} • confidence=tool_output • ${h}`,
           url: u,
         });
       }
@@ -1050,7 +1125,7 @@ export async function runKaliAggressiveScan({
   // Executa após a etapa XSS (nuclei/dalfox): scanner xss_vibes externo.
   if (cap.tools.xss_vibes && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     log(`═══ xss_vibes (XSS) em URLs com parâmetros (${paramUrls.length}) ═══`, 'section');
-    const r = await runXssVibesBatch({ urls: paramUrls, cap, log });
+    const r = await runXssVibesBatch({ urls: paramUrls, cap, log, auth });
     if (!r.ok) {
       log(`[xss_vibes] erro: ${r.error || 'falha desconhecida'}`, 'warn');
     } else {

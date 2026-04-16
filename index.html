@@ -1254,6 +1254,8 @@
         <span class="input-prefix">#</span>
         <input class="domain-input" id="projectNameInput" type="text" placeholder="nome_cliente" autocomplete="off" spellcheck="false">
       </div>
+      <div class="section-label" title="Priorização v2 (opcional)">Contexto bounty (JSON)</div>
+      <textarea id="bountyContextJsonInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:48px;margin-top:6px;font-size:10px" placeholder='{"focus":"api","programType":"web"}'></textarea>
 
       <div class="section-label">Target</div>
       <div class="input-wrap">
@@ -1774,6 +1776,7 @@
       <div class="stat" style="margin-left:auto">
         <div class="export-section" style="padding:0">
           <button class="export-btn" onclick="exportJSON()">⬇ JSON</button>
+          <button class="export-btn" onclick="exportPlatformBundle()">⬇ Plataforma</button>
           <button class="export-btn" onclick="exportMarkdown()">⬇ MD</button>
           <button class="export-btn" onclick="exportTXT()">⬇ TXT</button>
         </div>
@@ -1794,6 +1797,8 @@ let targetDomain = '';
 let batchTargetsSnapshot = [];
 /** Metadados do último `done` do stream (correlação, templates, etc.) */
 let lastPipelineBundle = null;
+/** Último snapshot de cobertura emitido pelo pipeline (NDJSON `recon_coverage`). */
+window.__lastReconCoverage = null;
 let dorkUrlQueue = [];
 let csrfToken = '';
 
@@ -2455,6 +2460,14 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         }
         refreshFindingsList();
       }
+      if (ev.type === 'recon_coverage' && ev.snapshot) {
+        window.__lastReconCoverage = ev.snapshot;
+        const c = ev.snapshot.counts || {};
+        addLog(
+          `Cobertura recon: ${c.totalFindings ?? findings.length} achados · HIGH=${c.highPrio ?? '—'} · tier HPT=${c.highProbabilityTier ?? '—'} · Kali=${ev.snapshot.kaliMode ? 'sim' : 'não'}`,
+          'info',
+        );
+      }
       if (ev.type === 'dork' && ev.googleUrl) enqueueDorkTab(ev.googleUrl);
       if (ev.type === 'open_url' && ev.url) {
         const u = String(ev.url).trim();
@@ -2530,6 +2543,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           runId: ev.runId ?? null,
           storage: ev.storage ?? null,
           intelMerge: ev.intelMerge ?? null,
+          reconCoverage: ev.reconCoverage ?? window.__lastReconCoverage ?? null,
         };
       }
     }
@@ -2576,6 +2590,7 @@ async function startRecon() {
   batchTargetsSnapshot = targets.slice();
   targetDomain = targets[targets.length - 1];
   lastPipelineBundle = null;
+  window.__lastReconCoverage = null;
 
   isRunning = true;
   logStarted = false;
@@ -2713,6 +2728,15 @@ async function startRecon() {
     const useOos = selectedMods.includes('out_of_scope');
     const oosText = (document.getElementById('outOfScopeInput')?.value || '').trim();
     const projectName = (document.getElementById('projectNameInput')?.value || '').trim();
+    let bountyContext = null;
+    const bcRaw = (document.getElementById('bountyContextJsonInput')?.value || '').trim();
+    if (bcRaw) {
+      try {
+        bountyContext = JSON.parse(bcRaw);
+      } catch {
+        addLog('Contexto bounty: JSON inválido — campo ignorado.', 'warn');
+      }
+    }
 
     for (let i = 0; i < targets.length; i++) {
       targetDomain = targets[i];
@@ -2746,6 +2770,7 @@ async function startRecon() {
       if (pgUrlUi) streamBody.pentestgptUrl = pgUrlUi;
       if (useOos) streamBody.outOfScope = oosText || '';
       if (projectName) streamBody.projectName = projectName;
+      if (bountyContext) streamBody.bountyContext = bountyContext;
 
       const res = await fetch(apiUrl('/api/recon/stream'), {
         method: 'POST',
@@ -2794,6 +2819,40 @@ async function startRecon() {
 }
 
 // ─── EXPORT FUNCTIONS ────────────────────────────────────
+function mapFindingForJsonExport(f) {
+  const ev = f.verification;
+  let verification;
+  if (ev && typeof ev === 'object') {
+    const rsp = ev.evidence?.responseSnippet;
+    const req = ev.evidence?.requestSnippet;
+    verification = {
+      classification: ev.classification,
+      confidenceScore: ev.confidenceScore,
+      verifiedAt: ev.verifiedAt,
+      evidenceHash: ev.evidence?.evidenceHash,
+      responseSnippetPreview: typeof rsp === 'string' ? rsp.slice(0, 1800) : undefined,
+      requestSnippetPreview: typeof req === 'string' ? req.slice(0, 800) : undefined,
+    };
+  }
+  return {
+    type: f.type,
+    priority: f.prio,
+    score: f.score || 0,
+    value: f.value,
+    meta: f.meta || '',
+    url: f.url || '',
+    fingerprint: f.fingerprint || '',
+    compositeScore: f.compositeScore,
+    attackTier: f.attackTier,
+    bountyProbability: f.bountyProbability,
+    priorityWhy: f.priorityWhy,
+    provenance: f.provenance && (f.provenance.how || f.provenance.relation)
+      ? { how: f.provenance.how || '', relation: f.provenance.relation || '' }
+      : undefined,
+    verification,
+  };
+}
+
 function exportJSON() {
   const multi = batchTargetsSnapshot.length > 1;
   const pn = (document.getElementById('projectNameInput')?.value || '').trim();
@@ -2803,22 +2862,42 @@ function exportJSON() {
     targets: multi ? batchTargetsSnapshot.slice() : undefined,
     timestamp: new Date().toISOString(),
     stats,
-    findings: findings.map(f => ({
-      type: f.type,
-      priority: f.prio,
-      score: f.score || 0,
-      value: f.value,
-      meta: f.meta || '',
-      url: f.url || '',
-      fingerprint: f.fingerprint || '',
-      provenance: f.provenance && (f.provenance.how || f.provenance.relation)
-        ? { how: f.provenance.how || '', relation: f.provenance.relation || '' }
-        : undefined,
-    })),
+    reconCoverage: window.__lastReconCoverage || undefined,
+    findings: findings.map(mapFindingForJsonExport),
   };
   const name = multi
     ? `ghostrecon_fila_${batchTargetsSnapshot.length}_${Date.now()}.json`
     : `ghostrecon_${targetDomain}_${Date.now()}.json`;
+  download(name, JSON.stringify(out, null, 2), 'application/json');
+}
+
+function exportPlatformBundle() {
+  const multi = batchTargetsSnapshot.length > 1;
+  const pn = (document.getElementById('projectNameInput')?.value || '').trim();
+  const bundle = lastPipelineBundle || {};
+  const bySev = { high: 0, med: 0, low: 0 };
+  findings.forEach((f) => {
+    const p = f.prio === 'high' ? 'high' : f.prio === 'med' ? 'med' : 'low';
+    bySev[p] += 1;
+  });
+  const out = {
+    schemaVersion: 2,
+    source: 'ghostrecon-platform-export',
+    exportedAt: new Date().toISOString(),
+    projectName: pn || undefined,
+    target: targetDomain,
+    targets: multi ? batchTargetsSnapshot.slice() : undefined,
+    stats,
+    severityHistogram: bySev,
+    runId: bundle.runId ?? null,
+    storage: bundle.storage ?? null,
+    intelMerge: bundle.intelMerge ?? null,
+    reconCoverage: bundle.reconCoverage || window.__lastReconCoverage || null,
+    correlation: bundle.correlation ?? null,
+    reportTemplates: bundle.reportTemplates ?? [],
+    findings: findings.map(mapFindingForJsonExport),
+  };
+  const name = `ghostrecon_platform_${targetDomain}_${Date.now()}.json`;
   download(name, JSON.stringify(out, null, 2), 'application/json');
 }
 

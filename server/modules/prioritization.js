@@ -79,6 +79,44 @@ function endpointUrlBoost(f) {
   return { x: 1, r: null };
 }
 
+function bountyContextMultiplier(ctx) {
+  if (!ctx || typeof ctx !== 'object') return { x: 1, reasons: [] };
+  const reasons = [];
+  let x = 1;
+  const raw = [
+    ctx.programType,
+    ctx.focus,
+    ctx.scope,
+    ctx.note,
+    typeof ctx.raw === 'string' ? ctx.raw : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (!raw.trim()) return { x: 1, reasons: [] };
+  if (/\bapi\b|graphql|rest/i.test(raw)) {
+    x *= 1.06;
+    reasons.push('contexto programa: API');
+  }
+  if (/\bweb\b|spa|react|vue|angular/i.test(raw)) {
+    x *= 1.04;
+    reasons.push('contexto programa: web clássica/SPA');
+  }
+  if (/\bmobile\b|android|ios|apk/i.test(raw)) {
+    x *= 1.03;
+    reasons.push('contexto programa: mobile');
+  }
+  if (/\b(iot|hardware|embedded)\b/i.test(raw)) {
+    x *= 1.05;
+    reasons.push('contexto programa: IoT/hardware');
+  }
+  if (/\b(vdp|disclosure|responsible)\b/i.test(raw)) {
+    x *= 1.02;
+    reasons.push('contexto: disclosure / VDP');
+  }
+  return { x, reasons };
+}
+
 function exploitabilityBoost(f) {
   let x = 1;
   const r = [];
@@ -126,8 +164,10 @@ function exploitabilityBoost(f) {
 
 /**
  * @param {Array<object>} findings
+ * @param {object|null} [bountyContext] — body `bountyContext` ou `GHOSTRECON_BOUNTY_CONTEXT` (JSON)
  */
-export function applyPrioritizationV2(findings) {
+export function applyPrioritizationV2(findings, bountyContext = null) {
+  const bc = bountyContextMultiplier(bountyContext);
   for (const f of findings) {
     const why = [];
     let base = Number(f.score);
@@ -151,6 +191,9 @@ export function applyPrioritizationV2(findings) {
     const ex = exploitabilityBoost(f);
     mult *= ex.x;
     why.push(...ex.reasons);
+
+    mult *= bc.x;
+    why.push(...bc.reasons);
 
     let composite = Math.min(100, Math.round(base * mult));
 

@@ -77,6 +77,10 @@ import { runPentestGptValidation, pentestGptHealthUrl, resolvePentestGptUrl } fr
 import { getPentestGptCapabilities } from './modules/pentestgpt-capabilities.js';
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from './modules/kali-subdomain-tools.js';
 import { withProvenance } from './modules/finding-provenance.js';
+import { serializeFindingsForRunSnapshot } from './modules/finding-serialize.js';
+import { buildReconCoverageSnapshot } from './modules/recon-coverage.js';
+import { runHighPrioHttpRecheck } from './modules/recheck-high.js';
+import { runOptionalPlaywrightXssProbe } from './modules/browser-xss-verify.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -227,20 +231,40 @@ function buildPipelineExportPayloadForAi({
   intelMerge,
   kaliMode,
   modules,
+  bountyContext = null,
+  auth = null,
 }) {
-    const findingsExport = findings.map((f) => ({
-    type: f.type,
-    priority: f.prio,
-    score: f.score || 0,
-    value: f.value,
-    meta: f.meta || '',
-    url: f.url || '',
-    fingerprint: f.fingerprint || '',
-    compositeScore: f.compositeScore,
-    attackTier: f.attackTier,
-    priorityWhy: f.priorityWhy,
-    provenance: f.provenance && (f.provenance.how || f.provenance.relation) ? { ...f.provenance } : undefined,
-  }));
+  const findingsExport = findings.map((f) => {
+    const ev = f.verification;
+    let verificationOut;
+    if (ev && typeof ev === 'object') {
+      const rsp = ev.evidence?.responseSnippet;
+      const req = ev.evidence?.requestSnippet;
+      verificationOut = {
+        classification: ev.classification,
+        confidenceScore: ev.confidenceScore,
+        verifiedAt: ev.verifiedAt,
+        evidenceHash: ev.evidence?.evidenceHash,
+        responseSnippetPreview: typeof rsp === 'string' ? rsp.slice(0, 2000) : undefined,
+        requestSnippetPreview: typeof req === 'string' ? req.slice(0, 900) : undefined,
+      };
+    }
+    return {
+      type: f.type,
+      priority: f.prio,
+      score: f.score || 0,
+      value: f.value,
+      meta: f.meta || '',
+      url: f.url || '',
+      fingerprint: f.fingerprint || '',
+      compositeScore: f.compositeScore,
+      attackTier: f.attackTier,
+      priorityWhy: f.priorityWhy,
+      bountyProbability: f.bountyProbability,
+      provenance: f.provenance && (f.provenance.how || f.provenance.relation) ? { ...f.provenance } : undefined,
+      verification: verificationOut,
+    };
+  });
   return {
     schemaVersion: 1,
     source: 'ghostrecon-server-pipeline',
@@ -256,6 +280,14 @@ function buildPipelineExportPayloadForAi({
     intelMerge,
     kaliMode,
     modules,
+    bountyContext: bountyContext || undefined,
+    authProfile:
+      auth && (auth.cookie || (auth.headers && Object.keys(auth.headers).length))
+        ? {
+            hasCookie: Boolean(auth.cookie),
+            headerKeys: auth.headers ? Object.keys(auth.headers).slice(0, 24) : [],
+          }
+        : undefined,
   };
 }
 
@@ -276,7 +308,18 @@ async function runPipeline(ctx) {
     shannonSkipDepsVerify = false,
     shannonGithubRepos = null,
     pentestgptUrl: pentestgptUrlOverride = null,
+    bountyContext: bountyContextBody = null,
   } = ctx;
+  let bountyCtx =
+    bountyContextBody && typeof bountyContextBody === 'object' ? bountyContextBody : null;
+  if (!bountyCtx && process.env.GHOSTRECON_BOUNTY_CONTEXT?.trim()) {
+    try {
+      bountyCtx = JSON.parse(process.env.GHOSTRECON_BOUNTY_CONTEXT);
+    } catch {
+      bountyCtx = { note: String(process.env.GHOSTRECON_BOUNTY_CONTEXT).slice(0, 400) };
+    }
+  }
+  let reconCoverageSnapshot = null;
   const runtimeProfile = resolveReconProfile(profile);
   const domainStr = exactMatch ? `"${domain}"` : domain;
   const findings = [];
@@ -1452,6 +1495,7 @@ async function runPipeline(ctx) {
         sqliSignals,
         runNuclei: runKaliNuclei,
         runFfuf: runKaliFfuf,
+        auth,
       });
     } else {
       log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
@@ -1508,7 +1552,7 @@ async function runPipeline(ctx) {
   pipe('score', 'active');
   progress(93);
   log('═══ Priorização v2 (composite + HIGH PROBABILITY) ═══', 'section');
-  applyPrioritizationV2(findings);
+  applyPrioritizationV2(findings, bountyCtx);
   for (const f of findings) {
     if (f.type === 'endpoint' && f.url && /\?.+=/i.test(f.url)) {
       f.meta = [f.meta, 'status_consistent=true'].filter(Boolean).join(' • ');
@@ -1524,7 +1568,7 @@ async function runPipeline(ctx) {
       f.meta = [f.meta, 'cve_hint=true'].filter(Boolean).join(' • ');
     }
   }
-  applyPrioritizationV2(findings);
+  applyPrioritizationV2(findings, bountyCtx);
 
   const semantic = dedupeBySemanticFamily(findings);
   if (semantic.merged > 0) {
@@ -1535,6 +1579,32 @@ async function runPipeline(ctx) {
   stats.high = findings.filter((f) => f.prio === 'high').length;
   emit({ type: 'stats', stats: { ...stats } });
   emit({ type: 'findings_rescore', findings });
+
+  try {
+    await runHighPrioHttpRecheck({ findings, auth, modules, log });
+    emit({ type: 'findings_rescore', findings: [...findings] });
+  } catch (e) {
+    log(`Recheck HIGH: ${e.message}`, 'warn');
+  }
+  try {
+    const pwFindings = await runOptionalPlaywrightXssProbe({ findings, log, limit: 4 });
+    for (const pf of pwFindings) addFinding(pf, null);
+  } catch (e) {
+    log(`Playwright XSS: ${e.message}`, 'warn');
+  }
+  try {
+    const kaliCapSnap = await getKaliCapabilities();
+    reconCoverageSnapshot = buildReconCoverageSnapshot({
+      domain,
+      modules,
+      kaliMode,
+      findings,
+      kaliCap: kaliCapSnap,
+    });
+    emit({ type: 'recon_coverage', snapshot: reconCoverageSnapshot });
+  } catch (e) {
+    log(`Cobertura recon: ${e.message}`, 'warn');
+  }
 
   if (cveHints.length) {
     log('═══ Versões detectadas → lookup CVE (manual) ═══', 'section');
@@ -1662,7 +1732,7 @@ async function runPipeline(ctx) {
         }
       }
       pipe('shannon', 'done');
-      applyPrioritizationV2(findings);
+      applyPrioritizationV2(findings, bountyCtx);
     }
   }
 
@@ -1685,6 +1755,8 @@ async function runPipeline(ctx) {
         intelMerge: null,
         kaliMode: Boolean(kaliMode),
         modules: modulesForDb,
+        bountyContext: bountyCtx,
+        auth,
       });
       const pg = await runPentestGptValidation(pgPayload, { log, urlOverride: pentestgptUrlOverride });
       pentestgptSummary = pg.summary || null;
@@ -1714,6 +1786,7 @@ async function runPipeline(ctx) {
   stats.high = findings.filter((f) => f.prio === 'high').length;
   emit({ type: 'stats', stats: { ...stats } });
 
+  const findingsSnapshotJson = serializeFindingsForRunSnapshot(findings);
   const saved = await saveRun({
     target: domain,
     exactMatch,
@@ -1722,6 +1795,7 @@ async function runPipeline(ctx) {
     findings,
     correlation: corr,
     localProjectName: String(projectNameRaw || '').trim(),
+    findingsJson: findingsSnapshotJson,
   });
   let runId = null;
   let intelMerge = null;
@@ -1795,6 +1869,7 @@ async function runPipeline(ctx) {
     storage: storageLabel(),
     reportTemplates,
     localSqlitePath: saved?.localMirrorPath || saved?.dbPath || null,
+    reconCoverage: reconCoverageSnapshot,
   });
 
   if (autoAiReports && aiAutoReportsServerAllowed() && aiKeysConfigured().any) {
@@ -1813,6 +1888,8 @@ async function runPipeline(ctx) {
       intelMerge,
       kaliMode: Boolean(kaliMode),
       modules: modulesForDb,
+      bountyContext: bountyCtx,
+      auth,
     });
     try {
       const aiOut = await runDualAiReports(aiPayload, {
@@ -2001,6 +2078,8 @@ app.post('/api/recon/stream', async (req, res) => {
       shannonSkipDepsVerify,
       shannonGithubRepos: req.body?.shannonGithubRepos,
       pentestgptUrl: req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl) : null,
+      bountyContext:
+        req.body?.bountyContext && typeof req.body.bountyContext === 'object' ? req.body.bountyContext : null,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
