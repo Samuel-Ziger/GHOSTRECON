@@ -38,6 +38,7 @@ import { extractCveHintsFromTechStrings } from './modules/cve-hints.js';
 import { fetchDnsEnrichment } from './modules/dns-enrichment.js';
 import { fetchWellKnownSecurityTxt, fetchWellKnownOpenIdConfiguration } from './modules/wellknown.js';
 import { runEvidenceVerification, runMicroExploitVariants } from './modules/verify.js';
+import { runSqlmapModule } from './modules/sqlmap-runner.js';
 import { harvestOpenApiFromOrigins, tryGraphqlMinimalProbe } from './modules/openapi-harvest.js';
 import { dedupeBySemanticFamily } from './modules/semantic-dedupe.js';
 import { buildReportTemplates } from './modules/report-template.js';
@@ -56,6 +57,14 @@ import {
   getRunById,
   listIntelForTarget,
   intelCountForTarget,
+  listManualValidationsForTarget,
+  upsertManualValidation,
+  deleteManualValidation,
+  listBrainCategories,
+  createBrainCategory,
+  upsertBrainLink,
+  getBrainCategoryById,
+  listBrainLinksForCategory,
   storageLabel,
   fingerprintFinding,
 } from './modules/db.js';
@@ -63,10 +72,16 @@ import { collectUniqueIpv4, shodanHostSummary } from './modules/ip-intel.js';
 import { googleCseSearch } from './modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from './modules/kali-scan.js';
 import {
+  augmentProcessPathFromCommonDirs,
+  prependExtraPathToEnvPath,
+  parseExtraPathInput,
+} from './modules/tool-path.js';
+import {
   runDualAiReports,
   aiKeysConfigured,
   pickAiReportForWebhook,
   probeLmStudioConnection,
+  normalizeOpenrouterOnlyFlag,
 } from './modules/ai-dual-report.js';
 import {
   getShannonCapabilities,
@@ -190,17 +205,18 @@ function aiAutoReportsServerAllowed() {
 function emitIaProximosPassosToLog(aiOut, log) {
   if (!aiOut || typeof log !== 'function') return;
   const parts = [];
-  if (aiOut.gemini?.ok && aiOut.gemini.proximosPath) {
-    parts.push({ label: 'Gemini — próximos passos', path: aiOut.gemini.proximosPath });
-  }
-  if (aiOut.openrouter?.ok && aiOut.openrouter.proximosPath) {
-    parts.push({ label: 'OpenRouter — próximos passos', path: aiOut.openrouter.proximosPath });
-  }
-  if (aiOut.claude?.ok && aiOut.claude.proximosPath) {
-    parts.push({ label: 'Claude (Anthropic) — próximos passos', path: aiOut.claude.proximosPath });
-  }
-  if (aiOut.lmstudio?.ok && aiOut.lmstudio.proximosPath) {
-    parts.push({ label: 'LM Studio (local) — próximos passos', path: aiOut.lmstudio.proximosPath });
+  const order = Array.isArray(aiOut._reportCascadeOrder)
+    ? aiOut._reportCascadeOrder
+    : ['gemini', 'openrouter', 'claude', 'lmstudio'];
+  const labels = {
+    gemini: 'Gemini — próximos passos',
+    openrouter: 'OpenRouter — próximos passos',
+    claude: 'Claude (Anthropic) — próximos passos',
+    lmstudio: 'LM Studio (local) — próximos passos',
+  };
+  for (const key of order) {
+    const b = aiOut[key];
+    if (b?.ok && b.proximosPath && labels[key]) parts.push({ label: labels[key], path: b.proximosPath });
   }
   if (!parts.length) return;
   log('═══ DECISÃO / PRÓXIMOS PASSOS (IA) ═══', 'section');
@@ -308,6 +324,10 @@ async function runPipeline(ctx) {
     projectName: projectNameRaw = '',
     autoAiReports = false,
     aiProviderMode = 'auto',
+    aiUseOpenrouter = true,
+    aiOpenrouterOnly = false,
+    /** Preferência bruta do POST (`gemini` | `openrouter`); o servidor ajusta se faltar chave. */
+    aiPrimaryCloud = null,
     shannonPrecheck = true,
     shannonSkipDepsVerify = false,
     shannonGithubRepos = null,
@@ -349,6 +369,21 @@ async function runPipeline(ctx) {
 
   const log = (msg, level = 'info') => emit({ type: 'log', msg, level });
   const pipe = (name, state) => emit({ type: 'pipe', name, state });
+  /** Marcos extra no Ghostmap quando a fase Kali não corre (emitidos por `kali-scan.js` durante o scan). */
+  const KALI_SUB_PIPE_STEPS = [
+    'nmap',
+    'whois',
+    'ffuf',
+    'nuclei',
+    'nuclei_xss',
+    'nuclei_sqli',
+    'wpscan',
+    'dalfox',
+    'xss_vibes',
+  ];
+  const skipKaliSubPipe = () => {
+    for (const n of KALI_SUB_PIPE_STEPS) pipe(n, 'skip');
+  };
   const progress = (p) => emit({ type: 'progress', pct: p });
 
   let pipelineAiOut = null;
@@ -1032,7 +1067,25 @@ async function runPipeline(ctx) {
     // Heurística (passivo): marcar parâmetros comuns para XSS / SQLi como candidatos (não confirmados)
     const n = String(name).toLowerCase();
     const xssCandidates = new Set(['q', 'query', 'search', 's', 'keyword', 'term', 'message', 'comment', 'title', 'name']);
-    const sqliCandidates = new Set(['id', 'ids', 'user', 'user_id', 'uid', 'account', 'order', 'order_id', 'page', 'sort', 'filter', 'where']);
+    const sqliCandidates = new Set([
+      'id',
+      'ids',
+      'user',
+      'user_id',
+      'uid',
+      'account',
+      'order',
+      'order_id',
+      'page',
+      'sort',
+      'filter',
+      'where',
+      'username',
+      'email',
+      'passwd',
+      'pwd',
+      'login',
+    ]);
     if (xssCandidates.has(n)) {
       addFinding(
         {
@@ -1431,6 +1484,22 @@ async function runPipeline(ctx) {
   } catch (e) {
     log(`Param discovery: ${e.message}`, 'warn');
   }
+
+  if (modules.includes('sqlmap')) {
+    pipe('sqlmap', 'active');
+    try {
+      const maxT = Math.max(1, Math.min(6, Number(process.env.GHOSTRECON_SQLMAP_TARGETS) || 2));
+      const sm = await runSqlmapModule({ findings, auth, log, maxTargets: maxT });
+      for (const x of sm) addFinding(x, null);
+      if (sm.length) log(`sqlmap: ${sm.length} achado(s) SQLi (ferramenta) registado(s)`, 'success');
+    } catch (e) {
+      log(`sqlmap: ${e.message}`, 'warn');
+    }
+    pipe('sqlmap', 'done');
+  } else {
+    pipe('sqlmap', 'skip');
+  }
+
   pipe('verify', 'done');
 
   // ── KALI: nmap / searchsploit / ffuf / nuclei ──
@@ -1465,7 +1534,7 @@ async function runPipeline(ctx) {
       let sqliSignals = false;
       const xssParamRe = /[?&](q|query|search|s|keyword|term|message|comment|title|name)=/i;
       const sqliParamRe =
-        /[?&](id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where)=/i;
+        /[?&](id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where|username|email|passwd|pwd|login)=/i;
       for (const u of paramUrlsForKali) {
         if (xssParamRe.test(u)) xssSignals = true;
         if (sqliParamRe.test(u)) sqliSignals = true;
@@ -1509,10 +1578,12 @@ async function runPipeline(ctx) {
       });
     } else {
       log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
+      skipKaliSubPipe();
     }
     pipe('kali', 'done');
   } else {
-    emit({ type: 'pipe', name: 'kali', state: 'skip' });
+    pipe('kali', 'skip');
+    skipKaliSubPipe();
   }
 
   progress(90);
@@ -1890,7 +1961,16 @@ async function runPipeline(ctx) {
 
   if (autoAiReports && aiAutoReportsServerAllowed() && aiKeysConfigured().any) {
     emit({ type: 'ai_report', phase: 'start', target: domain });
-    log('IA: recon concluído — a gerar relatórios (Gemini → OpenRouter → Claude → LM Studio) com o JSON deste run…', 'info');
+    const pri =
+      String(aiPrimaryCloud || '').toLowerCase() === 'openrouter' || normalizeOpenrouterOnlyFlag(aiOpenrouterOnly)
+        ? 'OpenRouter'
+        : 'Gemini';
+    const alt = pri === 'OpenRouter' ? 'Gemini' : 'OpenRouter';
+    const iaOrder =
+      aiUseOpenrouter === false
+        ? 'Gemini (sem OpenRouter) → LM Studio → Claude se configurado'
+        : `${pri} (primeiro) → LM Studio → ${alt} → Claude se configurado`;
+    log(`IA: recon concluído — a gerar relatórios (${iaOrder}) com o JSON deste run…`, 'info');
     const pn = String(projectNameRaw || '').trim();
     const aiPayload = buildPipelineExportPayloadForAi({
       target: domain,
@@ -1912,6 +1992,9 @@ async function runPipeline(ctx) {
         projectName: pn,
         targetDomain: domain,
         aiProviderMode,
+        aiUseOpenrouter,
+        aiOpenrouterOnly,
+        aiPrimaryCloud,
         onStatus: (message, level = 'info') => log(message, level),
       });
       pipelineAiOut = aiOut;
@@ -2077,6 +2160,13 @@ app.post('/api/recon/stream', async (req, res) => {
     }
   }
 
+  const extraPathRaw = typeof req.body?.extraPath === 'string' ? req.body.extraPath : '';
+  let savedEnvPath = null;
+  if (extraPathRaw.trim()) {
+    savedEnvPath = process.env.PATH;
+    process.env.PATH = prependExtraPathToEnvPath(extraPathRaw, savedEnvPath);
+  }
+
   try {
     await runPipeline({
       domain,
@@ -2090,6 +2180,14 @@ app.post('/api/recon/stream', async (req, res) => {
       projectName: req.body?.projectName,
       autoAiReports: Boolean(req.body?.autoAiReports),
       aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
+      aiUseOpenrouter: req.body?.aiUseOpenrouter !== false,
+      aiOpenrouterOnly: normalizeOpenrouterOnlyFlag(req.body?.aiOpenrouterOnly),
+      aiPrimaryCloud:
+        typeof req.body?.aiPrimaryCloud === 'string'
+          ? req.body.aiPrimaryCloud
+          : typeof req.body?.aiPrimaryReport === 'string'
+            ? req.body.aiPrimaryReport
+            : null,
       shannonPrecheck,
       shannonSkipDepsVerify,
       shannonGithubRepos: req.body?.shannonGithubRepos,
@@ -2099,6 +2197,8 @@ app.post('/api/recon/stream', async (req, res) => {
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
+  } finally {
+    if (savedEnvPath !== null) process.env.PATH = savedEnvPath;
   }
   res.end();
 });
@@ -2107,6 +2207,19 @@ app.get('/api/csrf-token', (req, res) => {
   const token = issueCsrfToken(req);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ token, expiresInMs: CSRF_TTL_MS });
+});
+
+app.post('/api/tool-path-refresh', (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF' });
+    return;
+  }
+  try {
+    const added = augmentProcessPathFromCommonDirs();
+    res.json({ ok: true, added });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 app.get('/api/health', (_req, res) => {
@@ -2135,7 +2248,12 @@ app.get('/api/capabilities', async (_req, res) => {
         http: { configured: false, preview: '' },
       };
     }
-    res.json({ ...cap, ai: aiKeysConfigured(), shannon, pentestgpt });
+    res.json({
+      ...cap,
+      ai: aiKeysConfigured(),
+      shannon,
+      pentestgpt,
+    });
   } catch (e) {
     res.status(500).json({
       kali: false,
@@ -2253,6 +2371,14 @@ app.post('/api/ai-reports', async (req, res) => {
       projectName,
       targetDomain,
       aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
+      aiUseOpenrouter: req.body?.aiUseOpenrouter !== false,
+      aiOpenrouterOnly: normalizeOpenrouterOnlyFlag(req.body?.aiOpenrouterOnly),
+      aiPrimaryCloud:
+        typeof req.body?.aiPrimaryCloud === 'string'
+          ? req.body.aiPrimaryCloud
+          : typeof req.body?.aiPrimaryReport === 'string'
+            ? req.body.aiPrimaryReport
+            : null,
     });
     const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
     if (whUrl) {
@@ -2351,6 +2477,217 @@ app.get('/api/intel/:target', async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+function isValidManualValidationTarget(t) {
+  const s = String(t || '')
+    .trim()
+    .toLowerCase();
+  return s && /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s);
+}
+
+function isSha256FingerprintHex(fp) {
+  return /^[a-f0-9]{64}$/.test(String(fp || '').trim().toLowerCase());
+}
+
+/** Categorias do modo cérebro (vulnerabilidade agregada); SQLite local com seeds iniciais. */
+app.get('/api/brain/categories', async (_req, res) => {
+  try {
+    const items = await listBrainCategories();
+    res.json({ items });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+app.post('/api/brain/categories', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const title = req.body?.title;
+  try {
+    const out = await createBrainCategory(title);
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post('/api/brain/link', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const target = String(req.body?.target || '')
+    .trim()
+    .toLowerCase();
+  const fp = String(req.body?.fingerprint || '').trim().toLowerCase();
+  const categoryId = req.body?.categoryId;
+  try {
+    const out = await upsertBrainLink({ target, fingerprint: fp, categoryId });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+/** Uma categoria do cérebro + achados ligados (para a página Cortex). */
+app.get('/api/brain/category/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'id inválido' });
+    return;
+  }
+  try {
+    const category = await getBrainCategoryById(id);
+    if (!category) {
+      res.status(404).json({ error: 'categoria não encontrada' });
+      return;
+    }
+    const links = await listBrainLinksForCategory(id);
+    res.json({ category, links });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+/** Lista achados marcados como validados manualmente para o alvo (SQLite). */
+app.get('/api/manual-validations/:target', async (req, res) => {
+  const t = String(req.params.target || '')
+    .trim()
+    .toLowerCase();
+  if (!isValidManualValidationTarget(t)) {
+    res.status(400).json({ error: 'domínio inválido' });
+    return;
+  }
+  try {
+    const items = await listManualValidationsForTarget(t);
+    res.json({ target: t, items });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+/** Marca ou desmarca validação manual (persistência por fingerprint = mesmo achado em recons futuros). */
+app.post('/api/manual-validations', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const target = String(req.body?.target || '')
+    .trim()
+    .toLowerCase();
+  const fp = String(req.body?.fingerprint || '').trim().toLowerCase();
+  const validated = req.body?.validated !== false && req.body?.validated !== 0 && req.body?.validated !== 'false';
+  if (!isValidManualValidationTarget(target)) {
+    res.status(400).json({ ok: false, error: 'domínio inválido' });
+    return;
+  }
+  if (!isSha256FingerprintHex(fp)) {
+    res.status(400).json({ ok: false, error: 'fingerprint inválido' });
+    return;
+  }
+  try {
+    if (validated) {
+      const snap = req.body?.snapshot && typeof req.body.snapshot === 'object' ? req.body.snapshot : null;
+      const notes = req.body?.notes != null ? String(req.body.notes) : '';
+      await upsertManualValidation({ target, fingerprint: fp, snapshot: snap, notes });
+      res.json({ ok: true, target, fingerprint: fp, validated: true });
+    } else {
+      await deleteManualValidation(target, fp);
+      res.json({ ok: true, target, fingerprint: fp, validated: false });
+    }
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+/** Gera relatório por IA só com achados já validados manualmente (subset do recon). */
+app.post('/api/manual-validations/ai-report', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const target = String(req.body?.target || '')
+    .trim()
+    .toLowerCase();
+  const findingsIn = Array.isArray(req.body?.findings) ? req.body.findings : null;
+  if (!isValidManualValidationTarget(target)) {
+    res.status(400).json({ ok: false, error: 'domínio inválido' });
+    return;
+  }
+  if (!findingsIn || !findingsIn.length) {
+    res.status(400).json({ ok: false, error: 'Indica pelo menos um achado validado (array findings).' });
+    return;
+  }
+  const known = new Set(
+    (await listManualValidationsForTarget(target)).map((x) => String(x.fingerprint || '').toLowerCase()),
+  );
+  const findings = [];
+  for (const f of findingsIn) {
+    if (!f || typeof f !== 'object') continue;
+    const fp = String(f.fingerprint || '').trim().toLowerCase();
+    if (!isSha256FingerprintHex(fp) || !known.has(fp)) continue;
+    findings.push({
+      type: f.type,
+      prio: f.prio,
+      score: f.score,
+      value: f.value,
+      meta: f.meta,
+      url: f.url,
+      fingerprint: fp,
+    });
+  }
+  if (!findings.length) {
+    res.status(400).json({
+      ok: false,
+      error: 'Nenhum achado coincide com validações manuais gravadas na base para este alvo.',
+    });
+    return;
+  }
+  const projectName = String(req.body?.projectName ?? '').trim();
+  const stats =
+    req.body?.stats && typeof req.body.stats === 'object'
+      ? req.body.stats
+      : { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
+  const payload = {
+    schemaVersion: 1,
+    source: 'ghostrecon-manual-validation-report',
+    exportedAt: new Date().toISOString(),
+    target,
+    projectName: projectName || undefined,
+    stats,
+    findings,
+    correlation: null,
+    reportTemplates: {},
+    runId: null,
+    storage: storageLabel(),
+    modules: ['manual_validation'],
+    bountyContext: {
+      note: 'Relatório pedido a partir de achados já confirmados manualmente no checklist Reporte.',
+    },
+  };
+  const aiPrimaryRaw =
+    typeof req.body?.aiPrimaryCloud === 'string'
+      ? req.body.aiPrimaryCloud
+      : typeof req.body?.aiPrimaryReport === 'string'
+        ? req.body.aiPrimaryReport
+        : null;
+  try {
+    const out = await runDualAiReports(payload, {
+      projectName,
+      targetDomain: target,
+      aiProviderMode: 'auto',
+      aiUseOpenrouter: req.body?.aiUseOpenrouter !== false,
+      aiOpenrouterOnly: normalizeOpenrouterOnlyFlag(req.body?.aiOpenrouterOnly),
+      aiPrimaryCloud: aiPrimaryRaw,
+      onStatus: () => {},
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 

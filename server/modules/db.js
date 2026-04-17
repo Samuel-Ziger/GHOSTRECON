@@ -98,3 +98,72 @@ export async function intelCountForTarget(target) {
   if (useSupabaseApi()) return supabase.intelCountForTarget(target);
   return sqlite.intelCountForTarget(target);
 }
+
+/** Validação manual de achados (SQLite local). Com Postgres/Supabase API ainda não persistido — devolve lista vazia. */
+export async function listManualValidationsForTarget(target) {
+  if (useDatabaseUrl() || useSupabaseApi()) return [];
+  try {
+    return sqlite.listManualValidationsForTarget(target);
+  } catch (e) {
+    console.error('[GHOSTRECON manual_validations list]', e?.message || e);
+    return [];
+  }
+}
+
+export async function upsertManualValidation(row) {
+  if (useDatabaseUrl() || useSupabaseApi()) {
+    throw new Error('Validação manual só persiste em SQLite (sem DATABASE_URL / Supabase nesta versão).');
+  }
+  return sqlite.upsertManualValidation(row);
+}
+
+export async function deleteManualValidation(target, fingerprint) {
+  if (useDatabaseUrl() || useSupabaseApi()) {
+    throw new Error('Validação manual só persiste em SQLite (sem DATABASE_URL / Supabase nesta versão).');
+  }
+  return sqlite.deleteManualValidation(target, fingerprint);
+}
+
+/** Categorias do «cérebro» (SQLite local). Com Postgres/Supabase devolve lista vazia. */
+export async function listBrainCategories() {
+  if (useDatabaseUrl() || useSupabaseApi()) return [];
+  try {
+    return sqlite.listBrainCategories();
+  } catch (e) {
+    console.error('[GHOSTRECON brain categories]', e?.message || e);
+    return [];
+  }
+}
+
+export async function createBrainCategory(title) {
+  if (useDatabaseUrl() || useSupabaseApi()) {
+    throw new Error('Cérebro só persiste em SQLite local (sem DATABASE_URL / Supabase nesta versão).');
+  }
+  return sqlite.createBrainCategory(title);
+}
+
+export async function upsertBrainLink(row) {
+  if (useDatabaseUrl() || useSupabaseApi()) {
+    throw new Error('Cérebro só persiste em SQLite local (sem DATABASE_URL / Supabase nesta versão).');
+  }
+  return sqlite.upsertBrainLink(row);
+}
+
+export async function getBrainCategoryById(id) {
+  if (useDatabaseUrl() || useSupabaseApi()) return null;
+  try {
+    return sqlite.getBrainCategoryById(id);
+  } catch {
+    return null;
+  }
+}
+
+export async function listBrainLinksForCategory(categoryId) {
+  if (useDatabaseUrl() || useSupabaseApi()) return [];
+  try {
+    return sqlite.listBrainLinksForCategory(categoryId);
+  } catch (e) {
+    console.error('[GHOSTRECON brain links]', e?.message || e);
+    return [];
+  }
+}

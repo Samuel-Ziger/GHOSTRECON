@@ -365,14 +365,30 @@
       background: var(--panel2);
       border: 1px solid var(--border2);
       border-radius: 6px;
-      padding: 0 12px 4px;
-      overflow-x: auto;
-      box-shadow: 0 4px 24px rgba(0,0,0,.35);
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
     }
 
-    .branches-wrap::-webkit-scrollbar { height: 4px; }
-    .branches-wrap::-webkit-scrollbar-track { background: var(--bg2); }
-    .branches-wrap::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+    .branches-wrap.branches-viewport {
+      padding: 0;
+      max-height: min(340px, 48vh);
+      overflow: auto;
+      overscroll-behavior: contain;
+    }
+
+    .branches-wrap::-webkit-scrollbar,
+    .branches-viewport::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .branches-wrap::-webkit-scrollbar-track,
+    .branches-viewport::-webkit-scrollbar-track {
+      background: var(--bg2);
+    }
+    .branches-wrap::-webkit-scrollbar-thumb,
+    .branches-viewport::-webkit-scrollbar-thumb {
+      background: var(--border2);
+      border-radius: 2px;
+    }
 
     .h-flow-cards {
       display: flex;
@@ -835,6 +851,704 @@
       .pipe-ms.active .pipe-ms-dot { animation: none; }
       body::before { opacity: 0.12; }
     }
+
+    /* ─── Legenda: separador à direita + painel deslizante ─── */
+    .ghostmap-legend-wrap {
+      position: fixed;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 55;
+      display: flex;
+      flex-direction: row-reverse;
+      align-items: flex-start;
+      max-height: 85vh;
+    }
+
+    .ghostmap-legend-tab {
+      flex-shrink: 0;
+      width: 38px;
+      min-height: 132px;
+      margin: 0;
+      padding: 12px 0;
+      border: 1px solid var(--border2);
+      border-right: none;
+      border-radius: 10px 0 0 10px;
+      background: rgba(11, 16, 23, 0.95);
+      color: var(--acc);
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      cursor: pointer;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: -6px 0 24px rgba(0, 0, 0, 0.45);
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+      position: relative;
+      z-index: 2;
+    }
+
+    .ghostmap-legend-tab:hover {
+      background: rgba(16, 24, 34, 0.98);
+      border-color: rgba(0, 200, 255, 0.35);
+      color: #e8fbff;
+    }
+
+    .ghostmap-legend-wrap.is-open .ghostmap-legend-tab {
+      border-color: rgba(0, 200, 255, 0.28);
+      background: rgba(8, 18, 28, 0.98);
+    }
+
+    .ghostmap-legend-panel {
+      width: min(288px, calc(100vw - 44px));
+      max-height: 85vh;
+      overflow-y: auto;
+      padding: 12px 14px 14px;
+      margin: 0;
+      background: rgba(11, 16, 23, 0.97);
+      border: 1px solid var(--border2);
+      border-right: none;
+      border-radius: 10px 0 0 10px;
+      font-size: 10px;
+      color: var(--dim2);
+      line-height: 1.45;
+      box-shadow: -10px 0 40px rgba(0, 0, 0, 0.55);
+      transform: translateX(100%);
+      opacity: 0;
+      visibility: hidden;
+      transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease, visibility 0.3s;
+      pointer-events: none;
+      position: relative;
+      z-index: 1;
+    }
+
+    .ghostmap-legend-wrap.is-open .ghostmap-legend-panel {
+      transform: translateX(0);
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .ghostmap-legend-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0 0 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .ghostmap-legend-close {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      margin: 0;
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--dim2);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .ghostmap-legend-close:hover {
+      border-color: var(--acc);
+      color: var(--text);
+    }
+
+    .ghostmap-legend-title {
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--acc);
+      margin: 0;
+      padding: 0;
+      border: none;
+    }
+
+    /* ─── JSON import / export: dock fixo à esquerda (espelho da legenda) ─── */
+    .branch-json-dock-wrap {
+      position: fixed;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 55;
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      max-height: 85vh;
+    }
+
+    .branch-json-dock-tab {
+      flex-shrink: 0;
+      width: 38px;
+      min-height: 132px;
+      margin: 0;
+      padding: 12px 0;
+      border: 1px solid var(--border2);
+      border-left: none;
+      border-radius: 0 10px 10px 0;
+      background: rgba(11, 16, 23, 0.95);
+      color: var(--acc);
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      cursor: pointer;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 6px 0 24px rgba(0, 0, 0, 0.45);
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+      position: relative;
+      z-index: 2;
+    }
+
+    .branch-json-dock-tab:hover {
+      background: rgba(16, 24, 34, 0.98);
+      border-color: rgba(0, 200, 255, 0.35);
+      color: #e8fbff;
+    }
+
+    .branch-json-dock-wrap.is-open .branch-json-dock-tab {
+      border-color: rgba(0, 200, 255, 0.28);
+      background: rgba(8, 18, 28, 0.98);
+    }
+
+    .branch-json-dock-panel {
+      width: min(320px, calc(100vw - 48px));
+      max-height: 85vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 12px 14px 14px;
+      margin: 0;
+      background: rgba(11, 16, 23, 0.97);
+      border: 1px solid var(--border2);
+      border-left: none;
+      border-radius: 0 10px 10px 0;
+      font-size: 10px;
+      color: var(--dim2);
+      line-height: 1.45;
+      box-shadow: 10px 0 40px rgba(0, 0, 0, 0.55);
+      transform: translateX(-100%);
+      opacity: 0;
+      visibility: hidden;
+      transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease, visibility 0.25s;
+      pointer-events: none;
+      position: relative;
+      z-index: 1;
+    }
+
+    .branch-json-dock-wrap.is-open .branch-json-dock-panel {
+      transform: translateX(0);
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .branch-json-dock-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0 0 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .branch-json-dock-title {
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--acc);
+      margin: 0;
+    }
+
+    .branch-json-dock-close {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      margin: 0;
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--dim2);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .branch-json-dock-close:hover {
+      border-color: var(--acc);
+      color: var(--text);
+    }
+
+    .branch-json-dock-panel .branch-json-toggle-row {
+      margin-bottom: 8px;
+    }
+
+    .branch-json-dock-panel .branch-json-panel-wrap {
+      margin-top: 0;
+    }
+
+    .ghostmap-legend-panel ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .ghostmap-legend-panel li {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 7px;
+    }
+
+    .ghostmap-legend-panel li:last-child {
+      margin-bottom: 0;
+    }
+    .leg-mitre {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      border: 1.5px solid rgba(255, 157, 77, 0.55);
+      background: linear-gradient(145deg, #1a1208, #0e0d0a);
+      margin-top: 1px;
+    }
+    .leg-arrow {
+      font-family: var(--mono);
+      color: var(--mitre);
+      font-weight: 700;
+    }
+    .leg-prio {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    .leg-prio.high { background: #ff3355; box-shadow: 0 0 6px rgba(255, 51, 85, 0.45); }
+    .leg-prio.med { background: #e6b800; box-shadow: 0 0 6px rgba(230, 184, 0, 0.35); }
+    .leg-prio.low { background: #2a8f6a; box-shadow: 0 0 6px rgba(42, 143, 106, 0.35); }
+
+    .live-hud {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--dim2);
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      background: rgba(0, 0, 0, 0.25);
+      max-width: 200px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .live-hud strong { color: var(--acc); }
+
+    /* ─── Mini pipeline (sticky) ─── */
+    .pipe-mini-strip {
+      position: sticky;
+      top: 52px;
+      z-index: 40;
+      margin: -6px 0 14px;
+      padding: 6px 10px;
+      background: rgba(5, 7, 9, 0.88);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pipe-mini-strip[hidden] { display: none !important; }
+    .pipe-mini-label {
+      font-family: var(--sans);
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--dim);
+      flex-shrink: 0;
+    }
+    .pipe-mini-dots {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 4px;
+      align-items: center;
+      flex: 1;
+      min-width: 0;
+    }
+    .pipe-mini-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--bg2);
+      border: 1px solid #1e2d3d;
+      flex-shrink: 0;
+      cursor: default;
+    }
+    .pipe-mini-dot.pending { opacity: 0.45; }
+    .pipe-mini-dot.active {
+      background: var(--live);
+      border-color: #ff8080;
+      box-shadow: 0 0 6px var(--live-dim);
+    }
+    .pipe-mini-dot.done {
+      background: var(--done-dim);
+      border-color: var(--done);
+    }
+    .pipe-mini-dot.skip { background: #1a1a14; border-color: #3a3520; }
+
+    .pipe-mini-kali {
+      flex-shrink: 0;
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 3px;
+      border: 1px solid var(--border2);
+      line-height: 1.2;
+      max-width: 140px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .pipe-mini-kali--on {
+      color: #7effc0;
+      border-color: rgba(0, 255, 136, 0.45);
+      background: rgba(0, 255, 136, 0.08);
+      box-shadow: 0 0 10px rgba(0, 255, 136, 0.12);
+    }
+    .pipe-mini-kali--off {
+      color: var(--dim2);
+      border-color: rgba(74, 96, 128, 0.4);
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    /* ─── Ramificações: zoom / pan ─── */
+    .branches-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim2);
+    }
+    .branches-toolbar button {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 4px 10px;
+      border-radius: 3px;
+      border: 1px solid var(--border2);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .branches-toolbar button:hover {
+      border-color: var(--acc);
+      color: var(--acc);
+    }
+    .branches-zoom-readout {
+      margin-left: auto;
+      color: var(--dim);
+      font-size: 9px;
+    }
+    .branches-viewport:focus {
+      outline: 1px solid rgba(0, 200, 255, 0.35);
+      outline-offset: 2px;
+    }
+    .branches-scale-inner {
+      transform-origin: 0 0;
+      display: inline-block;
+      min-width: max-content;
+      padding: 4px 0 8px;
+      transition: transform 0.12s ease-out;
+    }
+    .branches-wrap-inner {
+      border: none;
+      padding: 8px 10px 10px;
+      min-width: min-content;
+    }
+
+    .h-mini-card.prio-high {
+      border-left: 3px solid #ff3355;
+      box-shadow: inset 0 0 0 1px rgba(255, 51, 85, 0.12);
+    }
+    .h-mini-card.prio-med {
+      border-left: 3px solid #e6b800;
+      box-shadow: inset 0 0 0 1px rgba(230, 184, 0, 0.1);
+    }
+    .h-mini-card.prio-low {
+      border-left: 3px solid #2a8f6a;
+      box-shadow: inset 0 0 0 1px rgba(42, 143, 106, 0.1);
+    }
+    .h-mini-card.prio-unk {
+      border-left: 3px solid var(--border2);
+    }
+
+    /* ─── Recon subs: separador entre alvos (mantém ramos) ─── */
+    .h-flow-cascade-break {
+      flex: 0 0 auto;
+      width: 38px;
+      min-height: 172px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin: 0 6px;
+      padding: 8px 5px;
+      background: linear-gradient(180deg, rgba(0, 120, 220, 0.2), rgba(0, 40, 90, 0.45));
+      border-left: 3px solid #00b4ff;
+      border-right: 3px solid #00b4ff;
+      border-radius: 4px;
+      box-shadow: 0 0 22px rgba(0, 180, 255, 0.22);
+      align-self: stretch;
+    }
+    .h-flow-cascade-break-line {
+      flex: 1;
+      width: 3px;
+      min-height: 24px;
+      border-radius: 2px;
+      background: linear-gradient(180deg, transparent, #00d4ff, transparent);
+      box-shadow: 0 0 12px rgba(0, 212, 255, 0.55);
+    }
+    .h-flow-cascade-break-tag {
+      font-family: var(--sans);
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #5ee0ff;
+    }
+    .h-flow-cascade-break-label {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      font-family: var(--mono);
+      font-size: 9px;
+      line-height: 1.2;
+      color: #b8e8ff;
+      max-height: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      word-break: break-all;
+      text-align: center;
+    }
+
+    /* ─── Toggle JSON (painel no dock fixo à esquerda) ─── */
+    .branch-json-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 0;
+    }
+
+    .branch-json-toggle-row .toggle-label-ghm {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim2);
+      line-height: 1.35;
+    }
+
+    .toggle-ghm {
+      position: relative;
+      width: 36px;
+      height: 18px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .toggle-ghm input {
+      display: none;
+    }
+
+    .toggle-track-ghm {
+      width: 100%;
+      height: 100%;
+      background: var(--bg2);
+      border: 1px solid var(--border2);
+      transition: all 0.2s;
+      position: relative;
+      border-radius: 2px;
+    }
+
+    .toggle-thumb-ghm {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 12px;
+      height: 12px;
+      background: var(--dim);
+      transition: all 0.2s;
+      border-radius: 1px;
+    }
+
+    .toggle-ghm input:checked ~ .toggle-track-ghm {
+      border-color: rgba(0, 200, 255, 0.55);
+      box-shadow: 0 0 10px rgba(0, 200, 255, 0.12);
+    }
+
+    .toggle-ghm input:checked ~ .toggle-track-ghm .toggle-thumb-ghm {
+      left: 20px;
+      background: var(--acc);
+      box-shadow: 0 0 8px rgba(0, 200, 255, 0.45);
+    }
+
+    .branch-json-panel-wrap {
+      margin-top: 10px;
+    }
+
+    /* ─── Import JSON → ramificações ─── */
+    .branch-import-bar {
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px dashed rgba(0, 168, 255, 0.35);
+      border-radius: 6px;
+      background: rgba(0, 30, 60, 0.25);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .branch-import-bar > label {
+      font-size: 10px;
+      color: var(--dim2);
+      line-height: 1.45;
+    }
+    .branch-import-bar textarea {
+      width: 100%;
+      min-height: 76px;
+      resize: vertical;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.4;
+      padding: 8px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border2);
+      background: var(--bg2);
+      color: var(--text);
+    }
+    .branch-import-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .branch-import-actions input[type='file'] {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--dim2);
+      max-width: 100%;
+    }
+    .branch-import-actions button {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 5px 12px;
+      border-radius: 3px;
+      border: 1px solid var(--border2);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .branch-import-actions button:hover {
+      border-color: var(--acc);
+      color: var(--acc);
+    }
+
+    .branch-import-actions .branch-export-json-btn {
+      border-color: rgba(0, 232, 122, 0.35);
+      color: rgba(0, 232, 122, 0.95);
+    }
+
+    .branch-import-actions .branch-export-json-btn:hover {
+      border-color: var(--done);
+      color: #b8ffd8;
+    }
+
+    .branch-import-hint {
+      font-size: 9px;
+      color: var(--dim);
+      margin: 0;
+    }
+
+    /* ─── Filtros matriz ─── */
+    .matrix-filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 14px;
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      background: var(--panel);
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim2);
+    }
+    .matrix-filter-bar label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .matrix-filter-bar input[type='checkbox'] {
+      accent-color: var(--acc);
+    }
+    .matrix-filter-bar input[type='search'] {
+      flex: 1;
+      min-width: 140px;
+      max-width: 280px;
+      padding: 5px 8px;
+      border-radius: 3px;
+      border: 1px solid var(--border2);
+      background: var(--bg2);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .matrix-filter-bar .matrix-filter-meta {
+      width: 100%;
+      font-size: 9px;
+      color: var(--dim);
+      margin-top: -4px;
+    }
+    .tactic.hidden-matrix-filter,
+    .chip.hidden-matrix-filter {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -872,16 +1586,175 @@
     </div>
     <h1>GHOST<span>RECON</span> · MITRE + OWASP</h1>
     <div class="header-right">
+      <span id="liveFindingsCount" class="live-hud" style="display:none" title="Achados recebidos nesta sessão"></span>
+      <span id="liveLastTs" class="live-hud" style="display:none" title="Último evento ao vivo"></span>
       <span id="targetLine" class="target-badge" style="display:none"></span>
       <span id="statePill" class="pill waiting">À espera</span>
     </div>
   </header>
 
+  <div id="branchJsonDockWrap" class="branch-json-dock-wrap" hidden>
+    <button
+      type="button"
+      id="branchJsonDockTab"
+      class="branch-json-dock-tab"
+      aria-expanded="false"
+      aria-controls="branchJsonDockPanel"
+      title="Mostrar ou ocultar importar / exportar JSON"
+    >
+      JSON
+    </button>
+    <aside
+      id="branchJsonDockPanel"
+      class="branch-json-dock-panel"
+      aria-label="Importar e exportar JSON"
+      aria-hidden="true"
+    >
+      <div class="branch-json-dock-panel-head">
+        <div class="branch-json-dock-title">Importar / exportar</div>
+        <button type="button" class="branch-json-dock-close" id="branchJsonDockClose" aria-label="Fechar painel JSON">×</button>
+      </div>
+      <div class="branch-json-toggle-row">
+        <span class="toggle-label-ghm" title="Mostra ou oculta o campo para colar JSON e reaplicar ramificações (como a fila de alvos na UI principal)">JSON importar / exportar</span>
+        <label class="toggle-ghm">
+          <input type="checkbox" id="branchJsonPanelToggle" />
+          <div class="toggle-track-ghm"><div class="toggle-thumb-ghm"></div></div>
+        </label>
+      </div>
+      <div id="branchJsonPanelWrap" class="branch-json-panel-wrap" style="display: none">
+        <div id="branchImportBar" class="branch-import-bar">
+          <label for="branchImportJson">Importar JSON (export GHOSTRECON / platform ou array de achados) — recria só os ramos, sem recon.</label>
+          <textarea id="branchImportJson" spellcheck="false" autocomplete="off" placeholder='Ex.: { "target": "exemplo.com", "findings": [ { "type":"endpoint", "priority":"high", "value":"https://…", "mitre":[{"id":"T1595"}] } ] }'></textarea>
+          <div class="branch-import-actions">
+            <input type="file" id="branchImportFile" accept=".json,application/json" />
+            <button type="button" id="branchImportApply">Aplicar na timeline</button>
+            <button type="button" class="branch-export-json-btn" id="branchExportJsonBtn">Export JSON</button>
+            <button type="button" id="branchImportClearField">Limpar campo</button>
+          </div>
+          <p class="branch-import-hint">
+            «Export JSON» gera um ficheiro reimportável a partir dos eventos <code>finding</code> na timeline (o buffer do mapa mantém os últimos 200 eventos). Compatível com <code>export JSON</code> da UI (<code>findings[]</code> com <code>priority</code>, <code>mitre[].id</code>). Máx. 600 achados por importação.
+          </p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="ghostmap-legend-wrap" id="ghostmapLegendWrap">
+    <button
+      type="button"
+      id="ghostmapLegendTab"
+      class="ghostmap-legend-tab"
+      aria-expanded="false"
+      aria-controls="ghostmapLegendPanel"
+      title="Mostrar ou ocultar legenda"
+    >
+      Legenda
+    </button>
+    <aside
+      id="ghostmapLegendPanel"
+      class="ghostmap-legend-panel"
+      aria-label="Legenda do mapa"
+      aria-hidden="true"
+    >
+      <div class="ghostmap-legend-panel-head">
+        <div class="ghostmap-legend-title">Legenda</div>
+        <button type="button" class="ghostmap-legend-close" id="ghostmapLegendClose" aria-label="Fechar legenda">×</button>
+      </div>
+      <ul>
+        <li>
+          <span class="leg-mitre" aria-hidden="true"></span>
+          <span><strong style="color: var(--mitre)">Quadrado laranja</strong> — técnica MITRE (<code>Txxxx</code>) ou número do achado; clique para detalhe.</span>
+        </li>
+        <li>
+          <span class="leg-arrow" aria-hidden="true">↑</span>
+          <span>Ramo <strong>acima</strong> da linha / <strong class="leg-arrow">↓</strong> abaixo — alterna a cada achado.</span>
+        </li>
+        <li>
+          <span><span class="leg-prio high"></span><strong style="color: #ff8a9a">HIGH</strong> · <span class="leg-prio med"></span><strong style="color: #f0d060">MED</strong> · <span class="leg-prio low"></span><strong style="color: #5ed4a8">LOW</strong> — borda esquerda do cartão.</span>
+        </li>
+      </ul>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      const legWrap = document.getElementById('ghostmapLegendWrap');
+      const legTab = document.getElementById('ghostmapLegendTab');
+      const legPanel = document.getElementById('ghostmapLegendPanel');
+      const legClose = document.getElementById('ghostmapLegendClose');
+
+      const jsonWrap = document.getElementById('branchJsonDockWrap');
+      const jsonTab = document.getElementById('branchJsonDockTab');
+      const jsonPanel = document.getElementById('branchJsonDockPanel');
+      const jsonClose = document.getElementById('branchJsonDockClose');
+
+      function setLegendOpen(on) {
+        if (!legWrap || !legTab || !legPanel) return;
+        legWrap.classList.toggle('is-open', on);
+        legTab.setAttribute('aria-expanded', on ? 'true' : 'false');
+        legPanel.setAttribute('aria-hidden', on ? 'false' : 'true');
+      }
+
+      function setJsonDockOpen(on) {
+        if (!jsonWrap || !jsonTab || !jsonPanel) return;
+        jsonWrap.classList.toggle('is-open', on);
+        jsonTab.setAttribute('aria-expanded', on ? 'true' : 'false');
+        jsonPanel.setAttribute('aria-hidden', on ? 'false' : 'true');
+      }
+
+      legTab?.addEventListener('click', (e) => {
+        e.preventDefault();
+        setLegendOpen(!legWrap.classList.contains('is-open'));
+      });
+      legClose?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setLegendOpen(false);
+      });
+
+      jsonTab?.addEventListener('click', (e) => {
+        e.preventDefault();
+        setJsonDockOpen(!jsonWrap.classList.contains('is-open'));
+      });
+      jsonClose?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setJsonDockOpen(false);
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (jsonWrap?.classList.contains('is-open')) {
+          setJsonDockOpen(false);
+          e.preventDefault();
+          return;
+        }
+        if (legWrap?.classList.contains('is-open')) {
+          setLegendOpen(false);
+          e.preventDefault();
+        }
+      });
+    })();
+  </script>
+
   <main>
     <p class="hint">
       <strong>Pipeline</strong> horizontal por fases. Cada <strong>achado</strong> gera um ramo <strong>↑ cima</strong> / <strong>↓ baixo</strong> em alternância.
-      O <strong>quadrado laranja</strong> mostra a técnica MITRE (<code>T1595</code>) ou nº do achado — clique para ver os links <strong>ATT&amp;CK</strong> e <strong>OWASP</strong>.
+      O <strong>quadrado laranja</strong> mostra a técnica MITRE (<code>T1595</code>) ou nº do achado — clique para ver os links <strong>ATT&amp;CK</strong> e <strong>OWASP</strong>. À <strong>esquerda</strong>, o separador <strong>JSON</strong> abre importar/exportar (interruptor estilo fila + campo + Export JSON). À <strong>direita</strong>, <strong>Legenda</strong> abre o painel de cores e símbolos. O <strong>mini-pipeline</strong> (sticky) mostra <strong>Kali ON / Kali OFF</strong> conforme «Modo Kali» na corrida. Usa os filtros na matriz.
     </p>
+
+    <div id="pipeMiniMapStrip" class="pipe-mini-strip" hidden>
+      <span class="pipe-mini-label">Pipeline</span>
+      <span
+        id="pipeMiniKaliBadge"
+        class="pipe-mini-kali pipe-mini-kali--off"
+        hidden
+        title="Modo Kali (ferramentas no PATH do servidor, conforme caixa na UI do GHOSTRECON)"
+        role="status"
+        aria-live="polite"
+      ></span>
+      <div id="pipeMiniDots" class="pipe-mini-dots" aria-hidden="true"></div>
+    </div>
 
     <section class="block" aria-label="Fases do pipeline">
       <h2>Pipeline</h2>
@@ -894,15 +1767,33 @@
 
     <section class="block" aria-label="Ramificações">
       <h2>Ramificações</h2>
-      <div class="branches-wrap">
-        <div id="feedRoot" class="h-flow-cards">
-          <div class="empty-state">Aguardando achados…</div>
+      <div id="branchesToolbar" class="branches-toolbar" hidden>
+        <span>Ramo / pan: arrasta · zoom:</span>
+        <button type="button" id="branchZoomOut" title="Menos (ou Ctrl+scroll)">−</button>
+        <button type="button" id="branchZoomIn" title="Mais (ou Ctrl+scroll)">+</button>
+        <button type="button" id="branchZoomReset" title="100%">100%</button>
+        <span id="branchZoomReadout" class="branches-zoom-readout"></span>
+      </div>
+      <div class="branches-wrap branches-viewport" id="branchesViewport" tabindex="0" aria-label="Área de ramificações — zoom com Ctrl e roda do rato">
+        <div class="branches-scale-inner" id="branchesScaleInner">
+          <div class="branches-wrap-inner">
+            <div id="feedRoot" class="h-flow-cards">
+              <div class="empty-state">Aguardando achados…</div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
     <section class="block">
       <h2>Matriz tácticas</h2>
+      <div id="matrixFilterBar" class="matrix-filter-bar" hidden>
+        <label><input type="checkbox" id="filtTacticsHits" /> Só tácticas com ≥1 achado</label>
+        <label><input type="checkbox" id="filtHighOnly" /> Só técnicas de achados HIGH</label>
+        <input type="search" id="matrixSearch" placeholder="T1595, nome ou texto do achado…" autocomplete="off" />
+        <button type="button" id="matrixFilterReset">Limpar</button>
+        <span id="matrixFilterMeta" class="matrix-filter-meta"></span>
+      </div>
       <div id="tacticsRoot" class="tactics"></div>
     </section>
 
@@ -927,15 +1818,84 @@
       reconnaissance: 'TA0043',
     };
     const PIPE_TACTICS = {
+      sqlmap: ['TA0001'],
       kali: ['TA0001'],
-      verify: ['TA0001','TA0043'],
-      pentestgpt: ['TA0001','TA0043'],
-      assets: ['TA0042','TA0043'],
+      nmap: ['TA0043'],
+      whois: ['TA0043'],
+      ffuf: ['TA0001'],
+      nuclei: ['TA0001'],
+      nuclei_xss: ['TA0001'],
+      nuclei_sqli: ['TA0001'],
+      wpscan: ['TA0001', 'TA0043'],
+      dalfox: ['TA0001'],
+      xss_vibes: ['TA0001'],
+      verify: ['TA0001', 'TA0043'],
+      pentestgpt: ['TA0001', 'TA0043'],
+      assets: ['TA0042', 'TA0043'],
     };
+    /** Ordem do pipeline na UI + marcos Kali detalhados (alinhados com NDJSON do servidor). */
     const PIPE_ORDER = [
-      'input','subdomains','dns_enrichment','rdap','alive','surface','urls',
-      'params','js','dorks','secrets','verify','kali','assets','score','shannon','pentestgpt',
+      'input',
+      'subdomains',
+      'dns_enrichment',
+      'rdap',
+      'alive',
+      'surface',
+      'urls',
+      'params',
+      'js',
+      'dorks',
+      'secrets',
+      'verify',
+      'sqlmap',
+      'kali',
+      'nmap',
+      'whois',
+      'ffuf',
+      'nuclei',
+      'nuclei_xss',
+      'nuclei_sqli',
+      'wpscan',
+      'dalfox',
+      'xss_vibes',
+      'assets',
+      'score',
+      'shannon',
+      'pentestgpt',
     ];
+    function pipeDisplayName(id) {
+      const k = String(id || '');
+      const map = {
+        input: 'input',
+        subdomains: 'subdomains',
+        dns_enrichment: 'DNS enrich',
+        rdap: 'RDAP',
+        alive: 'alive check',
+        surface: 'surface',
+        urls: 'URLs',
+        params: 'params',
+        js: 'JS',
+        dorks: 'dorks',
+        secrets: 'secrets',
+        verify: 'verify',
+        sqlmap: 'sqlmap',
+        kali: 'Kali (fase)',
+        nmap: 'nmap',
+        whois: 'whois',
+        ffuf: 'ffuf',
+        nuclei: 'nuclei',
+        nuclei_xss: 'nuclei · XSS',
+        nuclei_sqli: 'nuclei · SQLi',
+        wpscan: 'wpscan',
+        dalfox: 'dalfox',
+        xss_vibes: 'xss_vibes',
+        assets: 'assets',
+        score: 'prioritize',
+        shannon: 'Shannon',
+        pentestgpt: 'PentestGPT',
+      };
+      return map[k] || k.replace(/_/g, ' ');
+    }
     const OWASP_TOP10_2025 = {
       A01:{title:'Broken Access Control',url:'https://owasp.org/Top10/A01_2021-Broken_Access_Control/'},
       A02:{title:'Security Misconfiguration',url:'https://owasp.org/Top10/A05_2021-Security_Misconfiguration/'},
@@ -1000,7 +1960,7 @@
         el.dataset.pipe = p;
         el.innerHTML =
           '<span class="pipe-ms-dot"></span><span class="pipe-ms-name"></span><span class="pipe-ms-st">—</span>';
-        el.querySelector('.pipe-ms-name').textContent = p;
+        el.querySelector('.pipe-ms-name').textContent = pipeDisplayName(p);
         container.appendChild(el);
       }
     }
@@ -1029,6 +1989,192 @@
       let bundleMeta = {loaded:false};
       let jsonScheduled = false;
       let findingSeq = 0;
+      let findingsReceivedCount = 0;
+      let lastMessageAt = 0;
+      /** `true` / `false` quando o index envia `kaliMode`; `null` antes do primeiro evento. */
+      let liveKaliMode = null;
+      const highMitreIds = new Set();
+      const mitreHitSnippet = new Map();
+      const pipeMiniDotsByName = new Map();
+      let matrixFilterWired = false;
+      let branchZoomWired = false;
+      let branchImportWired = false;
+      let branchZoom = 1;
+
+      function updateLiveHud() {
+        const fc = document.getElementById('liveFindingsCount');
+        const ft = document.getElementById('liveLastTs');
+        if (fc) {
+          fc.style.display = '';
+          fc.innerHTML = `<strong>${findingsReceivedCount}</strong> achados`;
+        }
+        if (ft) {
+          if (lastMessageAt) {
+            ft.style.display = '';
+            const t = new Date(lastMessageAt);
+            ft.textContent = `Último: ${t.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+          } else {
+            ft.style.display = 'none';
+          }
+        }
+      }
+
+      function buildMiniStrip() {
+        const host = document.getElementById('pipeMiniDots');
+        if (!host) return;
+        host.innerHTML = '';
+        pipeMiniDotsByName.clear();
+        for (const p of PIPE_ORDER) {
+          const dot = document.createElement('span');
+          dot.className = 'pipe-mini-dot pending';
+          dot.dataset.pipe = p;
+          dot.title = pipeDisplayName(p);
+          host.appendChild(dot);
+          pipeMiniDotsByName.set(p, dot);
+        }
+        refreshPipeMiniStrip();
+      }
+
+      function refreshPipeMiniStrip() {
+        const strip = document.getElementById('pipeMiniMapStrip');
+        if (!strip || strip.hidden) return;
+        for (const p of PIPE_ORDER) {
+          const dot = pipeMiniDotsByName.get(p);
+          if (!dot) continue;
+          const st = pipeStates.get(p) || 'pending';
+          dot.className =
+            `pipe-mini-dot ${st === 'active' ? 'active' : st === 'done' ? 'done' : st === 'skip' ? 'skip' : 'pending'}`;
+        }
+      }
+
+      function updatePipeMiniKaliBadge() {
+        const el = document.getElementById('pipeMiniKaliBadge');
+        if (!el) return;
+        if (liveKaliMode === true) {
+          el.hidden = false;
+          el.textContent = 'Kali ON';
+          el.className = 'pipe-mini-kali pipe-mini-kali--on';
+          el.title =
+            'Modo Kali activo neste recon — módulos Kali no servidor (nuclei, sqlmap, ffuf, etc.) conforme a caixa na UI.';
+        } else if (liveKaliMode === false) {
+          el.hidden = false;
+          el.textContent = 'Kali OFF';
+          el.className = 'pipe-mini-kali pipe-mini-kali--off';
+          el.title =
+            'Modo Kali desligado ou indisponível (caixa desmarcada ou servidor sem scan Kali no PATH).';
+        } else {
+          el.hidden = true;
+          el.textContent = '';
+        }
+      }
+
+      function chipMatchesMatrixSearch(tid, q) {
+        if (!q) return true;
+        const meta = techMeta.get(tid);
+        const idLc = String(tid).toLowerCase();
+        if (idLc.includes(q)) return true;
+        if (meta?.name && String(meta.name).toLowerCase().includes(q)) return true;
+        const snips = mitreHitSnippet.get(tid);
+        if (snips) {
+          for (const s of snips) {
+            if (String(s).toLowerCase().includes(q)) return true;
+          }
+        }
+        return false;
+      }
+
+      function applyMatrixFilters() {
+        const root = tacticsRoot;
+        if (!root?.querySelector?.('.tactic')) return;
+        const filtHits = Boolean(document.getElementById('filtTacticsHits')?.checked);
+        const filtHigh = Boolean(document.getElementById('filtHighOnly')?.checked);
+        const q = (document.getElementById('matrixSearch')?.value || '').trim().toLowerCase();
+        const metaEl = document.getElementById('matrixFilterMeta');
+        let visibleTactics = 0;
+        let visibleChips = 0;
+        for (const tac of root.querySelectorAll('.tactic')) {
+          const chips = tac.querySelectorAll('.chip');
+          for (const chip of chips) {
+            const tid = chip.textContent.trim();
+            chip.classList.remove('hidden-matrix-filter');
+            let show = true;
+            if (!chipMatchesMatrixSearch(tid, q)) show = false;
+            if (filtHigh) {
+              if (highMitreIds.size === 0) show = false;
+              else if (!highMitreIds.has(tid)) show = false;
+            }
+            if (!show) chip.classList.add('hidden-matrix-filter');
+          }
+          const vis = [...tac.querySelectorAll('.chip')].filter((c) => !c.classList.contains('hidden-matrix-filter'));
+          let tactShow = vis.length > 0;
+          if (tactShow && filtHits) tactShow = vis.some((c) => c.classList.contains('hit'));
+          tac.classList.toggle('hidden-matrix-filter', !tactShow);
+          if (tactShow) {
+            visibleTactics += 1;
+            visibleChips += vis.length;
+          }
+        }
+        if (metaEl) {
+          metaEl.textContent =
+            filtHigh && highMitreIds.size === 0
+              ? 'Nenhum achado HIGH com técnica MITRE ainda — desliga o filtro ou aguarda achados.'
+              : `Tácticas visíveis: ${visibleTactics} · chips visíveis: ${visibleChips}`;
+        }
+      }
+
+      function wireMatrixFiltersOnce() {
+        if (matrixFilterWired) return;
+        matrixFilterWired = true;
+        const onCh = () => applyMatrixFilters();
+        document.getElementById('filtTacticsHits')?.addEventListener('change', onCh);
+        document.getElementById('filtHighOnly')?.addEventListener('change', onCh);
+        document.getElementById('matrixSearch')?.addEventListener('input', onCh);
+        document.getElementById('matrixFilterReset')?.addEventListener('click', () => {
+          const a = document.getElementById('filtTacticsHits');
+          const b = document.getElementById('filtHighOnly');
+          const s = document.getElementById('matrixSearch');
+          if (a) a.checked = false;
+          if (b) b.checked = false;
+          if (s) s.value = '';
+          applyMatrixFilters();
+        });
+      }
+
+      function wireBranchZoomOnce() {
+        if (branchZoomWired) return;
+        branchZoomWired = true;
+        const inner = document.getElementById('branchesScaleInner');
+        const vp = document.getElementById('branchesViewport');
+        const readout = document.getElementById('branchZoomReadout');
+        function applyBranchZoom() {
+          branchZoom = Math.max(0.45, Math.min(2.25, branchZoom));
+          if (inner) inner.style.transform = `scale(${branchZoom})`;
+          if (readout) readout.textContent = `${Math.round(branchZoom * 100)}% · Ctrl+scroll`;
+        }
+        document.getElementById('branchZoomIn')?.addEventListener('click', () => {
+          branchZoom += 0.12;
+          applyBranchZoom();
+        });
+        document.getElementById('branchZoomOut')?.addEventListener('click', () => {
+          branchZoom -= 0.12;
+          applyBranchZoom();
+        });
+        document.getElementById('branchZoomReset')?.addEventListener('click', () => {
+          branchZoom = 1;
+          applyBranchZoom();
+        });
+        vp?.addEventListener(
+          'wheel',
+          (e) => {
+            if (!e.ctrlKey) return;
+            e.preventDefault();
+            branchZoom += e.deltaY > 0 ? -0.06 : 0.06;
+            applyBranchZoom();
+          },
+          { passive: false },
+        );
+        applyBranchZoom();
+      }
 
       function setLiveTactics(taList, active) {
         for (const [,el] of tacticElByTa) el.classList.remove('live');
@@ -1044,6 +2190,7 @@
           if (mitreHitSet.has(id)) el.classList.add('hit');
           else el.classList.remove('hit');
         }
+        applyMatrixFilters();
       }
 
       function addMitreHits(ids) {
@@ -1084,7 +2231,19 @@
           return {id, name:m?.name||null, url:m?.url||mitreTechniqueUrl(id)};
         });
         const owasp = [...owaspHitSet].sort().map(id=>({id,...owaspEntry(id)}));
-        return {schemaVersion:2,kind:'ghostrecon_mitre_live_state',note:'Estado ao vivo do mapa MITRE/OWASP para integração ou debug.',target:liveTarget||null,updatedAt:new Date().toISOString(),bundle:bundleMeta,pipelineMilestones:milestones,mitreTechniquesHit:mitreTechniques,owaspHit:owasp,timelineEvents:events.slice(-120)};
+        return {
+          schemaVersion: 2,
+          kind: 'ghostrecon_mitre_live_state',
+          note: 'Estado ao vivo do mapa MITRE/OWASP para integração ou debug.',
+          target: liveTarget || null,
+          kaliMode: typeof liveKaliMode === 'boolean' ? liveKaliMode : null,
+          updatedAt: new Date().toISOString(),
+          bundle: bundleMeta,
+          pipelineMilestones: milestones,
+          mitreTechniquesHit: mitreTechniques,
+          owaspHit: owasp,
+          timelineEvents: events.slice(-120),
+        };
       }
 
       function resetForNewTarget(domain) {
@@ -1100,6 +2259,9 @@
         mitreHitSet.clear();
         owaspHitSet.clear();
         findingSeq = 0;
+        findingsReceivedCount = 0;
+        highMitreIds.clear();
+        mitreHitSnippet.clear();
         for (const p of PIPE_ORDER) pipeStates.set(p,'pending');
         for (const [,el] of pipeRowEls) {
           el.className='pipe-ms pending';
@@ -1107,6 +2269,8 @@
           if (st) st.textContent='—';
         }
         applyHits();
+        refreshPipeMiniStrip();
+        updateLiveHud();
         scheduleJsonRefresh();
       }
 
@@ -1117,7 +2281,7 @@
           el.className='pipe-ms pending';
           el.dataset.pipe=name;
           el.innerHTML='<span class="pipe-ms-dot"></span><span class="pipe-ms-name"></span><span class="pipe-ms-st">—</span>';
-          el.querySelector('.pipe-ms-name').textContent=name;
+          el.querySelector('.pipe-ms-name').textContent = pipeDisplayName(name);
           pipeMsH.appendChild(el);
           pipeRowEls.set(name,el);
           pipeStates.set(name,'pending');
@@ -1125,8 +2289,11 @@
         const st = state==='active'?'active':state==='done'?'done':state==='skip'?'skip':'pending';
         pipeStates.set(name,st);
         el.className=`pipe-ms ${st}`;
+        const nameLab = el.querySelector('.pipe-ms-name');
+        if (nameLab) nameLab.textContent = pipeDisplayName(name);
         const lab=el.querySelector('.pipe-ms-st');
         if (lab) lab.textContent=st==='active'?'●':st==='done'?'✓':st==='skip'?'○':'—';
+        refreshPipeMiniStrip();
       }
 
       function buildTimelineSkeleton() {
@@ -1137,6 +2304,44 @@
 
       function escapeHtml(s) {
         return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+
+      function appendCascadeDivider(domain, meta) {
+        const emp = feedRoot.querySelector('.empty-state');
+        if (emp) emp.remove();
+        const d = String(domain || '').trim() || 'alvo';
+        const tag = escapeHtml(String(meta?.tag || 'SEGUINTE'));
+        const root = meta?.root ? escapeHtml(String(meta.root)) : '';
+        const wrap = document.createElement('div');
+        wrap.className = 'h-flow-cascade-break';
+        wrap.setAttribute('role', 'separator');
+        wrap.setAttribute('aria-label', `Seguinte alvo: ${d}`);
+        wrap.innerHTML = `<span class="h-flow-cascade-break-tag">${tag}${root ? ` · ${root}` : ''}</span><div class="h-flow-cascade-break-line" aria-hidden="true"></div><span class="h-flow-cascade-break-label">${escapeHtml(d)}</span>`;
+        feedRoot.appendChild(wrap);
+        while (feedRoot.children.length > MAX_SEGMENTS) feedRoot.removeChild(feedRoot.firstChild);
+        const vp = document.getElementById('branchesViewport');
+        if (vp) vp.scrollLeft = vp.scrollWidth;
+      }
+
+      function softResetForNewCascadeTarget(domain) {
+        liveTarget = String(domain || '').trim() || '';
+        if (liveTarget) {
+          targetLine.textContent = liveTarget;
+          targetLine.style.display = '';
+        } else {
+          targetLine.style.display = 'none';
+        }
+        mitreHitSet.clear();
+        owaspHitSet.clear();
+        highMitreIds.clear();
+        mitreHitSnippet.clear();
+        findingsReceivedCount = 0;
+        events.length = 0;
+        buildTimelineSkeleton();
+        applyHits();
+        refreshPipeMiniStrip();
+        updateLiveHud();
+        scheduleJsonRefresh();
       }
 
       function findingTypeHelp(typeRaw) {
@@ -1271,6 +2476,8 @@
         if (emp) emp.remove();
 
         findingSeq+=1;
+        findingsReceivedCount += 1;
+        updateLiveHud();
         const seq=findingSeq;
         const {finding,mitreHints,owaspHints,ts}=payload;
         const up=seq%2===1;
@@ -1282,6 +2489,16 @@
         const t=ts?new Date(ts):new Date();
         const timeStr=t.toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
         const pr=String(finding?.prio||'').toLowerCase();
+        const prioClass =
+          pr === 'high' ? 'prio-high' : pr === 'med' ? 'prio-med' : pr === 'low' ? 'prio-low' : 'prio-unk';
+        if (pr === 'high') {
+          for (const tid of mitreList) highMitreIds.add(tid);
+        }
+        for (const tid of mitreList) {
+          if (!mitreHitSnippet.has(tid)) mitreHitSnippet.set(tid, []);
+          const arr = mitreHitSnippet.get(tid);
+          arr.push(String(finding?.value || '').slice(0, 160), String(finding?.type || ''));
+        }
         const findingLinks = findFindingLinks(finding);
         const quickLink = findingLinks[0] || '';
 
@@ -1289,7 +2506,7 @@
         seg.className='h-seg '+(up?'h-seg-up':'h-seg-down');
 
         const card=document.createElement('div');
-        card.className='h-mini-card';
+        card.className = `h-mini-card ${prioClass}`;
         card.innerHTML=`
           <div class="t">${escapeHtml(String(finding?.type||'?'))} · ${escapeHtml(timeStr)}</div>
           <div class="v">${escapeHtml(String(finding?.value||'').slice(0,200))}</div>
@@ -1320,7 +2537,194 @@
 
         feedRoot.appendChild(seg);
         while (feedRoot.children.length>MAX_SEGMENTS) feedRoot.removeChild(feedRoot.firstChild);
-        feedRoot.scrollLeft=feedRoot.scrollWidth;
+        const vp = document.getElementById('branchesViewport');
+        if (vp) vp.scrollLeft = vp.scrollWidth;
+        else feedRoot.scrollLeft = feedRoot.scrollWidth;
+        applyMatrixFilters();
+      }
+
+      function extractFindingsArrayFromImport(raw) {
+        if (!raw || typeof raw !== 'object') return [];
+        if (Array.isArray(raw)) return raw;
+        if (Array.isArray(raw.findings)) return raw.findings;
+        if (typeof raw.findings_json === 'string') {
+          try {
+            const inner = JSON.parse(raw.findings_json);
+            if (Array.isArray(inner)) return inner;
+            if (inner && Array.isArray(inner.findings)) return inner.findings;
+          } catch {
+            return [];
+          }
+        }
+        return [];
+      }
+
+      function rowToFindingImportPayload(row, idx) {
+        const prio = String(row.priority ?? row.prio ?? '').toLowerCase();
+        const type = row.type != null ? String(row.type) : 'achado';
+        const value = String(row.value ?? '').slice(0, 220);
+        const meta = String(row.meta ?? '').slice(0, 160);
+        const url = row.url != null ? String(row.url).trim() : '';
+        const finding = { type, prio, value, meta };
+        if (url) finding.url = url.slice(0, 220);
+        const mitreHints = [];
+        if (Array.isArray(row.mitre)) {
+          for (const x of row.mitre) {
+            if (typeof x === 'string' && x.startsWith('T')) mitreHints.push(x);
+            else if (x && typeof x === 'object' && typeof x.id === 'string' && x.id.startsWith('T')) mitreHints.push(x.id);
+          }
+        }
+        const owaspHints = [];
+        if (Array.isArray(row.owasp)) {
+          for (const x of row.owasp) {
+            if (typeof x === 'string' && /^A\d{2}$/i.test(x)) {
+              owaspHints.push({ id: String(x).toUpperCase(), title: '', label: '' });
+            } else if (x && x.id && /^A\d{2}$/i.test(String(x.id))) {
+              owaspHints.push({
+                id: String(x.id).toUpperCase(),
+                title: x.title || '',
+                label: x.label || '',
+              });
+            }
+          }
+        }
+        return { ts: Date.now() + idx, finding, mitreHints, owaspHints };
+      }
+
+      function runBranchJsonImport(text) {
+        let obj;
+        try {
+          obj = JSON.parse(text);
+        } catch {
+          statePill.textContent = 'JSON inválido';
+          statePill.className = 'pill err';
+          return;
+        }
+        const list = extractFindingsArrayFromImport(obj);
+        if (!list.length) {
+          statePill.textContent = 'Sem findings no JSON';
+          statePill.className = 'pill err';
+          return;
+        }
+        const cap = 600;
+        const slice = list.slice(0, cap);
+        const emp = feedRoot.querySelector('.empty-state');
+        if (emp) emp.remove();
+        for (let i = 0; i < slice.length; i++) {
+          const m = rowToFindingImportPayload(slice[i], i);
+          appendFindingBranch(m);
+          addMitreHits(m.mitreHints);
+          addOwaspHits(m.owaspHints);
+          pushEvent({
+            t: m.ts || Date.now(),
+            kind: 'finding',
+            finding: m.finding,
+            mitreHints: m.mitreHints,
+            owaspHints: m.owaspHints || [],
+          });
+        }
+        applyHits();
+        const tname = obj.target != null ? String(obj.target).trim() : '';
+        if (tname) {
+          liveTarget = tname;
+          targetLine.textContent = tname;
+          targetLine.style.display = '';
+        }
+        pushEvent({ t: Date.now(), kind: 'import_json', count: slice.length });
+        scheduleJsonRefresh();
+        statePill.textContent = `Importados ${slice.length} achado(s)`;
+        statePill.className = 'pill';
+      }
+
+      function syncBranchJsonPanelVisibility() {
+        const on = Boolean(document.getElementById('branchJsonPanelToggle')?.checked);
+        const w = document.getElementById('branchJsonPanelWrap');
+        if (w) w.style.display = on ? 'block' : 'none';
+      }
+
+      function buildGhostmapFindingsExport() {
+        const findings = [];
+        for (const ev of events) {
+          if (ev.kind !== 'finding' || !ev.finding) continue;
+          const f = ev.finding;
+          const row = {
+            type: f.type,
+            priority: f.prio || f.priority || '',
+            value: f.value,
+            meta: f.meta || '',
+          };
+          if (f.url) row.url = f.url;
+          if (Array.isArray(ev.mitreHints) && ev.mitreHints.length) {
+            row.mitre = ev.mitreHints
+              .filter((id) => typeof id === 'string' && id.startsWith('T'))
+              .map((id) => ({ id }));
+          }
+          if (Array.isArray(ev.owaspHints) && ev.owaspHints.length) {
+            row.owasp = ev.owaspHints
+              .map((x) => {
+                if (typeof x === 'string' && /^A\d{2}$/i.test(x)) return { id: String(x).toUpperCase() };
+                if (x && x.id && /^A\d{2}$/i.test(String(x.id))) {
+                  return { id: String(x.id).toUpperCase(), title: x.title || '', label: x.label || '' };
+                }
+                return null;
+              })
+              .filter(Boolean);
+            if (!row.owasp.length) delete row.owasp;
+          }
+          findings.push(row);
+        }
+        return {
+          schemaVersion: 1,
+          source: 'ghostrecon-ghostmap-export',
+          exportedAt: new Date().toISOString(),
+          target: liveTarget || null,
+          findings,
+        };
+      }
+
+      function downloadBranchExportJson() {
+        const o = buildGhostmapFindingsExport();
+        const safe = (liveTarget || 'export').replace(/[^\w.-]+/g, '_').slice(0, 80);
+        const name = `ghostmap_${safe}_${Date.now()}.json`;
+        const blob = new Blob([JSON.stringify(o, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        a.rel = 'noopener';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        statePill.textContent = o.findings.length
+          ? `Export JSON: ${o.findings.length} achado(s)`
+          : 'Export JSON: ficheiro vazio (0 achados)';
+        statePill.className = 'pill';
+      }
+
+      function wireBranchImportOnce() {
+        if (branchImportWired) return;
+        branchImportWired = true;
+        document.getElementById('branchJsonPanelToggle')?.addEventListener('change', syncBranchJsonPanelVisibility);
+        syncBranchJsonPanelVisibility();
+        document.getElementById('branchExportJsonBtn')?.addEventListener('click', downloadBranchExportJson);
+        document.getElementById('branchImportApply')?.addEventListener('click', () => {
+          const ta = document.getElementById('branchImportJson');
+          runBranchJsonImport((ta?.value || '').trim());
+        });
+        document.getElementById('branchImportClearField')?.addEventListener('click', () => {
+          const ta = document.getElementById('branchImportJson');
+          if (ta) ta.value = '';
+          const fi = document.getElementById('branchImportFile');
+          if (fi) fi.value = '';
+        });
+        document.getElementById('branchImportFile')?.addEventListener('change', (ev) => {
+          const f = ev.target?.files?.[0];
+          if (!f) return;
+          const r = new FileReader();
+          r.onload = () => {
+            const ta = document.getElementById('branchImportJson');
+            if (ta) ta.value = String(r.result || '');
+          };
+          r.readAsText(f);
+        });
       }
 
       function renderTacticGrid(bundle) {
@@ -1369,12 +2773,31 @@
 
       function onMessage(ev) {
         const m=ev.data||{};
+        lastMessageAt = Date.now();
+        updateLiveHud();
         if (m.type==='target') {
-          buildTimelineSkeleton(); resetForNewTarget(m.domain);
-          pushEvent({t:Date.now(),kind:'target',domain:m.domain});
-          scheduleJsonRefresh(); return;
+          if (typeof m.kaliMode === 'boolean') {
+            liveKaliMode = m.kaliMode;
+            updatePipeMiniKaliBadge();
+          }
+          if (m.cascadeContinue) {
+            appendCascadeDivider(m.domain, { tag: m.cascadeTag || 'SEGUINTE', root: m.cascadeRoot });
+            softResetForNewCascadeTarget(m.domain);
+          } else {
+            buildTimelineSkeleton();
+            resetForNewTarget(m.domain);
+          }
+          // O servidor emite input active→done em milissegundos; o BC não tem replay — após o reset o marco input ficava «pending» se esses eventos se perdessem.
+          updatePipeRow('input', 'done');
+          pushEvent({ t: Date.now(), kind: 'target', domain: m.domain, cascadeContinue: Boolean(m.cascadeContinue) });
+          scheduleJsonRefresh();
+          return;
         }
         if (m.type==='pipe') {
+          if (typeof m.kaliMode === 'boolean') {
+            liveKaliMode = m.kaliMode;
+            updatePipeMiniKaliBadge();
+          }
           const name=String(m.name||''); const st=String(m.state||'');
           lastPipeLabel=`${name} · ${st}`;
           pipeHint.textContent=`Último pipeline: ${lastPipeLabel}`;
@@ -1385,9 +2808,18 @@
           scheduleJsonRefresh(); return;
         }
         if (m.type==='finding_card') {
-          appendFindingBranch(m); addMitreHits(m.mitreHints); addOwaspHits(m.owaspHints);
-          pushEvent({t:m.ts||Date.now(),kind:'finding',finding:m.finding,mitreHints:m.mitreHints,owaspHints:(m.owaspHints||[]).map(x=>(x&&x.id?x.id:x))});
-          scheduleJsonRefresh(); return;
+          appendFindingBranch(m);
+          addMitreHits(m.mitreHints);
+          addOwaspHits(m.owaspHints);
+          pushEvent({
+            t: m.ts || Date.now(),
+            kind: 'finding',
+            finding: m.finding,
+            mitreHints: m.mitreHints,
+            owaspHints: m.owaspHints || [],
+          });
+          scheduleJsonRefresh();
+          return;
         }
         if (m.type==='mitre_hints') { addMitreHits(m.ids); scheduleJsonRefresh(); return; }
         if (m.type==='findings_rescore') {
@@ -1406,8 +2838,19 @@
       }
 
       (async()=>{
+        const miniStrip = document.getElementById('pipeMiniMapStrip');
+        const bTool = document.getElementById('branchesToolbar');
+        const mBar = document.getElementById('matrixFilterBar');
+        const jsonDock = document.getElementById('branchJsonDockWrap');
+        if (miniStrip) miniStrip.hidden = false;
+        if (bTool) bTool.hidden = false;
+        if (mBar) mBar.hidden = false;
+        if (jsonDock) jsonDock.hidden = false;
         buildTimelineSkeleton();
+        buildMiniStrip();
+        updatePipeMiniKaliBadge();
         resetForNewTarget('');
+        wireBranchZoomOnce();
         let bundleOk = false;
         try {
           const res=await fetch('mitre-attack/recon-bundle.json',{cache:'no-store'});
@@ -1421,10 +2864,14 @@
         if (typeof BroadcastChannel==='undefined') {
           statePill.textContent='Sem BroadcastChannel'; statePill.className='pill err'; return;
         }
+        wireMatrixFiltersOnce();
+        wireBranchImportOnce();
+        applyMatrixFilters();
         const ch=new BroadcastChannel('ghostrecon-mitre-'+sessionId);
         ch.addEventListener('message',onMessage);
         statePill.textContent = bundleOk ? 'Ligado' : 'Ligado · sem matriz';
         statePill.className = 'pill waiting';
+        updateLiveHud();
         jsonLive.textContent=JSON.stringify(buildLiveJson(),null,2);
       })();
     }

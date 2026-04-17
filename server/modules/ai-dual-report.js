@@ -499,11 +499,62 @@ function resolveOutputDir(projectName, targetDomain) {
 }
 
 /**
+ * Modo «só OpenRouter primeiro» (saltar Gemini). Normaliza valores vindos do JSON HTTP
+ * (`Boolean("false")` em JS seria `true` — evitamos isso).
+ */
+export function normalizeOpenrouterOnlyFlag(v) {
+  if (v === true || v === 1) return true;
+  if (v === false || v === 0) return false;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(s)) return true;
+    if (['false', '0', 'no', 'off', ''].includes(s)) return false;
+  }
+  return false;
+}
+
+/**
+ * Primeiro provider cloud a tentar (`gemini` | `openrouter`).
+ * Compat: `aiOpenrouterOnly` antigo força `openrouter`.
+ */
+export function normalizeAiPrimaryCloud(v, legacyOpenrouterOnly = false) {
+  if (normalizeOpenrouterOnlyFlag(legacyOpenrouterOnly)) return 'openrouter';
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'openrouter' || s === 'or') return 'openrouter';
+    if (s === 'gemini' || s === 'google') return 'gemini';
+  }
+  return 'gemini';
+}
+
+function resolvePrimaryWithKeys(primaryGuess, aiUseOpenrouter, geminiKey, openrouterKey) {
+  let p = primaryGuess === 'openrouter' ? 'openrouter' : 'gemini';
+  if (aiUseOpenrouter === false) p = 'gemini';
+  if (p === 'openrouter' && !openrouterKey) p = 'gemini';
+  if (p === 'gemini' && !geminiKey && openrouterKey && aiUseOpenrouter !== false) p = 'openrouter';
+  return p;
+}
+
+/**
  * @param {object} payload — export completo do pipeline (UI)
  * @param {string} [aiProviderMode] — reservado; `lmstudio_only` na UI só activa pré-check (ordem no servidor: cloud → LM no fim).
  * @returns {{ outputDir: string, gemini: object, openrouter: object, claude: object, lmstudio: object, pipelineJsonPath: string }}
  */
-export async function runDualAiReports(payload, { projectName, targetDomain, onStatus, aiProviderMode } = {}) {
+export async function runDualAiReports(
+  payload,
+  {
+    projectName,
+    targetDomain,
+    onStatus,
+    aiProviderMode,
+    /** `false` = utilizador pediu para não usar OpenRouter (cobrança). */
+    aiUseOpenrouter = true,
+    /** Legado: `true` = primeiro OpenRouter (equivale a `aiPrimaryCloud: 'openrouter'`). */
+    aiOpenrouterOnly = false,
+    /** `gemini` | `openrouter` — primeiro a gerar o relatório; depois LM Studio, depois a outra cloud, depois Claude. */
+    aiPrimaryCloud: aiPrimaryCloudRaw = null,
+  } = {},
+) {
   const geminiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_AI_API_KEY?.trim();
   const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
   const claudeKey = process.env.ANTHROPIC_API_KEY?.trim();
@@ -513,7 +564,7 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
   /** Modelo por defeito: 2.5-flash costuma ter cota free distinta de 2.0; sobrescreve com GHOSTRECON_GEMINI_MODEL. */
   const geminiModel = process.env.GHOSTRECON_GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
   const openrouterModel =
-    process.env.GHOSTRECON_OPENROUTER_MODEL?.trim() || 'anthropic/claude-3.5-sonnet';
+    process.env.GHOSTRECON_OPENROUTER_MODEL?.trim() || 'google/gemma-4-31b-it';
   const claudeModel = process.env.GHOSTRECON_CLAUDE_MODEL?.trim() || 'claude-3-5-sonnet-20241022';
   const lmStudioModel = process.env.GHOSTRECON_LMSTUDIO_MODEL?.trim() || 'local-model';
   void aiProviderMode;
@@ -640,14 +691,32 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
     return false;
   };
 
-  const cloudOk = () =>
-    result.gemini.ok === true || result.openrouter.ok === true || result.claude.ok === true;
+  const primaryGuess = normalizeAiPrimaryCloud(aiPrimaryCloudRaw, aiOpenrouterOnly);
+  const primary = resolvePrimaryWithKeys(primaryGuess, aiUseOpenrouter, Boolean(geminiKey), Boolean(openrouterKey));
+  const alt = primary === 'gemini' ? 'openrouter' : 'gemini';
+  let attemptedGemini = false;
+  let attemptedOpenrouter = false;
 
-  // Cascata: 1) Gemini (3×)  2) OpenRouter  3) Claude  4) LM Studio (lento — só se clouds falharem)
-  // Modo UI `lmstudio_only`: obriga pré-check no cliente; no servidor LM fica sempre no fim.
+  const reportOk = () =>
+    result.gemini.ok === true ||
+    result.openrouter.ok === true ||
+    result.claude.ok === true ||
+    result.lmstudio.ok === true;
 
-  // 1) Gemini
-  if (geminiKey) {
+  const runGeminiAttempts = async () => {
+    if (attemptedGemini) return;
+    attemptedGemini = true;
+    if (!geminiKey) {
+      result.gemini = {
+        ok: false,
+        error: 'GEMINI_API_KEY ou GOOGLE_AI_API_KEY não definido',
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
+      return;
+    }
     let geminiLastErr = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       status(`IA Gemini: tentativa ${attempt}/3…`, 'info');
@@ -680,51 +749,103 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
         proximosPath: null,
       };
     }
-  } else {
-    result.gemini = {
-      ok: false,
-      error: 'GEMINI_API_KEY ou GOOGLE_AI_API_KEY não definido',
-      relatorio: null,
-      proximos_passos: null,
-      relatorioPath: null,
-      proximosPath: null,
-    };
-  }
+  };
 
-  // 2) OpenRouter
-  if (openrouterKey) {
-    if (result.gemini.ok) {
+  const runOpenrouterAttempt = async () => {
+    if (attemptedOpenrouter) return;
+    attemptedOpenrouter = true;
+    if (!openrouterKey) {
       result.openrouter = {
         ok: false,
-        error: 'Não executado (Gemini já respondeu com sucesso).',
+        error: 'OPENROUTER_API_KEY não definido',
         relatorio: null,
         proximos_passos: null,
         relatorioPath: null,
         proximosPath: null,
       };
-    } else {
-      status('IA OpenRouter: tentativa 1/1…', 'info');
-      try {
-        const raw = await callOpenRouterOnce(secondUser, openrouterKey, openrouterModel);
-        fs.writeFileSync(path.join(outputDir, 'openrouter_raw.txt'), raw, 'utf8');
-        const parsed = extractJsonObject(raw);
-        const paths = writePair('openrouter', parsed);
-        result.openrouter = { ok: true, error: null, ...paths };
-      } catch (e) {
-        result.openrouter = {
-          ok: false,
-          error: e.message,
-          relatorio: null,
-          proximos_passos: null,
-          relatorioPath: null,
-          proximosPath: null,
-        };
-      }
+      return;
     }
-  } else {
+    if (aiUseOpenrouter === false) {
+      result.openrouter = {
+        ok: false,
+        error: 'Omitido pelo utilizador (sem OpenRouter / evitar cobrança).',
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
+      return;
+    }
+    status(`IA OpenRouter (${openrouterModel}): tentativa 1/1…`, 'info');
+    try {
+      const raw = await callOpenRouterOnce(secondUser, openrouterKey, openrouterModel);
+      fs.writeFileSync(path.join(outputDir, 'openrouter_raw.txt'), raw, 'utf8');
+      const parsed = extractJsonObject(raw);
+      const paths = writePair('openrouter', parsed);
+      result.openrouter = { ok: true, error: null, ...paths };
+    } catch (e) {
+      result.openrouter = {
+        ok: false,
+        error: e.message,
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
+    }
+  };
+
+  status(
+    `IA: ordem — primeiro ${primary === 'openrouter' ? 'OpenRouter' : 'Gemini'}; se falhar → LM Studio; depois ${alt === 'openrouter' ? 'OpenRouter' : 'Gemini'} (se permitido); por fim Claude se configurado.`,
+    'info',
+  );
+
+  // Fase 1 — provider escolhido na UI (ou legado aiOpenrouterOnly)
+  if (primary === 'gemini') await runGeminiAttempts();
+  else await runOpenrouterAttempt();
+
+  const primarySucceeded =
+    (primary === 'gemini' && result.gemini.ok) || (primary === 'openrouter' && result.openrouter.ok);
+
+  if (primarySucceeded && primary === 'gemini' && !attemptedOpenrouter) {
     result.openrouter = {
       ok: false,
-      error: 'OPENROUTER_API_KEY não definido',
+      error: 'Não executado (Gemini respondeu primeiro conforme a tua escolha).',
+      relatorio: null,
+      proximos_passos: null,
+      relatorioPath: null,
+      proximosPath: null,
+    };
+    attemptedOpenrouter = true;
+  } else if (primarySucceeded && primary === 'openrouter' && !attemptedGemini) {
+    result.gemini = {
+      ok: false,
+      error: 'Não executado (OpenRouter respondeu primeiro conforme a tua escolha).',
+      relatorio: null,
+      proximos_passos: null,
+      relatorioPath: null,
+      proximosPath: null,
+    };
+    attemptedGemini = true;
+  }
+
+  // Fase 2 — LM Studio antes da outra cloud
+  if (!primarySucceeded && lmStudioEnabled) {
+    status('IA LM Studio: fallback local após falha do primeiro provider…', 'info');
+    await tryLmStudioReport();
+  } else if (primarySucceeded && lmStudioEnabled) {
+    result.lmstudio = {
+      ok: false,
+      error: 'Não executado (o primeiro provider escolhido já respondeu com sucesso).',
+      relatorio: null,
+      proximos_passos: null,
+      relatorioPath: null,
+      proximosPath: null,
+    };
+  } else if (!primarySucceeded && !lmStudioEnabled) {
+    result.lmstudio = {
+      ok: false,
+      error: 'LM Studio desativado (define GHOSTRECON_LMSTUDIO_ENABLED=1 e GHOSTRECON_LMSTUDIO_MODEL).',
       relatorio: null,
       proximos_passos: null,
       relatorioPath: null,
@@ -732,12 +853,18 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
     };
   }
 
-  // 3) Claude (Anthropic direct)
+  // Fase 3 — a outra cloud (Gemini ↔ OpenRouter)
+  if (!reportOk()) {
+    if (alt === 'gemini') await runGeminiAttempts();
+    if (!reportOk() && alt === 'openrouter') await runOpenrouterAttempt();
+  }
+
+  // Fase 4 — Claude (Anthropic direct)
   if (claudeKey) {
-    if (result.gemini.ok || result.openrouter.ok) {
+    if (reportOk()) {
       result.claude = {
         ok: false,
-        error: 'Não executado (provider cloud anterior já respondeu com sucesso).',
+        error: 'Não executado (já existe relatório de outro provider na cascata).',
         relatorio: null,
         proximos_passos: null,
         relatorioPath: null,
@@ -773,38 +900,27 @@ export async function runDualAiReports(payload, { projectName, targetDomain, onS
     };
   }
 
-  // 4) LM Studio (último recurso — modelos locais podem demorar muito em "reasoning")
-  const shouldTryLmStudio = !cloudOk();
-  if (shouldTryLmStudio && lmStudioEnabled) {
-    status('IA LM Studio: fallback local (último passo)…', 'info');
-    await tryLmStudioReport();
-  } else if (!shouldTryLmStudio && lmStudioEnabled) {
-    result.lmstudio = {
-      ok: false,
-      error: 'Não executado (um provider cloud já respondeu com sucesso).',
-      relatorio: null,
-      proximos_passos: null,
-      relatorioPath: null,
-      proximosPath: null,
-    };
-  } else if (shouldTryLmStudio && !lmStudioEnabled) {
-    result.lmstudio = {
-      ok: false,
-      error: 'LM Studio desativado (define GHOSTRECON_LMSTUDIO_ENABLED=1 e GHOSTRECON_LMSTUDIO_MODEL).',
-      relatorio: null,
-      proximos_passos: null,
-      relatorioPath: null,
-      proximosPath: null,
-    };
+  const cascade = [primary, 'lmstudio'];
+  if (alt !== primary) cascade.push(alt);
+  if (claudeKey) cascade.push('claude');
+  result._reportCascadeOrder = cascade;
+
+  for (const key of ['gemini', 'openrouter', 'claude', 'lmstudio']) {
+    const b = result[key];
+    if (b && !b.ok && (b.error === null || b.error === undefined || b.error === '')) {
+      b.error = 'Não executado.';
+    }
   }
 
   return result;
 }
 
-/** Escolhe o primeiro relatório bem-sucedido (Gemini → OpenRouter → Claude → LM Studio). */
+/** Escolhe o primeiro relatório bem-sucedido segundo `_reportCascadeOrder` (fallback: Gemini → OpenRouter → Claude → LM). */
 export function pickAiReportForWebhook(aiOut) {
   if (!aiOut || typeof aiOut !== 'object') return null;
-  const order = ['gemini', 'openrouter', 'claude', 'lmstudio'];
+  const order = Array.isArray(aiOut._reportCascadeOrder)
+    ? aiOut._reportCascadeOrder
+    : ['gemini', 'openrouter', 'claude', 'lmstudio'];
   for (const key of order) {
     const b = aiOut[key];
     if (b?.ok && typeof b.relatorio === 'string' && typeof b.proximos_passos === 'string') {

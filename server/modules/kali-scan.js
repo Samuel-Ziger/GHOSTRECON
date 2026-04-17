@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { readFile, writeFile, mkdtemp, rm } from 'fs/promises';
-import { join } from 'path';
+import { join, delimiter } from 'path';
 import { tmpdir } from 'os';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -41,6 +41,56 @@ async function pathWhich(cmd) {
   });
 }
 
+/** `which` + caminhos absolutos (IDE/systemd por vezes não herdam PATH completo com ~/go/bin). */
+function fileExecutableExists(absPath) {
+  if (!absPath || typeof absPath !== 'string') return false;
+  try {
+    const st = fs.statSync(absPath);
+    return st.isFile() || st.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function pathWhichOrPaths(cmd, absoluteCandidates = []) {
+  if (await pathWhich(cmd)) return true;
+  for (const p of absoluteCandidates) {
+    if (fileExecutableExists(p)) return true;
+  }
+  return false;
+}
+
+/** Onde o dalfox costuma estar (PATH incomum no processo Node). */
+function dalfoxCandidatePaths() {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const set = new Set();
+  const push = (p) => {
+    if (p && typeof p === 'string') set.add(p);
+  };
+  push('/usr/local/bin/dalfox');
+  push('/usr/bin/dalfox');
+  push('/snap/bin/dalfox');
+  if (home) {
+    push(join(home, 'go', 'bin', 'dalfox'));
+    push(join(home, '.local', 'bin', 'dalfox'));
+    push(join(home, 'bin', 'dalfox'));
+  }
+  const goPath = process.env.GOPATH || '';
+  for (const root of goPath.split(delimiter)) {
+    const t = root?.trim();
+    if (t) push(join(t, 'bin', 'dalfox'));
+  }
+  return [...set];
+}
+
+/** Caminho absoluto quando o ficheiro existe; senão `dalfox` no PATH. */
+function resolveDalfoxExecutableForSpawn() {
+  for (const p of dalfoxCandidatePaths()) {
+    if (fileExecutableExists(p)) return p;
+  }
+  return 'dalfox';
+}
+
 export async function getKaliCapabilities() {
   const force = process.env.GHOSTRECON_FORCE_KALI === '1';
   let distroKali = false;
@@ -55,6 +105,8 @@ export async function getKaliCapabilities() {
   const qualifyDistro = distroKali || force;
   const python3 = await pathWhich('python3');
   const python = python3 ? false : await pathWhich('python');
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const sqlmapAbs = ['/usr/bin/sqlmap', '/usr/local/bin/sqlmap', ...(home ? [join(home, '.local/bin/sqlmap')] : [])];
   const tools = {
     nmap: await pathWhich('nmap'),
     nuclei: await pathWhich('nuclei'),
@@ -62,7 +114,8 @@ export async function getKaliCapabilities() {
     searchsploit: await pathWhich('searchsploit'),
     wpscan: await pathWhich('wpscan'),
     whois: await pathWhich('whois'),
-    dalfox: await pathWhich('dalfox'),
+    dalfox: await pathWhichOrPaths('dalfox', dalfoxCandidatePaths()),
+    sqlmap: await pathWhichOrPaths('sqlmap', sqlmapAbs),
     python3,
     python,
     xss_vibes: (python3 || python) && fs.existsSync(XSS_VIBES_MAIN) && fs.existsSync(XSS_VIBES_PAYLOADS),
@@ -462,9 +515,10 @@ async function runDalfoxUrl(url, log, auth = null) {
   const ua = auth?.headers?.['User-Agent'] || auth?.headers?.['user-agent'];
   if (ua) authArgs.push('--user-agent', String(ua));
 
+  const dalfoxBin = resolveDalfoxExecutableForSpawn();
   const runOnce = async (withJson) => {
     const args = ['url', url, ...(withJson ? ['--format', 'json'] : []), ...tail, ...authArgs];
-    const proc = await runProc('dalfox', args, timeoutMs);
+    const proc = await runProc(dalfoxBin, args, timeoutMs);
     const text = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
     return { proc, text };
   };
@@ -798,6 +852,11 @@ export async function runKaliAggressiveScan({
   /** NDJSON: eventos `dork` para fila de Google (pesquisas «exploit pra …» por versão nmap). */
   emit = null,
 }) {
+  const pipeTool = (name, state) => {
+    if (typeof emit !== 'function') return;
+    emit({ type: 'pipe', name, state });
+  };
+
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
   const hosts = [...new Set(rawHosts)].slice(0, 22);
 
@@ -818,6 +877,7 @@ export async function runKaliAggressiveScan({
   const ftpChecked = new Set();
 
   if (cap.tools.nmap) {
+    pipeTool('nmap', 'active');
     try {
       const rows = await runNmapOnHosts(hosts, log);
       log(`nmap: ${rows.length} serviço(s) em portas abertas`, 'success');
@@ -938,13 +998,18 @@ export async function runKaliAggressiveScan({
       }
     } catch (e) {
       log(`nmap: ${e.message}`, 'error');
+    } finally {
+      pipeTool('nmap', 'done');
     }
+  } else {
+    pipeTool('nmap', 'skip');
   }
 
   // ── WHOIS (Kali) ──
   // WHOIS é leitura externa (não é exploit), mas ainda assim é "ativo". Mantemos só quando ferramenta existe
   // e com amostra limitada de subdomínios para não explodir tempo.
   if (cap.tools.whois) {
+    pipeTool('whois', 'active');
     log('═══ whois (registo domínio) ═══', 'section');
 
     const whoisTargets = [domain, ...(subdomainsAlive || [])]
@@ -988,9 +1053,13 @@ export async function runKaliAggressiveScan({
         log(`whois ${t}: ${e.message}`, 'warn');
       }
     }
+    pipeTool('whois', 'done');
+  } else {
+    pipeTool('whois', 'skip');
   }
 
   if (runFfuf && cap.tools.ffuf) {
+    pipeTool('ffuf', 'active');
     log('═══ ffuf (apenas HTTP 200) ═══', 'section');
     const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 5);
     for (const u of uniqBases) {
@@ -1010,11 +1079,16 @@ export async function runKaliAggressiveScan({
       }
       if (paths.length) log(`ffuf ${u} → ${paths.length} caminho(s) 200`, 'success');
     }
-  } else if (!runFfuf && cap.tools.ffuf) {
-    log('ffuf: omitido — activa o módulo «Ffuf (Kali)» em Sensitive Data (só com Modo Kali).', 'info');
+    pipeTool('ffuf', 'done');
+  } else {
+    pipeTool('ffuf', 'skip');
+    if (!runFfuf && cap.tools.ffuf) {
+      log('ffuf: omitido — activa o módulo «Ffuf (Kali)» em Sensitive Data (só com Modo Kali).', 'info');
+    }
   }
 
   if (runNuclei && cap.tools.nuclei) {
+    pipeTool('nuclei', 'active');
     log('═══ nuclei ═══', 'section');
     const targets = [...new Set(baseUrlsForFfuf.map((b) => b.replace(/\/$/, '')))].slice(0, 15);
     try {
@@ -1039,16 +1113,26 @@ export async function runKaliAggressiveScan({
       log(`nuclei: ${findings.length} finding(s)`, findings.length ? 'warn' : 'info');
     } catch (e) {
       log(`nuclei: ${e.message}`, 'warn');
+    } finally {
+      pipeTool('nuclei', 'done');
     }
-  } else if (!runNuclei && cap.tools.nuclei) {
-    log('Nuclei: omitido — activa o módulo «Nuclei (Kali)» em Sensitive Data (só com Modo Kali).', 'info');
+  } else {
+    pipeTool('nuclei', 'skip');
+    if (!runNuclei && cap.tools.nuclei) {
+      log('Nuclei: omitido — activa o módulo «Nuclei (Kali)» em Sensitive Data (só com Modo Kali).', 'info');
+    }
   }
 
   // XSS/SQLi via nuclei tags contra URLs com query string (vindas do corpus passivo)
-  if (runNuclei && cap.tools.nuclei && Array.isArray(paramUrls) && paramUrls.length) {
+  const canParamNuclei = runNuclei && cap.tools.nuclei && Array.isArray(paramUrls) && paramUrls.length;
+  if (!canParamNuclei) {
+    pipeTool('nuclei_xss', 'skip');
+    pipeTool('nuclei_sqli', 'skip');
+  } else {
     const urls = [...new Set(paramUrls)].slice(0, 30);
 
     if (xssSignals) {
+      pipeTool('nuclei_xss', 'active');
       log(`═══ nuclei (xss) em URLs com parâmetros (${urls.length}) ═══`, 'section');
       try {
         const xss = await runNucleiTags(urls, 'xss', log);
@@ -1068,12 +1152,16 @@ export async function runKaliAggressiveScan({
         if (xss.length) log(`XSS: ${xss.length} finding(s)`, 'warn');
       } catch (e) {
         log(`XSS nuclei: ${e.message}`, 'warn');
+      } finally {
+        pipeTool('nuclei_xss', 'done');
       }
     } else {
       log('nuclei tags=xss: skip (sem sinais passivos)', 'info');
+      pipeTool('nuclei_xss', 'skip');
     }
 
     if (sqliSignals) {
+      pipeTool('nuclei_sqli', 'active');
       log(`═══ nuclei (sqli) em URLs com parâmetros (${urls.length}) ═══`, 'section');
       try {
         const sqli = await runNucleiTags(urls, 'sqli', log);
@@ -1093,9 +1181,12 @@ export async function runKaliAggressiveScan({
         if (sqli.length) log(`SQLi: ${sqli.length} finding(s)`, 'warn');
       } catch (e) {
         log(`SQLi nuclei: ${e.message}`, 'warn');
+      } finally {
+        pipeTool('nuclei_sqli', 'done');
       }
     } else {
       log('nuclei tags=sqli: skip (sem sinais passivos)', 'info');
+      pipeTool('nuclei_sqli', 'skip');
     }
   }
 
@@ -1108,12 +1199,15 @@ export async function runKaliAggressiveScan({
 
     if (!targets || targets.length === 0) {
       log('[WPScan] WordPress não confirmado no passivo — wpscan não executado', 'info');
+      pipeTool('wpscan', 'skip');
     } else if (isWpscanApiRequired() && !isWpscanApiTokenConfigured()) {
       log(
         '[WPScan] SKIP — token obrigatório (GHOSTRECON_WPSCAN_REQUIRE_API≠0). Define WPSCAN_API_TOKEN ou GHOSTRECON_WPSCAN_API_TOKEN no .env (wpscan.com/register). Para permitir scan sem WPVulnDB: GHOSTRECON_WPSCAN_REQUIRE_API=0',
         'warn',
       );
+      pipeTool('wpscan', 'skip');
     } else {
+      pipeTool('wpscan', 'active');
       if (isWpscanApiTokenConfigured()) {
         log(
           '[WPScan] WPVulnDB ligado — WPSCAN_API_TOKEN / GHOSTRECON_WPSCAN_API_TOKEN (CVEs conhecidos no JSON)',
@@ -1155,12 +1249,17 @@ export async function runKaliAggressiveScan({
         }
       }
       log('[WPScan] Fim da fase wpscan (todos os alvos WordPress desta corrida)', 'info');
+      pipeTool('wpscan', 'done');
     }
+  } else {
+    pipeTool('wpscan', 'skip');
   }
 
   if (cap.tools.dalfox && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+    pipeTool('dalfox', 'active');
     const targets = [...new Set(paramUrls)].slice(0, Number(process.env.GHOSTRECON_DALFOX_MAX_URLS || 12));
     log(`═══ dalfox (XSS) em URLs com parâmetros (${targets.length}) ═══`, 'section');
+    try {
     for (const u of targets) {
       const r = await runDalfoxUrl(u, log, auth);
       if (!r.ok) {
@@ -1179,13 +1278,21 @@ export async function runKaliAggressiveScan({
       }
       if (r.hits.length) log(`dalfox ${u} → ${r.hits.length} hit(s)`, 'warn');
     }
+    } finally {
+      pipeTool('dalfox', 'done');
+    }
   } else if (cap.tools.dalfox && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     log('dalfox: skip (sem sinais XSS passivos)', 'info');
+    pipeTool('dalfox', 'skip');
+  } else {
+    pipeTool('dalfox', 'skip');
   }
 
   // Executa após a etapa XSS (nuclei/dalfox): scanner xss_vibes externo.
   if (cap.tools.xss_vibes && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+    pipeTool('xss_vibes', 'active');
     log(`═══ xss_vibes (XSS) em URLs com parâmetros (${paramUrls.length}) ═══`, 'section');
+    try {
     const r = await runXssVibesBatch({ urls: paramUrls, cap, log, auth });
     if (!r.ok) {
       log(`[xss_vibes] erro: ${r.error || 'falha desconhecida'}`, 'warn');
@@ -1202,10 +1309,17 @@ export async function runKaliAggressiveScan({
       }
       if (r.hits.length) log(`[xss_vibes] ${r.hits.length} hit(s) adicionado(s) como finding XSS`, 'warn');
     }
+    } finally {
+      pipeTool('xss_vibes', 'done');
+    }
   } else if (cap.tools.xss_vibes && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     log('[xss_vibes] skip (sem sinais XSS passivos)', 'info');
+    pipeTool('xss_vibes', 'skip');
   } else if (!cap.tools.xss_vibes) {
     log('[xss_vibes] indisponível (python + Xss/xss_vibes/main.py/payloads.json)', 'info');
+    pipeTool('xss_vibes', 'skip');
+  } else {
+    pipeTool('xss_vibes', 'skip');
   }
 
   log('═══ Fim modo Kali ═══', 'section');

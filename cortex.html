@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GHOSTRECON — Cortex</title>
+  <style>
+    :root {
+      --bg: #0c0c0e;
+      --bg2: #16161a;
+      --rail: #121218;
+      --border: #2a2a32;
+      --text: #dcd8e8;
+      --dim: #7a7588;
+      --accent: #c4a0ff;
+      --accent2: #7ee8c0;
+      --mono: ui-monospace, 'Cascadia Code', monospace;
+      --sans: system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.45;
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) 1fr;
+      grid-template-rows: auto 1fr;
+    }
+    #demoBanner {
+      grid-column: 1 / -1;
+      grid-row: 1;
+    }
+    @media (max-width: 720px) {
+      body {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto auto 1fr;
+      }
+      .rail {
+        grid-column: 1;
+        grid-row: 2;
+        max-height: 200px;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      main.cortex-main {
+        grid-column: 1;
+        grid-row: 3;
+      }
+    }
+    .rail {
+      grid-column: 1;
+      grid-row: 2;
+      background: var(--rail);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .rail-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .rail-sub {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      margin-top: 4px;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .rail-fake {
+      padding: 10px 16px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .rail-fake-btn {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px dashed rgba(196, 160, 255, 0.45);
+      border-radius: 4px;
+      background: rgba(196, 160, 255, 0.06);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 10px;
+      cursor: pointer;
+      line-height: 1.35;
+    }
+    .rail-fake-btn:hover:not(:disabled) {
+      background: rgba(196, 160, 255, 0.12);
+      border-color: rgba(196, 160, 255, 0.65);
+    }
+    .rail-fake-btn:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    .rail-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0 20px;
+    }
+    .nav-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 10px 16px;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 11px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+    }
+    .nav-item:hover {
+      background: rgba(196, 160, 255, 0.06);
+      color: var(--accent);
+    }
+    .nav-item.is-active {
+      border-left-color: var(--accent2);
+      background: rgba(126, 232, 192, 0.06);
+      color: var(--accent2);
+    }
+    .nav-count {
+      float: right;
+      opacity: 0.55;
+      font-size: 10px;
+    }
+    main.cortex-main {
+      grid-column: 2;
+      grid-row: 2;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(100, 70, 160, 0.08), transparent 55%), var(--bg);
+    }
+    main.cortex-main--obsidian-map .canvas-body {
+      padding: 8px 2px 72px;
+    }
+    .canvas-head {
+      padding: 14px 20px 10px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(22, 22, 26, 0.6);
+    }
+    .canvas-head-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px 20px;
+    }
+    .canvas-head-titles {
+      flex: 1;
+      min-width: 0;
+    }
+    .canvas-head-tools {
+      flex-shrink: 0;
+      padding-top: 2px;
+    }
+    .obsidian-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      user-select: none;
+      white-space: nowrap;
+    }
+    .obsidian-toggle input {
+      accent-color: var(--accent);
+      width: 14px;
+      height: 14px;
+    }
+    .obsidian-toggle span {
+      color: var(--accent2);
+    }
+    .canvas-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .canvas-hint {
+      margin: 6px 0 0;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+    }
+    .canvas-body {
+      flex: 1;
+      overflow: auto;
+      padding: 20px 22px 100px;
+    }
+    .empty-canvas {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--dim);
+      max-width: 36em;
+      line-height: 1.6;
+      margin-top: 8vh;
+    }
+    .graph-wrap {
+      position: relative;
+      min-height: 200px;
+    }
+    .graph-lines {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.12;
+      background-image: radial-gradient(circle at 1px 1px, rgba(196, 160, 255, 0.35) 1px, transparent 0);
+      background-size: 28px 28px;
+    }
+    /* —— Modo mapa local: área ampla, flutuante, só URLs nos nós —— */
+    @keyframes cortex-hub-float {
+      0%,
+      100% {
+        transform: translate(-50%, -50%) translateY(0);
+        box-shadow:
+          0 12px 40px rgba(0, 0, 0, 0.45),
+          0 0 0 1px rgba(196, 160, 255, 0.35),
+          0 0 48px rgba(126, 232, 192, 0.12);
+      }
+      50% {
+        transform: translate(-50%, -50%) translateY(-6px);
+        box-shadow:
+          0 20px 50px rgba(0, 0, 0, 0.5),
+          0 0 0 1px rgba(196, 160, 255, 0.5),
+          0 0 64px rgba(126, 232, 192, 0.18);
+      }
+    }
+    @keyframes cortex-node-float {
+      0%,
+      100% {
+        transform: translate(-50%, -50%) translate(0, 0);
+      }
+      33% {
+        transform: translate(-50%, -50%) translate(2px, -3px);
+      }
+      66% {
+        transform: translate(-50%, -50%) translate(-2px, 2px);
+      }
+    }
+    @keyframes cortex-dots-drift {
+      0% {
+        background-position: 0 0;
+      }
+      100% {
+        background-position: 48px 36px;
+      }
+    }
+    @keyframes cortex-line-glow {
+      0%,
+      100% {
+        stroke-opacity: 0.22;
+      }
+      50% {
+        stroke-opacity: 0.42;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .obsidian-hub,
+      .obsidian-orbit-layer .node.node--float,
+      .obsidian-graph .graph-lines,
+      .obsidian-radials line {
+        animation: none !important;
+      }
+    }
+    .obsidian-graph {
+      position: relative;
+      width: 100%;
+      max-width: none;
+      min-height: min(88dvh, calc(100vh - 200px));
+      margin: 8px 0 28px;
+      border-radius: 0;
+      border: none;
+      background:
+        radial-gradient(ellipse 70% 55% at 50% 45%, rgba(90, 55, 150, 0.22), transparent 58%),
+        radial-gradient(ellipse 50% 40% at 72% 28%, rgba(40, 100, 120, 0.12), transparent 45%),
+        var(--bg);
+      overflow: visible;
+    }
+    .obsidian-graph .graph-lines {
+      opacity: 0.2;
+      background-size: 20px 20px;
+      animation: cortex-dots-drift 48s linear infinite;
+    }
+    .obsidian-radials {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+      filter: drop-shadow(0 0 6px rgba(196, 160, 255, 0.15));
+    }
+    .obsidian-radials line {
+      stroke: rgba(196, 160, 255, 0.45);
+      stroke-width: 0.55;
+      vector-effect: non-scaling-stroke;
+      animation: cortex-line-glow 5.5s ease-in-out infinite;
+    }
+    .obsidian-hub {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 2;
+      max-width: min(280px, 46vw);
+      padding: 16px 22px;
+      border-radius: 999px;
+      border: 1px solid rgba(196, 160, 255, 0.4);
+      background: rgba(22, 22, 28, 0.55);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent2);
+      text-align: center;
+      line-height: 1.35;
+      pointer-events: none;
+      animation: cortex-hub-float 7s ease-in-out infinite;
+    }
+    .obsidian-orbit-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+    }
+    .obsidian-orbit-layer .node.node--float {
+      position: absolute;
+      pointer-events: auto;
+      width: auto;
+      max-width: min(48vw, 440px);
+      min-width: 0;
+      margin: 0;
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(196, 160, 255, 0.28);
+      background: rgba(18, 18, 24, 0.5);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.4),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+      transform: translate(-50%, -50%);
+      text-align: left;
+      animation: cortex-node-float 9s ease-in-out infinite;
+    }
+    .obsidian-orbit-layer .node.node--float:hover {
+      border-color: rgba(196, 160, 255, 0.55);
+      box-shadow:
+        0 14px 40px rgba(0, 0, 0, 0.5),
+        0 0 28px rgba(196, 160, 255, 0.15);
+      z-index: 4;
+    }
+    .node-url-float {
+      display: block;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--accent2);
+      line-height: 1.4;
+      word-break: break-all;
+      max-width: min(44vw, 400px);
+    }
+    .nodes {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: flex-start;
+    }
+    .node {
+      width: min(100%, 220px);
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg2);
+      cursor: pointer;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      text-align: left;
+    }
+    .node:hover {
+      border-color: rgba(196, 160, 255, 0.45);
+      box-shadow: 0 0 0 1px rgba(196, 160, 255, 0.08), 0 8px 28px rgba(0, 0, 0, 0.35);
+    }
+    .node-target {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--accent2);
+      margin-bottom: 6px;
+    }
+    .node-snippet {
+      font-size: 11px;
+      color: var(--text);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 4;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .node-meta {
+      margin-top: 8px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--dim);
+    }
+    .drawer-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(0, 0, 0, 0.45);
+    }
+    .drawer-backdrop.is-open {
+      display: block;
+    }
+    .drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: min(100%, 420px);
+      height: 100%;
+      z-index: 50;
+      background: var(--bg2);
+      border-left: 1px solid var(--border);
+      box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
+      transform: translateX(100%);
+      transition: transform 0.22s ease;
+      display: flex;
+      flex-direction: column;
+    }
+    .drawer.is-open {
+      transform: translateX(0);
+    }
+    .drawer-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .drawer-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      margin: 0;
+    }
+    .drawer-close {
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .drawer-close:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .drawer-body {
+      flex: 1;
+      overflow: auto;
+      padding: 14px 16px 24px;
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .drawer-section {
+      margin-bottom: 16px;
+    }
+    .drawer-label {
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--dim);
+      margin-bottom: 6px;
+    }
+    .drawer-pre {
+      margin: 0;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .err-banner {
+      margin: 12px 16px;
+      padding: 10px 12px;
+      border: 1px solid #664444;
+      background: rgba(120, 40, 50, 0.15);
+      color: #f0a0a8;
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .demo-banner {
+      margin: 0;
+      padding: 10px 16px;
+      border-bottom: 1px solid rgba(196, 160, 255, 0.35);
+      background: linear-gradient(90deg, rgba(100, 60, 160, 0.35), rgba(40, 80, 100, 0.2));
+      font-family: var(--mono);
+      font-size: 10px;
+      color: #e8dcff;
+      line-height: 1.5;
+    }
+    .demo-banner strong {
+      color: var(--accent2);
+    }
+  </style>
+</head>
+<body>
+  <div id="demoBanner" class="demo-banner" style="display: none" role="status"></div>
+  <aside class="rail">
+    <div class="rail-head">
+      Cortex
+      <div class="rail-sub" id="railSub">Tipos ligados no Reporte (SQLite local)</div>
+    </div>
+    <div class="rail-fake">
+      <button type="button" class="rail-fake-btn" id="btnFakeBrain" title="Simula a resposta da API sem base de dados">
+        Simular GET /api/brain/categories (JSON fictício)
+      </button>
+    </div>
+    <div class="rail-list" id="railList"></div>
+  </aside>
+  <main class="cortex-main">
+    <div id="errBanner" class="err-banner" style="display: none"></div>
+    <header class="canvas-head">
+      <div class="canvas-head-row">
+        <div class="canvas-head-titles">
+          <h1 class="canvas-title" id="canvasTitle">Cortex — Cérebro</h1>
+          <p class="canvas-hint" id="canvasHint">Selecciona uma vulnerabilidade à esquerda para ver os alvos confirmados.</p>
+        </div>
+        <div class="canvas-head-tools">
+          <label class="obsidian-toggle" title="Gráfico local: tipo no centro, alvos à volta (como o mapa local do Obsidian)">
+            <input type="checkbox" id="toggleObsidianGraph" checked />
+            <span>Mapa local (Obsidian)</span>
+          </label>
+        </div>
+      </div>
+    </header>
+    <div class="canvas-body" id="canvasBody"></div>
+  </main>
+  <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="drawerTitle">Detalhe</h2>
+      <button type="button" class="drawer-close" id="drawerClose" aria-label="Fechar">×</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </aside>
+
+  <script>
+    function apiBase() {
+      return new URL('.', window.location.href).origin;
+    }
+    function apiUrl(p) {
+      return apiBase() + (p.startsWith('/') ? p : '/' + p);
+    }
+
+    let categories = [];
+    let activeId = null;
+    let activeLinks = [];
+    let demoMode = false;
+    /** Título da categoria activa (para re-render ao mudar o modo mapa). */
+    let activeCategoryTitle = '';
+
+    function isObsidianGraphMode() {
+      const el = document.getElementById('toggleObsidianGraph');
+      return Boolean(el && el.checked);
+    }
+
+    function persistObsidianToggle() {
+      try {
+        localStorage.setItem('cortex_obsidian_graph', isObsidianGraphMode() ? '1' : '0');
+      } catch (_) {}
+    }
+
+    function restoreObsidianToggle() {
+      try {
+        const v = localStorage.getItem('cortex_obsidian_graph');
+        const el = document.getElementById('toggleObsidianGraph');
+        if (el && v !== null) el.checked = v === '1';
+      } catch (_) {}
+    }
+
+    /**
+     * Mapa local: elipse em toda a área útil, centro = tipo, nós = só URL, linhas SVG alinhadas.
+     */
+    function buildObsidianGraphHtml(categoryTitle, links) {
+      const n = Math.max(links.length, 1);
+      const cx = 50;
+      const cy = 50;
+      const rx = 43;
+      const ry = 36;
+      const lines = [];
+      for (let i = 0; i < n; i++) {
+        const ang = (i / n) * 2 * Math.PI - Math.PI / 2;
+        const x2 = cx + Math.cos(ang) * rx;
+        const y2 = cy + Math.sin(ang) * ry;
+        lines.push(
+          '<line style="animation-delay:' +
+            (i * 0.38).toFixed(2) +
+            's" x1="' +
+            cx +
+            '" y1="' +
+            cy +
+            '" x2="' +
+            x2.toFixed(3) +
+            '" y2="' +
+            y2.toFixed(3) +
+            '" />',
+        );
+      }
+      const nodeButtons = links
+        .map((link, idx) => {
+          const ang = (idx / n) * 2 * Math.PI - Math.PI / 2;
+          const dx = Math.cos(ang);
+          const dy = Math.sin(ang);
+          const lp = cx + dx * rx;
+          const tp = cy + dy * ry;
+          const fullUrl = linkDisplayUrl(link);
+          const shortUrl = fullUrl.length > 76 ? fullUrl.slice(0, 74) + '…' : fullUrl;
+          return (
+            '<button type="button" class="node node--float" data-idx="' +
+            idx +
+            '" title="' +
+            escapeAttr(fullUrl) +
+            '" style="left:' +
+            lp.toFixed(3) +
+            '%;top:' +
+            tp.toFixed(3) +
+            '%;animation-delay:' +
+            (idx * 0.55).toFixed(2) +
+            's"><span class="node-url-float">' +
+            escapeHtml(shortUrl) +
+            '</span></button>'
+          );
+        })
+        .join('');
+      return (
+        '<div class="obsidian-graph">' +
+        '<div class="graph-lines" aria-hidden="true"></div>' +
+        '<svg class="obsidian-radials" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
+        lines.join('') +
+        '</svg>' +
+        '<div class="obsidian-hub">' +
+        escapeHtml(categoryTitle) +
+        '</div>' +
+        '<div class="obsidian-orbit-layer">' +
+        nodeButtons +
+        '</div></div>'
+      );
+    }
+
+    /** Fingerprints 64 hex fictícios (só para UI demo). */
+    const DEMO_FP = {
+      xssA: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      xssB: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      sqli: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      ftp1: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      ftp2: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      idor: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    };
+
+    const CORTEX_DEMO_CATEGORIES = [
+      { id: 9001, title: 'XSS', linkCount: 2, created_at: '2026-01-01T12:00:00.000Z' },
+      { id: 9002, title: 'SQLi', linkCount: 1, created_at: '2026-01-01T12:00:00.000Z' },
+      { id: 9003, title: 'FTP (anónimo / sem auth)', linkCount: 2, created_at: '2026-01-01T12:00:00.000Z' },
+      { id: 9004, title: 'IDOR', linkCount: 1, created_at: '2026-01-01T12:00:00.000Z' },
+    ];
+
+    /**
+     * Corpo fictício no mesmo formato que o servidor devolve em GET /api/brain/categories.
+     * Gerado a partir das categorias demo para não duplicar IDs à mão.
+     */
+    const FAKE_GET_BRAIN_CATEGORIES_JSON = JSON.stringify({
+      items: CORTEX_DEMO_CATEGORIES,
+    });
+
+    /** Simula latência de rede e parse do JSON (só para visualizar o Cérebro na UI). */
+    async function fakeFetchBrainCategories(delayMs) {
+      const ms = typeof delayMs === 'number' && delayMs >= 0 ? delayMs : 400;
+      await new Promise((r) => setTimeout(r, ms));
+      const d = JSON.parse(FAKE_GET_BRAIN_CATEGORIES_JSON);
+      return Array.isArray(d.items) ? d.items.map((c) => ({ ...c })) : [];
+    }
+
+    const CORTEX_DEMO_LINKS = {
+      9001: [
+        {
+          target: 'bounty-alvo.invalid',
+          fingerprint: DEMO_FP.xssA,
+          linked_at: '2026-04-10T14:22:00.000Z',
+          notes: 'Reflected na página de pesquisa; confirmado com payload manual.',
+          snapshot: {
+            type: 'xss',
+            prio: 'high',
+            value:
+              'https://bounty-alvo.invalid/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E',
+            url: 'https://bounty-alvo.invalid/search',
+            meta: 'Parâmetro q sem escape',
+          },
+        },
+        {
+          target: 'cliente-demo.example',
+          fingerprint: DEMO_FP.xssB,
+          linked_at: '2026-04-12T09:05:00.000Z',
+          notes: 'DOM XSS via fragment; CSP fraco.',
+          snapshot: {
+            type: 'xss',
+            prio: 'medium',
+            value: 'https://cliente-demo.example/app#/callback=…',
+            url: 'https://cliente-demo.example/app',
+            meta: 'Router client-side',
+          },
+        },
+      ],
+      9002: [
+        {
+          target: 'legacy-api.test',
+          fingerprint: DEMO_FP.sqli,
+          linked_at: '2026-04-08T18:40:00.000Z',
+          notes: 'Boolean-based; id param.',
+          snapshot: {
+            type: 'sqli',
+            prio: 'high',
+            value: "GET /v1/users?id=1' OR '1'='1",
+            url: 'https://legacy-api.test/v1/users',
+            meta: 'SQLite backend',
+          },
+        },
+      ],
+      9003: [
+        {
+          target: 'ftp-old.corp',
+          fingerprint: DEMO_FP.ftp1,
+          linked_at: '2026-03-28T11:00:00.000Z',
+          notes: 'Anonymous upload permitido; banner vsftpd 3.0.3.',
+          snapshot: {
+            type: 'ftp',
+            prio: 'high',
+            value: 'ftp://ftp-old.corp/',
+            url: 'ftp://ftp-old.corp/',
+            meta: 'Porta 21 aberta',
+          },
+        },
+        {
+          target: 'backup-zone.internal',
+          fingerprint: DEMO_FP.ftp2,
+          linked_at: '2026-04-01T16:30:00.000Z',
+          notes: 'Mesmo padrão; credenciais vazias aceites.',
+          snapshot: {
+            type: 'ftp',
+            prio: 'high',
+            value: 'ftp://backup-zone.internal/pub/',
+            url: 'ftp://backup-zone.internal/pub/',
+            meta: 'Read-only mas listável',
+          },
+        },
+      ],
+      9004: [
+        {
+          target: 'saas-app.io',
+          fingerprint: DEMO_FP.idor,
+          linked_at: '2026-04-15T10:10:00.000Z',
+          notes: 'UUID sequencial em /api/invoices/{id}.',
+          snapshot: {
+            type: 'idor',
+            prio: 'medium',
+            value: 'https://saas-app.io/api/invoices/10042',
+            url: 'https://saas-app.io/api/invoices/10042',
+            meta: 'Acesso a fatura de outro tenant',
+          },
+        },
+      ],
+    };
+
+    function isCortexDemoMode() {
+      try {
+        const q = new URLSearchParams(location.search || '').get('demo');
+        if (q === '1' || q === 'true' || q === 'yes') return true;
+        const h = (location.hash || '').replace(/^#/, '').trim().toLowerCase();
+        return h === 'demo';
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function applyDemoChrome() {
+      demoMode = true;
+      const bar = document.getElementById('demoBanner');
+      const sub = document.getElementById('railSub');
+      if (bar) {
+        bar.style.display = 'block';
+        bar.innerHTML =
+          '<strong>Modo demonstração</strong> — dados fictícios (não vêm da base). Remove <code>?demo=1</code> ou o hash <code>#demo</code> da URL para o Cortex real.';
+      }
+      if (sub) {
+        sub.textContent = 'Vista fictícia · no SQLite real usas o Reporte (+ Cérebro)';
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function escapeAttr(s) {
+      return escapeHtml(s).replace(/'/g, '&#39;');
+    }
+
+    /** URL a mostrar no mapa flutuante (snapshot.url, link.url ou valor que pareça URL). */
+    function linkDisplayUrl(link) {
+      const snap = link.snapshot && typeof link.snapshot === 'object' ? link.snapshot : null;
+      let u = (link.url != null && String(link.url).trim()) || (snap && snap.url != null && String(snap.url).trim()) || '';
+      if (!u && snap && snap.value != null) {
+        const v = String(snap.value).trim();
+        if (/^(https?|ftp):\/\//i.test(v)) u = v.split(/\s/)[0].slice(0, 400);
+      }
+      if (!u && link.target) u = String(link.target);
+      return u || '(sem URL)';
+    }
+
+    function snippetFromLink(link) {
+      const snap = link.snapshot;
+      if (snap && typeof snap === 'object') {
+        const v = snap.value != null ? String(snap.value) : '';
+        const t = snap.type != null ? String(snap.type) : '';
+        const line = [t, v].filter(Boolean).join(' — ');
+        if (line) return line.slice(0, 280);
+      }
+      return link.notes ? String(link.notes).slice(0, 200) : '(sem resumo)';
+    }
+
+    function setErr(msg) {
+      const el = document.getElementById('errBanner');
+      if (!msg) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      el.style.display = 'block';
+      el.textContent = msg;
+    }
+
+    function renderRail() {
+      const host = document.getElementById('railList');
+      host.innerHTML = '';
+      if (!categories.length) {
+        host.innerHTML =
+          '<p style="padding:12px 16px;font-family:var(--mono);font-size:10px;color:var(--dim)">Sem categorias. Usa o Reporte (+ Cérebro) com SQLite local.</p>';
+        return;
+      }
+      for (const c of categories) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'nav-item' + (activeId === c.id ? ' is-active' : '');
+        b.innerHTML =
+          escapeHtml(c.title) + ` <span class="nav-count">${Number(c.linkCount) || 0}</span>`;
+        b.addEventListener('click', () => {
+          void selectCategory(c.id);
+        });
+        host.appendChild(b);
+      }
+    }
+
+    function setObsidianMainClass(on) {
+      document.querySelector('main.cortex-main')?.classList.toggle('cortex-main--obsidian-map', Boolean(on));
+    }
+
+    function renderCanvas(categoryTitle) {
+      const titleEl = document.getElementById('canvasTitle');
+      const hintEl = document.getElementById('canvasHint');
+      const body = document.getElementById('canvasBody');
+      titleEl.textContent = categoryTitle || 'Cérebro';
+      if (!activeId) {
+        setObsidianMainClass(false);
+        hintEl.textContent = 'Selecciona uma vulnerabilidade à esquerda.';
+        body.innerHTML =
+          '<p class="empty-canvas">Cada entrada no Reporte que ligares ao cérebro aparece aqui como um nó. Clica num nó para ver notas e snapshot no painel lateral. Com uma categoria seleccionada, activa <strong>Mapa local (Obsidian)</strong> no canto superior direito para ver o gráfico local (tipo no centro, alvos à volta).' +
+          (demoMode
+            ? ''
+            : ' Para uma <strong>pré-visualização fictícia</strong>, usa o botão à esquerda <strong>Simular GET …</strong>, ou <code>?demo=1</code> / <code>#demo</code> na URL.') +
+          '</p>';
+        return;
+      }
+      const baseHint =
+        activeLinks.length === 0
+          ? 'Ainda não há alvos ligados a este tipo — marca achados no Reporte e adiciona ao cérebro.'
+          : `${activeLinks.length} confirmação(ões) · clica num cartão para abrir o painel`;
+      hintEl.textContent =
+        baseHint +
+        (activeLinks.length && isObsidianGraphMode()
+          ? ' · Mapa local: URLs flutuantes à volta do tipo; passa o rato para ver a URL completa. Desmarca «Mapa local» para a vista em grelha.'
+          : '');
+
+      if (!activeLinks.length) {
+        setObsidianMainClass(false);
+        body.innerHTML = '<p class="empty-canvas">Sem nós nesta categoria.</p>';
+        return;
+      }
+
+      const hubTitle = categoryTitle || activeCategoryTitle || 'Categoria';
+
+      if (isObsidianGraphMode()) {
+        setObsidianMainClass(true);
+        body.innerHTML = buildObsidianGraphHtml(hubTitle, activeLinks);
+        return;
+      }
+
+      setObsidianMainClass(false);
+      const nodes = activeLinks
+        .map(
+          (link, idx) => `
+        <button type="button" class="node" data-idx="${idx}">
+          <div class="node-target">${escapeHtml(link.target)}</div>
+          <div class="node-snippet">${escapeHtml(snippetFromLink(link))}</div>
+          <div class="node-meta">${escapeHtml(String(link.fingerprint || '').slice(0, 14))}… · ${escapeHtml(
+            String(link.linked_at || '').slice(0, 19),
+          )}</div>
+        </button>`,
+        )
+        .join('');
+
+      body.innerHTML =
+        '<div class="graph-wrap"><div class="graph-lines" aria-hidden="true"></div><div class="nodes">' +
+        nodes +
+        '</div></div>';
+    }
+
+    function openDrawer(link, categoryTitle) {
+      const drawer = document.getElementById('drawer');
+      const backdrop = document.getElementById('drawerBackdrop');
+      document.getElementById('drawerTitle').textContent = categoryTitle || 'Detalhe';
+      const parts = [];
+      parts.push('<div class="drawer-section"><div class="drawer-label">Alvo</div><p class="drawer-pre">' + escapeHtml(link.target) + '</p></div>');
+      parts.push(
+        '<div class="drawer-section"><div class="drawer-label">Fingerprint</div><p class="drawer-pre">' +
+          escapeHtml(link.fingerprint) +
+          '</p></div>',
+      );
+      parts.push(
+        '<div class="drawer-section"><div class="drawer-label">Notas (Reporte)</div><p class="drawer-pre">' +
+          escapeHtml(link.notes || '—') +
+          '</p></div>',
+      );
+      parts.push(
+        '<div class="drawer-section"><div class="drawer-label">Snapshot</div><pre class="drawer-pre">' +
+          escapeHtml(JSON.stringify(link.snapshot || {}, null, 2)) +
+          '</pre></div>',
+      );
+      document.getElementById('drawerBody').innerHTML = parts.join('');
+      drawer.classList.add('is-open');
+      drawer.setAttribute('aria-hidden', 'false');
+      backdrop.classList.add('is-open');
+      backdrop.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeDrawer() {
+      document.getElementById('drawer').classList.remove('is-open');
+      document.getElementById('drawer').setAttribute('aria-hidden', 'true');
+      const b = document.getElementById('drawerBackdrop');
+      b.classList.remove('is-open');
+      b.setAttribute('aria-hidden', 'true');
+    }
+
+    async function selectCategory(id) {
+      activeId = id;
+      setErr('');
+      renderRail();
+      if (demoMode && CORTEX_DEMO_LINKS[id]) {
+        activeLinks = CORTEX_DEMO_LINKS[id].map((x) => ({ ...x }));
+        const cat = CORTEX_DEMO_CATEGORIES.find((c) => c.id === id);
+        const title = cat ? cat.title : 'Categoria';
+        activeCategoryTitle = title;
+        try {
+          const u = new URL(location.href);
+          u.hash = String(id);
+          history.replaceState(null, '', u.toString());
+        } catch (_) {}
+        renderCanvas(title);
+        return;
+      }
+      try {
+        const r = await fetch(apiUrl('/api/brain/category/' + encodeURIComponent(String(id))), { cache: 'no-store' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || String(r.status));
+        activeLinks = Array.isArray(d.links) ? d.links : [];
+        const title = d.category && d.category.title ? d.category.title : 'Categoria';
+        activeCategoryTitle = title;
+        try {
+          const u = new URL(location.href);
+          u.hash = String(id);
+          history.replaceState(null, '', u.toString());
+        } catch (_) {}
+        renderCanvas(title);
+      } catch (e) {
+        activeLinks = [];
+        activeCategoryTitle = '';
+        setErr(String(e.message || e));
+        renderCanvas('');
+      }
+    }
+
+    async function boot() {
+      demoMode = isCortexDemoMode();
+      if (demoMode) {
+        applyDemoChrome();
+        categories = CORTEX_DEMO_CATEGORIES.map((c) => ({ ...c }));
+        setErr('');
+      } else {
+        try {
+          const r = await fetch(apiUrl('/api/brain/categories'), { cache: 'no-store' });
+          const d = await r.json().catch(() => ({}));
+          categories = Array.isArray(d.items) ? d.items : [];
+        } catch (e) {
+          setErr('Não foi possível carregar categorias: ' + (e.message || e));
+          categories = [];
+        }
+      }
+      restoreObsidianToggle();
+      renderRail();
+
+      const h = (location.hash || '').replace(/^#/, '').trim().toLowerCase();
+      const n = h === 'demo' ? NaN : Number(h);
+      if (Number.isFinite(n) && n > 0 && categories.some((c) => c.id === n)) {
+        await selectCategory(n);
+      } else {
+        activeId = null;
+        activeLinks = [];
+        activeCategoryTitle = '';
+        renderCanvas('');
+      }
+    }
+
+    document.getElementById('drawerClose').addEventListener('click', closeDrawer);
+    document.getElementById('drawerBackdrop').addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeDrawer();
+    });
+
+    document.getElementById('canvasBody').addEventListener('click', (ev) => {
+      const n = ev.target.closest('.node');
+      if (!n || !document.getElementById('canvasBody').contains(n)) return;
+      const idx = Number(n.dataset.idx);
+      if (!Number.isFinite(idx) || !activeLinks[idx]) return;
+      const titleEl = document.getElementById('canvasTitle');
+      openDrawer(activeLinks[idx], titleEl ? titleEl.textContent : '');
+    });
+
+    document.getElementById('toggleObsidianGraph')?.addEventListener('change', () => {
+      persistObsidianToggle();
+      if (activeId && activeLinks.length) renderCanvas(activeCategoryTitle);
+    });
+
+    document.getElementById('btnFakeBrain').addEventListener('click', async () => {
+      const btn = document.getElementById('btnFakeBrain');
+      const sub = document.getElementById('railSub');
+      setErr('');
+      btn.disabled = true;
+      if (sub) sub.textContent = 'A simular GET /api/brain/categories (JSON fictício)…';
+      try {
+        categories = await fakeFetchBrainCategories(420);
+        demoMode = true;
+        applyDemoChrome();
+        if (sub) {
+          sub.textContent =
+            'Prévia: parse de JSON local (mesma forma que a API) · alvos em memória';
+        }
+        activeId = null;
+        activeLinks = [];
+        renderRail();
+        renderCanvas('');
+        if (categories.length) {
+          await selectCategory(categories[0].id);
+        }
+      } catch (e) {
+        setErr('Prévia fictícia falhou: ' + (e.message || e));
+        if (sub) sub.textContent = 'Tipos ligados no Reporte (SQLite local)';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    void boot();
+  </script>
+</body>
+</html>
