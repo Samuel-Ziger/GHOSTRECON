@@ -27,10 +27,71 @@
       font-size: 13px;
       line-height: 1.45;
     }
-    header {
+    header.reporte-hd {
+      position: relative;
       padding: 16px 20px;
       border-bottom: 1px solid var(--border);
       background: var(--bg2);
+      overflow: hidden;
+    }
+    .reporte-ghost-bg {
+      position: absolute;
+      right: 4%;
+      top: 50%;
+      transform: translateY(-50%);
+      width: min(160px, 32vw);
+      max-height: 100px;
+      opacity: 0.1;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .reporte-ghost-bg svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      filter: drop-shadow(0 0 20px rgba(0, 212, 255, 0.35));
+    }
+    .reporte-hd-inner {
+      position: relative;
+      z-index: 1;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .reporte-ghost-bg .ghost-anim-reporte,
+      .reporte-ghost-bg .ghost-eye-reporte {
+        animation: none !important;
+      }
+    }
+    .reporte-ghost-bg .ghost-anim-reporte {
+      transform-origin: 24px 26px;
+      animation: reporte-ghost-sway 3s ease-in-out infinite;
+    }
+    .reporte-ghost-bg .ghost-eye-reporte {
+      transform-origin: center;
+      transform-box: fill-box;
+      animation: reporte-ghost-blink 5s ease-in-out infinite;
+    }
+    .reporte-ghost-bg .ghost-eye-reporte-r {
+      animation-delay: 0.06s;
+    }
+    @keyframes reporte-ghost-sway {
+      0%,
+      100% {
+        transform: rotate(-3deg);
+      }
+      50% {
+        transform: rotate(3deg);
+      }
+    }
+    @keyframes reporte-ghost-blink {
+      0%,
+      47%,
+      53%,
+      100% {
+        transform: scaleY(1);
+      }
+      50% {
+        transform: scaleY(0.12);
+      }
     }
     h1 {
       margin: 0 0 6px;
@@ -406,9 +467,42 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>Reporte — checklist manual</h1>
-    <div class="sub" id="headLine">A carregar…</div>
+  <header class="reporte-hd">
+    <div class="reporte-ghost-bg" aria-hidden="true">
+      <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" width="100" height="108" focusable="false">
+        <defs>
+          <linearGradient id="reporteBgGhostGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e8fbff" />
+            <stop offset="45%" stop-color="#5ee0ff" />
+            <stop offset="100%" stop-color="#00a8d4" />
+          </linearGradient>
+          <linearGradient id="reporteBgGhostSheen" x1="15%" y1="0%" x2="75%" y2="85%">
+            <stop offset="0%" stop-color="rgba(255,255,255,0.35)" />
+            <stop offset="45%" stop-color="rgba(255,255,255,0)" />
+            <stop offset="100%" stop-color="rgba(0,45,70,0.22)" />
+          </linearGradient>
+        </defs>
+        <g class="ghost-anim-reporte">
+          <path
+            fill="url(#reporteBgGhostGrad)"
+            stroke="rgba(0,212,255,0.45)"
+            stroke-width="0.55"
+            d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
+          />
+          <path
+            fill="url(#reporteBgGhostSheen)"
+            d="M 24 8 C 15 8 9 15 9 23.5 V 33 Q 16 28 24 32 Q 32 28 39 33 V 23.5 C 39 15 33 8 24 8 Z"
+            opacity="0.88"
+          />
+          <ellipse class="ghost-eye-reporte" cx="17" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+          <ellipse class="ghost-eye-reporte ghost-eye-reporte-r" cx="31" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+        </g>
+      </svg>
+    </div>
+    <div class="reporte-hd-inner">
+      <h1>Reporte — checklist manual</h1>
+      <div class="sub" id="headLine">A carregar…</div>
+    </div>
   </header>
   <main>
     <div class="toolbar">

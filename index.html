@@ -718,6 +718,32 @@
     stroke-width: 1.15;
   }
 
+  /* Reporte — checklist (mesma família Ghostmap/Cortex; fila dedicada abaixo) */
+  .hub-actions-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .hub-actions-row-mitre {
+    display: flex;
+    width: 100%;
+  }
+  .hub-actions-row-mitre .mitre-map-btn.reporte-hub-btn {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+  .reporte-hub-svg {
+    display: block;
+    width: 24px;
+    height: 24px;
+    color: var(--accent);
+    filter: drop-shadow(0 0 5px rgba(0, 212, 255, 0.45));
+  }
+  .mitre-map-btn.reporte-hub-btn .mitre-map-btn-title {
+    text-shadow: 0 0 22px rgba(0, 255, 136, 0.18);
+  }
+
   .mitre-map-btn-copy {
     flex: 1;
     min-width: 0;
@@ -2301,7 +2327,8 @@
         <div class="progress-pct" id="progressPct">0%</div>
       </div>
 
-      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px">
+      <div class="hub-actions-wrap">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         <button class="run-btn" id="runBtn" onclick="startRecon()">▶ RUN RECON</button>
         <button
           type="button"
@@ -2377,6 +2404,39 @@
             </span>
           </span>
         </button>
+        </div>
+        <div class="hub-actions-row-mitre">
+          <button
+            type="button"
+            class="mitre-map-btn reporte-hub-btn"
+            id="reporteHubBtn"
+            title="Checklist manual + SQLite. Abre com os achados da sessão; no Reporte importas JSON pelo painel «Importar» à esquerda."
+            aria-label="Abrir Reporte — nova aba"
+            onclick="openReportePage()"
+          >
+            <span class="mitre-map-btn-skin" aria-hidden="true">
+              <span class="mitre-map-btn-shine"></span>
+              <span class="mitre-map-btn-inner">
+                <span class="mitre-map-btn-icon-wrap ghostmap-globe-frame">
+                  <span class="ghostmap-orbit ghostmap-orbit--a" aria-hidden="true"></span>
+                  <span class="ghostmap-orbit ghostmap-orbit--b" aria-hidden="true"></span>
+                  <svg class="reporte-hub-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+                    <rect x="9" y="3" width="6" height="4" rx="1" />
+                    <path d="M9 12h6M9 16h6" />
+                  </svg>
+                </span>
+                <span class="mitre-map-btn-copy">
+                  <span class="mitre-map-btn-title">Reporte</span>
+                </span>
+                <span class="mitre-map-btn-aside">
+                  <span class="mitre-map-btn-live"><span class="mitre-map-btn-live-dot"></span> checklist</span>
+                  <span class="mitre-map-btn-arrow" aria-hidden="true">↗</span>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
       </div>
 
       <div class="section-label" style="margin-top:18px">Histórico (SQLite)</div>
@@ -2876,9 +2936,6 @@
         <div class="export-section" style="padding:0">
           <button class="export-btn" onclick="exportJSON()">⬇ JSON</button>
           <button class="export-btn" onclick="exportPlatformBundle()">⬇ Plataforma</button>
-          <button type="button" class="export-btn" onclick="openReportePage()" title="Checklist manual + SQLite. Abre com os achados da sessão; no Reporte importas JSON pelo painel «Importar» à esquerda.">
-            Reporte
-          </button>
           <button class="export-btn" onclick="exportMarkdown()">⬇ MD</button>
           <button class="export-btn" onclick="exportTXT()">⬇ TXT</button>
         </div>
@@ -4139,7 +4196,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         if (ev.runId != null) addLog(`Gravado: run #${ev.runId} → ${ev.storage || 'base de dados'}`, 'success');
         showIntelMergeBanner(ev.target, ev.intelMerge);
         void showIntelCorpusStrip(ev.target || targetDomain);
-        if (!multi) addLog('Exporte JSON / MD / TXT ou abre «Reporte» na barra inferior.', 'info');
+        if (!multi) addLog('Exporte JSON / MD / TXT ou abre «Reporte» (botão abaixo de Ghostmap / Cortex).', 'info');
         void refreshManualValidationFps().then(() => {
           try {
             refreshFindingsList();

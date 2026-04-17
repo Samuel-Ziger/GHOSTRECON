@@ -4,210 +4,548 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GHOSTRECON — Cortex</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0c0c0e;
-      --bg2: #16161a;
-      --rail: #121218;
-      --border: #2a2a32;
-      --text: #dcd8e8;
-      --dim: #7a7588;
-      --accent: #c4a0ff;
-      --accent2: #7ee8c0;
-      --mono: ui-monospace, 'Cascadia Code', monospace;
-      --sans: system-ui, sans-serif;
+      --bg:        #0d0d12;
+      --bg2:       #13131a;
+      --bg3:       #191921;
+      --bg4:       #1f1f29;
+      --rail:      #111118;
+      --border:    #2a2a38;
+      --border2:   #3a3a50;
+      --text:      #cdc9e0;
+      --text2:     #8884a8;
+      --dim:       #55526e;
+      --accent:    #8b5cf6;
+      --accent-hi: #a78bfa;
+      --accent-lo: rgba(139,92,246,0.15);
+      --green:     #34d399;
+      --green-lo:  rgba(52,211,153,0.12);
+      --red:       #f87171;
+      --yellow:    #fbbf24;
+      --mono:      'JetBrains Mono', ui-monospace, monospace;
+      --sans:      'Syne', system-ui, sans-serif;
+      --radius:    6px;
+      --glow-accent: 0 0 20px rgba(139,92,246,0.35), 0 0 60px rgba(139,92,246,0.12);
+      --glow-green:  0 0 16px rgba(52,211,153,0.4),  0 0 50px rgba(52,211,153,0.1);
     }
-    * { box-sizing: border-box; }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      margin: 0;
       min-height: 100vh;
       background: var(--bg);
       color: var(--text);
-      font-family: var(--sans);
-      font-size: 13px;
-      line-height: 1.45;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
       display: grid;
-      grid-template-columns: minmax(220px, 280px) 1fr;
+      grid-template-columns: 42px minmax(200px, 260px) 1fr;
       grid-template-rows: auto 1fr;
+      overflow: hidden;
+      height: 100vh;
     }
+
+    /* ─── DEMO BANNER ─── */
     #demoBanner {
       grid-column: 1 / -1;
       grid-row: 1;
     }
-    @media (max-width: 720px) {
-      body {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto auto 1fr;
-      }
-      .rail {
-        grid-column: 1;
-        grid-row: 2;
-        max-height: 200px;
-        border-right: none;
-        border-bottom: 1px solid var(--border);
-      }
-      main.cortex-main {
-        grid-column: 1;
-        grid-row: 3;
-      }
+    .demo-banner {
+      display: none;
+      padding: 7px 18px;
+      background: linear-gradient(90deg, rgba(139,92,246,0.22), rgba(52,211,153,0.1));
+      border-bottom: 1px solid rgba(139,92,246,0.3);
+      font-family: var(--mono);
+      font-size: 10px;
+      color: #c4bde8;
+      letter-spacing: 0.03em;
     }
-    .rail {
+    .demo-banner strong { color: var(--green); font-weight: 500; }
+    .demo-banner code { color: var(--accent-hi); background: rgba(139,92,246,0.15); padding: 1px 5px; border-radius: 3px; }
+
+    /* ─── RIBBON (ícones verticais, como Obsidian) ─── */
+    .ribbon {
       grid-column: 1;
       grid-row: 2;
       background: var(--rail);
       border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
+      align-items: center;
+      padding: 10px 0;
+      gap: 4px;
+      z-index: 10;
+    }
+    .ribbon-logo {
+      width: 26px;
+      height: 26px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ribbon-logo svg { width: 20px; height: 20px; }
+    .ribbon-btn {
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      color: var(--dim);
+      cursor: pointer;
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s, background 0.15s;
+    }
+    .ribbon-btn:hover { color: var(--accent-hi); background: var(--accent-lo); }
+    .ribbon-btn.active { color: var(--green); background: var(--green-lo); }
+    .ribbon-btn svg { width: 16px; height: 16px; }
+    .ribbon-spacer { flex: 1; }
+
+    /* ─── FILE TREE SIDEBAR ─── */
+    .rail {
+      grid-column: 2;
+      grid-row: 2;
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
       min-height: 0;
+      overflow: hidden;
     }
     .rail-head {
-      padding: 14px 16px;
+      padding: 12px 14px 10px;
       border-bottom: 1px solid var(--border);
-      font-size: 10px;
-      letter-spacing: 0.2em;
+    }
+    .rail-brand {
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-hi);
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-      color: var(--accent);
+      display: flex;
+      align-items: center;
+      gap: 7px;
     }
     .rail-sub {
-      font-family: var(--mono);
-      font-size: 10px;
+      font-size: 9px;
       color: var(--dim);
       margin-top: 4px;
-      letter-spacing: 0;
-      text-transform: none;
+      letter-spacing: 0.04em;
     }
+    .rail-search {
+      margin: 8px 10px 0;
+      position: relative;
+    }
+    .rail-search input {
+      width: 100%;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 5px 8px 5px 26px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .rail-search input:focus { border-color: var(--accent); }
+    .rail-search input::placeholder { color: var(--dim); }
+    .rail-search svg {
+      position: absolute;
+      left: 7px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 12px;
+      height: 12px;
+      color: var(--dim);
+      pointer-events: none;
+    }
+
+    .rail-section {
+      padding: 10px 14px 4px;
+      font-size: 9px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--dim);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .rail-section-badge {
+      font-size: 9px;
+      color: var(--accent-hi);
+      background: var(--accent-lo);
+      border-radius: 3px;
+      padding: 0 5px;
+    }
+
     .rail-fake {
-      padding: 10px 16px 12px;
+      padding: 6px 10px 10px;
       border-bottom: 1px solid var(--border);
     }
     .rail-fake-btn {
       width: 100%;
-      padding: 8px 10px;
-      border: 1px dashed rgba(196, 160, 255, 0.45);
-      border-radius: 4px;
-      background: rgba(196, 160, 255, 0.06);
-      color: var(--accent);
+      padding: 7px 10px;
+      border: 1px dashed rgba(139,92,246,0.35);
+      border-radius: var(--radius);
+      background: rgba(139,92,246,0.05);
+      color: var(--accent-hi);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 9px;
       cursor: pointer;
-      line-height: 1.35;
+      line-height: 1.4;
+      text-align: left;
+      transition: background 0.15s, border-color 0.15s;
     }
-    .rail-fake-btn:hover:not(:disabled) {
-      background: rgba(196, 160, 255, 0.12);
-      border-color: rgba(196, 160, 255, 0.65);
-    }
-    .rail-fake-btn:disabled {
-      opacity: 0.55;
-      cursor: wait;
-    }
+    .rail-fake-btn::before { content: '⚡ '; }
+    .rail-fake-btn:hover:not(:disabled) { background: rgba(139,92,246,0.12); border-color: rgba(139,92,246,0.6); }
+    .rail-fake-btn:disabled { opacity: 0.5; cursor: wait; }
+
     .rail-list {
       flex: 1;
       overflow-y: auto;
-      padding: 8px 0 20px;
+      padding: 4px 0 20px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
     }
+    .rail-list::-webkit-scrollbar { width: 4px; }
+    .rail-list::-webkit-scrollbar-track { background: transparent; }
+    .rail-list::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+    .nav-folder {
+      padding: 5px 14px 3px;
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--dim);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .nav-folder svg { width: 10px; height: 10px; }
+
     .nav-item {
-      display: block;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       width: 100%;
       text-align: left;
-      padding: 10px 16px;
+      padding: 6px 14px 6px 22px;
       border: none;
+      border-left: 2px solid transparent;
       background: transparent;
-      color: var(--text);
+      color: var(--text2);
       font-family: var(--mono);
       font-size: 11px;
       cursor: pointer;
-      border-left: 3px solid transparent;
+      transition: color 0.12s, background 0.12s, border-color 0.12s;
+      position: relative;
     }
-    .nav-item:hover {
-      background: rgba(196, 160, 255, 0.06);
-      color: var(--accent);
+    .nav-item::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--dim);
+      flex-shrink: 0;
+      transition: background 0.15s, box-shadow 0.15s;
     }
+    .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+    .nav-item:hover::before { background: var(--accent-hi); }
     .nav-item.is-active {
-      border-left-color: var(--accent2);
-      background: rgba(126, 232, 192, 0.06);
-      color: var(--accent2);
+      border-left-color: var(--green);
+      background: var(--green-lo);
+      color: var(--green);
     }
+    .nav-item.is-active::before { background: var(--green); box-shadow: var(--glow-green); }
+    .nav-item-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .nav-count {
-      float: right;
-      opacity: 0.55;
-      font-size: 10px;
+      font-size: 9px;
+      opacity: 0.6;
+      background: rgba(255,255,255,0.06);
+      border-radius: 3px;
+      padding: 0 5px;
+      flex-shrink: 0;
     }
+    .nav-item.is-active .nav-count { background: rgba(52,211,153,0.15); color: var(--green); opacity: 1; }
+
+    /* ─── MAIN CANVAS ─── */
     main.cortex-main {
-      grid-column: 2;
+      grid-column: 3;
       grid-row: 2;
       min-width: 0;
       display: flex;
       flex-direction: column;
       position: relative;
-      background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(100, 70, 160, 0.08), transparent 55%), var(--bg);
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 10%, rgba(80,50,130,0.12), transparent 55%),
+        var(--bg);
+      overflow: hidden;
     }
-    main.cortex-main--obsidian-map .canvas-body {
-      padding: 8px 2px 72px;
-    }
+
     .canvas-head {
-      padding: 14px 20px 10px;
+      padding: 11px 20px 9px;
       border-bottom: 1px solid var(--border);
-      background: rgba(22, 22, 26, 0.6);
-    }
-    .canvas-head-row {
+      background: rgba(19,19,26,0.7);
+      backdrop-filter: blur(8px);
       display: flex;
+      align-items: center;
+      gap: 16px;
       flex-wrap: wrap;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 12px 20px;
     }
-    .canvas-head-titles {
+    .canvas-breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: var(--dim);
+    }
+    .canvas-breadcrumb span { color: var(--text); }
+    .canvas-title {
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.01em;
+      flex: 1;
+    }
+    .canvas-title-accent { color: var(--accent-hi); }
+    .canvas-hint {
+      font-size: 9px;
+      color: var(--dim);
+      width: 100%;
+      padding-top: 1px;
+    }
+
+    .canvas-head-main {
       flex: 1;
       min-width: 0;
+      position: relative;
     }
-    .canvas-head-tools {
+    .canvas-ghost-bg {
+      position: absolute;
+      left: -4%;
+      top: 42%;
+      transform: translateY(-50%);
+      width: min(200px, 34vw);
+      max-height: 120px;
+      opacity: 0.12;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .canvas-ghost-bg svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      filter: drop-shadow(0 0 24px rgba(139, 92, 246, 0.35));
+    }
+    .canvas-head-front {
+      position: relative;
+      z-index: 1;
+    }
+
+    .category-teach {
+      margin-top: 10px;
+      padding: 10px 12px 10px 14px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(139, 92, 246, 0.28);
+      background: rgba(139, 92, 246, 0.07);
+      max-width: min(56em, 100%);
+    }
+    .category-teach[hidden] {
+      display: none !important;
+    }
+    .category-teach-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .category-teach-head strong {
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-hi);
+      letter-spacing: 0.02em;
+    }
+    .category-teach-dismiss {
       flex-shrink: 0;
-      padding-top: 2px;
+      width: 26px;
+      height: 26px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg3);
+      color: var(--text2);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
     }
-    .obsidian-toggle {
+    .category-teach-dismiss:hover {
+      border-color: var(--accent-hi);
+      color: var(--accent-hi);
+    }
+    .category-teach-para {
+      margin: 0;
+      font-size: 10px;
+      color: var(--text2);
+      line-height: 1.55;
+    }
+
+    .canvas-ghost-bg .ghost-anim-cortex {
+      transform-origin: 24px 26px;
+      animation: cortex-ghost-sway 3s ease-in-out infinite;
+    }
+    .canvas-ghost-bg .ghost-eye-cortex {
+      transform-origin: center;
+      transform-box: fill-box;
+      animation: cortex-ghost-blink 5s ease-in-out infinite;
+    }
+    .canvas-ghost-bg .ghost-eye-cortex-r {
+      animation-delay: 0.06s;
+    }
+    @keyframes cortex-ghost-sway {
+      0%,
+      100% {
+        transform: rotate(-3deg);
+      }
+      50% {
+        transform: rotate(3deg);
+      }
+    }
+    @keyframes cortex-ghost-blink {
+      0%,
+      47%,
+      53%,
+      100% {
+        transform: scaleY(1);
+      }
+      50% {
+        transform: scaleY(0.12);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .canvas-ghost-bg .ghost-anim-cortex,
+      .canvas-ghost-bg .ghost-eye-cortex {
+        animation: none !important;
+      }
+    }
+
+    .canvas-head-tools {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .toggle-pill {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       cursor: pointer;
-      font-family: var(--mono);
-      font-size: 10px;
+      font-size: 9px;
       color: var(--dim);
       user-select: none;
-      white-space: nowrap;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--bg3);
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
     }
-    .obsidian-toggle input {
-      accent-color: var(--accent);
+    .toggle-pill:hover { border-color: var(--accent); color: var(--accent-hi); }
+    .toggle-pill input { display: none; }
+    .toggle-pill-dot {
       width: 14px;
-      height: 14px;
+      height: 8px;
+      border-radius: 4px;
+      background: var(--border2);
+      position: relative;
+      transition: background 0.2s;
+      flex-shrink: 0;
     }
-    .obsidian-toggle span {
-      color: var(--accent2);
+    .toggle-pill-dot::after {
+      content: '';
+      position: absolute;
+      top: 1px;
+      left: 1px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--dim);
+      transition: transform 0.2s, background 0.2s;
     }
-    .canvas-title {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 600;
-      letter-spacing: -0.02em;
+    #toggleObsidianGraph:checked ~ .toggle-pill .toggle-pill-dot { background: rgba(139,92,246,0.4); }
+    #toggleObsidianGraph:checked ~ .toggle-pill .toggle-pill-dot::after { transform: translateX(6px); background: var(--accent-hi); }
+
+    .canvas-stats {
+      display: flex;
+      gap: 12px;
     }
-    .canvas-hint {
-      margin: 6px 0 0;
-      font-family: var(--mono);
-      font-size: 10px;
+    .stat-pill {
+      font-size: 9px;
       color: var(--dim);
+      display: flex;
+      align-items: center;
+      gap: 4px;
     }
+    .stat-pill strong { color: var(--text); font-weight: 500; }
+
     .canvas-body {
       flex: 1;
       overflow: auto;
-      padding: 20px 22px 100px;
+      padding: 20px 22px 80px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+      position: relative;
     }
+    .canvas-body::-webkit-scrollbar { width: 5px; }
+    .canvas-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+    .canvas-body--graph {
+      overflow: hidden;
+      padding: 0;
+    }
+
+    /* ─── EMPTY STATE ─── */
     .empty-canvas {
-      font-family: var(--mono);
+      margin-top: 12vh;
+      max-width: 38em;
       font-size: 11px;
       color: var(--dim);
-      max-width: 36em;
-      line-height: 1.6;
-      margin-top: 8vh;
+      line-height: 1.7;
     }
+    .empty-canvas h2 {
+      font-family: var(--sans);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 10px;
+      letter-spacing: -0.02em;
+    }
+    .empty-canvas code {
+      color: var(--accent-hi);
+      background: var(--accent-lo);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+    .empty-canvas .kbd {
+      display: inline-block;
+      font-size: 9px;
+      color: var(--text);
+      background: var(--bg4);
+      border: 1px solid var(--border2);
+      border-radius: 3px;
+      padding: 1px 6px;
+    }
+    .empty-shortcut-row { margin-top: 18px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ─── GRAPH / NODE GRID ─── */
     .graph-wrap {
       position: relative;
       min-height: 200px;
@@ -216,84 +554,108 @@
       position: absolute;
       inset: 0;
       pointer-events: none;
-      opacity: 0.12;
-      background-image: radial-gradient(circle at 1px 1px, rgba(196, 160, 255, 0.35) 1px, transparent 0);
-      background-size: 28px 28px;
+      background-image:
+        radial-gradient(circle, rgba(139,92,246,0.18) 1px, transparent 0);
+      background-size: 24px 24px;
+      opacity: 0.5;
     }
-    /* —— Modo mapa local: área ampla, flutuante, só URLs nos nós —— */
-    @keyframes cortex-hub-float {
-      0%,
-      100% {
-        transform: translate(-50%, -50%) translateY(0);
-        box-shadow:
-          0 12px 40px rgba(0, 0, 0, 0.45),
-          0 0 0 1px rgba(196, 160, 255, 0.35),
-          0 0 48px rgba(126, 232, 192, 0.12);
-      }
-      50% {
-        transform: translate(-50%, -50%) translateY(-6px);
-        box-shadow:
-          0 20px 50px rgba(0, 0, 0, 0.5),
-          0 0 0 1px rgba(196, 160, 255, 0.5),
-          0 0 64px rgba(126, 232, 192, 0.18);
-      }
-    }
-    @keyframes cortex-node-float {
-      0%,
-      100% {
-        transform: translate(-50%, -50%) translate(0, 0);
-      }
-      33% {
-        transform: translate(-50%, -50%) translate(2px, -3px);
-      }
-      66% {
-        transform: translate(-50%, -50%) translate(-2px, 2px);
-      }
-    }
-    @keyframes cortex-dots-drift {
-      0% {
-        background-position: 0 0;
-      }
-      100% {
-        background-position: 48px 36px;
-      }
-    }
-    @keyframes cortex-line-glow {
-      0%,
-      100% {
-        stroke-opacity: 0.22;
-      }
-      50% {
-        stroke-opacity: 0.42;
-      }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .obsidian-hub,
-      .obsidian-orbit-layer .node.node--float,
-      .obsidian-graph .graph-lines,
-      .obsidian-radials line {
-        animation: none !important;
-      }
-    }
-    .obsidian-graph {
+    .nodes {
       position: relative;
-      width: 100%;
-      max-width: none;
-      min-height: min(88dvh, calc(100vh - 200px));
-      margin: 8px 0 28px;
-      border-radius: 0;
-      border: none;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .node {
+      width: min(100%, 210px);
+      padding: 11px 13px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg3);
+      cursor: pointer;
+      transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+      text-align: left;
+      position: relative;
+      overflow: hidden;
+    }
+    .node::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 3px;
+      height: 100%;
+      background: var(--accent);
+      opacity: 0;
+      transition: opacity 0.18s;
+    }
+    .node:hover { border-color: rgba(139,92,246,0.5); box-shadow: 0 4px 24px rgba(0,0,0,0.4), 0 0 0 1px rgba(139,92,246,0.1); transform: translateY(-1px); }
+    .node:hover::before { opacity: 1; }
+    .node-target {
+      font-size: 10px;
+      color: var(--green);
+      margin-bottom: 5px;
+      font-weight: 500;
+    }
+    .node-type-badge {
+      display: inline-block;
+      font-size: 8px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--accent-lo);
+      color: var(--accent-hi);
+      margin-bottom: 6px;
+    }
+    .node-snippet { font-size: 10px; color: var(--text2); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .node-meta { margin-top: 7px; font-size: 9px; color: var(--dim); display: flex; justify-content: space-between; }
+
+    /* ─── OBSIDIAN GRAPH MODE ─── */
+    @keyframes hub-float {
+      0%,100% { transform: translate(-50%,-50%) translateY(0); box-shadow: var(--glow-accent), 0 0 0 1px rgba(139,92,246,0.5); }
+      50% { transform: translate(-50%,-50%) translateY(-5px); box-shadow: var(--glow-accent), 0 0 0 1px rgba(139,92,246,0.7), 0 0 80px rgba(139,92,246,0.15); }
+    }
+    @keyframes node-drift {
+      0%,100% { transform: translate(-50%,-50%) translate(0,0); }
+      33% { transform: translate(-50%,-50%) translate(1.5px,-2.5px); }
+      66% { transform: translate(-50%,-50%) translate(-1.5px,2px); }
+    }
+    @keyframes dot-drift {
+      0% { background-position: 0 0; }
+      100% { background-position: 48px 40px; }
+    }
+    @keyframes line-pulse {
+      0%,100% { stroke-opacity: 0.15; }
+      50% { stroke-opacity: 0.38; }
+    }
+    @keyframes ring-spin {
+      from { transform: translate(-50%,-50%) rotate(0deg); }
+      to { transform: translate(-50%,-50%) rotate(360deg); }
+    }
+    @keyframes fade-in {
+      from { opacity: 0; } to { opacity: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .obsidian-hub, .node--float, .obsidian-graph .graph-lines, .obsidian-radials line, .hub-ring { animation: none !important; }
+    }
+
+    .obsidian-graph {
+      position: absolute;
+      inset: 0;
       background:
-        radial-gradient(ellipse 70% 55% at 50% 45%, rgba(90, 55, 150, 0.22), transparent 58%),
-        radial-gradient(ellipse 50% 40% at 72% 28%, rgba(40, 100, 120, 0.12), transparent 45%),
+        radial-gradient(ellipse 60% 50% at 50% 48%, rgba(80,45,140,0.18), transparent 60%),
+        radial-gradient(ellipse 45% 35% at 75% 25%, rgba(30,90,100,0.1), transparent 50%),
         var(--bg);
-      overflow: visible;
+      overflow: hidden;
+      animation: fade-in 0.3s ease;
     }
     .obsidian-graph .graph-lines {
-      opacity: 0.2;
-      background-size: 20px 20px;
-      animation: cortex-dots-drift 48s linear infinite;
+      opacity: 0.25;
+      background-size: 22px 22px;
+      animation: dot-drift 56s linear infinite;
     }
+
     .obsidian-radials {
       position: absolute;
       inset: 0;
@@ -301,806 +663,1142 @@
       height: 100%;
       pointer-events: none;
       z-index: 1;
-      filter: drop-shadow(0 0 6px rgba(196, 160, 255, 0.15));
     }
     .obsidian-radials line {
-      stroke: rgba(196, 160, 255, 0.45);
-      stroke-width: 0.55;
+      stroke: rgba(139,92,246,0.5);
+      stroke-width: 0.6;
       vector-effect: non-scaling-stroke;
-      animation: cortex-line-glow 5.5s ease-in-out infinite;
+      animation: line-pulse 5s ease-in-out infinite;
     }
+    .obsidian-radials line.line-green {
+      stroke: rgba(52,211,153,0.35);
+    }
+
     .obsidian-hub {
       position: absolute;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-      z-index: 2;
-      max-width: min(280px, 46vw);
-      padding: 16px 22px;
+      z-index: 3;
+      padding: 14px 22px;
       border-radius: 999px;
-      border: 1px solid rgba(196, 160, 255, 0.4);
-      background: rgba(22, 22, 28, 0.55);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--accent2);
+      border: 1px solid rgba(139,92,246,0.5);
+      background: rgba(19,19,28,0.65);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent-hi);
       text-align: center;
-      line-height: 1.35;
-      pointer-events: none;
-      animation: cortex-hub-float 7s ease-in-out infinite;
+      letter-spacing: 0.04em;
+      animation: hub-float 6.5s ease-in-out infinite;
+      box-shadow: var(--glow-accent);
+      white-space: nowrap;
+      cursor: grab;
+      pointer-events: auto;
+      user-select: none;
+      touch-action: none;
+      transform: translate(-50%, -50%);
     }
+    .obsidian-hub.is-hub-dragging {
+      cursor: grabbing;
+      animation: none;
+      box-shadow: var(--glow-accent), 0 20px 60px rgba(0,0,0,0.7);
+      border-color: rgba(139,92,246,0.9);
+      transform: translate(-50%, -50%) scale(1.06);
+    }
+    .hub-ring {
+      position: absolute;
+      z-index: 2;
+      width: 90px;
+      height: 90px;
+      border-radius: 50%;
+      border: 1px dashed rgba(139,92,246,0.2);
+      pointer-events: none;
+      animation: ring-spin 30s linear infinite;
+      transform: translate(-50%, -50%);
+    }
+
     .obsidian-orbit-layer {
       position: absolute;
       inset: 0;
-      z-index: 3;
+      z-index: 4;
       pointer-events: none;
     }
-    .obsidian-orbit-layer .node.node--float {
+    .node--float {
       position: absolute;
       pointer-events: auto;
       width: auto;
-      max-width: min(48vw, 440px);
+      max-width: min(46vw, 360px);
       min-width: 0;
       margin: 0;
-      padding: 10px 14px;
-      border-radius: 10px;
-      border: 1px solid rgba(196, 160, 255, 0.28);
-      background: rgba(18, 18, 24, 0.5);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      box-shadow:
-        0 8px 32px rgba(0, 0, 0, 0.4),
-        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
-      transform: translate(-50%, -50%);
+      padding: 9px 13px;
+      border-radius: 8px;
+      border: 1px solid rgba(139,92,246,0.2);
+      background: rgba(16,16,22,0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03) inset;
+      transform: translate(-50%,-50%);
       text-align: left;
-      animation: cortex-node-float 9s ease-in-out infinite;
+      cursor: grab;
+      transition: border-color 0.18s, box-shadow 0.18s;
+      user-select: none;
+      touch-action: none;
     }
-    .obsidian-orbit-layer .node.node--float:hover {
-      border-color: rgba(196, 160, 255, 0.55);
-      box-shadow:
-        0 14px 40px rgba(0, 0, 0, 0.5),
-        0 0 28px rgba(196, 160, 255, 0.15);
-      z-index: 4;
+    .node--float.is-drifting {
+      animation: node-drift 10s ease-in-out infinite;
+    }
+    .node--float.is-dragging {
+      cursor: grabbing;
+      border-color: rgba(139,92,246,0.7) !important;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.7), var(--glow-accent) !important;
+      z-index: 20 !important;
+      animation: none !important;
+    }
+    .node--float:hover:not(.is-dragging) {
+      border-color: rgba(52,211,153,0.5);
+      box-shadow: 0 14px 40px rgba(0,0,0,0.6), var(--glow-green);
+      z-index: 10;
+    }
+    .node-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(52,211,153,0.6);
+      margin-right: 6px;
+      vertical-align: middle;
+      flex-shrink: 0;
     }
     .node-url-float {
-      display: block;
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--accent2);
-      line-height: 1.4;
-      word-break: break-all;
-      max-width: min(44vw, 400px);
-    }
-    .nodes {
-      position: relative;
-      z-index: 1;
       display: flex;
-      flex-wrap: wrap;
-      gap: 14px;
       align-items: flex-start;
-    }
-    .node {
-      width: min(100%, 220px);
-      padding: 12px 14px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      background: var(--bg2);
-      cursor: pointer;
-      transition: border-color 0.15s ease, box-shadow 0.15s ease;
-      text-align: left;
-    }
-    .node:hover {
-      border-color: rgba(196, 160, 255, 0.45);
-      box-shadow: 0 0 0 1px rgba(196, 160, 255, 0.08), 0 8px 28px rgba(0, 0, 0, 0.35);
-    }
-    .node-target {
+      gap: 0;
       font-family: var(--mono);
-      font-size: 10px;
-      color: var(--accent2);
-      margin-bottom: 6px;
+      font-size: 9.5px;
+      color: var(--green);
+      line-height: 1.45;
+      word-break: break-all;
+      max-width: min(42vw, 330px);
     }
-    .node-snippet {
-      font-size: 11px;
-      color: var(--text);
-      line-height: 1.4;
-      display: -webkit-box;
-      -webkit-line-clamp: 4;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }
-    .node-meta {
-      margin-top: 8px;
-      font-family: var(--mono);
-      font-size: 9px;
-      color: var(--dim);
-    }
+    .node-url-float-host { color: var(--text); opacity: 0.85; }
+
+    /* ─── DRAWER ─── */
     .drawer-backdrop {
       display: none;
       position: fixed;
       inset: 0;
       z-index: 40;
-      background: rgba(0, 0, 0, 0.45);
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(2px);
     }
-    .drawer-backdrop.is-open {
-      display: block;
-    }
+    .drawer-backdrop.is-open { display: block; }
     .drawer {
       position: fixed;
       top: 0;
       right: 0;
-      width: min(100%, 420px);
+      width: min(100%, 400px);
       height: 100%;
       z-index: 50;
       background: var(--bg2);
       border-left: 1px solid var(--border);
-      box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
+      box-shadow: -16px 0 60px rgba(0,0,0,0.6);
       transform: translateX(100%);
-      transition: transform 0.22s ease;
+      transition: transform 0.22s cubic-bezier(0.4,0,0.2,1);
       display: flex;
       flex-direction: column;
     }
-    .drawer.is-open {
-      transform: translateX(0);
-    }
+    .drawer.is-open { transform: translateX(0); }
     .drawer-head {
-      padding: 14px 16px;
+      padding: 13px 16px;
       border-bottom: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
       gap: 10px;
+      background: var(--bg3);
+    }
+    .drawer-title-wrap { display: flex; align-items: center; gap: 8px; }
+    .drawer-icon {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent-hi);
+      box-shadow: var(--glow-accent);
+      flex-shrink: 0;
     }
     .drawer-title {
+      font-family: var(--sans);
       font-size: 12px;
-      font-weight: 600;
-      color: var(--accent);
-      margin: 0;
+      font-weight: 700;
+      color: var(--accent-hi);
+      letter-spacing: 0.03em;
     }
     .drawer-close {
       border: 1px solid var(--border);
       background: var(--bg);
-      color: var(--text);
-      width: 32px;
-      height: 32px;
+      color: var(--text2);
+      width: 28px;
+      height: 28px;
       cursor: pointer;
-      font-size: 18px;
+      font-size: 16px;
       line-height: 1;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s, border-color 0.15s;
     }
-    .drawer-close:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
+    .drawer-close:hover { border-color: var(--accent); color: var(--accent-hi); }
     .drawer-body {
       flex: 1;
       overflow: auto;
       padding: 14px 16px 24px;
-      font-family: var(--mono);
-      font-size: 10px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
     }
-    .drawer-section {
-      margin-bottom: 16px;
-    }
+    .drawer-section { margin-bottom: 14px; }
     .drawer-label {
-      font-size: 9px;
-      letter-spacing: 0.12em;
+      font-size: 8px;
+      letter-spacing: 0.18em;
       text-transform: uppercase;
       color: var(--dim);
-      margin-bottom: 6px;
+      margin-bottom: 5px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
     }
+    .drawer-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
     .drawer-pre {
       margin: 0;
-      padding: 10px 12px;
+      padding: 9px 11px;
       background: var(--bg);
       border: 1px solid var(--border);
+      border-radius: var(--radius);
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 220px;
+      max-height: 200px;
       overflow: auto;
-    }
-    .err-banner {
-      margin: 12px 16px;
-      padding: 10px 12px;
-      border: 1px solid #664444;
-      background: rgba(120, 40, 50, 0.15);
-      color: #f0a0a8;
-      font-family: var(--mono);
       font-size: 10px;
-    }
-    .demo-banner {
-      margin: 0;
-      padding: 10px 16px;
-      border-bottom: 1px solid rgba(196, 160, 255, 0.35);
-      background: linear-gradient(90deg, rgba(100, 60, 160, 0.35), rgba(40, 80, 100, 0.2));
-      font-family: var(--mono);
-      font-size: 10px;
-      color: #e8dcff;
+      color: var(--text);
       line-height: 1.5;
     }
-    .demo-banner strong {
-      color: var(--accent2);
+    .drawer-tag {
+      display: inline-block;
+      margin: 2px;
+      font-size: 9px;
+      padding: 2px 7px;
+      border-radius: 3px;
+    }
+    .drawer-tag-prio-high { background: rgba(248,113,113,0.12); color: var(--red); }
+    .drawer-tag-prio-medium { background: rgba(251,191,36,0.12); color: var(--yellow); }
+    .drawer-tag-type { background: var(--accent-lo); color: var(--accent-hi); }
+
+    /* ─── ERROR BANNER ─── */
+    .err-banner {
+      margin: 10px 14px;
+      padding: 9px 12px;
+      border: 1px solid rgba(248,113,113,0.35);
+      border-radius: var(--radius);
+      background: rgba(120,40,50,0.12);
+      color: var(--red);
+      font-size: 10px;
+      display: none;
+    }
+
+    /* ─── RESPONSIVE ─── */
+    @media (max-width: 760px) {
+      body { grid-template-columns: 1fr; grid-template-rows: auto auto auto 1fr; height: auto; overflow: auto; }
+      .ribbon { grid-column: 1; grid-row: 2; flex-direction: row; height: 40px; padding: 0 10px; gap: 4px; border-right: none; border-bottom: 1px solid var(--border); }
+      .ribbon-logo { margin-bottom: 0; margin-right: 4px; }
+      .ribbon-spacer { display: none; }
+      .rail { grid-column: 1; grid-row: 3; max-height: 180px; border-right: none; border-bottom: 1px solid var(--border); }
+      main.cortex-main { grid-column: 1; grid-row: 4; }
     }
   </style>
 </head>
 <body>
-  <div id="demoBanner" class="demo-banner" style="display: none" role="status"></div>
-  <aside class="rail">
-    <div class="rail-head">
-      Cortex
-      <div class="rail-sub" id="railSub">Tipos ligados no Reporte (SQLite local)</div>
-    </div>
-    <div class="rail-fake">
-      <button type="button" class="rail-fake-btn" id="btnFakeBrain" title="Simula a resposta da API sem base de dados">
-        Simular GET /api/brain/categories (JSON fictício)
-      </button>
-    </div>
-    <div class="rail-list" id="railList"></div>
-  </aside>
-  <main class="cortex-main">
-    <div id="errBanner" class="err-banner" style="display: none"></div>
-    <header class="canvas-head">
-      <div class="canvas-head-row">
-        <div class="canvas-head-titles">
-          <h1 class="canvas-title" id="canvasTitle">Cortex — Cérebro</h1>
-          <p class="canvas-hint" id="canvasHint">Selecciona uma vulnerabilidade à esquerda para ver os alvos confirmados.</p>
+
+<div id="demoBanner" class="demo-banner" role="status"></div>
+
+<!-- RIBBON -->
+<aside class="ribbon">
+  <div class="ribbon-logo">
+    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="10" cy="10" r="9" stroke="rgba(139,92,246,0.6)" stroke-width="1"/>
+      <circle cx="10" cy="10" r="5" stroke="var(--accent-hi)" stroke-width="1"/>
+      <circle cx="10" cy="10" r="2" fill="var(--green)"/>
+    </svg>
+  </div>
+  <button type="button" class="ribbon-btn active" title="Grafo (activo)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
+      <line x1="12" y1="7" x2="5" y2="17"/><line x1="12" y1="7" x2="19" y2="17"/>
+    </svg>
+  </button>
+  <button type="button" class="ribbon-btn" title="Pesquisa">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+  </button>
+  <button type="button" class="ribbon-btn" title="Tags">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+      <line x1="7" y1="7" x2="7.01" y2="7"/>
+    </svg>
+  </button>
+  <div class="ribbon-spacer"></div>
+  <button type="button" class="ribbon-btn" title="Configurações">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+</aside>
+
+<!-- SIDEBAR -->
+<aside class="rail">
+  <div class="rail-head">
+    <div class="rail-brand">Cortex</div>
+    <div class="rail-sub" id="railSub">Tipos do cérebro · checklist manual (SQLite local)</div>
+  </div>
+
+  <div class="rail-search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+    <input type="search" placeholder="Pesquisar notas…" id="railSearchInput" autocomplete="off" />
+  </div>
+
+  <div class="rail-fake" style="margin-top:8px;">
+    <button type="button" class="rail-fake-btn" id="btnFakeBrain">
+      Simular GET /api/brain/categories
+    </button>
+  </div>
+
+  <div class="rail-section">
+    Vulnerabilidades
+    <span class="rail-section-badge" id="catCount">0</span>
+  </div>
+
+  <div class="rail-list" id="railList"></div>
+</aside>
+
+<!-- MAIN CANVAS -->
+<main class="cortex-main" id="cortexMain">
+  <div class="err-banner" id="errBanner"></div>
+  <header class="canvas-head">
+    <div class="canvas-head-main">
+      <div class="canvas-ghost-bg" aria-hidden="true">
+        <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" width="120" height="130" focusable="false">
+          <defs>
+            <linearGradient id="cortexBgGhostGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#ede9fe" />
+              <stop offset="50%" stop-color="#a78bfa" />
+              <stop offset="100%" stop-color="#6d28d9" />
+            </linearGradient>
+            <linearGradient id="cortexBgGhostSheen" x1="15%" y1="0%" x2="75%" y2="85%">
+              <stop offset="0%" stop-color="rgba(255,255,255,0.35)" />
+              <stop offset="45%" stop-color="rgba(255,255,255,0)" />
+              <stop offset="100%" stop-color="rgba(30,20,60,0.25)" />
+            </linearGradient>
+          </defs>
+          <g class="ghost-anim-cortex">
+            <path
+              fill="url(#cortexBgGhostGrad)"
+              stroke="rgba(139,92,246,0.4)"
+              stroke-width="0.55"
+              d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
+            />
+            <path
+              fill="url(#cortexBgGhostSheen)"
+              d="M 24 8 C 15 8 9 15 9 23.5 V 33 Q 16 28 24 32 Q 32 28 39 33 V 23.5 C 39 15 33 8 24 8 Z"
+              opacity="0.88"
+            />
+            <ellipse class="ghost-eye-cortex" cx="17" cy="22" rx="3.2" ry="4.2" fill="#0c0a12" />
+            <ellipse class="ghost-eye-cortex ghost-eye-cortex-r" cx="31" cy="22" rx="3.2" ry="4.2" fill="#0c0a12" />
+          </g>
+        </svg>
+      </div>
+      <div class="canvas-head-front">
+        <div class="canvas-breadcrumb">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><line x1="12" y1="7" x2="5" y2="17"/><line x1="12" y1="7" x2="19" y2="17"/></svg>
+          <span>GHOSTRECON</span> / <span id="breadcrumbCat">—</span>
         </div>
-        <div class="canvas-head-tools">
-          <label class="obsidian-toggle" title="Gráfico local: tipo no centro, alvos à volta (como o mapa local do Obsidian)">
-            <input type="checkbox" id="toggleObsidianGraph" checked />
-            <span>Mapa local (Obsidian)</span>
-          </label>
+        <h1 class="canvas-title" id="canvasTitle">
+          <span class="canvas-title-accent">Cortex</span> — Cérebro
+        </h1>
+        <p class="canvas-hint" id="canvasHint">Selecciona uma vulnerabilidade à esquerda para ver os alvos confirmados.</p>
+        <div id="categoryTeach" class="category-teach" hidden>
+          <div class="category-teach-head">
+            <strong id="categoryTeachHead"></strong>
+            <button type="button" class="category-teach-dismiss" id="categoryTeachDismiss" aria-label="Ocultar explicação">×</button>
+          </div>
+          <p id="categoryTeachPara" class="category-teach-para"></p>
         </div>
       </div>
-    </header>
-    <div class="canvas-body" id="canvasBody"></div>
-  </main>
-  <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
-  <aside class="drawer" id="drawer" aria-hidden="true">
-    <div class="drawer-head">
-      <h2 class="drawer-title" id="drawerTitle">Detalhe</h2>
-      <button type="button" class="drawer-close" id="drawerClose" aria-label="Fechar">×</button>
     </div>
-    <div class="drawer-body" id="drawerBody"></div>
-  </aside>
+    <div class="canvas-head-tools">
+      <div class="canvas-stats" id="canvasStats" style="display:none;">
+        <div class="stat-pill"><strong id="statNodes">0</strong>&nbsp;nós</div>
+        <div class="stat-pill" style="color:var(--border2)">|</div>
+        <div class="stat-pill"><strong id="statType">—</strong>&nbsp;tipo</div>
+      </div>
+      <input type="checkbox" id="toggleObsidianGraph" checked style="display:none"/>
+      <label for="toggleObsidianGraph" class="toggle-pill">
+        <span class="toggle-pill-dot"></span>
+        Mapa local
+      </label>
+    </div>
+  </header>
 
-  <script>
-    function apiBase() {
-      return new URL('.', window.location.href).origin;
+  <div class="canvas-body" id="canvasBody"></div>
+</main>
+
+<!-- DRAWER -->
+<div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div class="drawer-title-wrap">
+      <div class="drawer-icon"></div>
+      <h2 class="drawer-title" id="drawerTitle">Detalhe</h2>
+    </div>
+    <button type="button" class="drawer-close" id="drawerClose" aria-label="Fechar">×</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+
+<script>
+  // ── utils ──
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const escA = s => esc(s).replace(/'/g,'&#39;');
+
+  function apiBase() { return new URL('.', window.location.href).origin; }
+  function apiUrl(p) { return apiBase() + (p.startsWith('/') ? p : '/' + p); }
+
+  let categories = [], activeId = null, activeLinks = [], activeCategoryTitle = '', demoMode = false;
+
+  // ── demo data ──
+  const DEMO_FP = {
+    xssA:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    xssB:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    sqli:'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    ftp1:'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    ftp2:'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    idor:'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  };
+  const CORTEX_DEMO_CATEGORIES = [
+    {id:9001,title:'XSS',linkCount:2,created_at:'2026-01-01T12:00:00.000Z'},
+    {id:9002,title:'SQL Injection',linkCount:1,created_at:'2026-01-01T12:00:00.000Z'},
+    {id:9003,title:'FTP Anonymous',linkCount:2,created_at:'2026-01-01T12:00:00.000Z'},
+    {id:9004,title:'IDOR',linkCount:1,created_at:'2026-01-01T12:00:00.000Z'},
+  ];
+  const CORTEX_DEMO_LINKS = {
+    9001:[
+      {target:'bounty-alvo.invalid',fingerprint:DEMO_FP.xssA,linked_at:'2026-04-10T14:22:00.000Z',notes:'Reflected na página de pesquisa; confirmado com payload manual.',snapshot:{type:'xss',prio:'high',value:'https://bounty-alvo.invalid/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E',url:'https://bounty-alvo.invalid/search',meta:'Parâmetro q sem escape'}},
+      {target:'cliente-demo.example',fingerprint:DEMO_FP.xssB,linked_at:'2026-04-12T09:05:00.000Z',notes:'DOM XSS via fragment; CSP fraco.',snapshot:{type:'xss',prio:'medium',value:'https://cliente-demo.example/app#/callback=…',url:'https://cliente-demo.example/app',meta:'Router client-side'}},
+    ],
+    9002:[
+      {target:'legacy-api.test',fingerprint:DEMO_FP.sqli,linked_at:'2026-04-08T18:40:00.000Z',notes:"Boolean-based; id param.",snapshot:{type:'sqli',prio:'high',value:"GET /v1/users?id=1' OR '1'='1",url:'https://legacy-api.test/v1/users',meta:'SQLite backend'}},
+    ],
+    9003:[
+      {target:'ftp-old.corp',fingerprint:DEMO_FP.ftp1,linked_at:'2026-03-28T11:00:00.000Z',notes:'Anonymous upload permitido; banner vsftpd 3.0.3.',snapshot:{type:'ftp',prio:'high',value:'ftp://ftp-old.corp/',url:'ftp://ftp-old.corp/',meta:'Porta 21 aberta'}},
+      {target:'backup-zone.internal',fingerprint:DEMO_FP.ftp2,linked_at:'2026-04-01T16:30:00.000Z',notes:'Mesmo padrão; credenciais vazias aceites.',snapshot:{type:'ftp',prio:'high',value:'ftp://backup-zone.internal/pub/',url:'ftp://backup-zone.internal/pub/',meta:'Read-only mas listável'}},
+    ],
+    9004:[
+      {target:'saas-app.io',fingerprint:DEMO_FP.idor,linked_at:'2026-04-15T10:10:00.000Z',notes:'UUID sequencial em /api/invoices/{id}.',snapshot:{type:'idor',prio:'medium',value:'https://saas-app.io/api/invoices/10042',url:'https://saas-app.io/api/invoices/10042',meta:'Acesso a fatura de outro tenant'}},
+    ],
+  };
+
+  function isCortexDemoMode() {
+    try {
+      const q = new URLSearchParams(location.search||'').get('demo');
+      if(q==='1'||q==='true'||q==='yes') return true;
+      const h=(location.hash||'').replace(/^#/,'').trim().toLowerCase();
+      return h==='demo';
+    } catch(_){ return false; }
+  }
+
+  function applyDemoChrome() {
+    demoMode = true;
+    const bar = $('demoBanner'), sub = $('railSub');
+    if(bar){ bar.style.display='block'; bar.innerHTML='<strong>Modo demonstração</strong> — dados fictícios. Remove <code>?demo=1</code> ou o hash <code>#demo</code> para o Cortex real.'; }
+    if(sub) sub.textContent='Vista fictícia · no GHOSTRECON principal ligas achados validados ao cérebro (SQLite)';
+  }
+
+  async function fakeFetchBrainCategories(ms=420){
+    await new Promise(r=>setTimeout(r,ms));
+    return CORTEX_DEMO_CATEGORIES.map(c=>({...c}));
+  }
+
+  function isObsidianMode(){ return Boolean($('toggleObsidianGraph')?.checked); }
+
+  function persistToggle(){
+    try{ localStorage.setItem('cortex_obsidian_graph', isObsidianMode()?'1':'0'); }catch(_){}
+  }
+  function restoreToggle(){
+    try{ const v=localStorage.getItem('cortex_obsidian_graph'),el=$('toggleObsidianGraph'); if(el&&v!==null) el.checked=v==='1'; }catch(_){}
+  }
+
+  function linkDisplayUrl(link){
+    const snap=link.snapshot&&typeof link.snapshot==='object'?link.snapshot:null;
+    let u=(link.url!=null&&String(link.url).trim())||(snap&&snap.url!=null&&String(snap.url).trim())||'';
+    if(!u&&snap&&snap.value!=null){ const v=String(snap.value).trim(); if(/^(https?|ftp):\/\//i.test(v)) u=v.split(/\s/)[0].slice(0,400); }
+    if(!u&&link.target) u=String(link.target);
+    return u||'(sem URL)';
+  }
+
+  function snippetFromLink(link){
+    const snap=link.snapshot;
+    if(snap&&typeof snap==='object'){
+      const v=snap.value!=null?String(snap.value):'';
+      const t=snap.type!=null?String(snap.type):'';
+      const line=[t,v].filter(Boolean).join(' — ');
+      if(line) return line.slice(0,250);
     }
-    function apiUrl(p) {
-      return apiBase() + (p.startsWith('/') ? p : '/' + p);
+    return link.notes?String(link.notes).slice(0,180):'(sem resumo)';
+  }
+
+  /** Texto curto educativo por tipo de vulnerabilidade (título da categoria). */
+  function getCategoryTeach(title) {
+    const t = String(title || '').toLowerCase();
+    if (/xss/.test(t)) {
+      return {
+        headline: 'O que é XSS?',
+        text: 'Cross-Site Scripting: código (normalmente JavaScript) injectado numa página que outra pessoa vê no browser. Pode ser reflected (payload na resposta), stored (persistido na base) ou DOM-based (lógica client-side insegura). Risco típico: roubar sessão, alterar conteúdo ou redireccionar a vítima.',
+      };
     }
-
-    let categories = [];
-    let activeId = null;
-    let activeLinks = [];
-    let demoMode = false;
-    /** Título da categoria activa (para re-render ao mudar o modo mapa). */
-    let activeCategoryTitle = '';
-
-    function isObsidianGraphMode() {
-      const el = document.getElementById('toggleObsidianGraph');
-      return Boolean(el && el.checked);
+    if (/sql|inje(c|ç)/.test(t)) {
+      return {
+        headline: 'O que é SQL Injection?',
+        text: 'Parte da entrada do utilizador é concatenada a uma query SQL sem saneamento, permitindo ao atacante alterar a lógica da query (filtros, UNION, escrita). Pode levar a leitura ou destruição de dados. Defesa: consultas parametrizadas, ORM com cuidado e princípio do menor privilégio na base.',
+      };
     }
-
-    function persistObsidianToggle() {
-      try {
-        localStorage.setItem('cortex_obsidian_graph', isObsidianGraphMode() ? '1' : '0');
-      } catch (_) {}
+    if (/ftp/.test(t)) {
+      return {
+        headline: 'O que é FTP inseguro?',
+        text: 'Serviços FTP mal configurados (anónimo, sem TLS, credenciais fracas ou directórios graváveis) expõem ficheiros ou permitem upload abusivo. Em bug bounty costuma ser prioridade média a alta conforme exposição e dados acessíveis.',
+      };
     }
-
-    function restoreObsidianToggle() {
-      try {
-        const v = localStorage.getItem('cortex_obsidian_graph');
-        const el = document.getElementById('toggleObsidianGraph');
-        if (el && v !== null) el.checked = v === '1';
-      } catch (_) {}
+    if (/idor/.test(t)) {
+      return {
+        headline: 'O que é IDOR?',
+        text: 'Insecure Direct Object Reference: o servidor expõe objectos (IDs, ficheiros, APIs) sem verificar se o utilizador autenticado tem permissão para esse objecto específico. Muitas vezes basta alterar um ID na URL ou no corpo do pedido para aceder a dados de outro utilizador.',
+      };
     }
-
-    /**
-     * Mapa local: elipse em toda a área útil, centro = tipo, nós = só URL, linhas SVG alinhadas.
-     */
-    function buildObsidianGraphHtml(categoryTitle, links) {
-      const n = Math.max(links.length, 1);
-      const cx = 50;
-      const cy = 50;
-      const rx = 43;
-      const ry = 36;
-      const lines = [];
-      for (let i = 0; i < n; i++) {
-        const ang = (i / n) * 2 * Math.PI - Math.PI / 2;
-        const x2 = cx + Math.cos(ang) * rx;
-        const y2 = cy + Math.sin(ang) * ry;
-        lines.push(
-          '<line style="animation-delay:' +
-            (i * 0.38).toFixed(2) +
-            's" x1="' +
-            cx +
-            '" y1="' +
-            cy +
-            '" x2="' +
-            x2.toFixed(3) +
-            '" y2="' +
-            y2.toFixed(3) +
-            '" />',
-        );
-      }
-      const nodeButtons = links
-        .map((link, idx) => {
-          const ang = (idx / n) * 2 * Math.PI - Math.PI / 2;
-          const dx = Math.cos(ang);
-          const dy = Math.sin(ang);
-          const lp = cx + dx * rx;
-          const tp = cy + dy * ry;
-          const fullUrl = linkDisplayUrl(link);
-          const shortUrl = fullUrl.length > 76 ? fullUrl.slice(0, 74) + '…' : fullUrl;
-          return (
-            '<button type="button" class="node node--float" data-idx="' +
-            idx +
-            '" title="' +
-            escapeAttr(fullUrl) +
-            '" style="left:' +
-            lp.toFixed(3) +
-            '%;top:' +
-            tp.toFixed(3) +
-            '%;animation-delay:' +
-            (idx * 0.55).toFixed(2) +
-            's"><span class="node-url-float">' +
-            escapeHtml(shortUrl) +
-            '</span></button>'
-          );
-        })
-        .join('');
-      return (
-        '<div class="obsidian-graph">' +
-        '<div class="graph-lines" aria-hidden="true"></div>' +
-        '<svg class="obsidian-radials" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
-        lines.join('') +
-        '</svg>' +
-        '<div class="obsidian-hub">' +
-        escapeHtml(categoryTitle) +
-        '</div>' +
-        '<div class="obsidian-orbit-layer">' +
-        nodeButtons +
-        '</div></div>'
-      );
+    if (/ssrf/.test(t)) {
+      return {
+        headline: 'O que é SSRF?',
+        text: 'Server-Side Request Forgery: o servidor faz pedidos HTTP (ou outros) a destinos escolhidos pelo atacante. Pode servir para ler metadata em clouds, varrer portas internas ou encadear com outros bugs.',
+      };
     }
+    if (/lfi|path traversal|traversal|file include/.test(t)) {
+      return {
+        headline: 'O que é LFI / path traversal?',
+        text: 'Inclusão ou leitura de ficheiros fora do directório previsto (../, wrappers, etc.), por vezes levando a exposição de credenciais ou código. Validação estrita de caminhos e listas brancas reduzem o risco.',
+      };
+    }
+    if (/rce|remote code|command inj|exec/.test(t)) {
+      return {
+        headline: 'O que é RCE / injecção de comandos?',
+        text: 'Execução de código ou comandos no servidor (ou no cliente, em casos limitados) controlada pelo atacante. É das classes mais graves: pode implicar compromisso total do host.',
+      };
+    }
+    if (/csrf/.test(t)) {
+      return {
+        headline: 'O que é CSRF?',
+        text: 'Cross-Site Request Forgery: enganar o browser da vítima a enviar pedidos autenticados a um site onde ela já tem sessão. Mitigação: tokens anti-CSRF, SameSite em cookies e verificação de origem.',
+      };
+    }
+    if (/xxe/.test(t)) {
+      return {
+        headline: 'O que é XXE?',
+        text: 'XML External Entity: parsers XML mal configurados processam entidades externas e podem vazar ficheiros locais ou fazer SSRF. Desactivar entidades externas ou usar formatos mais seguros ajuda.',
+      };
+    }
+    return {
+      headline: 'Sobre esta categoria',
+      text: 'Esta pasta do Cérebro agrupa achados que ligaste manualmente a este tipo a partir da checklist no GHOSTRECON. Usa o mapa ou a grelha para ver alvos; clica num nó para notas, fingerprint e snapshot completos.',
+    };
+  }
 
-    /** Fingerprints 64 hex fictícios (só para UI demo). */
-    const DEMO_FP = {
-      xssA: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      xssB: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      sqli: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-      ftp1: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-      ftp2: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-      idor: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  function applyCategoryTeach(labelForTeach) {
+    const box = $('categoryTeach');
+    if (!box) return;
+    if (!activeId) {
+      box.hidden = true;
+      return;
+    }
+    const label = String(labelForTeach || '').trim();
+    if (!label) {
+      box.hidden = true;
+      return;
+    }
+    const { headline, text } = getCategoryTeach(label);
+    $('categoryTeachHead').textContent = headline;
+    $('categoryTeachPara').textContent = text;
+    box.hidden = false;
+  }
+
+  function setErr(msg){
+    const el=$('errBanner');
+    el.style.display=msg?'block':'none';
+    el.textContent=msg||'';
+  }
+
+  // ── search filter ──
+  $('railSearchInput').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll('.nav-item').forEach(btn => {
+      const label = btn.querySelector('.nav-item-label');
+      btn.style.display = !q || (label && label.textContent.toLowerCase().includes(q)) ? '' : 'none';
+    });
+  });
+
+  function renderRail(){
+    const host=$('railList');
+    host.innerHTML='';
+    $('catCount').textContent=categories.length;
+    if(!categories.length){
+      host.innerHTML='<p style="padding:14px 16px;font-size:10px;color:var(--dim);line-height:1.6;">Sem categorias.<br>No GHOSTRECON principal usa checklist + cérebro (SQLite), ou clica em <em>Simular</em> acima.</p>';
+      return;
+    }
+    // folder header
+    const folderEl=document.createElement('div');
+    folderEl.className='nav-folder';
+    folderEl.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>findings`;
+    host.appendChild(folderEl);
+    for(const c of categories){
+      const b=document.createElement('button');
+      b.type='button';
+      b.className='nav-item'+(activeId===c.id?' is-active':'');
+      b.innerHTML=`<span class="nav-item-label">${esc(c.title)}</span><span class="nav-count">${Number(c.linkCount)||0}</span>`;
+      b.addEventListener('click', ()=>{ void selectCategory(c.id); });
+      host.appendChild(b);
+    }
+  }
+
+  // ── Obsidian Graph — spring physics ──
+  const SPRING_STIFFNESS = 0.065; // força da mola (menor = mais lag)
+  const SPRING_DAMPING   = 0.74;  // amortecimento (menor = oscila mais)
+  const SETTLE_THRESHOLD = 0.08;  // velocidade mínima antes de parar o loop
+
+  let graphState = null;
+  let dragState  = null;
+
+  function destroyGraphIfAny() {
+    if (!graphState) {
+      dragState = null;
+      return;
+    }
+    try {
+      if (graphState.resizeObserver) graphState.resizeObserver.disconnect();
+    } catch (_) {}
+    if (graphState.physicsRaf != null) {
+      cancelAnimationFrame(graphState.physicsRaf);
+    }
+    graphState = null;
+    dragState = null;
+  }
+
+  function buildObsidianGraph(title, links) {
+    const container = document.getElementById('canvasBody');
+    container.classList.add('canvas-body--graph');
+
+    const W  = container.clientWidth  || 800;
+    const H  = container.clientHeight || 600;
+    const cx = W / 2, cy = H / 2;
+    const rx = Math.min(W * 0.37, 320);
+    const ry = Math.min(H * 0.36, 230);
+    const n  = Math.max(links.length, 1);
+
+    const nodes = links.map((link, i) => {
+      const ang = (i / n) * 2 * Math.PI - Math.PI / 2;
+      const x   = cx + Math.cos(ang) * rx;
+      const y   = cy + Math.sin(ang) * ry;
+      return {
+        link,
+        x, y,               // rendered position
+        targetX: x,         // spring target
+        targetY: y,
+        vx: 0, vy: 0,       // velocity
+        offsetX: x - cx,    // offset relative to hub
+        offsetY: y - cy,
+        el: null,
+      };
+    });
+
+    // ── DOM ──
+    const graph = document.createElement('div');
+    graph.className = 'obsidian-graph';
+
+    const dotsBg = document.createElement('div');
+    dotsBg.className = 'graph-lines';
+    dotsBg.setAttribute('aria-hidden', 'true');
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'obsidian-radials');
+    svg.setAttribute('aria-hidden', 'true');
+
+    const hubRing = document.createElement('div');
+    hubRing.className = 'hub-ring';
+    hubRing.style.left = cx + 'px';
+    hubRing.style.top  = cy + 'px';
+
+    const hub = document.createElement('div');
+    hub.className = 'obsidian-hub';
+    hub.textContent = title;
+    hub.style.left = cx + 'px';
+    hub.style.top  = cy + 'px';
+
+    const orbit = document.createElement('div');
+    orbit.className = 'obsidian-orbit-layer';
+
+    nodes.forEach((nd, idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'node node--float is-drifting';
+      btn.style.left = nd.x + 'px';
+      btn.style.top  = nd.y + 'px';
+      btn.style.animationDelay = (idx * 0.62).toFixed(2) + 's';
+
+      const fullUrl = linkDisplayUrl(nd.link);
+      let host = '', path = fullUrl;
+      try { const u = new URL(fullUrl); host = u.host; path = u.pathname + (u.search || ''); } catch (_) {}
+      const shortPath = path.length > 46 ? path.slice(0, 44) + '…' : path;
+
+      btn.innerHTML = `<span class="node-url-float"><span class="node-dot"></span><span><span class="node-url-float-host">${esc(host)}</span>${esc(shortPath)}</span></span>`;
+      btn.title = fullUrl;
+      btn.dataset.idx = idx;
+      orbit.appendChild(btn);
+      nd.el = btn;
+    });
+
+    graph.appendChild(dotsBg);
+    graph.appendChild(svg);
+    graph.appendChild(hubRing);
+    graph.appendChild(hub);
+    graph.appendChild(orbit);
+
+    container.innerHTML = '';
+    container.appendChild(graph);
+
+    graphState = {
+      nodes, hubX: cx, hubY: cy,
+      hubEl: hub, hubRingEl: hubRing,
+      container, svgEl: svg, orbitEl: orbit,
+      physicsRaf: null,
+      resizeObserver: null,
     };
 
-    const CORTEX_DEMO_CATEGORIES = [
-      { id: 9001, title: 'XSS', linkCount: 2, created_at: '2026-01-01T12:00:00.000Z' },
-      { id: 9002, title: 'SQLi', linkCount: 1, created_at: '2026-01-01T12:00:00.000Z' },
-      { id: 9003, title: 'FTP (anónimo / sem auth)', linkCount: 2, created_at: '2026-01-01T12:00:00.000Z' },
-      { id: 9004, title: 'IDOR', linkCount: 1, created_at: '2026-01-01T12:00:00.000Z' },
-    ];
+    drawLines();
+    attachDrag(container, orbit, hub, graph);
+  }
 
-    /**
-     * Corpo fictício no mesmo formato que o servidor devolve em GET /api/brain/categories.
-     * Gerado a partir das categorias demo para não duplicar IDs à mão.
-     */
-    const FAKE_GET_BRAIN_CATEGORIES_JSON = JSON.stringify({
-      items: CORTEX_DEMO_CATEGORIES,
+  function drawLines() {
+    if (!graphState) return;
+    const { nodes, hubX, hubY, svgEl, container } = graphState;
+    const W = container.clientWidth  || 800;
+    const H = container.clientHeight || 600;
+
+    svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svgEl.style.width  = W + 'px';
+    svgEl.style.height = H + 'px';
+    svgEl.innerHTML = '';
+
+    nodes.forEach((nd, i) => {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', hubX);
+      line.setAttribute('y1', hubY);
+      line.setAttribute('x2', nd.x);
+      line.setAttribute('y2', nd.y);
+      line.style.animationDelay = (i * 0.4).toFixed(2) + 's';
+      if (i % 3 === 0) line.classList.add('line-green');
+      svgEl.appendChild(line);
     });
+  }
 
-    /** Simula latência de rede e parse do JSON (só para visualizar o Cérebro na UI). */
-    async function fakeFetchBrainCategories(delayMs) {
-      const ms = typeof delayMs === 'number' && delayMs >= 0 ? delayMs : 400;
-      await new Promise((r) => setTimeout(r, ms));
-      const d = JSON.parse(FAKE_GET_BRAIN_CATEGORIES_JSON);
-      return Array.isArray(d.items) ? d.items.map((c) => ({ ...c })) : [];
+  function startPhysicsLoop() {
+    if (!graphState || graphState.physicsRaf) return;
+
+    function tick() {
+      if (!graphState) return;
+      let active = false;
+
+      graphState.nodes.forEach(nd => {
+        if (nd._dragging) return; // directly dragged — skip physics
+
+        const dx = nd.targetX - nd.x;
+        const dy = nd.targetY - nd.y;
+
+        nd.vx = (nd.vx + dx * SPRING_STIFFNESS) * SPRING_DAMPING;
+        nd.vy = (nd.vy + dy * SPRING_STIFFNESS) * SPRING_DAMPING;
+
+        const moving = Math.abs(nd.vx) > SETTLE_THRESHOLD ||
+                       Math.abs(nd.vy) > SETTLE_THRESHOLD ||
+                       Math.abs(dx)    > SETTLE_THRESHOLD ||
+                       Math.abs(dy)    > SETTLE_THRESHOLD;
+
+        if (moving) {
+          nd.x += nd.vx;
+          nd.y += nd.vy;
+          nd.el.style.left = nd.x + 'px';
+          nd.el.style.top  = nd.y + 'px';
+          active = true;
+        } else {
+          // snap to target and kill velocity
+          nd.x = nd.targetX; nd.y = nd.targetY;
+          nd.vx = 0; nd.vy = 0;
+          nd.el.style.left = nd.x + 'px';
+          nd.el.style.top  = nd.y + 'px';
+          // restore drift animation once settled
+          if (!nd.el.classList.contains('is-drifting')) {
+            nd.el.classList.add('is-drifting');
+          }
+        }
+      });
+
+      if (active) {
+        drawLines();
+        graphState.physicsRaf = requestAnimationFrame(tick);
+      } else {
+        graphState.physicsRaf = null;
+      }
     }
 
-    const CORTEX_DEMO_LINKS = {
-      9001: [
-        {
-          target: 'bounty-alvo.invalid',
-          fingerprint: DEMO_FP.xssA,
-          linked_at: '2026-04-10T14:22:00.000Z',
-          notes: 'Reflected na página de pesquisa; confirmado com payload manual.',
-          snapshot: {
-            type: 'xss',
-            prio: 'high',
-            value:
-              'https://bounty-alvo.invalid/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E',
-            url: 'https://bounty-alvo.invalid/search',
-            meta: 'Parâmetro q sem escape',
-          },
-        },
-        {
-          target: 'cliente-demo.example',
-          fingerprint: DEMO_FP.xssB,
-          linked_at: '2026-04-12T09:05:00.000Z',
-          notes: 'DOM XSS via fragment; CSP fraco.',
-          snapshot: {
-            type: 'xss',
-            prio: 'medium',
-            value: 'https://cliente-demo.example/app#/callback=…',
-            url: 'https://cliente-demo.example/app',
-            meta: 'Router client-side',
-          },
-        },
-      ],
-      9002: [
-        {
-          target: 'legacy-api.test',
-          fingerprint: DEMO_FP.sqli,
-          linked_at: '2026-04-08T18:40:00.000Z',
-          notes: 'Boolean-based; id param.',
-          snapshot: {
-            type: 'sqli',
-            prio: 'high',
-            value: "GET /v1/users?id=1' OR '1'='1",
-            url: 'https://legacy-api.test/v1/users',
-            meta: 'SQLite backend',
-          },
-        },
-      ],
-      9003: [
-        {
-          target: 'ftp-old.corp',
-          fingerprint: DEMO_FP.ftp1,
-          linked_at: '2026-03-28T11:00:00.000Z',
-          notes: 'Anonymous upload permitido; banner vsftpd 3.0.3.',
-          snapshot: {
-            type: 'ftp',
-            prio: 'high',
-            value: 'ftp://ftp-old.corp/',
-            url: 'ftp://ftp-old.corp/',
-            meta: 'Porta 21 aberta',
-          },
-        },
-        {
-          target: 'backup-zone.internal',
-          fingerprint: DEMO_FP.ftp2,
-          linked_at: '2026-04-01T16:30:00.000Z',
-          notes: 'Mesmo padrão; credenciais vazias aceites.',
-          snapshot: {
-            type: 'ftp',
-            prio: 'high',
-            value: 'ftp://backup-zone.internal/pub/',
-            url: 'ftp://backup-zone.internal/pub/',
-            meta: 'Read-only mas listável',
-          },
-        },
-      ],
-      9004: [
-        {
-          target: 'saas-app.io',
-          fingerprint: DEMO_FP.idor,
-          linked_at: '2026-04-15T10:10:00.000Z',
-          notes: 'UUID sequencial em /api/invoices/{id}.',
-          snapshot: {
-            type: 'idor',
-            prio: 'medium',
-            value: 'https://saas-app.io/api/invoices/10042',
-            url: 'https://saas-app.io/api/invoices/10042',
-            meta: 'Acesso a fatura de outro tenant',
-          },
-        },
-      ],
+    graphState.physicsRaf = requestAnimationFrame(tick);
+  }
+
+  function attachDrag(container, orbit, hub, graph) {
+    // ── Hub drag: moves hub instantly, nodes follow with spring lag ──
+    hub.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      hub.setPointerCapture(e.pointerId);
+      hub.classList.add('is-hub-dragging');
+
+      // snapshot offsets at drag start so nodes maintain relative positions as targets
+      graphState.nodes.forEach(nd => {
+        nd.offsetX = nd.x - graphState.hubX;
+        nd.offsetY = nd.y - graphState.hubY;
+        // strip drift animation so physics has clean control
+        nd.el.classList.remove('is-drifting');
+        // give initial velocity that "stays behind" (opposite of drag direction) for effect
+        nd.vx *= 0.3;
+        nd.vy *= 0.3;
+      });
+
+      dragState = {
+        type: 'hub',
+        startMouseX: e.clientX,
+        startMouseY: e.clientY,
+        startHubX: graphState.hubX,
+        startHubY: graphState.hubY,
+      };
+    });
+
+    hub.addEventListener('pointermove', e => {
+      if (!dragState || dragState.type !== 'hub') return;
+      e.preventDefault();
+
+      const dx = e.clientX - dragState.startMouseX;
+      const dy = e.clientY - dragState.startMouseY;
+
+      graphState.hubX = dragState.startHubX + dx;
+      graphState.hubY = dragState.startHubY + dy;
+
+      // hub moves instantly
+      graphState.hubEl.style.left    = graphState.hubX + 'px';
+      graphState.hubEl.style.top     = graphState.hubY + 'px';
+      graphState.hubRingEl.style.left = graphState.hubX + 'px';
+      graphState.hubRingEl.style.top  = graphState.hubY + 'px';
+
+      // update spring targets — nodes lag behind chasing these
+      graphState.nodes.forEach(nd => {
+        nd.targetX = graphState.hubX + nd.offsetX;
+        nd.targetY = graphState.hubY + nd.offsetY;
+      });
+
+      // ensure physics loop is running
+      if (!graphState.physicsRaf) startPhysicsLoop();
+
+      // redraw lines from hub immediately (nodes will catch up via physics)
+      drawLines();
+    });
+
+    const endHubDrag = () => {
+      if (!dragState || dragState.type !== 'hub') return;
+      hub.classList.remove('is-hub-dragging');
+      dragState = null;
+      // physics loop continues until nodes settle
+      if (!graphState.physicsRaf) startPhysicsLoop();
     };
+    hub.addEventListener('pointerup',     endHubDrag);
+    hub.addEventListener('pointercancel', endHubDrag);
 
-    function isCortexDemoMode() {
-      try {
-        const q = new URLSearchParams(location.search || '').get('demo');
-        if (q === '1' || q === 'true' || q === 'yes') return true;
-        const h = (location.hash || '').replace(/^#/, '').trim().toLowerCase();
-        return h === 'demo';
-      } catch (_) {
-        return false;
-      }
+    // ── Individual node drag: direct control, no spring ──
+    orbit.addEventListener('pointerdown', e => {
+      const btn = e.target.closest('.node--float');
+      if (!btn) return;
+      const idx = Number(btn.dataset.idx);
+      if (!Number.isFinite(idx)) return;
+
+      e.preventDefault();
+      btn.setPointerCapture(e.pointerId);
+
+      const nd = graphState.nodes[idx];
+      nd._dragging = true;
+      btn.classList.remove('is-drifting');
+      btn.classList.add('is-dragging');
+
+      dragState = {
+        type: 'node',
+        nodeIdx: idx,
+        startMouseX: e.clientX,
+        startMouseY: e.clientY,
+        startNodeX: nd.x,
+        startNodeY: nd.y,
+      };
+    });
+
+    orbit.addEventListener('pointermove', e => {
+      if (!dragState || dragState.type !== 'node') return;
+      e.preventDefault();
+      const { nodeIdx, startMouseX, startMouseY, startNodeX, startNodeY } = dragState;
+      const nd = graphState.nodes[nodeIdx];
+      nd.x = startNodeX + (e.clientX - startMouseX);
+      nd.y = startNodeY + (e.clientY - startMouseY);
+      nd.targetX = nd.x;
+      nd.targetY = nd.y;
+      nd.vx = 0; nd.vy = 0;
+      nd.el.style.left = nd.x + 'px';
+      nd.el.style.top  = nd.y + 'px';
+      drawLines();
+    });
+
+    const endNodeDrag = () => {
+      if (!dragState || dragState.type !== 'node') return;
+      const nd = graphState.nodes[dragState.nodeIdx];
+      nd._dragging = false;
+      // update relative offset so hub drag keeps this new position
+      nd.offsetX = nd.x - graphState.hubX;
+      nd.offsetY = nd.y - graphState.hubY;
+      nd.el.classList.remove('is-dragging');
+      nd.el.classList.add('is-drifting');
+      dragState = null;
+    };
+    orbit.addEventListener('pointerup',     endNodeDrag);
+    orbit.addEventListener('pointercancel', endNodeDrag);
+
+    // click vs drag: drawer only on tap with no movement
+    orbit.addEventListener('click', e => {
+      if (dragState) return;
+      const btn = e.target.closest('.node--float');
+      if (!btn || !graphState) return;
+      const idx = Number(btn.dataset.idx);
+      if (!Number.isFinite(idx)) return;
+      openDrawer(graphState.nodes[idx].link, activeCategoryTitle);
+    });
+
+    // redraw lines on container resize
+    let resizeRaf;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(drawLines);
+    });
+    ro.observe(container);
+    graphState.resizeObserver = ro;
+  }
+
+
+  function renderCanvas(categoryTitle){
+    const titleEl=$('canvasTitle'), hintEl=$('canvasHint'), body=$('canvasBody');
+    const statsEl=$('canvasStats');
+    $('breadcrumbCat').textContent=categoryTitle||'—';
+
+    destroyGraphIfAny();
+    body.classList.remove('canvas-body--graph');
+
+    if(!activeId){
+      const teachBox = $('categoryTeach');
+      if (teachBox) teachBox.hidden = true;
+      titleEl.innerHTML='<span class="canvas-title-accent">Cortex</span> — Cérebro';
+      hintEl.textContent='Selecciona uma vulnerabilidade à esquerda para ver os alvos confirmados.';
+      statsEl.style.display='none';
+      body.innerHTML=`<div class="empty-canvas">
+        <h2>Bem-vindo ao Cortex</h2>
+        <p>Cada achado que ligares ao cérebro a partir da checklist no GHOSTRECON aparece aqui como um nó. Clica num nó para ver notas e snapshot no painel lateral.</p>
+        <p style="margin-top:10px;">Com o <strong>Mapa local</strong> activado, o tipo fica no centro e os alvos orbitam à volta — igual ao grafo local do Obsidian. Podes <strong>arrastar</strong> cada nó livremente.</p>
+        ${demoMode?'':'<p style="margin-top:10px;">Para pré-visualização fictícia clica em <strong>Simular GET…</strong> na barra lateral, ou usa <code>?demo=1</code> / <code>#demo</code> na URL.</p>'}
+        <div class="empty-shortcut-row">
+          <span class="kbd">Ctrl+K</span><span style="color:var(--dim);font-size:10px"> pesquisar notas</span>
+          <span style="color:var(--dim);font-size:10px;margin-left:8px">Esc</span><span style="color:var(--dim);font-size:10px"> fechar painel</span>
+        </div>
+      </div>`;
+      return;
     }
 
-    function applyDemoChrome() {
-      demoMode = true;
-      const bar = document.getElementById('demoBanner');
-      const sub = document.getElementById('railSub');
-      if (bar) {
-        bar.style.display = 'block';
-        bar.innerHTML =
-          '<strong>Modo demonstração</strong> — dados fictícios (não vêm da base). Remove <code>?demo=1</code> ou o hash <code>#demo</code> da URL para o Cortex real.';
-      }
-      if (sub) {
-        sub.textContent = 'Vista fictícia · no SQLite real usas o Reporte (+ Cérebro)';
-      }
+    titleEl.innerHTML=`<span class="canvas-title-accent">${esc(categoryTitle)}</span>`;
+    statsEl.style.display='flex';
+    $('statNodes').textContent=activeLinks.length;
+    $('statType').textContent=activeLinks[0]?.snapshot?.type||'—';
+
+    applyCategoryTeach(String(categoryTitle || activeCategoryTitle || '').trim());
+
+    if(!activeLinks.length){
+      hintEl.textContent='Sem alvos ligados a este tipo — valida na checklist no GHOSTRECON e adiciona ao cérebro.';
+      body.innerHTML='<p class="empty-canvas">Sem nós nesta categoria. Liga achados na checklist (app principal) ao cérebro.</p>';
+      return;
     }
 
-    function escapeHtml(s) {
-      return String(s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+    hintEl.textContent=isObsidianMode()
+      ? `${activeLinks.length} nó(s) · Arrasta o centro para mover tudo · arrasta um nó individualmente · clica para detalhes`
+      : `${activeLinks.length} confirmação(ões) · clica num cartão para abrir o painel lateral`;
+
+    if(isObsidianMode()){
+      // defer to let the DOM settle so clientWidth/Height are correct
+      body.innerHTML = '';
+      requestAnimationFrame(() => buildObsidianGraph(categoryTitle||activeCategoryTitle||'Tipo', activeLinks));
+      return;
     }
 
-    function escapeAttr(s) {
-      return escapeHtml(s).replace(/'/g, '&#39;');
+    const nodes=activeLinks.map((link,idx)=>{
+      const snap=link.snapshot||{};
+      const type=snap.type||'';
+      return `<button type="button" class="node" data-idx="${idx}">
+        ${type?`<span class="node-type-badge">${esc(type)}</span>`:''}
+        <div class="node-target">${esc(link.target)}</div>
+        <div class="node-snippet">${esc(snippetFromLink(link))}</div>
+        <div class="node-meta">
+          <span>${esc(String(link.fingerprint||'').slice(0,12))}…</span>
+          <span>${esc(String(link.linked_at||'').slice(0,10))}</span>
+        </div>
+      </button>`;
+    }).join('');
+
+    body.innerHTML=`<div class="graph-wrap"><div class="graph-lines" aria-hidden="true"></div><div class="nodes">${nodes}</div></div>`;
+  }
+
+  function openDrawer(link, categoryTitle){
+    const drawer=$('drawer'), backdrop=$('drawerBackdrop');
+    $('drawerTitle').textContent=categoryTitle||'Detalhe';
+    const snap=link.snapshot||{};
+    const prio=snap.prio||'';
+    const type=snap.type||'';
+    const prioClass=prio==='high'?'drawer-tag-prio-high':prio==='medium'?'drawer-tag-prio-medium':'';
+    $('drawerBody').innerHTML=`
+      ${type?`<div style="margin-bottom:12px;"><span class="drawer-tag drawer-tag-type">${esc(type)}</span>${prioClass?`<span class="drawer-tag ${prioClass}">${esc(prio)}</span>`:''}</div>`:''}
+      <div class="drawer-section"><div class="drawer-label">Alvo</div><pre class="drawer-pre">${esc(link.target)}</pre></div>
+      <div class="drawer-section"><div class="drawer-label">URL</div><pre class="drawer-pre">${esc(linkDisplayUrl(link))}</pre></div>
+      <div class="drawer-section"><div class="drawer-label">Fingerprint</div><pre class="drawer-pre">${esc(link.fingerprint)}</pre></div>
+      <div class="drawer-section"><div class="drawer-label">Notas</div><pre class="drawer-pre">${esc(link.notes||'—')}</pre></div>
+      <div class="drawer-section"><div class="drawer-label">Snapshot</div><pre class="drawer-pre">${esc(JSON.stringify(link.snapshot||{},null,2))}</pre></div>
+    `;
+    drawer.classList.add('is-open'); drawer.setAttribute('aria-hidden','false');
+    backdrop.classList.add('is-open'); backdrop.setAttribute('aria-hidden','false');
+  }
+
+  function closeDrawer(){
+    $('drawer').classList.remove('is-open'); $('drawer').setAttribute('aria-hidden','true');
+    const b=$('drawerBackdrop'); b.classList.remove('is-open'); b.setAttribute('aria-hidden','true');
+  }
+
+  async function selectCategory(id){
+    activeId=id; setErr(''); renderRail();
+    if(demoMode&&CORTEX_DEMO_LINKS[id]){
+      activeLinks=CORTEX_DEMO_LINKS[id].map(x=>({...x}));
+      const cat=CORTEX_DEMO_CATEGORIES.find(c=>c.id===id);
+      activeCategoryTitle=cat?cat.title:'Categoria';
+      try{ const u=new URL(location.href); u.hash=String(id); history.replaceState(null,'',u.toString()); }catch(_){}
+      renderCanvas(activeCategoryTitle); return;
     }
-
-    /** URL a mostrar no mapa flutuante (snapshot.url, link.url ou valor que pareça URL). */
-    function linkDisplayUrl(link) {
-      const snap = link.snapshot && typeof link.snapshot === 'object' ? link.snapshot : null;
-      let u = (link.url != null && String(link.url).trim()) || (snap && snap.url != null && String(snap.url).trim()) || '';
-      if (!u && snap && snap.value != null) {
-        const v = String(snap.value).trim();
-        if (/^(https?|ftp):\/\//i.test(v)) u = v.split(/\s/)[0].slice(0, 400);
-      }
-      if (!u && link.target) u = String(link.target);
-      return u || '(sem URL)';
+    try{
+      const r=await fetch(apiUrl('/api/brain/category/'+encodeURIComponent(String(id))),{cache:'no-store'});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(d.error||String(r.status));
+      activeLinks=Array.isArray(d.links)?d.links:[];
+      activeCategoryTitle=d.category?.title||'Categoria';
+      try{ const u=new URL(location.href); u.hash=String(id); history.replaceState(null,'',u.toString()); }catch(_){}
+      renderCanvas(activeCategoryTitle);
+    } catch(e){
+      activeLinks=[];activeCategoryTitle='';
+      setErr(String(e.message||e)); renderCanvas('');
     }
+  }
 
-    function snippetFromLink(link) {
-      const snap = link.snapshot;
-      if (snap && typeof snap === 'object') {
-        const v = snap.value != null ? String(snap.value) : '';
-        const t = snap.type != null ? String(snap.type) : '';
-        const line = [t, v].filter(Boolean).join(' — ');
-        if (line) return line.slice(0, 280);
-      }
-      return link.notes ? String(link.notes).slice(0, 200) : '(sem resumo)';
-    }
-
-    function setErr(msg) {
-      const el = document.getElementById('errBanner');
-      if (!msg) {
-        el.style.display = 'none';
-        el.textContent = '';
-        return;
-      }
-      el.style.display = 'block';
-      el.textContent = msg;
-    }
-
-    function renderRail() {
-      const host = document.getElementById('railList');
-      host.innerHTML = '';
-      if (!categories.length) {
-        host.innerHTML =
-          '<p style="padding:12px 16px;font-family:var(--mono);font-size:10px;color:var(--dim)">Sem categorias. Usa o Reporte (+ Cérebro) com SQLite local.</p>';
-        return;
-      }
-      for (const c of categories) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'nav-item' + (activeId === c.id ? ' is-active' : '');
-        b.innerHTML =
-          escapeHtml(c.title) + ` <span class="nav-count">${Number(c.linkCount) || 0}</span>`;
-        b.addEventListener('click', () => {
-          void selectCategory(c.id);
-        });
-        host.appendChild(b);
-      }
-    }
-
-    function setObsidianMainClass(on) {
-      document.querySelector('main.cortex-main')?.classList.toggle('cortex-main--obsidian-map', Boolean(on));
-    }
-
-    function renderCanvas(categoryTitle) {
-      const titleEl = document.getElementById('canvasTitle');
-      const hintEl = document.getElementById('canvasHint');
-      const body = document.getElementById('canvasBody');
-      titleEl.textContent = categoryTitle || 'Cérebro';
-      if (!activeId) {
-        setObsidianMainClass(false);
-        hintEl.textContent = 'Selecciona uma vulnerabilidade à esquerda.';
-        body.innerHTML =
-          '<p class="empty-canvas">Cada entrada no Reporte que ligares ao cérebro aparece aqui como um nó. Clica num nó para ver notas e snapshot no painel lateral. Com uma categoria seleccionada, activa <strong>Mapa local (Obsidian)</strong> no canto superior direito para ver o gráfico local (tipo no centro, alvos à volta).' +
-          (demoMode
-            ? ''
-            : ' Para uma <strong>pré-visualização fictícia</strong>, usa o botão à esquerda <strong>Simular GET …</strong>, ou <code>?demo=1</code> / <code>#demo</code> na URL.') +
-          '</p>';
-        return;
-      }
-      const baseHint =
-        activeLinks.length === 0
-          ? 'Ainda não há alvos ligados a este tipo — marca achados no Reporte e adiciona ao cérebro.'
-          : `${activeLinks.length} confirmação(ões) · clica num cartão para abrir o painel`;
-      hintEl.textContent =
-        baseHint +
-        (activeLinks.length && isObsidianGraphMode()
-          ? ' · Mapa local: URLs flutuantes à volta do tipo; passa o rato para ver a URL completa. Desmarca «Mapa local» para a vista em grelha.'
-          : '');
-
-      if (!activeLinks.length) {
-        setObsidianMainClass(false);
-        body.innerHTML = '<p class="empty-canvas">Sem nós nesta categoria.</p>';
-        return;
-      }
-
-      const hubTitle = categoryTitle || activeCategoryTitle || 'Categoria';
-
-      if (isObsidianGraphMode()) {
-        setObsidianMainClass(true);
-        body.innerHTML = buildObsidianGraphHtml(hubTitle, activeLinks);
-        return;
-      }
-
-      setObsidianMainClass(false);
-      const nodes = activeLinks
-        .map(
-          (link, idx) => `
-        <button type="button" class="node" data-idx="${idx}">
-          <div class="node-target">${escapeHtml(link.target)}</div>
-          <div class="node-snippet">${escapeHtml(snippetFromLink(link))}</div>
-          <div class="node-meta">${escapeHtml(String(link.fingerprint || '').slice(0, 14))}… · ${escapeHtml(
-            String(link.linked_at || '').slice(0, 19),
-          )}</div>
-        </button>`,
-        )
-        .join('');
-
-      body.innerHTML =
-        '<div class="graph-wrap"><div class="graph-lines" aria-hidden="true"></div><div class="nodes">' +
-        nodes +
-        '</div></div>';
-    }
-
-    function openDrawer(link, categoryTitle) {
-      const drawer = document.getElementById('drawer');
-      const backdrop = document.getElementById('drawerBackdrop');
-      document.getElementById('drawerTitle').textContent = categoryTitle || 'Detalhe';
-      const parts = [];
-      parts.push('<div class="drawer-section"><div class="drawer-label">Alvo</div><p class="drawer-pre">' + escapeHtml(link.target) + '</p></div>');
-      parts.push(
-        '<div class="drawer-section"><div class="drawer-label">Fingerprint</div><p class="drawer-pre">' +
-          escapeHtml(link.fingerprint) +
-          '</p></div>',
-      );
-      parts.push(
-        '<div class="drawer-section"><div class="drawer-label">Notas (Reporte)</div><p class="drawer-pre">' +
-          escapeHtml(link.notes || '—') +
-          '</p></div>',
-      );
-      parts.push(
-        '<div class="drawer-section"><div class="drawer-label">Snapshot</div><pre class="drawer-pre">' +
-          escapeHtml(JSON.stringify(link.snapshot || {}, null, 2)) +
-          '</pre></div>',
-      );
-      document.getElementById('drawerBody').innerHTML = parts.join('');
-      drawer.classList.add('is-open');
-      drawer.setAttribute('aria-hidden', 'false');
-      backdrop.classList.add('is-open');
-      backdrop.setAttribute('aria-hidden', 'false');
-    }
-
-    function closeDrawer() {
-      document.getElementById('drawer').classList.remove('is-open');
-      document.getElementById('drawer').setAttribute('aria-hidden', 'true');
-      const b = document.getElementById('drawerBackdrop');
-      b.classList.remove('is-open');
-      b.setAttribute('aria-hidden', 'true');
-    }
-
-    async function selectCategory(id) {
-      activeId = id;
+  async function boot(){
+    demoMode=isCortexDemoMode();
+    if(demoMode){
+      applyDemoChrome();
+      categories=CORTEX_DEMO_CATEGORIES.map(c=>({...c}));
       setErr('');
-      renderRail();
-      if (demoMode && CORTEX_DEMO_LINKS[id]) {
-        activeLinks = CORTEX_DEMO_LINKS[id].map((x) => ({ ...x }));
-        const cat = CORTEX_DEMO_CATEGORIES.find((c) => c.id === id);
-        const title = cat ? cat.title : 'Categoria';
-        activeCategoryTitle = title;
-        try {
-          const u = new URL(location.href);
-          u.hash = String(id);
-          history.replaceState(null, '', u.toString());
-        } catch (_) {}
-        renderCanvas(title);
-        return;
-      }
-      try {
-        const r = await fetch(apiUrl('/api/brain/category/' + encodeURIComponent(String(id))), { cache: 'no-store' });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d.error || String(r.status));
-        activeLinks = Array.isArray(d.links) ? d.links : [];
-        const title = d.category && d.category.title ? d.category.title : 'Categoria';
-        activeCategoryTitle = title;
-        try {
-          const u = new URL(location.href);
-          u.hash = String(id);
-          history.replaceState(null, '', u.toString());
-        } catch (_) {}
-        renderCanvas(title);
-      } catch (e) {
-        activeLinks = [];
-        activeCategoryTitle = '';
-        setErr(String(e.message || e));
-        renderCanvas('');
+    } else {
+      try{
+        const r=await fetch(apiUrl('/api/brain/categories'),{cache:'no-store'});
+        const d=await r.json().catch(()=>({}));
+        categories=Array.isArray(d.items)?d.items:[];
+      } catch(e){
+        setErr('Não foi possível carregar categorias: '+(e.message||e));
+        categories=[];
       }
     }
+    restoreToggle();
+    renderRail();
+    const h=(location.hash||'').replace(/^#/,'').trim().toLowerCase();
+    const n=h==='demo'?NaN:Number(h);
+    if(Number.isFinite(n)&&n>0&&categories.some(c=>c.id===n)) await selectCategory(n);
+    else { activeId=null;activeLinks=[];activeCategoryTitle='';renderCanvas(''); }
+  }
 
-    async function boot() {
-      demoMode = isCortexDemoMode();
-      if (demoMode) {
-        applyDemoChrome();
-        categories = CORTEX_DEMO_CATEGORIES.map((c) => ({ ...c }));
-        setErr('');
-      } else {
-        try {
-          const r = await fetch(apiUrl('/api/brain/categories'), { cache: 'no-store' });
-          const d = await r.json().catch(() => ({}));
-          categories = Array.isArray(d.items) ? d.items : [];
-        } catch (e) {
-          setErr('Não foi possível carregar categorias: ' + (e.message || e));
-          categories = [];
-        }
-      }
-      restoreObsidianToggle();
-      renderRail();
+  // ── events ──
+  $('categoryTeachDismiss')?.addEventListener('click', () => {
+    const b = $('categoryTeach');
+    if (b) b.hidden = true;
+  });
 
-      const h = (location.hash || '').replace(/^#/, '').trim().toLowerCase();
-      const n = h === 'demo' ? NaN : Number(h);
-      if (Number.isFinite(n) && n > 0 && categories.some((c) => c.id === n)) {
-        await selectCategory(n);
-      } else {
-        activeId = null;
-        activeLinks = [];
-        activeCategoryTitle = '';
-        renderCanvas('');
-      }
+  $('drawerClose').addEventListener('click', closeDrawer);
+  $('drawerBackdrop').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeDrawer();
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      $('railSearchInput')?.focus();
+      $('railSearchInput')?.select();
     }
+  });
 
-    document.getElementById('drawerClose').addEventListener('click', closeDrawer);
-    document.getElementById('drawerBackdrop').addEventListener('click', closeDrawer);
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closeDrawer();
-    });
+  // grid-mode node clicks (graph-mode nodes handle clicks internally via attachDrag)
+  $('canvasBody').addEventListener('click', ev=>{
+    if (graphState) return; // graph mode handles its own clicks
+    const n=ev.target.closest('.node');
+    if(!n||!$('canvasBody').contains(n)) return;
+    const idx=Number(n.dataset.idx);
+    if(!Number.isFinite(idx)||!activeLinks[idx]) return;
+    openDrawer(activeLinks[idx], activeCategoryTitle);
+  });
 
-    document.getElementById('canvasBody').addEventListener('click', (ev) => {
-      const n = ev.target.closest('.node');
-      if (!n || !document.getElementById('canvasBody').contains(n)) return;
-      const idx = Number(n.dataset.idx);
-      if (!Number.isFinite(idx) || !activeLinks[idx]) return;
-      const titleEl = document.getElementById('canvasTitle');
-      openDrawer(activeLinks[idx], titleEl ? titleEl.textContent : '');
-    });
+  $('toggleObsidianGraph').addEventListener('change', ()=>{
+    persistToggle();
+    if(activeId&&activeLinks.length) renderCanvas(activeCategoryTitle);
+  });
 
-    document.getElementById('toggleObsidianGraph')?.addEventListener('change', () => {
-      persistObsidianToggle();
-      if (activeId && activeLinks.length) renderCanvas(activeCategoryTitle);
-    });
+  $('btnFakeBrain').addEventListener('click', async ()=>{
+    const btn=$('btnFakeBrain'), sub=$('railSub');
+    setErr(''); btn.disabled=true;
+    if(sub) sub.textContent='A simular…';
+    try{
+      categories=await fakeFetchBrainCategories(420);
+      demoMode=true; applyDemoChrome();
+      activeId=null;activeLinks=[];
+      renderRail(); renderCanvas('');
+      if(categories.length) await selectCategory(categories[0].id);
+    } catch(e){
+      setErr('Prévia fictícia falhou: '+(e.message||e));
+      if(sub) sub.textContent='Tipos do cérebro · checklist manual (SQLite local)';
+    } finally{ btn.disabled=false; }
+  });
 
-    document.getElementById('btnFakeBrain').addEventListener('click', async () => {
-      const btn = document.getElementById('btnFakeBrain');
-      const sub = document.getElementById('railSub');
-      setErr('');
-      btn.disabled = true;
-      if (sub) sub.textContent = 'A simular GET /api/brain/categories (JSON fictício)…';
-      try {
-        categories = await fakeFetchBrainCategories(420);
-        demoMode = true;
-        applyDemoChrome();
-        if (sub) {
-          sub.textContent =
-            'Prévia: parse de JSON local (mesma forma que a API) · alvos em memória';
-        }
-        activeId = null;
-        activeLinks = [];
-        renderRail();
-        renderCanvas('');
-        if (categories.length) {
-          await selectCategory(categories[0].id);
-        }
-      } catch (e) {
-        setErr('Prévia fictícia falhou: ' + (e.message || e));
-        if (sub) sub.textContent = 'Tipos ligados no Reporte (SQLite local)';
-      } finally {
-        btn.disabled = false;
-      }
-    });
-
-    void boot();
-  </script>
+  void boot();
+</script>
 </body>
 </html>

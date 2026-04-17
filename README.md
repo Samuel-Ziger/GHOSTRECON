@@ -10,7 +10,10 @@ A interface é uma página estática **`index.html`** servida pelo **Express**; 
 
 - **`mitre-attack/recon-bundle.json`**: subconjunto fixo do ATT&CK **Enterprise** (fases *reconnaissance*, *resource-development*, *initial-access*), gerado a partir de um clone local do [MITRE CTI](https://github.com/mitre/cti) em `mitre-attack/cti/` (pasta **ignorada no Git** por ser pesada). Comando: **`npm run mitre:extract`** (`server/scripts/extract-mitre-recon-bundle.mjs`).
 - **`server/modules/mitre-recon.js`**: após o OWASP Top 10 2025, aplica etiquetas **MITRE** a cada finding (`f.mitre`) com o mesmo estilo de objectos que `f.owasp`; incluído em snapshots, export IA e UI.
-- **`mitre-map.html`**: mapa **ao vivo** noutra aba — **linha do tempo horizontal** do pipeline, **ramificações** alternadas (cima / baixo) por achado, quadrados clicáveis (técnica MITRE ou `#n`) com **popup** (explicação + links **attack.mitre.org** e **OWASP**). Cada card pode mostrar **link direto do achado** (quando houver URL em `value/meta`) e o modal inclui bloco de **serviço identificado** (ex.: WAF/Cloudflare, Nginx, Apache, WordPress, Jenkins, etc.) com explicação curta e documentação. Sincroniza com a aba principal via **`BroadcastChannel`** (mesmo browser) e usa fallback de sessão recente via `localStorage` para evitar ficar preso em hash antigo.
+- **`mitre-map.html`** (**Ghostmap** na UI): mapa **ao vivo** noutra aba — **linha do tempo horizontal** do pipeline, **ramificações** alternadas (cima / baixo) por achado, quadrados clicáveis (técnica MITRE ou `#n`) com **popup** (explicação + links **attack.mitre.org** e **OWASP**). Cada card pode mostrar **link direto do achado** (quando houver URL em `value/meta`) e o modal inclui bloco de **serviço identificado** (ex.: WAF/Cloudflare, Nginx, Apache, WordPress, Jenkins, etc.) com explicação curta e documentação. Sincroniza com a aba principal via **`BroadcastChannel`** (mesmo browser) e usa fallback de sessão recente via `localStorage` para evitar ficar preso em hash antigo.
+- **`cortex.html`** (**Cortex** na UI): vista **Cérebro** — categorias de vulnerabilidade ligadas a achados **validados manualmente** (SQLite). Lista por tipo, **mapa local** (estilo grafo Obsidian: nó central, URLs em órbita, física / arrastar) ou grelha de cartões, painel lateral com detalhe. Dados reais via `GET /api/brain/categories` e `GET /api/brain/category/:id`. **Modo demo**: `?demo=1`, `#demo` ou **Shift+clique** no botão Cortex no `index.html`; botão **Simular GET** gera categorias fictícias sem base.
+- **`reporte.html`** (**Reporte** na UI): **checklist manual** por alvo — lê o pacote `sessionStorage` (`ghostrecon_reporte_payload`) gravado quando abres o Reporte a partir do **`index.html`** (achados da sessão + `target`). Importação de JSON pelo painel **Importar** (só entrada; exportações JSON/Plataforma continuam na barra inferior do index). Persistência de validações e notas: `GET`/`POST /api/manual-validations` (CSRF). Opcional: **relatório IA** (`POST /api/manual-validations/ai-report`) sobre achados validados.
+- **`brain.html`**: redireccionamento simples para **`cortex.html`** (nome legado «Cérebro» → Cortex).
 
 ---
 
@@ -197,8 +200,9 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - **PentestGPT (sidebar)**: módulo **`pentestgpt_validate`**, linha **`pentestgptCapLine`** (árvore upstream **e** indicador **`POST .env`**), campo **URL POST** opcional + **Lembrar** + **Testar ponte**, **`pipe-pentestgpt`** na barra.
 - **Guia de módulos**: botão **?** junto a «Modules» — pop-up com descrição de cada módulo, **Shannon** / **PentestGPT** (função + resultados no Ghost) e nota sobre opções de **IA**.
 - **Dismiss** de findings por fingerprint (`localStorage`).
-- **Mapa MITRE (ao vivo)**: durante o recon, botão **«Mapa MITRE (ao vivo)»** abre **`mitre-map.html`** (nova aba); o botão na sidebar tem estilo dedicado (neon/cyber), só fica ativo quando a sessão live existe e requer popups permitidos (ou abrir manualmente o URL indicado no log se o browser bloquear).
-- **Exportação** no browser: **JSON** (payload alinhado com o servidor para IA), **Markdown**, **TXT**.
+- **Ghostmap / Cortex / Reporte** (sidebar, por baixo de **RUN RECON**): três botões no **mesmo estilo** (card neon). **Ghostmap** abre `mitre-map.html` (BroadcastChannel). **Cortex** abre `cortex.html` (Shift+clique = demo). **Reporte** abre `reporte.html` com o payload da sessão (nova aba; se o popup for bloqueado, segue o URL no log).
+- **Mapa MITRE (ao vivo)**: durante o recon, o botão **Ghostmap** fica activo quando a sessão live existe; requer popups permitidos (ou abrir manualmente o URL indicado no log se o browser bloquear).
+- **Exportação** na barra inferior de estatísticas: **JSON** (payload alinhado com o servidor para IA), **Plataforma**, **Markdown**, **TXT** (o **Reporte** não está nesta barra — usa o botão dedicado acima).
 - **Auth opcional**: `localStorage` `ghostrecon_auth_json` → enviado como `auth` (headers + cookie) para probe/verify.
 - **API base**: por defeito mesma origem; outra porta: `localStorage.setItem('ghostrecon_api_base', 'http://127.0.0.1:PORTO')`.
 - Abrir `index.html` via `file://` **não** corre o pipeline — é preciso `npm start` (ou Docker).
@@ -208,7 +212,7 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 ## Segurança do servidor
 
 - **CORS**: apenas origens `http://127.0.0.1:PORT` e `http://localhost:PORT` (PORT do servidor).
-- **CSRF**: `GET /api/csrf-token` → header `X-CSRF-Token` obrigatório em `POST /api/recon/stream`, `POST /api/ai-reports`, `POST /api/shannon/prep` e `POST /api/pentestgpt-ping`.
+- **CSRF**: `GET /api/csrf-token` → header `X-CSRF-Token` obrigatório em `POST /api/recon/stream`, `POST /api/ai-reports`, `POST /api/shannon/prep`, `POST /api/pentestgpt-ping`, `POST /api/brain/categories`, `POST /api/brain/link`, `POST /api/manual-validations` e `POST /api/manual-validations/ai-report`.
 - **Rate limit** opcional por IP em `POST /api/recon/stream` (`GHOSTRECON_RL_*`).
 - Corpo JSON limitado a **5 MB**.
 
@@ -242,8 +246,18 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | `GET` | `/` | Serve `index.html` |
-| `GET` | `/mitre-map.html` | Mapa MITRE/OWASP ao vivo (estático; mesmo origin que o servidor) |
+| `GET` | `/mitre-map.html` | Ghostmap — MITRE/OWASP ao vivo (estático; mesmo origin) |
+| `GET` | `/cortex.html` | Cortex — Cérebro / grafo por categorias (estático + API abaixo) |
+| `GET` | `/reporte.html` | Reporte — checklist manual (estático + API `manual-validations`) |
+| `GET` | `/brain.html` | Redireciona para `cortex.html` |
 | `GET` | `/mitre-attack/recon-bundle.json` | Bundle ATT&CK recon (subconjunto fixo) |
+| `GET` | `/api/brain/categories` | Lista categorias do modo cérebro (SQLite) |
+| `POST` | `/api/brain/categories` | Cria categoria (CSRF); corpo `{ "title": "…" }` |
+| `POST` | `/api/brain/link` | Liga `target` + `fingerprint` a `categoryId` (CSRF) |
+| `GET` | `/api/brain/category/:id` | Categoria + `links[]` para o Cortex |
+| `GET` | `/api/manual-validations/:target` | Lista validações manuais por domínio |
+| `POST` | `/api/manual-validations` | Grava/remove validação + snapshot (CSRF) |
+| `POST` | `/api/manual-validations/ai-report` | Relatório IA sobre achados validados (CSRF) |
 | `GET` | `/api/health` | `{ ok, service }` |
 | `GET` | `/api/csrf-token` | Token CSRF (vinculado ao IP, TTL ~2 h) |
 | `GET` | `/api/capabilities` | Kali, PATH, chaves IA, `shannon`, `pentestgpt` (árvore local + `http` se `GHOSTRECON_PENTESTGPT_URL` definida) |
@@ -404,8 +418,11 @@ A imagem **não** inclui ferramentas Kali (nmap, nuclei, etc.) — modo passivo 
 
 ```
 GHOSTRECON/
-├── index.html                 # Frontend
-├── mitre-map.html             # Mapa MITRE + OWASP ao vivo (BroadcastChannel)
+├── index.html                 # Frontend principal (recon + hub Ghostmap/Cortex/Reporte)
+├── mitre-map.html             # Ghostmap — MITRE + OWASP ao vivo (BroadcastChannel)
+├── cortex.html                # Cortex — Cérebro (categorias SQLite, mapa local)
+├── reporte.html               # Checklist manual + import JSON + validações
+├── brain.html                 # Redirect → cortex.html
 ├── package.json
 ├── .env.example
 ├── Dockerfile
