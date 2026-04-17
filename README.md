@@ -4,16 +4,49 @@ Framework de **OSINT e reconhecimento** orientado a **bug bounty** e pentest aut
 
 Opcionalmente integra **clone local de repositórios GitHub** (com URLs manuais na UI para programas de bug bounty), **Shannon Lite** em `IAs/shannon/` (white-box: `shannon start`, poll de `workflow.log`, relatório em `.shannon/deliverables/`, abertura da **Temporal Web UI** no browser), e **validação HTTP pós-recon** (**PentestGPT** ou qualquer serviço que aceite o payload exportado).
 
-A interface é uma página estática **`index.html`** servida pelo **Express**; o pipeline corre no servidor e envia eventos em **NDJSON** para o browser.
+A interface é uma página estática **`index.html`** servida pelo **Express**; o pipeline corre no servidor e envia eventos em **NDJSON** para o browser. Na **sidebar** tens ainda o hub **Ghostmap**, **Cortex** e **Reporte** — três ecrãs dedicados a narrativa de ameaça, grafo por categorias e triagem humana (secção **«Três vistas»** abaixo).
 
-### MITRE ATT&CK e OWASP (heurísticas)
+---
+
+## Três vistas: Ghostmap, Cortex e Reporte
+
+O recon produz **muitos** achados em pouco tempo. Além da lista e do log no `index.html`, o GHOSTRECON oferece **três ecrãs complementares** — cada um optimizado para um tipo de decisão. Não substituem o pipeline: **organizam o output** para triagem, narrativa de risco e **prova humana** (indispensável em bug bounty e pentest com relatório).
+
+### Ghostmap (`mitre-map.html`) — narrativa MITRE / OWASP **ao vivo**
+
+**O que faz:** desenha o recon como uma **linha do tempo horizontal** do pipeline, com **ramificações** por achado (alternadas para cima / baixo), cartões clicáveis (técnica MITRE ou índice `#n`) e **popups** com explicação curta, links para **attack.mitre.org** e **OWASP**, e — quando existe — **link directo** para o URL do finding. Inclui contexto de **stack / serviço** (WAF, Nginx, WordPress, etc.) para não ficares só com o raw URL.
+
+**Utilidade:** quando o scan está a correr ou acabou de terminar, precisas de responder *«isto encaixa onde no modelo de ameaça?»* sem exportar para Excel. O Ghostmap sincroniza com a aba principal via **`BroadcastChannel`** (mesma origem, mesmo browser) e usa **`localStorage`** como fallback de sessão — vês o mapa **a evoluir** com o recon, o que é forte para **demos**, handoff a outra pessoa e **priorização visual** (clusters de exposição, fases onde o alvo “abre” mais superfície).
+
+**Quando usar:** briefings, preparação de relatório (esqueleto narrativo ATT&CK), e revisão rápida de *coverage* de reconnaissance / initial-access em relação ao que o Ghost já encontrou.
+
+### Cortex (`cortex.html`) — **Cérebro** (categorias + grafo + SQLite)
+
+**O que faz:** agrupa o que **já decidiste** que importa: crias **categorias** (tipos de bug, linhas de investigação, etc.) e **ligas** fingerprints de findings ao cérebro via API **`/api/brain/*`** (persistência **SQLite** no servidor). A UI oferece lista por tipo, **mapa local** (estilo grafo: nó central, URLs em órbita, física / arrastar) ou grelha de cartões, com painel lateral para detalhe.
+
+**Utilidade:** a lista do recon mistura **sinal e ruído**. O Cortex responde a *«Entre o que **eu** marquei ou liguei manualmente, que história de ataque emerge?»* — útil para **sprints de BB**, re-scoping («foco só em XSS + IDOR neste alvo»), e para manter **continuidade** entre runs sem perder o fio à meada semântico. O fluxo natural é: **validar no Reporte** → **ligar no Cortex** → ver o grafo por categoria.
+
+**Modo demo:** `?demo=1`, `#demo` ou **Shift+clique** no botão Cortex no `index.html`; **Simular GET** gera dados fictícios — ideal para **treino** ou apresentações sem poluir a base.
+
+### Reporte (`reporte.html`) — checklist manual, notas e base para IA
+
+**O que faz:** é o **balcão de triagem humana** por alvo: ao abrir a partir do `index.html`, recebe o pacote em **`sessionStorage`** (`ghostrecon_reporte_payload`) com findings da sessão e o **target**. Podes **importar** JSON pelo painel lateral (só entrada; exportações **JSON / Plataforma / MD / TXT** continuam na **barra inferior** do index). Gravações de estado passam por **`GET` / `POST /api/manual-validations`** (CSRF); opcionalmente **`POST /api/manual-validations/ai-report`** gera relatório IA sobre **apenas** o que validaste.
+
+**Utilidade:** programas de bounty e pentest pago valorizam **confirmação explícita** — o Reporte é onde marcas *confirmado / falso positivo / a investigar*, anotas contexto que o automático não tem, e fechas um **«conjunto de verdade»** antes de submeter ou de gerar texto com IA. Alimenta o Cortex: o que aqui validas torna-se matéria prima para **ligações** e categorias no cérebro.
+
+**Ficheiro legacy:** `brain.html` redirecciona para `cortex.html` (antigo nome «Cérebro»).
+
+### Onde abrir na UI
+
+Na **sidebar**, por baixo de **RUN RECON**, os três botões **Ghostmap**, **Cortex** e **Reporte** partilham o **mesmo estilo** (card neon). Ghostmap precisa de sessão live / popups conforme o browser; Reporte abre em nova aba com o payload da sessão (se o popup falhar, o log indica o URL).
+
+---
+
+## MITRE ATT&CK e OWASP (heurísticas)
 
 - **`mitre-attack/recon-bundle.json`**: subconjunto fixo do ATT&CK **Enterprise** (fases *reconnaissance*, *resource-development*, *initial-access*), gerado a partir de um clone local do [MITRE CTI](https://github.com/mitre/cti) em `mitre-attack/cti/` (pasta **ignorada no Git** por ser pesada). Comando: **`npm run mitre:extract`** (`server/scripts/extract-mitre-recon-bundle.mjs`).
 - **`server/modules/mitre-recon.js`**: após o OWASP Top 10 2025, aplica etiquetas **MITRE** a cada finding (`f.mitre`) com o mesmo estilo de objectos que `f.owasp`; incluído em snapshots, export IA e UI.
-- **`mitre-map.html`** (**Ghostmap** na UI): mapa **ao vivo** noutra aba — **linha do tempo horizontal** do pipeline, **ramificações** alternadas (cima / baixo) por achado, quadrados clicáveis (técnica MITRE ou `#n`) com **popup** (explicação + links **attack.mitre.org** e **OWASP**). Cada card pode mostrar **link direto do achado** (quando houver URL em `value/meta`) e o modal inclui bloco de **serviço identificado** (ex.: WAF/Cloudflare, Nginx, Apache, WordPress, Jenkins, etc.) com explicação curta e documentação. Sincroniza com a aba principal via **`BroadcastChannel`** (mesmo browser) e usa fallback de sessão recente via `localStorage` para evitar ficar preso em hash antigo.
-- **`cortex.html`** (**Cortex** na UI): vista **Cérebro** — categorias de vulnerabilidade ligadas a achados **validados manualmente** (SQLite). Lista por tipo, **mapa local** (estilo grafo Obsidian: nó central, URLs em órbita, física / arrastar) ou grelha de cartões, painel lateral com detalhe. Dados reais via `GET /api/brain/categories` e `GET /api/brain/category/:id`. **Modo demo**: `?demo=1`, `#demo` ou **Shift+clique** no botão Cortex no `index.html`; botão **Simular GET** gera categorias fictícias sem base.
-- **`reporte.html`** (**Reporte** na UI): **checklist manual** por alvo — lê o pacote `sessionStorage` (`ghostrecon_reporte_payload`) gravado quando abres o Reporte a partir do **`index.html`** (achados da sessão + `target`). Importação de JSON pelo painel **Importar** (só entrada; exportações JSON/Plataforma continuam na barra inferior do index). Persistência de validações e notas: `GET`/`POST /api/manual-validations` (CSRF). Opcional: **relatório IA** (`POST /api/manual-validations/ai-report`) sobre achados validados.
-- **`brain.html`**: redireccionamento simples para **`cortex.html`** (nome legado «Cérebro» → Cortex).
+- **`mitre-map.html`** (Ghostmap), **`cortex.html`** (Cortex), **`reporte.html`** (Reporte), **`brain.html`** (redirect → Cortex): visão funcional, fluxo de trabalho e APIs na secção **«Três vistas: Ghostmap, Cortex e Reporte»** no início deste README. Tecnicamente: Ghostmap ↔ `BroadcastChannel` + `localStorage`; Cortex ↔ `GET/POST /api/brain/*` (SQLite); Reporte ↔ `sessionStorage` + `GET/POST /api/manual-validations` (+ `ai-report` opcional).
 
 ---
 
@@ -200,9 +233,9 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
 - **PentestGPT (sidebar)**: módulo **`pentestgpt_validate`**, linha **`pentestgptCapLine`** (árvore upstream **e** indicador **`POST .env`**), campo **URL POST** opcional + **Lembrar** + **Testar ponte**, **`pipe-pentestgpt`** na barra.
 - **Guia de módulos**: botão **?** junto a «Modules» — pop-up com descrição de cada módulo, **Shannon** / **PentestGPT** (função + resultados no Ghost) e nota sobre opções de **IA**.
 - **Dismiss** de findings por fingerprint (`localStorage`).
-- **Ghostmap / Cortex / Reporte** (sidebar, por baixo de **RUN RECON**): três botões no **mesmo estilo** (card neon). **Ghostmap** abre `mitre-map.html` (BroadcastChannel). **Cortex** abre `cortex.html` (Shift+clique = demo). **Reporte** abre `reporte.html` com o payload da sessão (nova aba; se o popup for bloqueado, segue o URL no log).
-- **Mapa MITRE (ao vivo)**: durante o recon, o botão **Ghostmap** fica activo quando a sessão live existe; requer popups permitidos (ou abrir manualmente o URL indicado no log se o browser bloquear).
-- **Exportação** na barra inferior de estatísticas: **JSON** (payload alinhado com o servidor para IA), **Plataforma**, **Markdown**, **TXT** (o **Reporte** não está nesta barra — usa o botão dedicado acima).
+- **Ghostmap / Cortex / Reporte**: hub na **sidebar** (por baixo de **RUN RECON**); descrição alargada na secção **«Três vistas: Ghostmap, Cortex e Reporte»**. Resumo: Ghostmap = `mitre-map.html` + BroadcastChannel; Cortex = `cortex.html` (Shift+clique = demo); Reporte = `reporte.html` + payload em nova aba (se popup bloquear, ver log).
+- **Ghostmap ao vivo**: o botão **Ghostmap** fica útil quando há sessão de recon activa; popups permitidos ou URL manual no log.
+- **Exportação** (barra inferior): **JSON**, **Plataforma**, **Markdown**, **TXT** — o **Reporte** é vista própria (checklist + import), não botão nesta barra.
 - **Auth opcional**: `localStorage` `ghostrecon_auth_json` → enviado como `auth` (headers + cookie) para probe/verify.
 - **API base**: por defeito mesma origem; outra porta: `localStorage.setItem('ghostrecon_api_base', 'http://127.0.0.1:PORTO')`.
 - Abrir `index.html` via `file://` **não** corre o pipeline — é preciso `npm start` (ou Docker).
