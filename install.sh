@@ -103,7 +103,7 @@ install_base_apt_packages() {
 
   log "Instalando pacotes base"
   apt_install_if_available \
-    ca-certificates curl git jq unzip xz-utils gnupg lsb-release software-properties-common \
+    ca-certificates curl git jq unzip xz-utils gnupg lsb-release \
     build-essential pkg-config make gcc g++ python3 python3-pip python3-venv python3-dev \
     whois wafw00f ffuf nmap sqlmap dirb seclists
 }
@@ -209,11 +209,21 @@ setup_env_file() {
   fi
 }
 
+# CORRIGIDO: evita o erro de "externally-managed-environment" tentando uv primeiro,
+# depois vai direto pro --break-system-packages sem exibir erro desnecessario.
 install_xss_vibes_python() {
   [ -d "$XSS_DIR" ] || return
   log "Instalando dependencias Python do xss_vibes"
-  python3 -m pip install --user -r "$XSS_DIR/requirements" || \
-    python3 -m pip install --user --break-system-packages -r "$XSS_DIR/requirements"
+
+  local req="$XSS_DIR/requirements"
+
+  if need_cmd uv; then
+    log "Usando uv para instalar dependencias Python"
+    uv pip install --system -r "$req" 2>/dev/null && return
+  fi
+
+  log "Usando pip com --break-system-packages"
+  python3 -m pip install --user --break-system-packages -r "$req"
 }
 
 install_playwright() {
@@ -263,6 +273,8 @@ prepare_pentestgpt() {
   fi
 }
 
+# CORRIGIDO: npm install -g supabase nao e suportado pela CLI do Supabase.
+# Agora baixa o .deb diretamente do GitHub releases.
 install_supabase_cli() {
   if [ "$INSTALL_SUPABASE" -ne 1 ]; then
     return
@@ -271,8 +283,32 @@ install_supabase_cli() {
     log "Supabase CLI ja esta no PATH"
     return
   fi
-  log "Instalando Supabase CLI global"
-  run_sudo npm install -g supabase
+
+  log "Instalando Supabase CLI via GitHub releases"
+
+  local latest_tag
+  latest_tag="$(curl -fsSL https://api.github.com/repos/supabase/cli/releases/latest \
+    | jq -r '.tag_name')"
+
+  if [ -z "$latest_tag" ] || [ "$latest_tag" = "null" ]; then
+    warn "Nao foi possivel obter a versao mais recente do Supabase CLI. Pulando."
+    return
+  fi
+
+  local version="${latest_tag#v}"
+  local tmp_deb
+  tmp_deb="$(mktemp /tmp/supabase_XXXXXX.deb)"
+
+  log "Baixando supabase ${latest_tag}"
+  if curl -fsSL \
+    "https://github.com/supabase/cli/releases/download/${latest_tag}/supabase_${version}_linux_amd64.deb" \
+    -o "$tmp_deb"; then
+    run_sudo dpkg -i "$tmp_deb"
+    rm -f "$tmp_deb"
+  else
+    rm -f "$tmp_deb"
+    warn "Falha ao baixar Supabase CLI. Instale manualmente: https://github.com/supabase/cli#install-the-cli"
+  fi
 }
 
 verify_install() {

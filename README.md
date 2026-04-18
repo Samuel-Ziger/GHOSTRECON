@@ -1,318 +1,208 @@
 # GHOSTRECON
 
-Framework de **OSINT e reconhecimento** orientado a **bug bounty** e pentest autorizado. Combina recolha **passiva** (Certificate Transparency, arquivos web, DNS, cabeçalhos, TLS, APIs públicas) com fases **semi‑ativas** (HTTP GET de probing, verificação heurística com evidência) e, opcionalmente, **modo Kali** (nmap, nuclei, ffuf, wpscan, dalfox, whois, searchsploit). Inclui **priorização**, **correlação**, **templates de relatório**, **deduplicação** de achados, persistência em **SQLite** ou **Postgres/Supabase**, **comparação entre runs**, **webhooks** (incluindo **Discord**), e **relatórios em Markdown gerados por IA** (Gemini, OpenRouter ou Anthropic).
+**Framework de OSINT e reconhecimento** para **bug bounty** e pentest autorizado. Um servidor **Node.js + Express** orquestra recolha **passiva** (Certificate Transparency, arquivos web, DNS, cabeçalhos, TLS, APIs públicas), fases **semi-ativas** (HTTP, verificação com evidência) e, opcionalmente, **modo Kali** (nmap, nuclei, ffuf, wpscan, dalfox, sqlmap, xss_vibes, …). A UI (`index.html`) consome o pipeline em **NDJSON**; há ainda **Ghostmap**, **Cortex** e **Reporte** — três ecrãs para narrativa de ameaça, grafo por categorias e triagem humana.
 
-Opcionalmente integra **clone local de repositórios GitHub** (com URLs manuais na UI para programas de bug bounty), **Shannon Lite** em `IAs/shannon/` (white-box: `shannon start`, poll de `workflow.log`, relatório em `.shannon/deliverables/`, abertura da **Temporal Web UI** no browser), e **validação HTTP pós-recon** (**PentestGPT** ou qualquer serviço que aceite o payload exportado).
-
-A interface é uma página estática **`index.html`** servida pelo **Express**; o pipeline corre no servidor e envia eventos em **NDJSON** para o browser. Na **sidebar** tens ainda o hub **Ghostmap**, **Cortex** e **Reporte** — três ecrãs dedicados a narrativa de ameaça, grafo por categorias e triagem humana (secção **«Três vistas»** abaixo).
-
-**Fluxo rápido (Reporte + Anotações):** vê a página estática **[`como-usar.html`](como-usar.html)** (abre no mesmo servidor que o `index.html`).
-
----
-
-## Três vistas: Ghostmap, Cortex e Reporte
-
-O recon produz **muitos** achados em pouco tempo. Além da lista e do log no `index.html`, o GHOSTRECON oferece **três ecrãs complementares** — cada um optimizado para um tipo de decisão. Não substituem o pipeline: **organizam o output** para triagem, narrativa de risco e **prova humana** (indispensável em bug bounty e pentest com relatório).
-
-### Ghostmap (`mitre-map.html`) — narrativa MITRE / OWASP **ao vivo**
-
-**O que faz:** desenha o recon como uma **linha do tempo horizontal** do pipeline, com **ramificações** por achado (alternadas para cima / baixo), cartões clicáveis (técnica MITRE ou índice `#n`) e **popups** com explicação curta, links para **attack.mitre.org** e **OWASP**, e — quando existe — **link directo** para o URL do finding. Inclui contexto de **stack / serviço** (WAF, Nginx, WordPress, etc.) para não ficares só com o raw URL.
-
-**Utilidade:** quando o scan está a correr ou acabou de terminar, precisas de responder *«isto encaixa onde no modelo de ameaça?»* sem exportar para Excel. O Ghostmap sincroniza com a aba principal via **`BroadcastChannel`** (mesma origem, mesmo browser) e usa **`localStorage`** como fallback de sessão — vês o mapa **a evoluir** com o recon, o que é forte para **demos**, handoff a outra pessoa e **priorização visual** (clusters de exposição, fases onde o alvo “abre” mais superfície).
-
-**Quando usar:** briefings, preparação de relatório (esqueleto narrativo ATT&CK), e revisão rápida de *coverage* de reconnaissance / initial-access em relação ao que o Ghost já encontrou.
-
-### Cortex (`cortex.html`) — **Cérebro** (categorias + grafo + SQLite)
-
-**O que faz:** agrupa o que **já decidiste** que importa: crias **categorias** (tipos de bug, linhas de investigação, etc.) e **ligas** fingerprints de findings ao cérebro via API **`/api/brain/*`** (persistência **SQLite** no servidor). A UI oferece lista por tipo, **mapa local** (estilo grafo: nó central, URLs em órbita, física / arrastar) ou grelha de cartões, com painel lateral para detalhe.
-
-**Utilidade:** a lista do recon mistura **sinal e ruído**. O Cortex responde a *«Entre o que **eu** marquei ou liguei manualmente, que história de ataque emerge?»* — útil para **sprints de BB**, re-scoping («foco só em XSS + IDOR neste alvo»), e para manter **continuidade** entre runs sem perder o fio à meada semântico. O fluxo natural é: **validar no Reporte** → **ligar no Cortex** → ver o grafo por categoria.
-
-**Modo demo:** `?demo=1`, `#demo` ou **Shift+clique** no botão Cortex no `index.html`; **Simular GET** gera dados fictícios — ideal para **treino** ou apresentações sem poluir a base.
-
-### Reporte (`reporte.html`) — checklist manual, notas e base para IA
-
-**O que faz:** é o **balcão de triagem humana** por alvo: ao abrir a partir do `index.html`, recebe o pacote em **`sessionStorage`** (`ghostrecon_reporte_payload`) com findings da sessão e o **target**. Podes **importar** JSON pelo painel lateral (só entrada; exportações **JSON / Plataforma / MD / TXT** continuam na **barra inferior** do index). Gravações de estado passam por **`GET` / `POST /api/manual-validations`** (CSRF); opcionalmente **`POST /api/manual-validations/ai-report`** gera relatório IA sobre **apenas** o que validaste.
-
-**Anotações (`anotacao.html`):** no Reporte, o botão **ANOTAÇÃO** abre uma **nova aba** com o modelo de campo (10 secções) e IA (OpenRouter). O **preenchimento automático** das secções a partir do checklist usa **só achados com o toggle de validação ligado** (e «Atualizar a partir das validações» reprocessa todos os validados). O resto das caixas é manual.
-
-**Alvo do pacote vs. URLs dos achados:** se o `target` do JSON divergir do primeiro host inferido a partir dos achados, aparece um **aviso** no topo do Reporte — as validações SQLite usam sempre o **domínio do pacote**.
-
-**Subconjuntos (alívio para sessionStorage):** na barra inferior do `index.html`, ao lado de **⬇ JSON**, tens **⬇ JSON · high** e **⬇ JSON · validados**, e botões **Reporte · high** / **Reporte · validados** para abrir a checklist já filtrada (listas muito grandes deixam de bloquear o `sessionStorage`).
-
-**Utilidade:** programas de bounty e pentest pago valorizam **confirmação explícita** — o Reporte é onde marcas *confirmado / falso positivo / a investigar*, anotas contexto que o automático não tem, e fechas um **«conjunto de verdade»** antes de submeter ou de gerar texto com IA. Alimenta o Cortex: o que aqui validas torna-se matéria prima para **ligações** e categorias no cérebro.
-
-**Ficheiro legacy:** `brain.html` redirecciona para `cortex.html` (antigo nome «Cérebro»).
-
-### Onde abrir na UI
-
-Na **sidebar**, por baixo de **RUN RECON**, os três botões **Ghostmap**, **Cortex** e **Reporte** partilham o **mesmo estilo** (card neon). Ghostmap precisa de sessão live / popups conforme o browser; Reporte abre em nova aba com o payload da sessão (se o popup falhar, o log indica o URL).
+```bash
+npm install && npm start
+# → http://127.0.0.1:3847
+```
 
 ---
 
-## MITRE ATT&CK e OWASP (heurísticas)
+## Índice
 
-- **`mitre-attack/recon-bundle.json`**: subconjunto fixo do ATT&CK **Enterprise** (fases *reconnaissance*, *resource-development*, *initial-access*), gerado a partir de um clone local do [MITRE CTI](https://github.com/mitre/cti) em `mitre-attack/cti/` (pasta **ignorada no Git** por ser pesada). Comando: **`npm run mitre:extract`** (`server/scripts/extract-mitre-recon-bundle.mjs`).
-- **`server/modules/mitre-recon.js`**: após o OWASP Top 10 2025, aplica etiquetas **MITRE** a cada finding (`f.mitre`) com o mesmo estilo de objectos que `f.owasp`; incluído em snapshots, export IA e UI.
-- **`mitre-map.html`** (Ghostmap), **`cortex.html`** (Cortex), **`reporte.html`** (Reporte), **`brain.html`** (redirect → Cortex): visão funcional, fluxo de trabalho e APIs na secção **«Três vistas: Ghostmap, Cortex e Reporte»** no início deste README. Tecnicamente: Ghostmap ↔ `BroadcastChannel` + `localStorage`; Cortex ↔ `GET/POST /api/brain/*` (SQLite); Reporte ↔ `sessionStorage` + `GET/POST /api/manual-validations` (+ `ai-report` opcional).
-
----
-
-## O que a ferramenta faz (visão por fases)
-
-A orquestração está em `server/index.js` (`runPipeline`). A ordem abaixo corresponde ao fluxo real.
-
-### 1. Entrada e contexto
-
-- Valida o **domínio** alvo e normaliza (remove esquema, lower case).
-- Regista **módulos** activos, **perfil** (`quick` | `standard` | `deep`), **modo exact match** (aspas nos dorks) e **Modo Kali**.
-- **Fora de escopo**: lista vinda de `GHOSTRECON_OUT_OF_SCOPE` e/ou do campo da UI quando o módulo `out_of_scope` está activo. Suporta wildcards tipo `*.cdn.cliente.com`. Filtra hosts e URLs em superfície HTML, sitemaps, corpus de URLs, CSE, etc. (`server/modules/scope.js`).
-
-### 2. Subdomínios e resolução DNS
-
-- **crt.sh** (Certificate Transparency): enumeração de nomes vistos em certificados, quando o módulo `subdomains` está activo.
-- **VirusTotal** (`virustotal`): funde hostnames da API com a lista CT, se a chave `VIRUSTOTAL_API_KEY` estiver definida.
-- **Subfinder** / **Amass**: só com **Modo Kali** ligado **e** módulos `subfinder` / `amass` marcados; output é fundido e depois **resolvido** (A/AAAA). Até **150** subdomínios (excluindo o apex) são testados em DNS; os que resolvem geram findings `subdomain` com meta de registos DNS e marca `tool=subfinder` quando aplicável.
-- Se `subdomains` estiver desactivado mas Kali+enum estiver activo, não há passagem por crt.sh (apenas enum Kali quando seleccionado).
-
-### 3. Enriquecimento DNS (módulo `dns_enrichment`)
-
-- Consultas **MX**, **TXT** (SPF, registos de verificação de terceiros), **DMARC** (`_dmarc.<domínio>`), sobre o apex e uma amostra de subdomínios vivos, com limites de hosts, concorrência e timeouts em `server/config.js`.
-
-### 4. RDAP (módulo `rdap`)
-
-- Consulta **RDAP** do registo do domínio (estado, nameservers, eventos) e gera finding tipo `rdap`. Se o módulo estiver desligado, o pipe `rdap` é marcado como `skip` na UI.
-
-### 5. HTTP alive / probing
-
-- Para o **apex** e subdomínios a considerar (e VirusTotal hosts quando subdomínios passivos estão off), constrói URLs `https://` e `http://` até um máximo que depende do **perfil** (`maxHostsToProbe`: 36 / 80 / 130).
-- **GET** com timeout e concorrência configuráveis; extrai **título**, **stack/tecnologias** (`tech.js`), **cabeçalhos de segurança**, **indícios de WAF** nos cabeçalhos/corpo, e **superfície HTML** (links `href` e `action` de formulários) até `htmlSurfaceMaxEndpoints` achados — viram findings `endpoint` com meta `HTML surface`.
-- **Stealth** (`stealth_requests` na UI ou `GHOSTRECON_STEALTH=1`): **jitter** aleatório entre pedidos e **User-Agent rotativo** (`request-policy.js`).
-
-### 6. WAF (módulo `wafw00f` e heurística)
-
-- Com módulo **`wafw00f`** ou perfil **não** `quick`, tenta fingerprint via CLI **`wafw00f`** nos hosts HTTPS vivos; finding `intel` tipo WAF.
-- Independentemente disso, o probe já infere **Cloudflare** (e similares) e pode emitir `intel` “WAF hint”.
-
-### 7. Fase “surface” (cabeçalhos, TLS, robots, well-known)
-
-Activada se qualquer um de: `security_headers`, `robots_sitemap`, `wellknown_*`.
-
-- **Cabeçalhos de segurança** (`security_headers`): para cada resposta “saudável”, corre `analyzeSecurityHeaders` e gera findings `security` (HSTS, CSP, XFO, etc.).
-- **TLS** (`security_headers`): `peekTlsCertificate` na porta 443 — validade, assunto, emissor, SAN; achados `tls`; SANs alimentam mais tarde **asset discovery**.
-- **robots.txt / sitemap** (`robots_sitemap`): por origem preferindo HTTPS; extrai **Disallow** como `intel` e URLs de páginas como `endpoint`.
-- **`.well-known/security.txt`** e **`.well-known/openid-configuration`**: pedidos com limites próprios; OIDC descobre endpoints e regista-os como `endpoint` com meta OIDC.
-
-### 8. Shodan (módulo `shodan`)
-
-- Com `SHODAN_API_KEY`, resolve IPv4 para uma amostra de hosts e consulta `api.shodan.io/shodan/host/{ip}`; findings `intel` com portas, org, hostnames, CVEs/tags quando existirem.
-
-### 9. OpenAPI / Swagger (módulo `openapi_specs`)
-
-- Para até `openapiMaxOrigins` origens HTTPS, tenta paths comuns (`/openapi.json`, `/swagger.json`, `/v2/api-docs`, …). Se encontrar JSON OAS3/Swagger2 válido, gera `endpoint` para a spec e `param` para nomes de parâmetros extraídos.
-
-### 10. Corpus de URLs (Wayback, Common Crawl, CLI, Katana)
-
-- **Wayback** (`wayback`): CDX, URLs 200 no âmbito `*.domínio`.
-- **Common Crawl** (`common_crawl`): índice CDX (URL opcional `GHOSTRECON_CC_CDX_API`).
-- **gau** / **waybackurls**: se o módulo estiver marcado **ou** o perfil `deep` (`includeCliArchives`), `archive-tools.js` invoca essas CLIs se existirem no PATH.
-- **Katana**: só no perfil **`deep`**, crawl JS a partir de `https://` e `http://` do apex (profundidade 3, até 300 URLs novas no escopo).
-- Todo o corpus é filtrado por **out of scope**.
-
-### 11. GraphQL (módulo `graphql_probe`)
-
-- Se o corpus contiver URLs com `graphql` no path, faz **um POST** por URL (até 4 origens distintas) com query de introspecção **mínima**; se a resposta indicar schema ou errors estruturados, emite `intel` sobre alcance de introspecção.
-
-### 12. Endpoints “interessantes”
-
-- `filterInterestingUrls` aplica regex de caminhos sensíveis (`api`, `admin`, `graphql`, `swagger`, etc. em `config.js`).
-- Cada URL interessante vira `endpoint` com meta indicando fonte (Wayback, Common Crawl ou “arquivo web”).
-
-### 13. Parâmetros
-
-- `extractParamsFromUrls` agrega nomes de query string do corpus; scoring por nome; findings `param`.
-- **Heurísticas passivas**: `intel` “XSS candidate param” e “SQLi candidate param” para nomes típicos (usados depois para **gating** do modo Kali).
-
-### 14. Análise de JavaScript
-
-- Extrai URLs `.js` do corpus; fetch limitado (`maxJsFetch`); `js-analyzer.js` extrai endpoints em strings, insights (ex. hints admin); `secrets.js` procura padrões tipo chaves — findings `js`, `intel`, `secret`.
-
-### 15. Google Dorks e Custom Search
-
-- `dorks.js` gera queries por categoria (directory, config, login, passwords, etc. conforme checkboxes). Cada dork é enviado ao cliente como evento `dork` **e** gravado como finding `dork`.
-- **Google CSE** (`google_cse` + `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX`): executa até `googleCseMaxQueries` queries com delay; URLs cujo host está no escopo viram `endpoint`.
-
-### 16. GitHub, clone local e Pastebin
-
-- **GitHub** (`github`): **Code Search** com token opcional `GITHUB_TOKEN` — findings `secret` (revisão manual). **Repo Search** sugere repositórios candidatos.
-- **Clone local** (`GHOSTRECON_GITHUB_CLONE_ENABLED`, pasta `clone/` na raiz, ignorada no Git): até `GHOSTRECON_CLONE_MAX_REPOS` repos com `git clone --depth 1`, limites de tamanho/timeout e **retenção** (`GHOSTRECON_CLONE_RETENTION_DAYS`, default 30 dias). Os clones bem-sucedidos geram findings `intel` com o caminho no disco e alimentam o **Shannon white-box** quando esse módulo está activo.
-- **Repos manuais (UI Shannon)**: campo de texto `shannonGithubRepos` no `POST /api/recon/stream` — uma **URL** `https://github.com/org/repo` (ou ramos `/tree/...`), **`org/repo`**, ou várias linhas / separadas por vírgula ou `;`. São fundidos na lista de candidatos ao clone (entradas manuais têm prioridade sobre a mesma `full_name`). Com **só** o módulo **Shannon white-box** (sem «GitHub leaks»), o servidor pode clonar **apenas** esses repos, útil quando o programa fornece o link do código.
-- **Pastebin** (`pastebin`): não há API fiável — apenas log a orientar uso dos dorks.
-
-### 17. Validação de secrets (`secret_validation`)
-
-- `secret-validation.js` tenta classificar achados `secret` como **live** / **probable** / **dead** com pedidos HTTP leves; gera findings `secret_validation`.
-
-### 18. Verify (evidência)
-
-- `verify.js`: para até `maxVerifyEndpoints` URLs (findings **`endpoint`** com query **e** findings **`param`** cujo `sampleUrl` já contém o parâmetro, p.ex. `id=…`), testa variantes de parâmetros (XSS/**SQLi** (baseline = valor original na URL, teste = valor + **`'`**)/open redirect/IDOR/LFI) com **redirect manual**, comparação com regex de **erros SQL** na resposta, snippets de pedido/resposta, classificação **confirmed** / **probable** / **noisy** e objeto `verification` com hash de evidência.
-
-### 19. Micro-exploit XSS (módulo `micro_exploit`)
-
-- Após verify, `runMicroExploitVariants` com limite de testes; findings adicionais ligados a XSS.
-
-### 20. Descoberta activa de parâmetros
-
-- Em endpoints **sem** query, tenta `discoverParamsActive` (ferramenta externa quando disponível, timeout longo); novos `param` com meta `active_discovery`.
-
-### 21. Modo Kali (`kaliMode` + detecção de ambiente)
-
-Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no PATH.
-
-- **nmap**: XML parseado → findings `nmap`; argumentos via `GHOSTRECON_NMAP_ARGS` (default `-sV -Pn -T4 --host-timeout 180s`).
-- **FTP anônimo (pós-nmap)**: quando há serviço FTP (ex.: `21/tcp`), tenta login `USER anonymous`; se permitir, cria finding `security` high.
-- **searchsploit**: até 12 queries únicas derivadas de produto/versão do nmap → findings `exploit`.
-- **ffuf** (módulo `kali_ffuf`): wordlist Seclists/dirb, só **HTTP 200**, várias bases (domínio + portas 80/443 descobertas), threads `GHOSTRECON_FFUF_THREADS`.
-- **nuclei** (módulo `kali_nuclei`): lista de alvos; perfil `GHOSTRECON_NUCLEI_PROFILE` (`safe`, `bb-passive`, `bb-active`, `high-impact`); depois, se houver **sinais** XSS/SQLi passivos, corre tags `xss` / `sqli` sobre URLs com query (até 30).
-- **dalfox**: se `dalfox` no PATH **e** sinais XSS, até `GHOSTRECON_DALFOX_MAX_URLS` URLs (default 12), timeout `GHOSTRECON_DALFOX_TIMEOUT_MS` → findings `dalfox`.
-- **xss_vibes**: se `Xss/xss_vibes` + Python estiverem disponíveis **e** houver sinais XSS, roda após a fase XSS no Kali; logs prefixados `[xss_vibes]`; hits entram como findings `xss`.
-- **wpscan**: só se WordPress foi detectado no probe (`tech`) e `wpscan` existe; por defeito **só corre com** `WPSCAN_API_TOKEN` (WPVulnDB para CVEs); `GHOSTRECON_WPSCAN_REQUIRE_API=0` permite enumeração sem token. Logs prefixados `[WPScan]` na consola NDJSON.
-- **whois**: domínio raiz + amostra de subdomínios (limite via env ou `config.js`).
-
-### 22. Asset discovery e takeover
-
-- `discoverAssetHints`: pistas passivas (CAA, padrões de nomes, SANs TLS).
-- `detectTakeoverCandidates` + **CNAME chain** + match de corpo HTTP contra páginas conhecidas de parking — findings `takeover` (candidate vs confirmado).
-
-### 23. Priorização, CVE, correlação, inteligência
-
-- **Priorização v2**: `applyPrioritizationV2` — scores compostos, `attackTier`, `priorityWhy`.
-- Anotações em endpoints (ex. `status_consistent`, `auth=required` em paths admin-like).
-- **CVE hints**: a partir de strings de tecnologia, gera links **NVD** e **OSV** (lookup manual, log na consola NDJSON).
-- **Dedupe semântico**: `semantic-dedupe.js` colapsa famílias redundantes antes das estatísticas finais.
-- **Correlação**: `correlation.js` — resumo e parâmetros de risco.
-- **Checklist**: `buildExploitChecklist` → eventos `intel` com prefixo `☐ CHECKLIST:`.
-- **Sugestões**: `suggestVectors` → mais linhas `intel`.
-- **Templates de relatório**: `report-template.js` → eventos `report_template` e `intel` `REPORT:`.
-
-### 24. Persistência e delta
-
-- `saveRun`: grava run completo; **merge** no corpus `bounty_intel` (dedupe por fingerprint).
-- Se usares Postgres/Supabase **e** indicares **nome de projeto** na UI, pode gravar **espelho** SQLite em pasta local (`escopo/{projeto}/{domínio}/`) — ver `db.js` / `db-sqlite.js`.
-- Compara com o **run anterior do mesmo alvo**: se houver novidades “quentes”, emite `delta_hot` na stream.
-
-### 25. Relatórios IA (opcional)
-
-- Chaves: `GEMINI_API_KEY` ou `GOOGLE_AI_API_KEY`, `OPENROUTER_API_KEY` (ou `ANTHROPIC_API_KEY` directo), e opcionalmente provider local via LM Studio; modelos configuráveis, retries (Gemini/OpenRouter), limites de caracteres do Markdown.
-- UI: checkbox de confirmação + `autoAiReports` no POST; servidor pode gerar ficheiros **Markdown** (relatório + próximos passos) e emitir eventos `ai_report`; o conteúdo de “próximos passos” pode ser ecoado no log NDJSON.
-- Resiliência IA: Gemini e OpenRouter fazem retentativas em `429` e `5xx` (inclui `503`) com `Retry-After` + backoff; Claude e LM Studio seguem a política de tentativas descrita abaixo.
-- Cascata de execução (run automático): **Gemini** (até 3 tentativas, espera fixa padrão 60s entre falhas) → **OpenRouter** (1 tentativa) → **Claude** (1 tentativa) → **LM Studio** (último recurso, se activo no `.env`).
-- UI: opção **"LM Studio no final (pré-check obrigatório)"** — valida o LM Studio antes do recon; no servidor o LM Studio **só corre** se todos os providers cloud anteriores falharem (útil porque modelos locais podem demorar muito em *reasoning*).
-- **`GHOSTRECON_AI_AUTO=0`**: desliga geração automática no fim do pipeline (podes usar `POST /api/ai-reports` com payload exportado).
-- **`GET /api/capabilities`**: inclui `ai`, **`shannon`** e **`pentestgpt`**. O bloco `pentestgpt` resume a **árvore** local (`GHOSTRECON_PENTESTGPT_HOME` / `IAs/PentestGPT`: `pyproject.toml`, Python 3.12+, `uv`, Docker, etc.) e **`http`** — `configured` / `preview` indicam se `GHOSTRECON_PENTESTGPT_URL` está definida no **servidor** (a pré-visualização mascara query strings).
-
-### 26. Shannon Lite (white-box), Temporal e PentestGPT (opcional)
-
-- **Código Shannon**: não está versionado neste repo. Clona o upstream em **`IAs/shannon/`** (instruções em **`IAs/README.md`**). Requer Docker, build (`pnpm` / `./shannon build`) e credencial de IA no ecossistema Shannon (ex. `ANTHROPIC_API_KEY` no `.env` do Shannon).
-- **Módulo `shannon_whitebox`**: corre **depois** de verify/Kali/assets e da fase **PRIORITIZE** (`score`), **antes** de **PentestGPT HTTP** — assim o POST de validação inclui os `intel` Shannon no payload. Requer clones neste run e **`GHOSTRECON_SHANNON_AUTO_RUN`** ≠ `0`. O servidor corre **`shannon start`** (via `node …/shannon`) com `-u https://<alvo>/`, `-r <clone absoluto>`, `-w ghostrecon-…`, opcional **`--pipeline-testing`** (`GHOSTRECON_SHANNON_PIPELINE_TESTING=1`). **Fila global** serializa scans. O fim segue **`workflow.log`** no workspace. Lê **`comprehensive_security_assessment_report.md`** em `<clone>/.shannon/deliverables/` e emite findings `intel`. Durante a espera longa, o servidor regista linhas de **keepalive** no log NDJSON para reduzir cortes de stream no browser.
-- **UI / pré-check**: linha de estado Shannon, `shannonPrecheck` (default activo) e `shannonSkipDepsVerify` no POST; se o pré-check falhar, o recon é recusado com `error` NDJSON. Botão **Docker pull** chama `POST /api/shannon/prep` e imprime `dockerPullLog` no terminal. **`GHOSTRECON_SHANNON_HOME`**: path absoluto alternativo ao Shannon.
-- **Temporal Web UI**: quando o CLI imprime `http://localhost:8233/...`, o servidor envia **`open_url`** na stream; a UI abre numa nova aba (como os dorks). Desliga com **`GHOSTRECON_SHANNON_OPEN_TEMPORAL_UI=0`**.
-- **Espelho do CLI na UI**: com **`GHOSTRECON_SHANNON_MIRROR_CLI`** (default activo), o stdout/stderr do `shannon start` é reenviado como eventos **`shannon_cli`** — vês o banner e as linhas «Target / Repository / Monitor» no painel do Ghost (ANSI removido; linhas longas truncadas). Define `=0` para desligar.
-- **PentestGPT (validação HTTP no Ghost)**: módulo **`pentestgpt_validate`**. Após **`score`**, `POST` JSON para a URL efectiva (**`GHOSTRECON_PENTESTGPT_URL`** ou override `pentestgptUrl` no corpo do recon) com `ghostPayload`. Resposta tolerante: `summary`, `validatedFindings`, `falsePositives` → novos **findings** na UI / SQLite ou cartão **intel** «PentestGPT (resumo)». **`GHOSTRECON_PENTESTGPT_HOME`** ajusta o path da árvore em capabilities (default `IAs/PentestGPT`). Script opcional **`npm run pentestgpt-bridge`** → `pentestgpt-ghost-bridge.mjs`: prompt de sistema focado em **bug bounty** (triagem OSINT/recon, não CTF); substituível com **`GHOSTRECON_PENTESTGPT_BRIDGE_SYSTEM_PROMPT`**. O **agente** upstream GreyDGL (Docker/TUI) é independente — ver **`IAs/README.md`**.
-- **PentestGPT — UI e rotas**: na sidebar, **URL POST (opcional)** envia `pentestgptUrl` por run; **Lembrar** usa `localStorage` (`ghostrecon_pentestgpt_url_override`); **Testar ponte** chama **`POST /api/pentestgpt-ping`** (CSRF) e o servidor faz **`GET`** na origem do endpoint de validação com sufixo **`/health`** (evita CORS no browser). Se o módulo está activo mas **não** há URL no `.env` nem no campo, a UI pergunta se queres continuar (o passo será ignorado).
-- **Shannon — resultado na UI**: por repo, finding **`intel`** com título `Shannon white-box: org/repo`, **meta** com `workspace`, caminho do **Markdown** do relatório e **excerto**; em falha, `intel` com fase/erro. O relatório completo fica no disco do workspace Shannon.
-- **Ajuda «?» nos Modules**: o botão ao lado de **Modules** abre um guia com todas as categorias, secções dedicadas a **Shannon**, **PentestGPT** (o que faz / o que aparece no Ghost / configuração) e esclarecimento de que as caixas de **IA** não usam `class="mod"` (enviam `autoAiReports` / `aiProviderMode`).
-
-### 27. Webhook
-
-- **`GHOSTRECON_WEBHOOK_URL`**: após gravar run, envia resumo (JSON genérico **ou** mensagem formatada **Discord**). No Discord, o resumo pode incluir linhas opcionais **Shannon** e **PentestGPT** quando há texto resumido; o JSON genérico inclui `shannonSummary` e `pentestgptSummary` no payload.
-- Após IA: segundo POST — Discord com **embeds** (relatório + próximos passos) ou JSON `kind: ai_report`.
+- [O que tens neste repo](#o-que-tens-neste-repo)
+- [Instalação](#instalação)
+- [Interface e páginas estáticas](#interface-e-páginas-estáticas)
+- [Pipeline (visão única)](#pipeline-visão-única)
+- [Módulos e capacidades](#módulos-e-capacidades)
+- [MITRE ATT&CK e OWASP](#mitre-attck-e-owasp)
+- [Integrações pesadas (opcional)](#integrações-pesadas-opcional)
+- [API HTTP e eventos NDJSON](#api-http-e-eventos-ndjson)
+- [Persistência (SQLite / Postgres / Supabase)](#persistência-sqlite--postgres--supabase)
+- [Segurança do servidor](#segurança-do-servidor)
+- [Variáveis de ambiente](#variáveis-de-ambiente)
+- [Docker](#docker)
+- [Testes e scripts](#testes-e-scripts)
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [Extensão e contribuição técnica](#extensão-e-contribuição-técnica)
+- [Aviso legal](#aviso-legal)
 
 ---
 
-## Interface web (UI)
+## O que tens neste repo
 
-- Tema **dark / red team**; consumo da stream **NDJSON** (`POST /api/recon/stream`).
-- **Perfil** `quick` | `standard` | `deep` (select ou `localStorage` `ghostrecon_profile`).
-- **Nome de projeto**: pasta local opcional para SQLite espelhado.
-- **Modo Kali**, módulos por categorias (Fontes, OSINT, Secrets, etc.).
-- **Fila de dorks**: delay e máximo de abas para abrir Google no browser.
-- **Shannon (sidebar)**: módulo **`shannon_whitebox`**, pré-check de dependências, omitir verificação, **repos GitHub (manual)** (textarea → `shannonGithubRepos`), botão **Docker pull** (prep). Na barra de pipeline, **SHANNON** aparece **depois** de PRIORITIZE e **antes** de PENTESTGPT (ordem real do servidor). Linha **`shannonCapLine`** (`GET /api/capabilities` → `shannon`).
-- **PentestGPT (sidebar)**: módulo **`pentestgpt_validate`**, linha **`pentestgptCapLine`** (árvore upstream **e** indicador **`POST .env`**), campo **URL POST** opcional + **Lembrar** + **Testar ponte**, **`pipe-pentestgpt`** na barra.
-- **Guia de módulos**: botão **?** junto a «Modules» — pop-up com descrição de cada módulo, **Shannon** / **PentestGPT** (função + resultados no Ghost) e nota sobre opções de **IA**.
-- **Dismiss** de findings por fingerprint (`localStorage`).
-- **Ghostmap / Cortex / Reporte**: hub na **sidebar** (por baixo de **RUN RECON**); descrição alargada na secção **«Três vistas: Ghostmap, Cortex e Reporte»**. Resumo: Ghostmap = `mitre-map.html` + BroadcastChannel; Cortex = `cortex.html` (Shift+clique = demo); Reporte = `reporte.html` + payload em nova aba (se popup bloquear, ver log).
-- **Ghostmap ao vivo**: o botão **Ghostmap** fica útil quando há sessão de recon activa; popups permitidos ou URL manual no log.
-- **Exportação** (barra inferior): **JSON**, **Plataforma**, **Markdown**, **TXT** — o **Reporte** é vista própria (checklist + import), não botão nesta barra.
-- **Auth opcional**: `localStorage` `ghostrecon_auth_json` → enviado como `auth` (headers + cookie) para probe/verify.
-- **API base**: por defeito mesma origem; outra porta: `localStorage.setItem('ghostrecon_api_base', 'http://127.0.0.1:PORTO')`.
-- Abrir `index.html` via `file://` **não** corre o pipeline — é preciso `npm start` (ou Docker).
+| Área | Descrição |
+|------|-----------|
+| **Recon passivo → semi-ativo** | Subdomínios (crt.sh, VT, Subfinder/Amass em Kali), DNS rico (MX/TXT/DMARC), RDAP, probe HTTP, TLS, robots/sitemap, `.well-known`, Shodan, Wayback, Common Crawl, gau/waybackurls, Katana (perfil deep), OpenAPI/Swagger, GraphQL (introspecção mínima), superfície HTML, JS + secrets |
+| **OSINT** | Google dorks (fila na UI) + **Google CSE** com API |
+| **Código e leaks** | GitHub Code/Repo Search, clone local para `clone/`, validação de secrets |
+| **Verificação** | `verify` (XSS/SQLi/open redirect/IDOR/LFI com evidência), `micro_exploit`, **webshell heurístico**, descoberta activa de parâmetros, **`sqlmap`** opcional, **Playwright** para XSS DOM opcional |
+| **Kali** | nmap (incl. perfis agressivo/UDP opcionais), searchsploit, ffuf, nuclei, dalfox, wpscan, whois, **xss_vibes** (Python), **intel MySQL 3306** + correlação com ficheiros de config no score |
+| **Inteligência** | Priorização v2, CVE hints (NVD/OSV), correlação, dedupe semântico, templates de relatório, checklist e sugestões, **snapshot de cobertura de recon** (`recon_coverage`) |
+| **UI extra** | Ghostmap (MITRE/OWASP ao vivo), Cortex (categorias + SQLite), Reporte + anotações IA |
+| **IA** | Relatórios Markdown (Gemini, OpenRouter, Claude, LM Studio em cascata) |
+| **Integrações** | Shannon Lite (white-box), PentestGPT HTTP, webhooks (incl. Discord) |
 
 ---
 
-## Segurança do servidor
+## Instalação
 
-- **CORS**: apenas origens `http://127.0.0.1:PORT` e `http://localhost:PORT` (PORT do servidor).
-- **CSRF**: `GET /api/csrf-token` → header `X-CSRF-Token` obrigatório em `POST /api/recon/stream`, `POST /api/ai-reports`, `POST /api/shannon/prep`, `POST /api/pentestgpt-ping`, `POST /api/brain/categories`, `POST /api/brain/link`, `POST /api/manual-validations` e `POST /api/manual-validations/ai-report`.
-- **Rate limit** opcional por IP em `POST /api/recon/stream` (`GHOSTRECON_RL_*`).
-- Corpo JSON limitado a **5 MB**.
+### Requisitos
+
+- **Node.js ≥ 18** (o `Dockerfile` usa Node 22).
+- Para modo completo: **Debian/Kali** ou derivado com `apt` (recomendado para `./install.sh`).
+
+### NPM
+
+```bash
+npm install
+npm start          # produção
+npm run dev        # node --watch
+npm test           # node --test server/tests/*.test.js
+```
+
+### Instalador Debian/Kali (`install.sh`)
+
+Script bash com perfis:
+
+| Perfil | Conteúdo |
+|--------|----------|
+| `minimal` | APT base, Node 22, `npm install`, `.env` a partir de `.env.example` |
+| `passive` | Minimal + ferramentas Go (subfinder, nuclei, katana, gau, waybackurls, dalfox), deps Python do **xss_vibes**, Supabase CLI (`.deb` GitHub) |
+| `full` | Passive + exploitdb, amass, wpscan, Playwright/Chromium, clones opcionais **Shannon** + **PentestGPT** |
+
+```bash
+chmod +x install.sh
+./install.sh --profile full        # ou minimal | passive
+./install.sh --profile full --skip-ias --skip-docker
+```
+
+Opções: `--skip-ias`, `--skip-playwright`, `--skip-docker`, `--skip-supabase`.
 
 ---
 
-## Eventos NDJSON (resumo)
+## Interface e páginas estáticas
 
-| Tipo | Função |
-|------|--------|
-| `log` | Mensagens (níveis info/warn/success/error/section/find) |
-| `shannon_cli` | Linha espelhada do `./shannon start` (ASCII/ texto; `white-space: pre` na UI). Controlado por `GHOSTRECON_SHANNON_MIRROR_CLI` (default ligado). |
-| `progress` | Percentagem da barra |
-| `pipe` | Estado de fase (`input`, `subdomains`, `alive`, `surface`, `urls`, `params`, `js`, `dorks`, `secrets`, `shannon`, `verify`, `kali`, `assets`, `score`, `pentestgpt`, …) |
-| `stats` | Contadores (subs, endpoints, params, secrets, dorks, high) |
-| `finding` | Achado com `fingerprint`; no stream inclui **`mitreHints`** e **`owaspHints`** (heurísticas antes do passo final de etiquetas) |
-| `dork` | Query + URL Google |
-| `open_url` | Abre `url` numa nova aba (`noopener`) — usado p.ex. para Temporal Web UI quando o Shannon imprime o link |
-| `intel` | Linha livre (checklist, sugestões, REPORT) |
-| `report_template` | Template estruturado |
-| `priority_pass` | Top alvos de alta probabilidade |
-| `findings_rescore` | Lista completa após rescoring |
-| `delta_hot` | Amostra de achados críticos novos vs run anterior |
-| `ai_report` | Início/fim/erro da geração IA |
-| `done` | Payload final (`runId`, `intelMerge`, `storage`, caminho SQLite local, etc.) |
-| `error` | Falha (domínio inválido, CSRF, rate limit, excepção) |
+| Ficheiro | Função |
+|----------|--------|
+| [`index.html`](index.html) | Consola principal: domínio, perfil (`quick` / `standard` / `deep`), módulos, modo Kali, stream NDJSON, exportações, hub sidebar |
+| [`mitre-map.html`](mitre-map.html) | **Ghostmap** — timeline MITRE/OWASP; `BroadcastChannel` + `localStorage` com a sessão principal |
+| [`cortex.html`](cortex.html) | **Cortex** — categorias, links fingerprint ↔ categoria (`/api/brain/*`), grafo local; demo: `?demo=1` ou Shift+clique |
+| [`reporte.html`](reporte.html) | **Reporte** — checklist manual, validações, IA sobre validados; payload via `sessionStorage` |
+| [`anotacao.html`](anotacao.html) | Modelo de anotações (10 secções) com IA (OpenRouter) |
+| [`como-usar.html`](como-usar.html) | Fluxo Reporte + anotações |
+| [`brain.html`](brain.html) | Redireciona para `cortex.html` |
+
+Guia rápido de fluxo humano: abre **[`como-usar.html`](como-usar.html)** no mesmo origin que o servidor.
+
+**Nota:** abrir `index.html` via `file://` **não** executa o pipeline — é necessário `npm start` (ou proxy estático equivalente).
 
 ---
 
-## API HTTP
+## Pipeline (visão única)
+
+Orquestração em `server/index.js` (`runPipeline`). Ordem efectiva (simplificada):
+
+```mermaid
+flowchart LR
+  A[Entrada + scope] --> B[Subs + DNS]
+  B --> C[HTTP alive + tech]
+  C --> D[Surface TLS/robots/well-known]
+  D --> E[URLs arquivo + filtros]
+  E --> F[Params + JS + dorks]
+  F --> G[Secrets + validação]
+  G --> H[Verify + micro-exploit]
+  H --> I[Webshell probe opcional]
+  I --> J[Param discovery activo]
+  J --> K[SQLMap opcional]
+  K --> L[Kali opcional]
+  L --> M[Assets + takeover]
+  M --> N[Score + CVE + dedupe + recheck + Playwright + recon_coverage]
+  N --> O[Shannon opcional]
+  O --> P[PentestGPT opcional]
+  P --> Q[OWASP + MITRE tags]
+  Q --> R[saveRun + delta_hot]
+  R --> S[done + IA opcional + webhook]
+```
+
+Fases **`pipe`** expostas na UI incluem entre outras: `input`, `subdomains`, `dns_enrichment`, `rdap`, `alive`, `surface`, `urls`, `params`, `js`, `dorks`, `secrets`, `verify`, `webshell_probe`, `sqlmap`, `kali`, `assets`, `score`, `shannon`, `pentestgpt`.
+
+---
+
+## Módulos e capacidades
+
+Os módulos seleccionáveis estão em [`index.html`](index.html) (checkboxes `class="mod"`). Resumo por família:
+
+- **Scope:** `out_of_scope` — lista + wildcards (`*.cdn.cliente.com`); ver `server/modules/scope.js`.
+- **Fontes / arquivo:** `subdomains`, `wayback`, `common_crawl`, `gau`, `waybackurls`, `rdap`, `virustotal`, `dns_enrichment`, `security_headers`, `header_intel`, `wafw00f`, `robots_sitemap`, `wellknown_security_txt`, `wellknown_openid`, `shodan`, `openapi_specs`, `graphql_probe`.
+- **OSINT Google:** categorias de dork (`directory`, `config`, …) + `google_cse`.
+- **Secrets / código:** `github`, `pastebin`, validação automática de secrets; clone GitHub (`GHOSTRECON_GITHUB_*`).
+- **Prova:** `verify_sqli_deep`, `micro_exploit`, `webshell_probe`, **`sqlmap`** (limite de alvos via `GHOSTRECON_SQLMAP_TARGETS`), `stealth_requests` (ou `GHOSTRECON_STEALTH=1`).
+- **Kali** (requer ambiente Kali ou `GHOSTRECON_FORCE_KALI=1` + ferramentas): `subfinder`, `amass`, `kali_ffuf`, `kali_nuclei`, **`kali_nmap_aggressive`**, **`kali_nmap_udp`**, **`mysql_3306_intel`**, wpscan, nuclei/dalfox/xss_vibes conforme sinais.
+- **IA integrada:** `shannon_whitebox`, `pentestgpt_validate` — ver secção seguinte.
+
+Após o **score**, o servidor pode correlacionar exposição MySQL em rede com ficheiros de config (`buildMysqlConfigSurfaceCorrelationFindings`), fazer **recheck HTTP** em achados HIGH (`runHighPrioHttpRecheck`), sondagem **Playwright** XSS (`GHOSTRECON_PLAYWRIGHT_*`), e emitir **`recon_coverage`** com resumo do que correu e do ambiente.
+
+---
+
+## MITRE ATT&CK e OWASP
+
+- **`mitre-attack/recon-bundle.json`** — subconjunto Enterprise (reconnaissance, resource-development, initial-access). Regenerar: `npm run mitre:extract` (requer clone local de [MITRE CTI](https://github.com/mitre/cti) em `mitre-attack/cti/`, pasta pesada e ignorada no Git).
+- **`server/modules/mitre-recon.js`** / **`owasp-top10.js`** — heurísticas por finding; etiquetas finais aplicadas **após** PentestGPT e **antes** de gravar o run.
+
+---
+
+## Integrações pesadas (opcional)
+
+### Shannon Lite (white-box)
+
+Código **não** está neste repo — clone em `IAs/shannon/` (ver [`IAs/README.md`](IAs/README.md)). O pipeline pode executar `./shannon start` sobre clones GitHub, ler relatórios em `.shannon/deliverables/`, espelhar CLI (`shannon_cli`), abrir Temporal Web UI (`open_url`). Configuração: `GHOSTRECON_SHANNON_*`.
+
+### PentestGPT
+
+Validação HTTP **POST** com `ghostPayload` — URL `GHOSTRECON_PENTESTGPT_URL` ou campo na UI. Ponte opcional: `npm run pentestgpt-bridge`. Árvore GreyDGL opcional em `IAs/PentestGPT/`.
+
+### Relatórios IA
+
+Cascata configurável (Gemini, OpenRouter, Claude, LM Studio). `GET /api/capabilities` expõe `ai`, `shannon`, `pentestgpt`.
+
+### Webhook
+
+`GHOSTRECON_WEBHOOK_URL` — resumo pós-run; segundo POST após IA com embeds Discord quando aplicável.
+
+---
+
+## API HTTP e eventos NDJSON
+
+### Rotas principais
 
 | Método | Rota | Descrição |
 |--------|------|-----------|
-| `GET` | `/` | Serve `index.html` |
-| `GET` | `/mitre-map.html` | Ghostmap — MITRE/OWASP ao vivo (estático; mesmo origin) |
-| `GET` | `/cortex.html` | Cortex — Cérebro / grafo por categorias (estático + API abaixo) |
-| `GET` | `/reporte.html` | Reporte — checklist manual (estático + API `manual-validations`) |
-| `GET` | `/brain.html` | Redireciona para `cortex.html` |
-| `GET` | `/mitre-attack/recon-bundle.json` | Bundle ATT&CK recon (subconjunto fixo) |
-| `GET` | `/api/brain/categories` | Lista categorias do modo cérebro (SQLite) |
-| `POST` | `/api/brain/categories` | Cria categoria (CSRF); corpo `{ "title": "…" }` |
-| `POST` | `/api/brain/link` | Liga `target` + `fingerprint` a `categoryId` (CSRF) |
-| `GET` | `/api/brain/category/:id` | Categoria + `links[]` para o Cortex |
-| `GET` | `/api/manual-validations/:target` | Lista validações manuais por domínio |
-| `POST` | `/api/manual-validations` | Grava/remove validação + snapshot (CSRF) |
-| `POST` | `/api/manual-validations/ai-report` | Relatório IA sobre achados validados (CSRF) |
-| `GET` | `/api/health` | `{ ok, service }` |
-| `GET` | `/api/csrf-token` | Token CSRF (vinculado ao IP, TTL ~2 h) |
-| `GET` | `/api/capabilities` | Kali, PATH, chaves IA, `shannon`, `pentestgpt` (árvore local + `http` se `GHOSTRECON_PENTESTGPT_URL` definida) |
-| `POST` | `/api/shannon/prep` | Header `X-CSRF-Token`; corpo `{ "pullUpstream": true }` → `docker pull keygraph/shannon:latest`; resposta inclui `dockerPullLog` |
-| `POST` | `/api/pentestgpt-ping` | CSRF; corpo `{ "pentestgptUrl": "…" }` opcional — resolve URL (override ou `.env`), `GET` em `…/health` na mesma origem; JSON `{ ok, healthUrl, status, body }` ou erro |
-| `GET` | `/api/ai/lmstudio-check` | Testa conexão com LM Studio local (pré-check da UI) |
-| `POST` | `/api/recon/stream` | Corpo JSON (ver abaixo); resposta **NDJSON** |
-| `POST` | `/api/ai-reports` | Gera relatórios IA a partir de `payload` (export JSON); opcional webhook |
-| `GET` | `/api/runs?limit=` | Lista runs |
-| `GET` | `/api/runs/:id` | Run com findings |
-| `GET` | `/api/runs/:newerId/diff/:baselineId` | Diff mesmo alvo |
-| `GET` | `/api/intel/:target` | Corpus `bounty_intel` deduplicado |
+| `GET` | `/`, `/mitre-map.html`, `/cortex.html`, `/reporte.html`, … | Ficheiros estáticos na raiz do projeto |
+| `GET` | `/mitre-attack/recon-bundle.json` | Bundle MITRE |
+| `GET` | `/api/health` | Healthcheck |
+| `GET` | `/api/csrf-token` | Token CSRF (~2 h, por IP) |
+| `GET` | `/api/capabilities` | Kali, PATH, chaves IA, Shannon, PentestGPT |
+| `POST` | `/api/recon/stream` | **Corpo JSON do recon** — resposta **NDJSON** |
+| `POST` | `/api/ai-reports` | Relatórios IA a partir de export JSON |
+| `GET` | `/api/runs`, `/api/runs/:id`, `/api/runs/:newerId/diff/:baselineId` | Histórico e diff |
+| `GET` | `/api/intel/:target` | Corpus deduplicado |
+| `GET`/`POST` | `/api/brain/*` | Cortex — categorias e links |
+| `GET`/`POST` | `/api/manual-validations*` | Reporte + `ai-report` opcional |
+| `POST` | `/api/shannon/prep`, `/api/pentestgpt-ping` | Prep Docker Shannon, health PentestGPT |
+| `GET` | `/api/ai/lmstudio-check` | Pré-check LM Studio |
 
-### Corpo típico de `POST /api/recon/stream`
+Cabeçalho obrigatório nos POST sensíveis: **`X-CSRF-Token`**. Corpo máx. **5 MB** em `/api/recon/stream`.
+
+### Eventos NDJSON (tipos)
+
+Além de `log`, `progress`, `pipe`, `stats`, `finding`, `dork`, `open_url`, `intel`, `report_template`, `priority_pass`, `findings_rescore`, `delta_hot`, `ai_report`, `done`, `error`:
+
+- **`shannon_cli`** — linhas do Shannon (ANSI removido).
+- **`recon_coverage`** — snapshot de cobertura do run (módulos, Kali, achados).
+
+Exemplo mínimo de corpo para `POST /api/recon/stream`:
 
 ```json
 {
@@ -320,127 +210,39 @@ Requer SO identificado como Kali (ou `GHOSTRECON_FORCE_KALI=1`) **e** `nmap` no 
   "exactMatch": false,
   "kaliMode": false,
   "profile": "standard",
-  "modules": ["subdomains", "wayback", "security_headers", "github", "shannon_whitebox", "pentestgpt_validate"],
-  "auth": { "headers": {}, "cookie": "" },
-  "outOfScope": "staging.example.com, *.cdn.example.com",
+  "modules": ["subdomains", "wayback", "security_headers", "github"],
+  "outOfScope": "staging.example.com",
   "projectName": "cliente_x",
   "autoAiReports": false,
-  "aiProviderMode": "auto",
-  "shannonPrecheck": true,
-  "shannonSkipDepsVerify": false,
-  "shannonGithubRepos": "https://github.com/org/programa-bounty\norg/outro-repo",
-  "pentestgptUrl": "http://127.0.0.1:8765/validate"
+  "aiProviderMode": "auto"
 }
 ```
 
-Campos opcionais frequentes:
+---
 
-| Campo | Descrição |
-|--------|-----------|
-| `shannonPrecheck` | `false` desactiva a validação de dependências Shannon no **servidor** (não recomendado). |
-| `shannonSkipDepsVerify` | `true` — o servidor não bloqueia o recon se o Shannon não estiver pronto. |
-| `shannonGithubRepos` | String multilinha: URLs GitHub e/ou `owner/repo` para **clone manual** (bug bounty). |
-| `pentestgptUrl` | Opcional: URL do `POST` de validação **neste run** (sobrepõe `GHOSTRECON_PENTESTGPT_URL` se for `http://` ou `https://`). |
-| `modules` | Incluir `"pentestgpt_validate"` para validação HTTP pós-`score` (requer URL no `.env` ou `pentestgptUrl`). |
+## Persistência (SQLite / Postgres / Supabase)
 
-Cabeçalho: `X-CSRF-Token: <token>`.
+- **SQLite local:** default `data/bugbounty.db` (override `GHOSTRECON_DB`).
+- **Postgres:** `DATABASE_URL` (pooler Supabase IPv4, etc.).
+- **Supabase API:** `SUPABASE_URL` + chave (`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, …).
+- Migrações: `supabase/migrations/`; atalho SQL: `supabase/COPIAR_PARA_SQL_EDITOR.sql`.
+- Com **nome de projeto** na UI: espelho opcional em `escopo/{projeto}/{domínio}/`.
 
-`aiProviderMode`:
-- `auto` (default): cascata Gemini → OpenRouter → Claude → LM Studio
-- `lmstudio_only`: igual a `auto` na ordem de execução; na UI activa só o **pré-check** do LM Studio antes do recon (o LM continua no fim da cascata)
+Comandos npm: `npm run db:link`, `npm run db:push`, `npm run db:migration:new`.
 
 ---
 
-## Variáveis de ambiente (referência)
+## Segurança do servidor
 
-| Variável | Uso |
-|----------|-----|
-| `PORT` | Porta HTTP (default `3847`) |
-| `HOST` | Bind address (default `127.0.0.1`) |
-| `GITHUB_TOKEN` | Rate limit GitHub Code Search e Repo Search |
-| `GHOSTRECON_GITHUB_CLONE_ENABLED` | `1` (default) ou `0` — clone local de repos candidatos para `clone/` |
-| `GHOSTRECON_CLONE_DIR` / `GHOSTRECON_CLONE_MAX_REPOS` / `GHOSTRECON_CLONE_MAX_SIZE_MB` / `GHOSTRECON_CLONE_TIMEOUT_MS` / `GHOSTRECON_CLONE_RETENTION_DAYS` | Pasta, quantidade, MB máx., timeout clone, dias de retenção |
-| `GHOSTRECON_SHANNON_HOME` | Path absoluto ao root do Shannon Lite (default `IAs/shannon` sob a raiz do GHOSTRECON) |
-| `GHOSTRECON_SHANNON_AUTO_RUN` | `0` — não executar `./shannon start` após clone (só diagnóstico / clone) |
-| `GHOSTRECON_SHANNON_MAX_CLONES_PER_RUN` | Máximo de clones a analisar com Shannon por run (default 1, cap 5) |
-| `GHOSTRECON_SHANNON_START_TIMEOUT_MS` / `GHOSTRECON_SHANNON_WORKFLOW_TIMEOUT_MS` | Timeout do arranque do CLI e espera pelo `workflow.log` |
-| `GHOSTRECON_SHANNON_PIPELINE_TESTING` | `1` — passa `--pipeline-testing` ao Shannon (mais rápido para desenvolvimento) |
-| `GHOSTRECON_SHANNON_REPORT_MAX_CHARS` | Truncagem ao ler o relatório Markdown consolidado |
-| `GHOSTRECON_SHANNON_OPEN_TEMPORAL_UI` | `0` — não emitir `open_url` para a Temporal Web UI |
-| `GHOSTRECON_SHANNON_MIRROR_CLI` | `0` — não espelhar stdout/stderr do Shannon na stream (`shannon_cli`) |
-| `GHOSTRECON_PENTESTGPT_URL` | URL do `POST` de validação pós-recon (módulo `pentestgpt_validate`) |
-| `GHOSTRECON_PENTESTGPT_HOME` | Raiz do clone GreyDGL (capabilities) |
-| `GHOSTRECON_PENTESTGPT_ENABLED` / `GHOSTRECON_PENTESTGPT_TIMEOUT_MS` | Activar serviço e timeout HTTP |
-| `GHOSTRECON_PENTESTGPT_BRIDGE_PORT` / `GHOSTRECON_PENTESTGPT_BRIDGE_MODEL` | Ponte `pentestgpt-ghost-bridge.mjs` (OpenRouter) |
-| `GHOSTRECON_PENTESTGPT_BRIDGE_SYSTEM_PROMPT` | Opcional: substitui o prompt bug bounty da ponte |
-| `GOOGLE_CSE_KEY` / `GOOGLE_CSE_CX` | Google Programmable Search (módulo `google_cse`) |
-| `GHOSTRECON_DB` | Caminho SQLite global (default `data/bugbounty.db`) |
-| `DATABASE_URL` | Postgres directo (prioridade sobre API Supabase) |
-| `SUPABASE_URL` + chave | Cliente REST (`SUPABASE_ANON_KEY`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, ou `SUPABASE_KEY`) |
-| `VIRUSTOTAL_API_KEY` | Subdomínios VT |
-| `SHODAN_API_KEY` | Lookup passivo Shodan |
-| `GHOSTRECON_WEBHOOK_URL` | Webhook pós-recon e pós-IA |
-| `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS` | Rate limit POST recon |
-| `GHOSTRECON_CC_CDX_API` | URL índice Common Crawl |
-| `GHOSTRECON_OUT_OF_SCOPE` | Hosts/patterns fora de escopo (global) |
-| `GHOSTRECON_STEALTH` | `1` = stealth como módulo sempre activo |
-| `GHOSTRECON_FORCE_KALI` | `1` = assumir ambiente Kali |
-| `GHOSTRECON_NMAP_ARGS` | Argumentos nmap |
-| `GHOSTRECON_FTP_ANON_TIMEOUT_MS` | Timeout do teste de login FTP anônimo (default `12000`) |
-| `GHOSTRECON_NUCLEI_PROFILE` | `safe` / `bb-passive` / `bb-active` / `high-impact` |
-| `GHOSTRECON_FFUF_THREADS` | Threads ffuf (1–64) |
-| `GHOSTRECON_DALFOX_MAX_URLS` / `GHOSTRECON_DALFOX_TIMEOUT_MS` | dalfox |
-| `GHOSTRECON_XSS_VIBES_MAX_URLS` / `GHOSTRECON_XSS_VIBES_THREADS` / `GHOSTRECON_XSS_VIBES_TIMEOUT_MS` | scanner `Xss/xss_vibes` (pós-XSS no Kali) |
-| `WPSCAN_API_TOKEN` ou `GHOSTRECON_WPSCAN_API_TOKEN` | WPVulnDB no wpscan (CVEs); **por defeito o scan não corre sem token** |
-| `GHOSTRECON_WPSCAN_REQUIRE_API` | `0` = permitir wpscan sem token (só enumeração); omitido ou ≠`0` = exige token |
-| `GHOSTRECON_WPSCAN_DETECTION_MODE` / `GHOSTRECON_WPSCAN_TIMEOUT_MS` | Modo e timeout wpscan |
-| `GHOSTRECON_WHOIS_SUBDOMAINS_MAX` | Extra whois |
-| `GHOSTRECON_SUBFINDER_TIMEOUT_MS` / `GHOSTRECON_AMASS_TIMEOUT_MS` | Timeouts enum |
-| `GEMINI_API_KEY` / `GOOGLE_AI_API_KEY` | IA Gemini |
-| `GHOSTRECON_GEMINI_MODEL` / `GHOSTRECON_GEMINI_MAX_RETRIES` | Gemini (retries em 429/5xx/timeout) |
-| `OPENROUTER_API_KEY` | IA via OpenRouter |
-| `GHOSTRECON_OPENROUTER_MODEL` / `GHOSTRECON_OPENROUTER_HTTP_REFERER` / `GHOSTRECON_OPENROUTER_APP_TITLE` / `GHOSTRECON_OPENROUTER_MAX_RETRIES` | OpenRouter |
-| `GHOSTRECON_AI_FALLBACK_WAIT_SEC` | Espera fixa entre tentativas Gemini na cascata (default `60`) |
-| `ANTHROPIC_API_KEY` / `GHOSTRECON_CLAUDE_MODEL` | Claude directo (terceiro na cascata, após Gemini e OpenRouter) |
-| `GHOSTRECON_LMSTUDIO_ENABLED` / `GHOSTRECON_LMSTUDIO_BASE_URL` / `GHOSTRECON_LMSTUDIO_MODEL` / `GHOSTRECON_LMSTUDIO_API_KEY` | LM Studio local (OpenAI-compatible) |
-| `GHOSTRECON_LMSTUDIO_N_CTX` / `GHOSTRECON_LMSTUDIO_MAX_OUTPUT_TOKENS` (ou `GHOSTRECON_LMSTUDIO_MAX_TOKENS`) / `GHOSTRECON_LMSTUDIO_TIMEOUT_MS` / `GHOSTRECON_LMSTUDIO_TEMPERATURE` | Contexto, saída e tempo limite no LM Studio |
-| `GHOSTRECON_LMSTUDIO_MAX_INPUT_CHARS` / `GHOSTRECON_LMSTUDIO_CHARS_PER_TOKEN` | Limite opcional do JSON local (senão calcula a partir de `N_CTX`) |
-| `GHOSTRECON_AI_AUTO` | `0` desliga IA automática no fim do recon |
-| `GHOSTRECON_AI_RELATORIO_MAX_CHARS` / `GHOSTRECON_AI_PROXIMOS_MAX_CHARS` | Truncagem Markdown IA |
-
-Limites numéricos (timeouts, concorrência, caps de URLs, etc.) estão centralizados em `server/config.js`.
+- **CORS** restrito a `http://127.0.0.1:PORT` e `http://localhost:PORT`.
+- **CSRF** em todos os POST mutáveis listados acima.
+- **Rate limit** opcional: `GHOSTRECON_RL_MAX` / `GHOSTRECON_RL_WINDOW_MS`.
 
 ---
 
-## Requisitos e execução
+## Variáveis de ambiente
 
-- **Node.js 18+** (usa `fetch` nativo). O `Dockerfile` usa Node 22 Alpine.
-
-```bash
-npm install
-npm start          # produção
-npm run dev        # reload com --watch
-npm test           # testes em server/tests/ (incl. pentestgpt-capabilities, pentestgpt-local)
-npm run mitre:extract  # regenera mitre-attack/recon-bundle.json a partir de mitre-attack/cti/ (clone local)
-npm run test:ai    # smoke das APIs IA (script separado)
-```
-
-Abre **http://127.0.0.1:3847** (ou `HOST`/`PORT` definidos).
-
----
-
-## Base de dados
-
-### Supabase
-
-1. **CLI**: `npm run db:link`, `npm run db:push`, migrações em `supabase/migrations/`.
-2. **SQL Editor**: colar `supabase/COPIAR_PARA_SQL_EDITOR.sql` (sem colar o caminho do ficheiro como texto).
-
-### SQLite
-
-- Ficheiro default: **`data/bugbounty.db`**.
-- Tabelas principais: **`runs`**, **`findings`**, **`bounty_intel`** (corpus deduplicado por alvo; actualiza `last_seen` / `last_run_id`).
-- Com **nome de projeto** na UI e storage remoto: cópia local adicional sob `escopo/...`.
+Lista completa e comentários: **[`.env.example`](.env.example)**. Inclui: APIs (VT, Shodan, GitHub, Google CSE), base de dados, Shannon, PentestGPT, IA, webhook, Kali, wpscan, xss_vibes, Playwright, stealth, scope global, Common Crawl CDX, limites de relatório IA.
 
 ---
 
@@ -451,7 +253,20 @@ docker build -t ghostrecon .
 docker run --rm -p 3847:3847 --env-file .env ghostrecon
 ```
 
-A imagem **não** inclui ferramentas Kali (nmap, nuclei, etc.) — modo passivo apenas.
+A imagem **oficial** copia apenas `server/` e `index.html` — é adequada a um **modo mínimo**. Para **Ghostmap / Cortex / Reporte** e restantes `.html`, monta a raiz do repo ou amplia o `Dockerfile` (por exemplo `COPY *.html ./`).
+
+Não inclui ferramentas Kali dentro da imagem.
+
+---
+
+## Testes e scripts
+
+| Comando | Função |
+|---------|--------|
+| `npm test` | Suite `server/tests/*.test.js` |
+| `npm run mitre:extract` | Regenera `mitre-attack/recon-bundle.json` |
+| `npm run pentestgpt-bridge` | Ponte OpenRouter → endpoint de validação |
+| `npm run test:ai` | Smoke das APIs de IA |
 
 ---
 
@@ -459,43 +274,36 @@ A imagem **não** inclui ferramentas Kali (nmap, nuclei, etc.) — modo passivo 
 
 ```
 GHOSTRECON/
-├── index.html                 # Frontend principal (recon + hub Ghostmap/Cortex/Reporte)
-├── mitre-map.html             # Ghostmap — MITRE + OWASP ao vivo (BroadcastChannel)
-├── cortex.html                # Cortex — Cérebro (categorias SQLite, mapa local)
-├── reporte.html               # Checklist manual + import JSON + validações
-├── brain.html                 # Redirect → cortex.html
+├── index.html, mitre-map.html, cortex.html, reporte.html, …
 ├── package.json
-├── .env.example
+├── install.sh
 ├── Dockerfile
-├── README.md
-├── mitre-attack/
-│   ├── recon-bundle.json      # ATT&CK recon fixo (versionado)
-│   └── cti/                   # Clone MITRE/cti (opcional; ignorado no Git — gerar bundle com npm run mitre:extract)
-├── IAs/
-│   └── README.md              # Clones Shannon + PentestGPT (pastas em IAs/ ignoradas no Git)
-├── clone/                     # Clones git (ignorado no Git; criado em runtime)
-├── supabase/                  # CLI, migrações, SQL para editor
+├── .env.example
+├── mitre-attack/recon-bundle.json
+├── mitre-attack/cti/          # clone MITRE/cti (opcional, não versionado)
+├── IAs/README.md            # Shannon + PentestGPT (clones em IAs/, ignorados)
+├── Xss/xss_vibes/           # Scanner XSS auxiliar (Python)
+├── clone/                   # clones git em runtime (ignorado)
+├── supabase/                # config, migrations, SQL editor
 └── server/
-    ├── index.js               # Express, rotas, pipeline
-    ├── load-env.js            # Carrega .env da raiz do repo
-    ├── config.js              # Limites, regex “interesting”, UA
-    ├── scripts/               # pentestgpt-ghost-bridge.mjs, extract-mitre-recon-bundle.mjs, …
-    ├── modules/               # …, mitre-recon.js, owasp-top10.js, verify.js, …
-    └── tests/                 # …, mitre-recon.test.js, verify-sqli-patterns.test.js, …
+    ├── index.js             # Express + pipeline
+    ├── config.js            # Limites globais
+    ├── load-env.js
+    ├── scripts/             # mitre extract, pentestgpt bridge, smoke IA
+    ├── modules/             # dezenas de módulos (recon, DB, IA, Kali, …)
+    └── tests/
 ```
 
 ---
 
-## Como estender
+## Extensão e contribuição técnica
 
-- **Novos dorks**: `server/modules/dorks.js` + checkbox em `index.html` com `class="mod"` e o mesmo `value`.
-- **Nova fonte passiva**: novo módulo em `modules/`, import e chamada em `runPipeline` com eventos `pipe`/`log` coerentes.
-- **Shannon / PentestGPT**: ver `IAs/README.md`; rotas `GET /api/capabilities`, `POST /api/shannon/prep`, `POST /api/pentestgpt-ping` (CSRF); novos env em `.env.example`.
-- **MITRE bundle**: actualizar dados ATT&CK → colocar clone em `mitre-attack/cti/` e correr **`npm run mitre:extract`**; opcionalmente afinar heurísticas em `server/modules/mitre-recon.js`.
-- **Limites**: `server/config.js`.
+- Novos dorks: `server/modules/dorks.js` + checkbox em `index.html` com `class="mod"` e o mesmo `value`.
+- Nova fonte: módulo em `server/modules/`, integração em `runPipeline` com eventos `pipe` / `log` consistentes.
+- Limites: `server/config.js`.
 
 ---
 
 ## Aviso legal
 
-Utiliza apenas contra alvos **autorizados**. O modo passivo ainda gera tráfego HTTP e consultas a terceiros (crt.sh, Archive.org, Google APIs, GitHub, etc.); o **modo Kali** é **intrusivo**. O **Shannon Lite** executa análise white-box e fluxos de pentest autónomo (Docker, Temporal, possíveis testes activos contra a aplicação) — só com programa e permissões explícitas. Cumpre os termos dos programas de bug bounty e a legislação aplicável.
+Usa **apenas** contra alvos **autorizados**. Mesmo o modo passivo gera tráfego HTTP e consultas a terceiros (crt.sh, Archive.org, APIs Google/GitHub, …). O **modo Kali** e ferramentas como **sqlmap**, **nuclei**, **Shannon** e **PentestGPT** podem ser **intrusivos**. Cumpre os termos dos programas de bug bounty e a legislação aplicável.
