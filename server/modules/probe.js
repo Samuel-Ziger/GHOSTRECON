@@ -2,6 +2,7 @@ import { limits } from '../config.js';
 import { detectTech } from './tech.js';
 import { extractHtmlSurface } from './html-surface.js';
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
+import { flattenResponseHeaderPairs } from './header-intel.js';
 
 function extractTitle(html) {
   const m = html.match(/<title[^>]*>([^<]{0,300})/i);
@@ -94,7 +95,7 @@ export async function probeHttp(url, opts = {}) {
         surface = null;
       }
     }
-    return {
+    const out = {
       ok: true,
       url: res.url,
       status: res.status,
@@ -103,7 +104,13 @@ export async function probeHttp(url, opts = {}) {
       waf,
       securityHeaders,
       surface,
+      /** Primeiros bytes HTML (só text/html) — comentários / heurísticas sem novo fetch. */
+      htmlSample: /text\/html|application\/xhtml/i.test(ct) ? text : '',
     };
+    if (modules.includes('header_intel')) {
+      out.responseHeadersFlat = flattenResponseHeaderPairs(res.headers);
+    }
+    return out;
   } catch (e) {
     return {
       ok: false,

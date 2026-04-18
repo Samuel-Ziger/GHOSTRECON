@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
 import { resolveShannonHome } from './shannon-capabilities.js';
+import { hostLiteralForUrl } from './recon-target.js';
 
 /** Igual ao `apps/cli/src/commands/logs.ts` — fim do workflow no ficheiro append-only. */
 const WORKFLOW_DONE_RE = /^Workflow (COMPLETED|FAILED)$/m;
@@ -201,7 +202,8 @@ export async function runShannonOnClone(opts) {
       .replace(/[^a-zA-Z0-9.-]+/g, '-')
       .slice(0, 80)}-${Date.now()}-${slug}`;
 
-    const targetUrl = `https://${String(domain).trim().toLowerCase()}/`;
+    const apex = String(domain).trim();
+    const targetUrl = `https://${hostLiteralForUrl(apex)}/`;
     const shannonScript = path.join(shannonHome, 'shannon');
     const args = ['start', '-u', targetUrl, '-r', path.resolve(clonePath), '-w', workspaceId];
     if (String(process.env.GHOSTRECON_SHANNON_PIPELINE_TESTING || '').trim() === '1') {

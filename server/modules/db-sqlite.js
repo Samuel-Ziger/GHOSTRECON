@@ -66,6 +66,7 @@ const SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS brain_categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_brain_cat_title ON brain_categories(title);
@@ -109,7 +110,19 @@ function ensureRunsFindingsJsonColumn(d) {
 function applySqliteSchema(d) {
   d.exec(SCHEMA_SQL);
   ensureRunsFindingsJsonColumn(d);
+  ensureBrainCategoryDescriptionColumn(d);
   ensureBrainSeedCategories(d);
+}
+
+function ensureBrainCategoryDescriptionColumn(d) {
+  try {
+    const cols = d.prepare(`PRAGMA table_info(brain_categories)`).all();
+    if (!cols.some((c) => c.name === 'description')) {
+      d.exec(`ALTER TABLE brain_categories ADD COLUMN description TEXT NOT NULL DEFAULT ''`);
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 function ensureBrainSeedCategories(d) {
@@ -419,7 +432,7 @@ export function listBrainCategories() {
   ensureBrainSeedCategories(d);
   const rows = d
     .prepare(
-      `SELECT c.id, c.title, c.created_at,
+      `SELECT c.id, c.title, c.description, c.created_at,
         (SELECT COUNT(*) FROM brain_links bl WHERE bl.category_id = c.id) AS link_count
        FROM brain_categories c ORDER BY lower(trim(c.title))`,
     )
@@ -427,6 +440,7 @@ export function listBrainCategories() {
   return rows.map((r) => ({
     id: Number(r.id),
     title: r.title,
+    description: r.description || '',
     created_at: r.created_at,
     linkCount: Number(r.link_count) || 0,
   }));
@@ -436,9 +450,9 @@ export function getBrainCategoryById(idRaw) {
   const d = getDb();
   const cid = Number(idRaw);
   if (!Number.isFinite(cid) || cid < 1) return null;
-  const r = d.prepare('SELECT id, title, created_at FROM brain_categories WHERE id = ?').get(cid);
+  const r = d.prepare('SELECT id, title, description, created_at FROM brain_categories WHERE id = ?').get(cid);
   if (!r) return null;
-  return { id: Number(r.id), title: r.title, created_at: r.created_at };
+  return { id: Number(r.id), title: r.title, description: r.description || '', created_at: r.created_at };
 }
 
 export function listBrainLinksForCategory(categoryIdRaw) {
@@ -463,18 +477,43 @@ export function listBrainLinksForCategory(categoryIdRaw) {
   }));
 }
 
-export function createBrainCategory(titleRaw) {
+export function createBrainCategory(titleRaw, descriptionRaw = '') {
   const d = getDb();
   const title = String(titleRaw || '')
     .trim()
     .slice(0, 120);
+  const description = String(descriptionRaw || '')
+    .trim()
+    .slice(0, 2000);
   if (!title) throw new Error('título vazio');
   ensureBrainSeedCategories(d);
-  const row = d.prepare('SELECT id, title FROM brain_categories WHERE lower(trim(title)) = lower(trim(?))').get(title);
-  if (row) return { id: Number(row.id), title: row.title, existing: true };
+  const row = d
+    .prepare('SELECT id, title, description FROM brain_categories WHERE lower(trim(title)) = lower(trim(?))')
+    .get(title);
+  if (row) return { id: Number(row.id), title: row.title, description: row.description || '', existing: true };
   const now = new Date().toISOString();
-  const info = d.prepare('INSERT INTO brain_categories (title, created_at) VALUES (?, ?)').run(title, now);
-  return { id: Number(info.lastInsertRowid), title, existing: false };
+  const info = d
+    .prepare('INSERT INTO brain_categories (title, description, created_at) VALUES (?, ?, ?)')
+    .run(title, description, now);
+  return { id: Number(info.lastInsertRowid), title, description, existing: false };
+}
+
+export function updateBrainCategoryDescription(idRaw, descriptionRaw) {
+  const d = getDb();
+  const cid = Number(idRaw);
+  if (!Number.isFinite(cid) || cid < 1) throw new Error('categoria inválida');
+  const description = String(descriptionRaw || '')
+    .trim()
+    .slice(0, 2000);
+  const info = d.prepare('UPDATE brain_categories SET description = ? WHERE id = ?').run(description, cid);
+  if (!info.changes) throw new Error('categoria não encontrada');
+  const row = d.prepare('SELECT id, title, description, created_at FROM brain_categories WHERE id = ?').get(cid);
+  return {
+    id: Number(row.id),
+    title: row.title,
+    description: row.description || '',
+    created_at: row.created_at,
+  };
 }
 
 export function upsertBrainLink({ target: targetRaw, fingerprint, categoryId }) {

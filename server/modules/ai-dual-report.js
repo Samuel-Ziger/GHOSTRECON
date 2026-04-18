@@ -33,18 +33,20 @@ Estilo e extensão (obrigatório):
 - Conta caracteres mentalmente antes de responder.
 
 Formato de resposta (OBRIGATÓRIO):
-Responde APENAS com um único objeto JSON válido (sem texto antes ou depois, sem blocos markdown), com exactamente estas chaves:
-- "relatorio": string em Markdown — no máximo ${maxRelatorio} caracteres. Síntese seca: achados relevantes por severidade/tipo, notas de risco.
-- "proximos_passos": string em Markdown — no máximo ${maxProximos} caracteres. Lista curta e priorizada de verificações manuais seguras.
+Responde APENAS com um único objeto JSON válido (sem texto antes ou depois, sem blocos markdown), com exactamente estas chaves (nomes em minúsculas, sem acentos: relatorio, proximos_passos):
+- "relatorio": string em Markdown — no máximo ${maxRelatorio} caracteres. Síntese seca: achados relevantes por severidade/tipo, notas de risco. **Obrigatório: não pode estar vazio nem ser só um título;** mínimo ~3 linhas úteis.
+- "proximos_passos": string em Markdown — no máximo ${maxProximos} caracteres. Lista curta e priorizada de verificações manuais seguras. **Obrigatório: não pode estar vazio.**
+
+Ordem no JSON: começa sempre por "relatorio" e só depois "proximos_passos", para o relatório principal não ficar omitido ou truncado.
 
 Idioma: português (Portugal ou Brasil, consistente).`;
 }
 
 function buildAiSystemPromptCompact() {
   const { maxRelatorio, maxProximos } = getAiMarkdownCharLimits();
-  return `Analisa o JSON do GHOSTRECON e responde APENAS com JSON válido:
+  return `Analisa o JSON do GHOSTRECON e responde APENAS com JSON válido (chaves exactas relatorio, proximos_passos — nunca vazias):
 {"relatorio":"...","proximos_passos":"..."}.
-Regras: usar só dados do JSON, sem inventar, português, conciso.
+Regras: usar só dados do JSON, sem inventar, português, conciso. relatorio primeiro no objecto.
 Limites: relatorio <= ${maxRelatorio} chars; proximos_passos <= ${maxProximos} chars.`;
 }
 
@@ -99,16 +101,135 @@ JSON:
 ${jsonString}`;
 }
 
+/**
+ * Extrai o primeiro objecto JSON `{...}` com chaves equilibradas (ignora `}` dentro de strings).
+ * Evita cortar mal quando há texto ou `}` extra após o JSON (lastIndexOf('}') era incorrecto).
+ */
 function extractJsonObject(text) {
   if (!text || typeof text !== 'string') throw new Error('Resposta vazia');
   let s = text.trim();
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) s = fence[1].trim();
   const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start === -1 || end <= start) throw new Error('JSON não encontrado na resposta');
-  s = s.slice(start, end + 1);
-  return JSON.parse(s);
+  if (start === -1) throw new Error('JSON não encontrado na resposta');
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const slice = s.slice(start, i + 1);
+        try {
+          return JSON.parse(slice);
+        } catch (e) {
+          throw new Error(`JSON inválido na resposta da IA: ${e?.message || e}`);
+        }
+      }
+    }
+  }
+  throw new Error('JSON não encontrado na resposta (objecto não fechado)');
+}
+
+function jsonKeyNorm(k) {
+  return String(k || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[\s-]+/g, '_');
+}
+
+function coerceAiMarkdownValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    return value
+      .map((x) => coerceAiMarkdownValue(x))
+      .filter((x) => String(x).trim() !== '')
+      .join('\n\n');
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+/** Mapeia chaves alternativas devolvidas por LLMs (acentos, camelCase, inglês) para relatorio / proximos_passos. */
+function normalizeAiReportFields(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { relatorio: '', proximos_passos: '' };
+  }
+  const L = Object.create(null);
+  for (const k of Object.keys(parsed)) {
+    L[jsonKeyNorm(k)] = parsed[k];
+  }
+  const pickFirst = (...normKeys) => {
+    for (const nk of normKeys) {
+      const key = jsonKeyNorm(nk);
+      const v = L[key];
+      if (v === undefined || v === null) continue;
+      const s = coerceAiMarkdownValue(v).trim();
+      if (s !== '') return coerceAiMarkdownValue(v);
+    }
+    return '';
+  };
+  let relatorio = pickFirst(
+    'relatorio',
+    'relatório',
+    'report',
+    'reports',
+    'resumo',
+    'analise',
+    'análise',
+    'sintese',
+    'síntese',
+    'summary',
+    'findings_summary',
+  );
+  let proximos_passos = pickFirst(
+    'proximos_passos',
+    'proximos',
+    'próximos_passos',
+    'proximos_passos_md',
+    'next_steps',
+    'nextsteps',
+    'acoes',
+    'ações',
+    'recommendations',
+    'action_items',
+  );
+  if (!String(relatorio || '').trim() && parsed.relatorio != null) {
+    relatorio = coerceAiMarkdownValue(parsed.relatorio);
+  }
+  if (!String(proximos_passos || '').trim() && parsed.proximos_passos != null) {
+    proximos_passos = coerceAiMarkdownValue(parsed.proximos_passos);
+  }
+  return {
+    relatorio: String(relatorio || '').trim(),
+    proximos_passos: String(proximos_passos || '').trim(),
+  };
 }
 
 function parseRetryAfterSeconds(retryAfterHeader) {
@@ -241,21 +362,41 @@ async function callOpenRouterOnce(userText, apiKey, model, opts = {}) {
   };
   if (referer) headers['HTTP-Referer'] = referer;
   if (title) headers['X-Title'] = title;
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const jsonMode =
+    opts.jsonObject === false
+      ? false
+      : !['0', 'false', 'no', 'off'].includes(
+          String(process.env.GHOSTRECON_OPENROUTER_JSON_OBJECT || '1').trim().toLowerCase(),
+        );
+  const body = {
+    model,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: userText },
+    ],
+    temperature: 0.25,
+    max_tokens: 16384,
+  };
+  if (jsonMode) {
+    body.response_format = { type: 'json_object' };
+  }
+  let res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: userText },
-      ],
-      temperature: 0.25,
-      max_tokens: 16384,
-    }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(180000),
   });
-  const data = await res.json().catch(() => ({}));
+  let data = await res.json().catch(() => ({}));
+  if (!res.ok && jsonMode && body.response_format && res.status === 400) {
+    delete body.response_format;
+    res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(180000),
+    });
+    data = await res.json().catch(() => ({}));
+  }
   if (!res.ok) {
     const raw = String(data?.error?.message || data?.message || JSON.stringify(data));
     const msg = raw.length > 360 ? `${raw.slice(0, 360)}…` : raw;
@@ -426,7 +567,7 @@ function isLmStudioRetryablePayloadError(err) {
 /** Conteúdo user só com o JSON (system já leva as regras no Claude). */
 function buildClaudeUserPayloadJsonOnly(jsonString) {
   const { maxRelatorio, maxProximos } = getAiMarkdownCharLimits();
-  return `Analisa o seguinte JSON do GHOSTRECON. Responde APENAS com o objeto JSON pedido (chaves "relatorio" e "proximos_passos", valores Markdown). Cumpre os limites: relatorio ≤ ${maxRelatorio} caracteres, proximos_passos ≤ ${maxProximos} caracteres.
+  return `Analisa o seguinte JSON do GHOSTRECON. Responde APENAS com o objeto JSON pedido (chaves "relatorio" e "proximos_passos", valores Markdown; nenhuma vazia; relatorio primeiro no objecto). Cumpre os limites: relatorio ≤ ${maxRelatorio} caracteres, proximos_passos ≤ ${maxProximos} caracteres.
 
 JSON:
 ${jsonString}`;
@@ -553,6 +694,11 @@ export async function runDualAiReports(
     aiOpenrouterOnly = false,
     /** `gemini` | `openrouter` — primeiro a gerar o relatório; depois LM Studio, depois a outra cloud, depois Claude. */
     aiPrimaryCloud: aiPrimaryCloudRaw = null,
+    /**
+     * Quando `true` e o primeiro cloud é OpenRouter: tenta Gemini antes do LM Studio
+     * (ordem: OpenRouter → Gemini → LM Studio → Claude). Usado no relatório por IA do Reporte.
+     */
+    aiOpenrouterThenGeminiBeforeLm = false,
   } = {},
 ) {
   const geminiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_AI_API_KEY?.trim();
@@ -634,8 +780,9 @@ export async function runDualAiReports(
   const { maxRelatorio, maxProximos } = getAiMarkdownCharLimits();
 
   const writePair = (prefix, parsed) => {
-    const rel = clampMarkdown(parsed?.relatorio ?? '', maxRelatorio);
-    const prox = clampMarkdown(parsed?.proximos_passos ?? '', maxProximos);
+    const norm = normalizeAiReportFields(parsed);
+    const rel = clampMarkdown(norm.relatorio, maxRelatorio);
+    const prox = clampMarkdown(norm.proximos_passos, maxProximos);
     const rp = path.join(outputDir, `${prefix}_relatorio.md`);
     const pp = path.join(outputDir, `${prefix}_proximos_passos.md`);
     fs.writeFileSync(rp, rel, 'utf8');
@@ -694,6 +841,7 @@ export async function runDualAiReports(
   const primaryGuess = normalizeAiPrimaryCloud(aiPrimaryCloudRaw, aiOpenrouterOnly);
   const primary = resolvePrimaryWithKeys(primaryGuess, aiUseOpenrouter, Boolean(geminiKey), Boolean(openrouterKey));
   const alt = primary === 'gemini' ? 'openrouter' : 'gemini';
+  const reorderClouds = Boolean(aiOpenrouterThenGeminiBeforeLm) && primary === 'openrouter';
   let attemptedGemini = false;
   let attemptedOpenrouter = false;
 
@@ -796,7 +944,9 @@ export async function runDualAiReports(
   };
 
   status(
-    `IA: ordem — primeiro ${primary === 'openrouter' ? 'OpenRouter' : 'Gemini'}; se falhar → LM Studio; depois ${alt === 'openrouter' ? 'OpenRouter' : 'Gemini'} (se permitido); por fim Claude se configurado.`,
+    reorderClouds
+      ? 'IA (Reporte): ordem — OpenRouter primeiro; se falhar → Gemini; se ainda falhar → LM Studio; por fim Claude se configurado.'
+      : `IA: ordem — primeiro ${primary === 'openrouter' ? 'OpenRouter' : 'Gemini'}; se falhar → LM Studio; depois ${alt === 'openrouter' ? 'OpenRouter' : 'Gemini'} (se permitido); por fim Claude se configurado.`,
     'info',
   );
 
@@ -829,8 +979,36 @@ export async function runDualAiReports(
     attemptedGemini = true;
   }
 
-  // Fase 2 — LM Studio antes da outra cloud
-  if (!primarySucceeded && lmStudioEnabled) {
+  // Reporte: Gemini como segunda cloud (antes do LM Studio) quando o primeiro é OpenRouter
+  if (reorderClouds && !primarySucceeded && alt === 'gemini') {
+    await runGeminiAttempts();
+  }
+
+  // Fase 2 — LM Studio (por defeito antes da outra cloud; no modo Reporte/reorder, depois de OpenRouter+Gemini)
+  if (reorderClouds) {
+    if (!reportOk() && lmStudioEnabled) {
+      status('IA LM Studio: fallback local após OpenRouter/Gemini…', 'info');
+      await tryLmStudioReport();
+    } else if (reportOk() && lmStudioEnabled) {
+      result.lmstudio = {
+        ok: false,
+        error: 'Não executado (o primeiro provider escolhido já respondeu com sucesso).',
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
+    } else if (!reportOk() && !lmStudioEnabled) {
+      result.lmstudio = {
+        ok: false,
+        error: 'LM Studio desativado (define GHOSTRECON_LMSTUDIO_ENABLED=1 e GHOSTRECON_LMSTUDIO_MODEL).',
+        relatorio: null,
+        proximos_passos: null,
+        relatorioPath: null,
+        proximosPath: null,
+      };
+    }
+  } else if (!primarySucceeded && lmStudioEnabled) {
     status('IA LM Studio: fallback local após falha do primeiro provider…', 'info');
     await tryLmStudioReport();
   } else if (primarySucceeded && lmStudioEnabled) {
@@ -853,8 +1031,10 @@ export async function runDualAiReports(
     };
   }
 
-  // Fase 3 — a outra cloud (Gemini ↔ OpenRouter)
-  if (!reportOk()) {
+  // Fase 3 — a outra cloud (Gemini ↔ OpenRouter), excepto no modo reorder (Gemini já foi tentado na Fase 1b)
+  if (reorderClouds) {
+    if (!reportOk() && alt === 'openrouter') await runOpenrouterAttempt();
+  } else if (!reportOk()) {
     if (alt === 'gemini') await runGeminiAttempts();
     if (!reportOk() && alt === 'openrouter') await runOpenrouterAttempt();
   }
@@ -900,9 +1080,10 @@ export async function runDualAiReports(
     };
   }
 
-  const cascade = [primary, 'lmstudio'];
-  if (alt !== primary) cascade.push(alt);
-  if (claudeKey) cascade.push('claude');
+  const cascade =
+    reorderClouds
+      ? ['openrouter', 'gemini', 'lmstudio', ...(claudeKey ? ['claude'] : [])]
+      : [primary, 'lmstudio', ...(alt !== primary ? [alt] : []), ...(claudeKey ? ['claude'] : [])];
   result._reportCascadeOrder = cascade;
 
   for (const key of ['gemini', 'openrouter', 'claude', 'lmstudio']) {
@@ -921,9 +1102,20 @@ export function pickAiReportForWebhook(aiOut) {
   const order = Array.isArray(aiOut._reportCascadeOrder)
     ? aiOut._reportCascadeOrder
     : ['gemini', 'openrouter', 'claude', 'lmstudio'];
+  const usable = (b) =>
+    b?.ok
+    && typeof b.relatorio === 'string'
+    && typeof b.proximos_passos === 'string'
+    && b.proximos_passos.trim().length > 0;
   for (const key of order) {
     const b = aiOut[key];
-    if (b?.ok && typeof b.relatorio === 'string' && typeof b.proximos_passos === 'string') {
+    if (usable(b) && b.relatorio.trim().length > 0) {
+      return { provider: key, relatorio: b.relatorio, proximos_passos: b.proximos_passos };
+    }
+  }
+  for (const key of order) {
+    const b = aiOut[key];
+    if (usable(b)) {
       return { provider: key, relatorio: b.relatorio, proximos_passos: b.proximos_passos };
     }
   }

@@ -84,6 +84,11 @@ export const DORK_TEMPLATES = {
   robots_sitemap: [],
   rdap: [],
   security_headers: [],
+  header_intel: [],
+  kali_nmap_aggressive: [],
+  kali_nmap_udp: [],
+  mysql_3306_intel: [],
+  webshell_probe: [],
   virustotal: [],
   /** Lista servida pela UI/API; não gera dorks */
   out_of_scope: [],

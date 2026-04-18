@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GHOSTRECON — Anotações</title>
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --bg2: #121a24;
+      --border: #2a3848;
+      --text: #c8d0dc;
+      --dim: #7a8a9e;
+      --accent: #00d4ff;
+      --ok: #00ff88;
+      --err: #ff6688;
+      --mono: ui-monospace, 'Cascadia Code', monospace;
+      --sans: system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    header.reporte-hd {
+      position: relative;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+      overflow: hidden;
+    }
+    .reporte-ghost-bg {
+      position: absolute;
+      right: 4%;
+      top: 50%;
+      transform: translateY(-50%);
+      width: min(160px, 32vw);
+      max-height: 100px;
+      opacity: 0.1;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .reporte-ghost-bg svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      filter: drop-shadow(0 0 20px rgba(0, 212, 255, 0.35));
+    }
+    .reporte-hd-inner { position: relative; z-index: 1; }
+    @media (prefers-reduced-motion: reduce) {
+      .reporte-ghost-bg .ghost-anim-reporte,
+      .reporte-ghost-bg .ghost-eye-reporte { animation: none !important; }
+    }
+    .reporte-ghost-bg .ghost-anim-reporte {
+      transform-origin: 24px 26px;
+      animation: reporte-ghost-sway 3s ease-in-out infinite;
+    }
+    .reporte-ghost-bg .ghost-eye-reporte {
+      transform-origin: center;
+      transform-box: fill-box;
+      animation: reporte-ghost-blink 5s ease-in-out infinite;
+    }
+    .reporte-ghost-bg .ghost-eye-reporte-r { animation-delay: 0.06s; }
+    @keyframes reporte-ghost-sway {
+      0%, 100% { transform: rotate(-3deg); }
+      50% { transform: rotate(3deg); }
+    }
+    @keyframes reporte-ghost-blink {
+      0%, 47%, 53%, 100% { transform: scaleY(1); }
+      50% { transform: scaleY(0.12); }
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .sub {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--dim);
+    }
+    main {
+      padding: 16px 20px 100px;
+      max-width: min(960px, 100%);
+      margin: 0 auto;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    button {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary {
+      border-color: rgba(0, 212, 255, 0.55);
+      color: var(--accent);
+    }
+    .intro {
+      margin: 0 0 16px;
+      line-height: 1.55;
+      color: var(--text);
+      font-size: 12px;
+    }
+    .ann-sec { margin-bottom: 16px; }
+    .ann-sec label {
+      display: block;
+      font-size: 9px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+    .ann-sec textarea {
+      width: 100%;
+      min-height: 76px;
+      resize: vertical;
+      padding: 8px 10px;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.45;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    .ann-sec textarea.ann-tall { min-height: 120px; }
+    .ann-ai-wrap {
+      margin-top: 12px;
+      border: 1px solid rgba(0, 212, 255, 0.22);
+      background: rgba(10, 16, 24, 0.55);
+      padding: 8px 10px 10px;
+    }
+    .ann-ai-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+    .ann-ai-bar-label {
+      flex: 1;
+      min-width: 160px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .ann-ai-bar button { font-size: 9px; padding: 6px 10px; letter-spacing: 0.04em; }
+    .ann-ai-bar button:disabled { opacity: 0.4; }
+    .ann-ai-out {
+      padding: 10px 12px;
+      border: 1px solid rgba(0, 212, 255, 0.2);
+      background: rgba(10, 16, 24, 0.85);
+      min-height: 48px;
+      max-height: 320px;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 10px;
+      white-space: pre-wrap;
+      color: var(--text);
+    }
+    .ann-ai-out:empty::before {
+      content: '(Ainda sem relatório — usa o botão IA.)';
+      color: var(--dim);
+      font-style: italic;
+    }
+    .ann-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .log {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      margin-top: 10px;
+      white-space: pre-wrap;
+    }
+    .log.err { color: var(--err); }
+    .log.ok { color: var(--ok); }
+    footer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      background: rgba(10, 14, 20, 0.96);
+    }
+    footer .sub { font-size: 10px; color: var(--dim); line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <header class="reporte-hd">
+    <div class="reporte-ghost-bg" aria-hidden="true">
+      <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" width="100" height="108" focusable="false">
+        <defs>
+          <linearGradient id="anBgGhostGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e8fbff" />
+            <stop offset="45%" stop-color="#5ee0ff" />
+            <stop offset="100%" stop-color="#00a8d4" />
+          </linearGradient>
+        </defs>
+        <g class="ghost-anim-reporte">
+          <path
+            fill="url(#anBgGhostGrad)"
+            stroke="rgba(0,212,255,0.45)"
+            stroke-width="0.55"
+            d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
+          />
+          <ellipse class="ghost-eye-reporte" cx="17" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+          <ellipse class="ghost-eye-reporte ghost-eye-reporte-r" cx="31" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+        </g>
+      </svg>
+    </div>
+    <div class="reporte-hd-inner">
+      <h1>Anotações — modelo Reporte</h1>
+      <div class="sub" id="headLine">A carregar…</div>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <button type="button" id="btnReload">Sincronizar validações</button>
+      <button type="button" id="btnOpenReporte">Abrir checklist Reporte</button>
+      <button type="button" id="annBtnSave">Guardar rascunho</button>
+      <button type="button" id="annBtnSync">Atualizar a partir das validações</button>
+      <button type="button" id="annBtnSkeleton" title="Insere linhas-guia nas secções vazias">Guias (só vazios)</button>
+      <button type="button" id="annBtnMd">Descarregar .md</button>
+      <button type="button" class="btn-primary" id="annBtnAi">IA</button>
+    </div>
+    <p class="intro" id="introP">
+      O mesmo pacote de achados que enviaste ao <strong>Reporte</strong> é usado aqui. As validações na base continuam a
+      preencher estas caixas (via «Sincronizar» ou ao validar no Reporte). O botão <strong>IA</strong> envia o Markdown à
+      <strong>OpenRouter</strong>.
+    </p>
+    <div class="ann-sec">
+      <label for="annS1">1. Identificação do alvo</label>
+      <textarea id="annS1" class="ann-tall" spellcheck="false" autocomplete="off" placeholder="Alvo: …&#10;Data/Hora: …&#10;Fase: …"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS2">2. Portas e serviços</label>
+      <textarea id="annS2" class="ann-tall" spellcheck="false" autocomplete="off" placeholder="Portas abertas:&#10;- …"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS3">3. Enumeração web</label>
+      <textarea id="annS3" class="ann-tall" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS4">4. Possíveis vetores de ataque</label>
+      <textarea id="annS4" class="ann-tall" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS5">5. Testes realizados (validação manual)</label>
+      <textarea id="annS5" class="ann-tall" spellcheck="false" autocomplete="off" placeholder="Vetor / payload / resultado…"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS6">6. Exploração</label>
+      <textarea id="annS6" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS7">7. Pós-exploração (privesc)</label>
+      <textarea id="annS7" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS8">8. Impacto</label>
+      <textarea id="annS8" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS9">9. Referência (OWASP / MITRE)</label>
+      <textarea id="annS9" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="ann-sec">
+      <label for="annS10">10. Status final</label>
+      <textarea id="annS10" spellcheck="false" autocomplete="off" placeholder="[ ] Confirmado / falso positivo / parcial"></textarea>
+    </div>
+    <div class="ann-ai-wrap" id="annAiWrap">
+      <div class="ann-ai-bar">
+        <span class="ann-ai-bar-label">Relatório IA (OpenRouter)</span>
+        <button type="button" id="annBtnAiCopy" disabled>Copiar</button>
+        <button type="button" id="annBtnAiMdDl" disabled>Descarregar IA (.md)</button>
+        <button type="button" id="annBtnAiClear" disabled>Limpar</button>
+      </div>
+      <div class="ann-ai-out" id="annAiResult" aria-live="polite"></div>
+    </div>
+    <div class="log" id="msg"></div>
+  </main>
+  <footer>
+    <span class="sub">Abre esta página pelo botão <strong>ANOTAÇÃO</strong> na barra do <strong>Reporte</strong> (<code>reporte.html</code>). O checklist manual fica nessa aba.</span>
+  </footer>
+  <script>
+    const ANOTACAO_PAYLOAD_KEY = 'ghostrecon_anotacao_payload';
+    const REPORTE_PAYLOAD_KEY = 'ghostrecon_reporte_payload';
+    const REPORTE_PAYLOAD_SHARED_KEY = 'ghostrecon_reporte_payload_shared';
+    const REPORT_IMPORT_MAX = 6000;
+
+    function getApiBase() {
+      try {
+        const proto = window.location.protocol;
+        if (proto === 'file:' || proto === 'blob:') {
+          const saved = localStorage.getItem('ghostrecon_api_base');
+          return (saved || 'http://127.0.0.1:3847').replace(/\/+$/, '');
+        }
+      } catch (_) {}
+      return '';
+    }
+    function apiUrl(p) {
+      const path = p.startsWith('/') ? p : '/' + p;
+      const base = getApiBase();
+      return base ? base + path : path;
+    }
+
+    let csrf = '';
+    let target = '';
+    let findings = [];
+    const validatedFp = new Set();
+    let serverItems = [];
+    let aiUseOpenrouter = false;
+
+    const FP_URL_NORMALIZE_TYPES = new Set([
+      'endpoint', 'param', 'js', 'security', 'tls', 'nuclei', 'xss', 'sqli', 'dalfox', 'wpscan', 'intel',
+    ]);
+
+    function normalizeTarget(raw) {
+      let s = String(raw || '')
+        .trim()
+        .toLowerCase();
+      if (!s) return '';
+      s = s.replace(/^\*\./, '');
+      if (/^[a-z][a-z0-9+.-]*:\/\//.test(s)) {
+        try {
+          s = String(new URL(s).hostname || '').toLowerCase();
+        } catch (_) {}
+      } else if (/[/?#]/.test(s)) {
+        s = s.split(/[/?#]/, 1)[0];
+      }
+      s = s.replace(/:\d+$/, '').replace(/\.$/, '');
+      return s;
+    }
+
+    function targetUsableForApi(t) {
+      const s = normalizeTarget(t);
+      return s && /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s);
+    }
+
+    function normSpace(s) {
+      return String(s == null ? '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+    }
+
+    function normUrlForFingerprintBrowser(u) {
+      if (!u) return '';
+      try {
+        const x = new URL(String(u));
+        x.hash = '';
+        const keys = [...new Set([...x.searchParams.keys()])].sort();
+        const sp = new URLSearchParams();
+        for (const k of keys) {
+          for (const v of x.searchParams.getAll(k)) sp.append(k, v);
+        }
+        const q = sp.toString();
+        x.search = q ? '?' + q : '';
+        return x.href.toLowerCase();
+      } catch (_) {
+        return normSpace(u);
+      }
+    }
+
+    async function sha256Hex(text) {
+      if (!globalThis.crypto || !globalThis.crypto.subtle || typeof TextEncoder === 'undefined') {
+        throw new Error('SHA-256 indisponível neste browser');
+      }
+      const data = new TextEncoder().encode(String(text || ''));
+      const dig = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(dig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function ensureFindingFingerprint(targetRaw, finding) {
+      const f = finding && typeof finding === 'object' ? { ...finding } : {};
+      const fpIn = String(f.fingerprint || '').trim().toLowerCase();
+      if (/^[a-f0-9]{64}$/.test(fpIn)) {
+        f.fingerprint = fpIn;
+        return f;
+      }
+      const typeNorm = normSpace(f.type);
+      const urlPart = FP_URL_NORMALIZE_TYPES.has(typeNorm)
+        ? normUrlForFingerprintBrowser(f.url)
+        : normSpace(f.url);
+      const raw = normSpace(targetRaw) + '|' + typeNorm + '|' + normSpace(f.value) + '|' + urlPart;
+      try {
+        f.fingerprint = await sha256Hex(raw);
+      } catch (_) {
+        f.fingerprint = '';
+      }
+      return f;
+    }
+
+    async function hydrateFindingsFingerprints(rows, targetRaw) {
+      const out = [];
+      for (const row of rows || []) {
+        if (!row || typeof row !== 'object') continue;
+        out.push(await ensureFindingFingerprint(targetRaw, row));
+      }
+      return out;
+    }
+
+    async function fetchCsrf() {
+      const r = await fetch(apiUrl('/api/csrf-token'));
+      const d = await r.json();
+      csrf = String(d.token || '');
+      if (!csrf) throw new Error('CSRF vazio');
+    }
+
+    async function loadServerState() {
+      if (!targetUsableForApi(target)) {
+        serverItems = [];
+        validatedFp.clear();
+        return;
+      }
+      const r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)));
+      if (!r.ok) throw new Error('GET validações: ' + r.status);
+      const d = await r.json();
+      serverItems = Array.isArray(d.items) ? d.items : [];
+      validatedFp.clear();
+      for (const it of serverItems) {
+        if (it.fingerprint) validatedFp.add(String(it.fingerprint).toLowerCase());
+      }
+    }
+
+    async function loadAiState() {
+      try {
+        const r = await fetch(apiUrl('/api/capabilities'));
+        if (!r.ok) return;
+        const d = await r.json().catch(() => ({}));
+        aiUseOpenrouter = Boolean(d && d.ai && d.ai.openrouter);
+      } catch (_) {}
+    }
+
+    function setMsg(t, cls) {
+      const el = document.getElementById('msg');
+      el.textContent = t || '';
+      el.className = 'log' + (cls ? ' ' + cls : '');
+    }
+
+    function normalizeImportedFinding(f) {
+      if (!f || typeof f !== 'object') return null;
+      const fp = String(f.fingerprint || '').trim().toLowerCase();
+      const prio = f.prio != null ? f.prio : f.priority != null ? f.priority : '';
+      const out = {
+        type: f.type != null ? String(f.type) : '',
+        prio: prio !== '' && prio != null ? String(prio) : '',
+        value: f.value != null ? String(f.value) : '',
+        url: f.url != null ? String(f.url) : '',
+        meta: f.meta != null ? String(f.meta) : '',
+      };
+      if (f.score != null) out.score = f.score;
+      if (Array.isArray(f.owasp)) out.owasp = f.owasp;
+      if (Array.isArray(f.mitre)) out.mitre = f.mitre;
+      if (/^[a-f0-9]{64}$/.test(fp)) out.fingerprint = fp;
+      return out;
+    }
+
+    function normalizeTaxonomyTags(list, idRe) {
+      const out = [];
+      for (const t of list || []) {
+        const id = typeof t === 'string' ? t : t && t.id != null ? String(t.id) : '';
+        const clean = String(id || '').trim().toUpperCase();
+        if (!idRe.test(clean)) continue;
+        if (!out.some((x) => x.id === clean)) {
+          out.push({
+            id: clean,
+            title: t && t.title != null ? String(t.title) : undefined,
+            label: t && t.label != null ? String(t.label) : undefined,
+            url: t && t.url != null ? String(t.url) : undefined,
+          });
+        }
+      }
+      return out.slice(0, 12);
+    }
+
+    function taxonomyIds(list, idRe) {
+      return normalizeTaxonomyTags(list, idRe).map((x) => x.id);
+    }
+
+    function extractFindingsFromImportRoot(obj) {
+      if (Array.isArray(obj)) return obj;
+      if (obj && Array.isArray(obj.findings)) return obj.findings;
+      if (obj && Array.isArray(obj.items)) return obj.items;
+      return [];
+    }
+
+    function syncPayloadToSession() {
+      const payload = {
+        target,
+        updatedAt: new Date().toISOString(),
+        findings: findings.map((x) => ({ ...x })),
+      };
+      const raw = JSON.stringify(payload);
+      if (raw.length > 4_500_000) throw new Error('Pacote demasiado grande para sessionStorage.');
+      sessionStorage.setItem(REPORTE_PAYLOAD_KEY, raw);
+      try {
+        localStorage.setItem(REPORTE_PAYLOAD_SHARED_KEY, raw);
+      } catch (_) {}
+    }
+
+    function readAnotacaoPayloadRaw() {
+      try {
+        const a = sessionStorage.getItem(ANOTACAO_PAYLOAD_KEY);
+        if (a) {
+          sessionStorage.removeItem(ANOTACAO_PAYLOAD_KEY);
+          return a;
+        }
+      } catch (_) {}
+      try {
+        const r = sessionStorage.getItem(REPORTE_PAYLOAD_KEY);
+        if (r) {
+          sessionStorage.removeItem(REPORTE_PAYLOAD_KEY);
+          return r;
+        }
+      } catch (_) {}
+      try {
+        const raw = localStorage.getItem(REPORTE_PAYLOAD_SHARED_KEY) || '';
+        if (raw) localStorage.removeItem(REPORTE_PAYLOAD_SHARED_KEY);
+        return raw;
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function updateHeadLineFromState() {
+      const el = document.getElementById('headLine');
+      if (!el) return;
+      el.textContent = targetUsableForApi(target)
+        ? 'Alvo: ' +
+            target +
+            ' · ' +
+            findings.length +
+            ' achados na lista · ' +
+            validatedFp.size +
+            ' validados na base'
+        : 'Sem alvo válido no pacote — indica Target ($) no GHOSTRECON antes de gravar validações.';
+    }
+
+    async function loadLatestRunIntoChecklist(preferredTargetRaw) {
+      const preferredTarget = normalizeTarget(preferredTargetRaw || target);
+      const rList = await fetch(apiUrl('/api/runs?limit=50'));
+      if (!rList.ok) throw new Error('Não foi possível listar recons (' + rList.status + ').');
+      const dList = await rList.json().catch(() => ({}));
+      const runs = Array.isArray(dList.runs) ? dList.runs : [];
+      if (!runs.length) throw new Error('Ainda não há recons gravados na base.');
+      let chosen = null;
+      if (preferredTarget) {
+        chosen = runs.find((x) => normalizeTarget(x && x.target) === preferredTarget) || null;
+      }
+      if (!chosen) chosen = runs[0];
+      if (!chosen || !Number.isFinite(Number(chosen.id))) throw new Error('Recon inválido.');
+      const runId = Number(chosen.id);
+      const rRun = await fetch(apiUrl('/api/runs/' + runId));
+      if (!rRun.ok) throw new Error('Run #' + runId + ' (' + rRun.status + ').');
+      const run = await rRun.json().catch(() => ({}));
+      const rows0 = extractFindingsFromImportRoot(run)
+        .map(normalizeImportedFinding)
+        .filter(Boolean)
+        .slice(0, REPORT_IMPORT_MAX);
+      if (!rows0.length) throw new Error('Run sem achados utilizáveis.');
+      target = normalizeTarget((run && run.target) || preferredTarget || target);
+      findings = await hydrateFindingsFingerprints(rows0, target);
+      syncPayloadToSession();
+      updateHeadLineFromState();
+      return { runId, rows: findings };
+    }
+
+    const ANN_KEYS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10'];
+    const ANN_TITLES = [
+      '1. Identificação do Alvo',
+      '2. Portas e Serviços',
+      '3. Enumeração Web',
+      '4. Possíveis Vetores de Ataque',
+      '5. Testes Realizados (VALIDAÇÃO MANUAL)',
+      '6. Exploração',
+      '7. Pós-Exploração (Privesc)',
+      '8. Impacto',
+      '9. Referência (OWASP / MITRE)',
+      '10. Status Final',
+    ];
+
+    function annStorageKey() {
+      const t = normalizeTarget(target);
+      return 'ghostrecon_reporte_ann_v1:' + (t && targetUsableForApi(t) ? t : '_sem_alvo');
+    }
+
+    function emptyAnnMap() {
+      const o = {};
+      for (const k of ANN_KEYS) o[k] = '';
+      return o;
+    }
+
+    function readAnnMap() {
+      try {
+        const raw = localStorage.getItem(annStorageKey());
+        if (!raw) return null;
+        const o = JSON.parse(raw);
+        if (!o || typeof o !== 'object') return null;
+        const out = emptyAnnMap();
+        for (const k of ANN_KEYS) {
+          if (typeof o[k] === 'string') out[k] = o[k];
+        }
+        return out;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function writeAnnMap(map) {
+      const payload = { ...emptyAnnMap(), ...map, savedAt: new Date().toISOString() };
+      try {
+        localStorage.setItem(annStorageKey(), JSON.stringify(payload));
+      } catch (_) {}
+    }
+
+    function annFpMarker(fp) {
+      return '\n# --- ' + String(fp).toLowerCase() + ' ---\n';
+    }
+
+    function upsertFpSection(text, fp, body) {
+      const fpL = String(fp).toLowerCase();
+      const head = annFpMarker(fpL);
+      const re = new RegExp('\\n# --- ' + fpL + ' ---\\n[\\s\\S]*?(?=\\n# --- [a-f0-9]{64} ---|$)');
+      const base = String(text || '').replace(re, '');
+      return (base + head + String(body || '').trim() + '\n').trim();
+    }
+
+    function appendDedupeLine(sectionText, line) {
+      const ln = String(line || '').trim();
+      if (!ln) return String(sectionText || '');
+      const cur = String(sectionText || '');
+      const lines = cur.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      const key = ln.toLowerCase();
+      for (const x of lines) {
+        if (x.toLowerCase() === key) return cur;
+      }
+      return cur ? cur + '\n' + ln : ln;
+    }
+
+    function defaultAnnSection1() {
+      const t = normalizeTarget(target);
+      const ts = new Date().toISOString();
+      return (
+        'Alvo: ' +
+        (targetUsableForApi(t) ? t : '(indica alvo no pacote)') +
+        '\nData/Hora: ' +
+        ts +
+        '\nFase: Recon — checklist Reporte (validação manual)'
+      );
+    }
+
+    function mergeFindingIntoAnnMap(map, f, fp, notes, opts) {
+      const full = !opts || opts.full !== false;
+      const fpL = String(fp).toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(fpL)) return map || emptyAnnMap();
+      const m = map || emptyAnnMap();
+      const typ = String(f.type || '').trim().toLowerCase();
+      const val = String(f.value || '').trim();
+      const url = String(f.url || '').trim();
+      const ow = taxonomyIds(f && f.owasp, /^A\d{2}$/i);
+      const mit = taxonomyIds(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
+
+      if (full && !String(m.s1 || '').trim()) m.s1 = defaultAnnSection1();
+
+      if (full) {
+        if (typ === 'nmap' || /\d+\/(tcp|udp)/i.test(val)) {
+          m.s2 = appendDedupeLine(m.s2, '- ' + (val || '(serviço sem descrição)'));
+        }
+        if (typ === 'tech' || typ === 'wappalyzer' || typ === 'fingerprint' || typ === 'cms') {
+          m.s3 = appendDedupeLine(m.s3, '- [tech] ' + (val || typ));
+        } else if (typ === 'endpoint' || typ === 'url' || typ === 'path') {
+          const u = url || val;
+          m.s3 = appendDedupeLine(m.s3, '- [endpoint] ' + (u || val));
+        } else if (typ === 'param' || typ === 'parameter') {
+          m.s3 = appendDedupeLine(m.s3, '- [parâmetro] ' + val + (url ? ' @ ' + url : ''));
+        } else if (url && (typ === 'js' || typ === 'security' || typ === 'header')) {
+          m.s3 = appendDedupeLine(m.s3, '- [' + typ + '] ' + val + (url ? ' — ' + url : ''));
+        }
+        const prio = String(f.prio || '').toLowerCase();
+        const hi = prio === 'high' || prio === 'critical';
+        const vecLine =
+          '[ ] ' +
+          (hi ? '(prioridade alta) ' : '') +
+          typ +
+          ': ' +
+          (val || '(sem valor)') +
+          (url ? ' — ' + url : '');
+        m.s4 = appendDedupeLine(m.s4, vecLine);
+        for (const id of ow) m.s9 = appendDedupeLine(m.s9, '- OWASP: ' + id);
+        for (const id of mit) m.s9 = appendDedupeLine(m.s9, '- MITRE ATT&CK: ' + id);
+      }
+      const noteBlock =
+        'Tipo: ' +
+        typ +
+        '\nValor / contexto: ' +
+        (val || '—') +
+        (url ? '\nURL: ' + url : '') +
+        (String(notes || '').trim() ? '\nNotas (manual): ' + String(notes).trim() : '') +
+        '\nEstado: validado no checklist Reporte.';
+      m.s5 = upsertFpSection(m.s5, fpL, noteBlock);
+      return m;
+    }
+
+    function resyncAllValidatedAnnotations() {
+      let map = readAnnMap() || emptyAnnMap();
+      if (!String(map.s1 || '').trim()) map.s1 = defaultAnnSection1();
+      for (const f of findings) {
+        const fp = String(f.fingerprint || '').toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(fp) || !validatedFp.has(fp)) continue;
+        const prev = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fp);
+        const notes = prev && prev.notes != null ? String(prev.notes) : '';
+        map = mergeFindingIntoAnnMap(map, f, fp, notes);
+      }
+      writeAnnMap(map);
+      return map;
+    }
+
+    function applyAnnMapToDom(map) {
+      const m = map || emptyAnnMap();
+      for (let i = 0; i < ANN_KEYS.length; i++) {
+        const el = document.getElementById('annS' + (i + 1));
+        if (el) el.value = m[ANN_KEYS[i]] || '';
+      }
+    }
+
+    function readAnnMapFromDom() {
+      const o = emptyAnnMap();
+      for (let i = 0; i < ANN_KEYS.length; i++) {
+        const el = document.getElementById('annS' + (i + 1));
+        o[ANN_KEYS[i]] = el ? String(el.value || '') : '';
+      }
+      return o;
+    }
+
+    function buildAnnotationMarkdownDoc() {
+      const m = readAnnMapFromDom();
+      const t = normalizeTarget(target);
+      const head =
+        '# MODELO DE ANOTAÇÃO — GHOSTRECON Reporte\n\n' +
+        '_Alvo: ' +
+        (targetUsableForApi(t) ? t : 'n/d') +
+        '_\n\n';
+      let md = head;
+      for (let i = 0; i < ANN_KEYS.length; i++) {
+        md += '## ' + ANN_TITLES[i] + '\n\n' + (m[ANN_KEYS[i]] || '').trim() + '\n\n';
+      }
+      return md.trim() + '\n';
+    }
+
+    function downloadAnnotationMd() {
+      const md = buildAnnotationMarkdownDoc();
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const t = normalizeTarget(target);
+      const safe = (targetUsableForApi(t) ? t : 'alvo').replace(/[^\w.-]+/g, '_');
+      const name = 'anotacao_' + safe + '_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.md';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      }, 2500);
+      setMsg('Ficheiro Markdown descarregado: ' + name, 'ok');
+    }
+
+    const ANN_SKELETON = {
+      s1: 'Alvo:\nData/Hora:\nFase: Recon / Enumeração / Exploração / Pós-exploração\n',
+      s2: 'Portas abertas:\n-\n\nObservações:\n-\n',
+      s3:
+        'Tecnologias identificadas:\n-\n\nEndpoints encontrados:\n-\n\nParâmetros identificados:\n-\n\nObservações:\n-\n',
+      s4: 'Possíveis vetores:\n[ ] …\n\nPrioridade:\n- Alta:\n- Média:\n- Baixa:\n',
+      s5: 'Vetor:\nParâmetro:\nPayload:\nResultado:\n\nEvidência:\n-\n\nStatus:\n',
+      s6: 'Acesso inicial obtido via:\n-\n\nAções realizadas:\n-\n\nResultado:\n-\n',
+      s7: 'Acesso atual:\n\nEnumeração local:\n-\n\nExploração:\n-\n\nResultado:\n-\n',
+      s8: 'Impacto:\n-\n-\n-\n',
+      s9: '- OWASP:\n- MITRE:\n',
+      s10: '[ ] Confirmado\n[ ] Falso positivo\n[ ] Parcial\n',
+    };
+
+    function updateAnnAiToolbarState() {
+      const out = document.getElementById('annAiResult');
+      const has = Boolean(out && String(out.textContent || '').trim());
+      for (const id of ['annBtnAiCopy', 'annBtnAiMdDl', 'annBtnAiClear']) {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !has;
+      }
+    }
+
+    function downloadAiReportMarkdown() {
+      const out = document.getElementById('annAiResult');
+      const md = String(out?.textContent || '').trim();
+      if (!md) return;
+      const blob = new Blob(['# Relatório IA (OpenRouter — GHOSTRECON)\n\n', md, '\n'], {
+        type: 'text/markdown;charset=utf-8',
+      });
+      const t = normalizeTarget(target);
+      const safe = (targetUsableForApi(t) ? t : 'alvo').replace(/[^\w.-]+/g, '_');
+      const name =
+        'relatorio_ia_' + safe + '_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.md';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      }, 2500);
+      setMsg('Markdown do relatório IA descarregado: ' + name, 'ok');
+    }
+
+    async function copyAnnAiResult() {
+      const out = document.getElementById('annAiResult');
+      const t = String(out?.textContent || '').trim();
+      if (!t) return;
+      try {
+        await navigator.clipboard.writeText(t);
+        setMsg('Relatório IA copiado.', 'ok');
+      } catch (e) {
+        setMsg('Não foi possível copiar. ' + (e.message || ''), 'err');
+      }
+    }
+
+    function fillAnnotationSkeletonGuides() {
+      for (let i = 0; i < ANN_KEYS.length; i++) {
+        const k = ANN_KEYS[i];
+        const el = document.getElementById('annS' + (i + 1));
+        if (!el || String(el.value || '').trim()) continue;
+        if (k === 's1' && targetUsableForApi(normalizeTarget(target))) el.value = defaultAnnSection1();
+        else if (ANN_SKELETON[k]) el.value = ANN_SKELETON[k];
+      }
+      writeAnnMap(readAnnMapFromDom());
+      setMsg('Guias inseridas só onde as caixas estavam vazias.', 'ok');
+    }
+
+    function applyInitialAnnDom() {
+      const map = readAnnMap() || emptyAnnMap();
+      if (!String(map.s1 || '').trim() && targetUsableForApi(normalizeTarget(target))) map.s1 = defaultAnnSection1();
+      applyAnnMapToDom(map);
+      const aiEl = document.getElementById('annAiResult');
+      if (aiEl) aiEl.textContent = '';
+      updateAnnAiToolbarState();
+    }
+
+    document.getElementById('btnReload').addEventListener('click', async () => {
+      setMsg('A sincronizar…', '');
+      try {
+        if (!findings.length) {
+          const loaded = await loadLatestRunIntoChecklist(target);
+          setMsg('Lista carregada do run #' + loaded.runId + '.', 'ok');
+        }
+        await loadServerState();
+        try {
+          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+        } catch (_) {}
+        applyAnnMapToDom(readAnnMap() || emptyAnnMap());
+        updateHeadLineFromState();
+        setMsg('Sincronizado com a base.', 'ok');
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+      }
+    });
+
+    document.getElementById('btnOpenReporte').addEventListener('click', () => {
+      try {
+        syncPayloadToSession();
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+        return;
+      }
+      const u = new URL('reporte.html', window.location.href);
+      const w = window.open(u.href, '_blank', 'noopener,noreferrer');
+      if (!w) setMsg('Popup bloqueado — permite popups para abrir o Reporte.', 'err');
+    });
+
+    document.getElementById('annBtnSave').addEventListener('click', () => {
+      writeAnnMap(readAnnMapFromDom());
+      setMsg('Rascunho guardado (localStorage).', 'ok');
+    });
+    document.getElementById('annBtnSync').addEventListener('click', () => {
+      const map = resyncAllValidatedAnnotations();
+      applyAnnMapToDom(map);
+      setMsg('Secções automáticas actualizadas a partir dos validados.', 'ok');
+    });
+    document.getElementById('annBtnSkeleton').addEventListener('click', () => {
+      fillAnnotationSkeletonGuides();
+    });
+    document.getElementById('annBtnMd').addEventListener('click', () => {
+      downloadAnnotationMd();
+    });
+    document.getElementById('annBtnAiCopy').addEventListener('click', () => {
+      void copyAnnAiResult();
+    });
+    document.getElementById('annBtnAiMdDl').addEventListener('click', () => {
+      downloadAiReportMarkdown();
+    });
+    document.getElementById('annBtnAiClear').addEventListener('click', () => {
+      const out = document.getElementById('annAiResult');
+      if (out) out.textContent = '';
+      updateAnnAiToolbarState();
+    });
+    document.getElementById('annBtnAi').addEventListener('click', async () => {
+      writeAnnMap(readAnnMapFromDom());
+      const md = buildAnnotationMarkdownDoc();
+      const out = document.getElementById('annAiResult');
+      if (out) out.textContent = '';
+      const btn = document.getElementById('annBtnAi');
+      btn.disabled = true;
+      setMsg('A pedir relatório à OpenRouter…', '');
+      try {
+        await fetchCsrf();
+        const r = await fetch(apiUrl('/api/manual-validations/annotations-ai'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+          body: JSON.stringify({
+            markdown: md,
+            target: targetUsableForApi(normalizeTarget(target)) ? normalizeTarget(target) : '',
+          }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || String(r.status));
+        if (out) out.textContent = String(d.markdown || '').trim() || '(resposta vazia)';
+        updateAnnAiToolbarState();
+        setMsg('Relatório IA recebido.', 'ok');
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+        if (out) out.textContent = '';
+        updateAnnAiToolbarState();
+      }
+      btn.disabled = false;
+    });
+
+    (async function init() {
+      const raw = readAnotacaoPayloadRaw();
+      if (!raw) {
+        document.getElementById('headLine').textContent = 'Sem pacote — abre pelo botão ANOTAÇÃO no Reporte.';
+        findings = [];
+        target = '';
+        setMsg('Sem dados. Abre o Reporte e clica «ANOTAÇÃO» na barra superior.', 'err');
+        return;
+      }
+      let pack;
+      try {
+        pack = JSON.parse(raw);
+      } catch {
+        setMsg('Pacote JSON inválido.', 'err');
+        return;
+      }
+      target = normalizeTarget(pack.target || '');
+      findings = await hydrateFindingsFingerprints(
+        (Array.isArray(pack.findings) ? pack.findings : [])
+          .map(normalizeImportedFinding)
+          .filter(Boolean),
+        target,
+      );
+      updateHeadLineFromState();
+      try {
+        await loadAiState();
+        await loadServerState();
+        try {
+          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+        } catch (_) {}
+        applyInitialAnnDom();
+        setMsg(
+          targetUsableForApi(target)
+            ? 'Pacote carregado. Edita as secções ou usa IA / Descarregar .md.'
+            : 'Sem domínio válido: validações SQLite podem não sincronizar até indicares o alvo no hub.',
+          targetUsableForApi(target) ? 'ok' : '',
+        );
+      } catch (e) {
+        applyInitialAnnDom();
+        setMsg('Aviso: base — ' + (e.message || e), 'err');
+      }
+    })();
+  </script>
+</body>
+</html>

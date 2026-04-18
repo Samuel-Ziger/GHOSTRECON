@@ -135,7 +135,7 @@
     }
     .row {
       display: grid;
-      grid-template-columns: 36px 1fr;
+      grid-template-columns: 1fr 72px;
       gap: 10px 14px;
       align-items: start;
       padding: 12px 14px;
@@ -144,12 +144,67 @@
       background: rgba(18, 26, 36, 0.65);
     }
     .row.validated { border-color: rgba(0, 255, 136, 0.35); }
-    .row input[type='checkbox'] {
+    .val-toggle {
+      margin-top: 2px;
+      width: 64px;
+      height: 24px;
+      padding: 2px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--dim);
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-start;
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      user-select: none;
+      border-radius: 999px;
+      position: relative;
+      justify-self: end;
+    }
+    .val-toggle::before {
+      content: '';
       width: 18px;
       height: 18px;
-      margin-top: 4px;
-      cursor: pointer;
-      accent-color: var(--ok);
+      border: 1px solid var(--border);
+      background: rgba(122, 138, 158, 0.2);
+      display: inline-block;
+      border-radius: 50%;
+      transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+    }
+    .val-toggle::after {
+      content: attr(data-state);
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: inherit;
+    }
+    .val-toggle:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .val-toggle.is-on {
+      border-color: rgba(0, 255, 136, 0.65);
+      color: var(--ok);
+      background: rgba(0, 255, 136, 0.07);
+    }
+    .val-toggle.is-on::before {
+      border-color: var(--ok);
+      background: linear-gradient(180deg, rgba(0, 255, 136, 0.28), rgba(0, 255, 136, 0.1));
+      box-shadow: inset 0 0 0 2px rgba(10, 14, 20, 0.9);
+      transform: translateX(39px);
+    }
+    .val-toggle.is-on::after {
+      left: 8px;
+      right: auto;
+    }
+    .val-toggle:disabled {
+      opacity: 0.55;
+      cursor: wait;
     }
     .meta {
       font-family: var(--mono);
@@ -158,7 +213,43 @@
       margin-bottom: 4px;
     }
     .val { font-size: 12px; word-break: break-word; margin-bottom: 6px; }
-    .url a { color: var(--accent); font-size: 10px; }
+    .url {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid rgba(0, 212, 255, 0.35);
+      border-radius: 4px;
+      padding: 3px 7px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      z-index: 5;
+      pointer-events: auto;
+    }
+    .url:hover {
+      border-color: var(--accent);
+      color: #a7ecff;
+    }
+    .taxo-tags {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .taxo-tag {
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg3);
+      color: var(--text2);
+    }
+    .taxo-tag.owasp { border-color: rgba(251, 191, 36, 0.45); color: var(--yellow); }
+    .taxo-tag.mitre { border-color: rgba(139, 92, 246, 0.45); color: var(--accent); }
     .notes-in {
       width: 100%;
       margin-top: 6px;
@@ -508,6 +599,14 @@
     <div class="toolbar">
       <button type="button" id="btnReload">Recarregar da base</button>
       <button type="button" class="btn-primary" id="btnAi" disabled>Gerar relatório IA (validados)</button>
+      <button
+        type="button"
+        class="btn-primary"
+        id="btnAnotacao"
+        title="Abre o modelo de anotações + IA (OpenRouter) numa nova aba, com o pacote actual desta checklist"
+      >
+        ANOTAÇÃO
+      </button>
       <span class="sub" id="countLine"></span>
     </div>
     <div id="list"></div>
@@ -574,15 +673,27 @@
   </div>
   <footer>
     <span class="sub" id="footHint"
-      >Marca apenas o que testaste manualmente. Opcional: após validar, podes ligar ao <strong>cérebro</strong> (SQLite) por tipo de vulnerabilidade. Os fingerprints coincidem com recons futuros no mesmo alvo.</span>
+      >Marca apenas o que testaste manualmente. Opcional: após validar, podes ligar ao <strong>cérebro</strong> (SQLite) por tipo de vulnerabilidade. O botão <strong>ANOTAÇÃO</strong> acima abre o modelo de campo + IA noutra aba. Os fingerprints coincidem com recons futuros no mesmo alvo.</span>
   </footer>
   <script>
-    function apiBase() {
-      const u = new URL('.', window.location.href);
-      return u.origin;
+    const REPORTE_PAYLOAD_KEY = 'ghostrecon_reporte_payload';
+    const REPORTE_PAYLOAD_SHARED_KEY = 'ghostrecon_reporte_payload_shared';
+    const ANOTACAO_PAYLOAD_KEY = 'ghostrecon_anotacao_payload';
+
+    function getApiBase() {
+      try {
+        const proto = window.location.protocol;
+        if (proto === 'file:' || proto === 'blob:') {
+          const saved = localStorage.getItem('ghostrecon_api_base');
+          return (saved || 'http://127.0.0.1:3847').replace(/\/+$/, '');
+        }
+      } catch (_) {}
+      return '';
     }
     function apiUrl(p) {
-      return apiBase() + (p.startsWith('/') ? p : '/' + p);
+      const path = p.startsWith('/') ? p : '/' + p;
+      const base = getApiBase();
+      return base ? base + path : path;
     }
 
     let csrf = '';
@@ -590,12 +701,147 @@
     let findings = [];
     const validatedFp = new Set();
     let serverItems = [];
+    let aiUseOpenrouter = false;
+    const FP_URL_NORMALIZE_TYPES = new Set([
+      'endpoint',
+      'param',
+      'js',
+      'security',
+      'tls',
+      'nuclei',
+      'xss',
+      'sqli',
+      'dalfox',
+      'wpscan',
+      'intel',
+    ]);
 
-    function targetUsableForApi(t) {
-      const s = String(t || '')
+    function normalizeTarget(raw) {
+      let s = String(raw || '')
         .trim()
         .toLowerCase();
+      if (!s) return '';
+      s = s.replace(/^\*\./, '');
+      if (/^[a-z][a-z0-9+.-]*:\/\//.test(s)) {
+        try {
+          s = String(new URL(s).hostname || '').toLowerCase();
+        } catch (_) {}
+      } else if (/[/?#]/.test(s)) {
+        s = s.split(/[/?#]/, 1)[0];
+      }
+      s = s.replace(/:\d+$/, '').replace(/\.$/, '');
+      return s;
+    }
+
+    function targetUsableForApi(t) {
+      const s = normalizeTarget(t);
       return s && /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s);
+    }
+
+    function deriveTargetFromFindings(rows) {
+      for (const r of rows || []) {
+        const one = deriveTargetFromFinding(r);
+        if (one) return one;
+      }
+      return '';
+    }
+
+    function deriveTargetFromFinding(r) {
+      if (!r || typeof r !== 'object') return '';
+      const urlRaw = String(r.url || '').trim();
+      if (urlRaw) {
+        try {
+          const host = normalizeTarget(new URL(urlRaw).hostname || '');
+          if (targetUsableForApi(host)) return host;
+        } catch (_) {
+          const host = normalizeTarget(urlRaw);
+          if (targetUsableForApi(host)) return host;
+        }
+      }
+      const valueRaw = String(r.value || '').trim();
+      if (valueRaw) {
+        const direct = normalizeTarget(valueRaw);
+        if (targetUsableForApi(direct)) return direct;
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(valueRaw)) {
+          try {
+            const host = normalizeTarget(new URL(valueRaw).hostname || '');
+            if (targetUsableForApi(host)) return host;
+          } catch (_) {}
+        }
+      }
+      return '';
+    }
+
+    function resolveTargetForValidation(f) {
+      if (targetUsableForApi(target)) return normalizeTarget(target);
+      const fromFinding = deriveTargetFromFinding(f);
+      if (targetUsableForApi(fromFinding)) return fromFinding;
+      const fromList = deriveTargetFromFindings(findings);
+      if (targetUsableForApi(fromList)) return fromList;
+      return '';
+    }
+
+    function normSpace(s) {
+      return String(s == null ? '' : s)
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+    }
+
+    function normUrlForFingerprintBrowser(u) {
+      if (!u) return '';
+      try {
+        const x = new URL(String(u));
+        x.hash = '';
+        const keys = [...new Set([...x.searchParams.keys()])].sort();
+        const sp = new URLSearchParams();
+        for (const k of keys) {
+          for (const v of x.searchParams.getAll(k)) sp.append(k, v);
+        }
+        const q = sp.toString();
+        x.search = q ? '?' + q : '';
+        return x.href.toLowerCase();
+      } catch (_) {
+        return normSpace(u);
+      }
+    }
+
+    async function sha256Hex(text) {
+      if (!globalThis.crypto || !globalThis.crypto.subtle || typeof TextEncoder === 'undefined') {
+        throw new Error('SHA-256 indisponível neste browser');
+      }
+      const data = new TextEncoder().encode(String(text || ''));
+      const dig = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(dig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function ensureFindingFingerprint(targetRaw, finding) {
+      const f = finding && typeof finding === 'object' ? { ...finding } : {};
+      const fpIn = String(f.fingerprint || '').trim().toLowerCase();
+      if (/^[a-f0-9]{64}$/.test(fpIn)) {
+        f.fingerprint = fpIn;
+        return f;
+      }
+      const typeNorm = normSpace(f.type);
+      const urlPart = FP_URL_NORMALIZE_TYPES.has(typeNorm)
+        ? normUrlForFingerprintBrowser(f.url)
+        : normSpace(f.url);
+      const raw = normSpace(targetRaw) + '|' + typeNorm + '|' + normSpace(f.value) + '|' + urlPart;
+      try {
+        f.fingerprint = await sha256Hex(raw);
+      } catch (_) {
+        f.fingerprint = '';
+      }
+      return f;
+    }
+
+    async function hydrateFindingsFingerprints(rows, targetRaw) {
+      const out = [];
+      for (const row of rows || []) {
+        if (!row || typeof row !== 'object') continue;
+        out.push(await ensureFindingFingerprint(targetRaw, row));
+      }
+      return out;
     }
 
     async function fetchCsrf() {
@@ -621,6 +867,46 @@
       }
     }
 
+    async function loadAiState() {
+      try {
+        const r = await fetch(apiUrl('/api/capabilities'));
+        if (!r.ok) return;
+        const d = await r.json().catch(() => ({}));
+        aiUseOpenrouter = Boolean(d && d.ai && d.ai.openrouter);
+      } catch (_) {}
+    }
+
+    async function loadLatestRunIntoChecklist(preferredTargetRaw) {
+      const preferredTarget = normalizeTarget(preferredTargetRaw || target);
+      const rList = await fetch(apiUrl('/api/runs?limit=50'));
+      if (!rList.ok) throw new Error('Não foi possível listar recons na base (' + rList.status + ').');
+      const dList = await rList.json().catch(() => ({}));
+      const runs = Array.isArray(dList.runs) ? dList.runs : [];
+      if (!runs.length) throw new Error('Ainda não há recons gravados na base.');
+      let chosen = null;
+      if (preferredTarget) {
+        chosen = runs.find((x) => normalizeTarget(x && x.target) === preferredTarget) || null;
+      }
+      if (!chosen) chosen = runs[0];
+      if (!chosen || !Number.isFinite(Number(chosen.id))) {
+        throw new Error('Recon inválido retornado pela API.');
+      }
+      const runId = Number(chosen.id);
+      const rRun = await fetch(apiUrl('/api/runs/' + runId));
+      if (!rRun.ok) throw new Error('Não foi possível carregar run #' + String(runId) + ' (' + rRun.status + ').');
+      const run = await rRun.json().catch(() => ({}));
+      const rows0 = extractFindingsFromImportRoot(run)
+        .map(normalizeImportedFinding)
+        .filter(Boolean)
+        .slice(0, REPORT_IMPORT_MAX);
+      if (!rows0.length) throw new Error('Run #' + String(runId) + ' não contém achados utilizáveis.');
+      target = normalizeTarget((run && run.target) || preferredTarget || target);
+      findings = await hydrateFindingsFingerprints(rows0, target);
+      syncPayloadToSession();
+      updateHeadLineFromState();
+      return { runId, rows: findings };
+    }
+
     function setMsg(t, cls) {
       const el = document.getElementById('msg');
       el.textContent = t || '';
@@ -628,12 +914,16 @@
     }
 
     function snapshotFromFinding(f) {
+      const owasp = normalizeTaxonomyTags(f && f.owasp, /^A\d{2}$/i);
+      const mitre = normalizeTaxonomyTags(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
       return {
         type: f.type,
         prio: f.prio,
         value: f.value,
         url: f.url || '',
         meta: (f.meta || '').slice(0, 800),
+        owasp: owasp.length ? owasp : undefined,
+        mitre: mitre.length ? mitre : undefined,
       };
     }
 
@@ -651,8 +941,32 @@
         meta: f.meta != null ? String(f.meta) : '',
       };
       if (f.score != null) out.score = f.score;
+      if (Array.isArray(f.owasp)) out.owasp = f.owasp;
+      if (Array.isArray(f.mitre)) out.mitre = f.mitre;
       if (/^[a-f0-9]{64}$/.test(fp)) out.fingerprint = fp;
       return out;
+    }
+
+    function normalizeTaxonomyTags(list, idRe) {
+      const out = [];
+      for (const t of list || []) {
+        const id = typeof t === 'string' ? t : t && t.id != null ? String(t.id) : '';
+        const clean = String(id || '').trim().toUpperCase();
+        if (!idRe.test(clean)) continue;
+        if (!out.some((x) => x.id === clean)) {
+          out.push({
+            id: clean,
+            title: t && t.title != null ? String(t.title) : undefined,
+            label: t && t.label != null ? String(t.label) : undefined,
+            url: t && t.url != null ? String(t.url) : undefined,
+          });
+        }
+      }
+      return out.slice(0, 12);
+    }
+
+    function taxonomyIds(list, idRe) {
+      return normalizeTaxonomyTags(list, idRe).map((x) => x.id);
     }
 
     function extractFindingsFromImportRoot(obj) {
@@ -670,7 +984,31 @@
       };
       const raw = JSON.stringify(payload);
       if (raw.length > 4_500_000) throw new Error('Pacote demasiado grande para sessionStorage (máx. ~4,5 MB).');
-      sessionStorage.setItem('ghostrecon_reporte_payload', raw);
+      sessionStorage.setItem(REPORTE_PAYLOAD_KEY, raw);
+      try {
+        localStorage.setItem(REPORTE_PAYLOAD_SHARED_KEY, raw);
+      } catch (_) {}
+    }
+
+    function readPayloadRawFromStorage() {
+      try {
+        const raw = sessionStorage.getItem(REPORTE_PAYLOAD_KEY);
+        if (raw) {
+          // Consome uma vez: refresh da aba não deve reabrir payload antigo.
+          sessionStorage.removeItem(REPORTE_PAYLOAD_KEY);
+          return raw;
+        }
+      } catch (_) {}
+      try {
+        const raw = localStorage.getItem(REPORTE_PAYLOAD_SHARED_KEY) || '';
+        if (raw) {
+          // Evita reutilizar payload antigo quando o Reporte é aberto fora do fluxo atual.
+          localStorage.removeItem(REPORTE_PAYLOAD_SHARED_KEY);
+        }
+        return raw;
+      } catch (_) {
+        return '';
+      }
     }
 
     function updateHeadLineFromState() {
@@ -691,20 +1029,30 @@
         throw new Error('JSON inválido (parse).');
       }
       if (Array.isArray(obj)) obj = { target: '', findings: obj };
-      const newTarget = String(obj.target || '').trim().toLowerCase();
+      const newTarget = normalizeTarget(obj.target || '');
       let rows = extractFindingsFromImportRoot(obj)
         .map(normalizeImportedFinding)
         .filter(Boolean);
       if (rows.length > REPORT_IMPORT_MAX) rows = rows.slice(0, REPORT_IMPORT_MAX);
       if (newTarget) target = newTarget;
-      findings = rows;
+      if (!targetUsableForApi(target)) {
+        const inferredTarget = deriveTargetFromFindings(rows);
+        if (inferredTarget) target = inferredTarget;
+      }
+      findings = await hydrateFindingsFingerprints(rows, target);
       syncPayloadToSession();
       updateHeadLineFromState();
       await loadServerState();
       render();
-      const withFp = rows.filter((r) => /^[a-f0-9]{64}$/.test(String(r.fingerprint || ''))).length;
+      try {
+        if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+      } catch (_) {}
+      const withFp = findings.filter((r) => /^[a-f0-9]{64}$/.test(String(r.fingerprint || ''))).length;
+      const targetMsg = targetUsableForApi(target)
+        ? ' alvo: ' + target + '.'
+        : ' sem alvo válido para gravação (inclui "target" no JSON ou URL completa num achado).';
       setMsg(
-        'Checklist actualizado: ' + rows.length + ' registo(s), ' + withFp + ' com fingerprint válido para marcar.',
+        'Checklist actualizado: ' + findings.length + ' registo(s), ' + withFp + ' com fingerprint válido para marcar;' + targetMsg,
         'ok',
       );
     }
@@ -767,10 +1115,15 @@
     }
 
     async function persistValidation(fp, on, f, notesText) {
-      if (!targetUsableForApi(target)) throw new Error('Indica um domínio válido no Target ($) no GHOSTRECON para gravar na base.');
+      const targetForSave = resolveTargetForValidation(f);
+      if (!targetUsableForApi(targetForSave)) {
+        throw new Error('Não foi possível inferir um domínio válido para gravar a validação. Inclui "target" no JSON importado ou URL completa no achado.');
+      }
+      target = targetForSave;
+      updateHeadLineFromState();
       await fetchCsrf();
       const body = {
-        target,
+        target: targetForSave,
         fingerprint: fp,
         validated: on,
         snapshot: on ? snapshotFromFinding(f) : undefined,
@@ -977,38 +1330,74 @@
             : '';
         const row = document.createElement('div');
         row.className = 'row' + (on ? ' validated' : '');
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = on;
-        cb.dataset.fp = fp;
-        cb.addEventListener('change', async () => {
-          cb.disabled = true;
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'val-toggle' + (on ? ' is-on' : '');
+        toggle.dataset.fp = fp;
+        setValidateToggleState(toggle, on);
+        toggle.addEventListener('click', async () => {
+          const nextOn = !validatedFp.has(fp);
+          toggle.disabled = true;
           try {
             const ta0 = row.querySelector('textarea');
             const note0 = (ta0 && ta0.value) || '';
-            await persistValidation(fp, cb.checked, f, note0);
-            if (cb.checked) validatedFp.add(fp);
+            await persistValidation(fp, nextOn, f, note0);
+            if (nextOn) validatedFp.add(fp);
             else validatedFp.delete(fp);
-            row.classList.toggle('validated', cb.checked);
+            try {
+              let map = readAnnMap() || emptyAnnMap();
+              if (nextOn) map = mergeFindingIntoAnnMap(map, f, fp, note0, { full: true });
+              else map.s5 = removeFpSection(map.s5, fp);
+              writeAnnMap(map);
+            } catch (_) {}
+            row.classList.toggle('validated', nextOn);
+            setValidateToggleState(toggle, nextOn);
             updateAiButton();
-            setMsg(cb.checked ? 'Gravado como validado.' : 'Validação removida.', 'ok');
-            if (cb.checked) void offerBrainModal(fp, f, { askFirst: true });
+            setMsg(nextOn ? 'Gravado como validado.' : 'Validação removida.', 'ok');
+            if (nextOn) void offerBrainModal(fp, f, { askFirst: true });
           } catch (e) {
-            cb.checked = !cb.checked;
+            setValidateToggleState(toggle, validatedFp.has(fp));
             setMsg(String(e.message || e), 'err');
           }
-          cb.disabled = false;
+          toggle.disabled = false;
         });
         const body = document.createElement('div');
+        const extUrl = toExternalUrl(f.url) || toExternalUrl(f.value);
+        const owaspIds = taxonomyIds(f && f.owasp, /^A\d{2}$/i);
+        const mitreIds = taxonomyIds(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
+        const taxHtml =
+          owaspIds.length || mitreIds.length
+            ? `<div class="taxo-tags">` +
+              owaspIds.map((id) => `<span class="taxo-tag owasp" title="OWASP">${escapeHtml(id)}</span>`).join('') +
+              mitreIds.map((id) => `<span class="taxo-tag mitre" title="MITRE ATT&CK">${escapeHtml(id)}</span>`).join('') +
+              `</div>`
+            : '';
         body.innerHTML =
           `<div class="meta">${escapeHtml(String(f.type || ''))} · ${escapeHtml(String(f.prio || ''))} · <code>${fp.slice(0, 12)}…</code></div>` +
           `<div class="val">${escapeHtml(String(f.value || ''))}</div>` +
-          (f.url ? `<div class="url"><a href="${escapeAttr(f.url)}" target="_blank" rel="noopener noreferrer">↗ URL</a></div>` : '') +
+          (extUrl
+            ? `<div class="url report-open-url-hit" role="link" tabindex="0" aria-label="Abrir URL em nova aba" data-url="${escapeAttr(extUrl)}">↗ URL</div>`
+            : '') +
+          taxHtml +
           `<textarea class="notes-in" data-fp="${fp}" rows="2" placeholder="Notas do teste manual (opcional)"></textarea>` +
           brainBadge +
           brainBtn;
-        row.appendChild(cb);
         row.appendChild(body);
+        row.appendChild(toggle);
+        const urlBtn = row.querySelector('.report-open-url-hit');
+        if (urlBtn) {
+          urlBtn.style.cursor = 'pointer';
+          urlBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            openExternalUrl(String(urlBtn.getAttribute('data-url') || ''));
+          });
+          urlBtn.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter' && ev.key !== ' ') return;
+            ev.preventDefault();
+            openExternalUrl(String(urlBtn.getAttribute('data-url') || ''));
+          });
+        }
         const ta = row.querySelector('textarea');
         if (ta) {
           if (prev && prev.notes) ta.value = prev.notes;
@@ -1017,6 +1406,11 @@
             try {
               await fetchCsrf();
               await persistValidation(fp, true, f, ta.value);
+              try {
+                let map = readAnnMap() || emptyAnnMap();
+                map = mergeFindingIntoAnnMap(map, f, fp, ta.value, { full: false });
+                writeAnnMap(map);
+              } catch (_) {}
               setMsg('Notas actualizadas.', 'ok');
             } catch (e) {
               setMsg(String(e.message || e), 'err');
@@ -1041,6 +1435,157 @@
       btn.textContent = 'Gerar relatório IA (' + n + ' validados nesta lista)';
     }
 
+    const ANN_KEYS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10'];
+
+    function annStorageKey() {
+      const t = normalizeTarget(target);
+      return 'ghostrecon_reporte_ann_v1:' + (t && targetUsableForApi(t) ? t : '_sem_alvo');
+    }
+
+    function emptyAnnMap() {
+      const o = {};
+      for (const k of ANN_KEYS) o[k] = '';
+      return o;
+    }
+
+    function readAnnMap() {
+      try {
+        const raw = localStorage.getItem(annStorageKey());
+        if (!raw) return null;
+        const o = JSON.parse(raw);
+        if (!o || typeof o !== 'object') return null;
+        const out = emptyAnnMap();
+        for (const k of ANN_KEYS) {
+          if (typeof o[k] === 'string') out[k] = o[k];
+        }
+        return out;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function writeAnnMap(map) {
+      const payload = { ...emptyAnnMap(), ...map, savedAt: new Date().toISOString() };
+      try {
+        localStorage.setItem(annStorageKey(), JSON.stringify(payload));
+      } catch (_) {}
+    }
+
+    function annFpMarker(fp) {
+      return '\n# --- ' + String(fp).toLowerCase() + ' ---\n';
+    }
+
+    function upsertFpSection(text, fp, body) {
+      const fpL = String(fp).toLowerCase();
+      const head = annFpMarker(fpL);
+      const re = new RegExp(
+        '\\n# --- ' + fpL + ' ---\\n[\\s\\S]*?(?=\\n# --- [a-f0-9]{64} ---|$)',
+      );
+      const base = String(text || '').replace(re, '');
+      return (base + head + String(body || '').trim() + '\n').trim();
+    }
+
+    function removeFpSection(text, fp) {
+      const fpL = String(fp).toLowerCase();
+      const re = new RegExp('\\n# --- ' + fpL + ' ---\\n[\\s\\S]*?(?=\\n# --- [a-f0-9]{64} ---|$)');
+      return String(text || '').replace(re, '').trim();
+    }
+
+    function appendDedupeLine(sectionText, line) {
+      const ln = String(line || '').trim();
+      if (!ln) return String(sectionText || '');
+      const cur = String(sectionText || '');
+      const lines = cur.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      const key = ln.toLowerCase();
+      for (const x of lines) {
+        if (x.toLowerCase() === key) return cur;
+      }
+      return cur ? cur + '\n' + ln : ln;
+    }
+
+    function defaultAnnSection1() {
+      const t = normalizeTarget(target);
+      const ts = new Date().toISOString();
+      return (
+        'Alvo: ' +
+        (targetUsableForApi(t) ? t : '(indica alvo no pacote)') +
+        '\nData/Hora: ' +
+        ts +
+        '\nFase: Recon — checklist Reporte (validação manual)'
+      );
+    }
+
+    function mergeFindingIntoAnnMap(map, f, fp, notes, opts) {
+      const full = !opts || opts.full !== false;
+      const fpL = String(fp).toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(fpL)) return map || emptyAnnMap();
+      const m = map || emptyAnnMap();
+      const typ = String(f.type || '').trim().toLowerCase();
+      const val = String(f.value || '').trim();
+      const url = String(f.url || '').trim();
+      const ow = taxonomyIds(f && f.owasp, /^A\d{2}$/i);
+      const mit = taxonomyIds(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
+
+      if (full && !String(m.s1 || '').trim()) m.s1 = defaultAnnSection1();
+
+      if (full) {
+        if (typ === 'nmap' || /\d+\/(tcp|udp)/i.test(val)) {
+          m.s2 = appendDedupeLine(m.s2, '- ' + (val || '(serviço sem descrição)'));
+        }
+
+        if (typ === 'tech' || typ === 'wappalyzer' || typ === 'fingerprint' || typ === 'cms') {
+          m.s3 = appendDedupeLine(m.s3, '- [tech] ' + (val || typ));
+        } else if (typ === 'endpoint' || typ === 'url' || typ === 'path') {
+          const u = url || val;
+          m.s3 = appendDedupeLine(m.s3, '- [endpoint] ' + (u || val));
+        } else if (typ === 'param' || typ === 'parameter') {
+          m.s3 = appendDedupeLine(m.s3, '- [parâmetro] ' + val + (url ? ' @ ' + url : ''));
+        } else if (url && (typ === 'js' || typ === 'security' || typ === 'header')) {
+          m.s3 = appendDedupeLine(m.s3, '- [' + typ + '] ' + val + (url ? ' — ' + url : ''));
+        }
+
+        const prio = String(f.prio || '').toLowerCase();
+        const hi = prio === 'high' || prio === 'critical';
+        const vecLine =
+          '[ ] ' +
+          (hi ? '(prioridade alta) ' : '') +
+          typ +
+          ': ' +
+          (val || '(sem valor)') +
+          (url ? ' — ' + url : '');
+        m.s4 = appendDedupeLine(m.s4, vecLine);
+
+        for (const id of ow) m.s9 = appendDedupeLine(m.s9, '- OWASP: ' + id);
+        for (const id of mit) m.s9 = appendDedupeLine(m.s9, '- MITRE ATT&CK: ' + id);
+      }
+
+      const noteBlock =
+        'Tipo: ' +
+        typ +
+        '\nValor / contexto: ' +
+        (val || '—') +
+        (url ? '\nURL: ' + url : '') +
+        (String(notes || '').trim() ? '\nNotas (manual): ' + String(notes).trim() : '') +
+        '\nEstado: validado no checklist Reporte.';
+      m.s5 = upsertFpSection(m.s5, fpL, noteBlock);
+
+      return m;
+    }
+
+    function resyncAllValidatedAnnotations() {
+      let map = readAnnMap() || emptyAnnMap();
+      if (!String(map.s1 || '').trim()) map.s1 = defaultAnnSection1();
+      for (const f of findings) {
+        const fp = String(f.fingerprint || '').toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(fp) || !validatedFp.has(fp)) continue;
+        const prev = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fp);
+        const notes = prev && prev.notes != null ? String(prev.notes) : '';
+        map = mergeFindingIntoAnnMap(map, f, fp, notes);
+      }
+      writeAnnMap(map);
+      return map;
+    }
+
     function escapeHtml(s) {
       return String(s)
         .replace(/&/g, '&amp;')
@@ -1052,11 +1597,90 @@
       return escapeHtml(s).replace(/'/g, '&#39;');
     }
 
+    function toExternalUrl(raw) {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      if (/^https?:\/\//i.test(s)) {
+        try { return new URL(s).href; } catch (_) { return encodeURI(s); }
+      }
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return '';
+      if (/^[a-z0-9][a-z0-9.-]*[a-z0-9](\/.*)?$/i.test(s)) {
+        const guess = 'https://' + s;
+        try { return new URL(guess).href; } catch (_) { return encodeURI(guess); }
+      }
+      return '';
+    }
+
+    function onListClick(ev) {
+      const a = ev.target.closest('.report-open-url-hit');
+      if (a) {
+        const raw = String(a.getAttribute('data-url') || '').trim();
+        openExternalUrl(raw);
+        return;
+      }
+      const b = ev.target.closest('.brain-add-btn');
+      if (!b) return;
+      const ffp = String(b.getAttribute('data-brain-fp') || '').toLowerCase();
+      const fx = findings.find((x) => String(x.fingerprint || '').toLowerCase() === ffp);
+      if (fx) void offerBrainModal(ffp, fx, { askFirst: false });
+    }
+
+    function openExternalUrl(raw) {
+      const url = toExternalUrl(raw);
+      if (!url) return;
+      const w = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!w) setMsg('Popup bloqueado ao abrir URL. Permite popups para esta página.', 'err');
+    }
+
+    function setValidateToggleState(btn, on) {
+      if (!btn) return;
+      const state = Boolean(on);
+      btn.classList.toggle('is-on', state);
+      btn.setAttribute('aria-pressed', state ? 'true' : 'false');
+      btn.setAttribute('aria-label', state ? 'Validado manualmente' : 'Marcar como validado');
+      btn.title = state ? 'Validado manualmente' : 'Marcar como validado';
+      btn.dataset.state = state ? 'ON' : 'OFF';
+    }
+
+    function openAnotacaoFromReporte() {
+      const payload = {
+        target: normalizeTarget(target),
+        updatedAt: new Date().toISOString(),
+        findings: findings.map((x) => ({ ...x })),
+      };
+      let raw;
+      try {
+        raw = JSON.stringify(payload);
+        if (raw.length > 4_500_000) {
+          throw new Error('Pacote demasiado grande para sessionStorage (máx. ~4,5 MB).');
+        }
+        sessionStorage.setItem(ANOTACAO_PAYLOAD_KEY, raw);
+        sessionStorage.setItem(REPORTE_PAYLOAD_KEY, raw);
+        try {
+          localStorage.setItem(REPORTE_PAYLOAD_SHARED_KEY, raw);
+        } catch (_) {}
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+        return;
+      }
+      const u = new URL('anotacao.html', window.location.href);
+      const w = window.open(u.href, '_blank', 'noopener,noreferrer');
+      if (!w) setMsg('Popup bloqueado — permite popups para abrir Anotações.', 'err');
+      else setMsg('Aba «Anotações» aberta; esta checklist mantém-se.', 'ok');
+    }
+
     document.getElementById('btnReload').addEventListener('click', async () => {
       setMsg('A sincronizar…', '');
       try {
+        if (!findings.length) {
+          const loaded = await loadLatestRunIntoChecklist(target);
+          setMsg('Checklist carregada do run #' + loaded.runId + '. A sincronizar validações…', '');
+        }
         await loadServerState();
         render();
+        try {
+          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+        } catch (_) {}
         setMsg('Sincronizado com a base.', 'ok');
       } catch (e) {
         setMsg(String(e.message || e), 'err');
@@ -1079,8 +1703,8 @@
           body: JSON.stringify({
             target,
             findings: sel,
-            aiPrimaryCloud: 'gemini',
-            aiUseOpenrouter: true,
+            aiPrimaryCloud: 'openrouter',
+            aiUseOpenrouter,
             stats: { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 },
           }),
         });
@@ -1092,10 +1716,10 @@
         const okC = d.claude?.ok;
         const dir = d.outputDir || '';
         setMsg(
-          'IA concluída. Gemini: ' +
-            (okG ? 'OK' : d.gemini?.error || '—') +
-            ' · OpenRouter: ' +
+          'IA concluída. OpenRouter: ' +
             (okO ? 'OK' : d.openrouter?.error || '—') +
+            ' · Gemini: ' +
+            (okG ? 'OK' : d.gemini?.error || '—') +
             ' · LM: ' +
             (okL ? 'OK' : d.lmstudio?.error || '—') +
             ' · Claude: ' +
@@ -1110,17 +1734,18 @@
       updateAiButton();
     });
 
+    document.getElementById('btnAnotacao').addEventListener('click', () => {
+      openAnotacaoFromReporte();
+    });
+
     (async function init() {
-      let raw;
-      try {
-        raw = sessionStorage.getItem('ghostrecon_reporte_payload');
-      } catch (e) {
-        setMsg('sessionStorage indisponível.', 'err');
-        return;
-      }
+      const raw = readPayloadRawFromStorage();
       if (!raw) {
         document.getElementById('headLine').textContent = 'Abre esta página a partir do botão «Reporte» no GHOSTRECON.';
-        setMsg('Sem dados. Abre o Reporte pelo botão «Reporte» na barra inferior do GHOSTRECON (com ou sem recon).', 'err');
+        findings = [];
+        target = '';
+        render();
+        setMsg('Sem dados desta sessão. Abre pelo botão «Reporte» no GHOSTRECON ou clica «Recarregar da base».', 'err');
         return;
       }
       let pack;
@@ -1130,20 +1755,27 @@
         setMsg('Pacote JSON inválido.', 'err');
         return;
       }
-      target = String(pack.target || '')
-        .trim()
-        .toLowerCase();
-      findings = Array.isArray(pack.findings) ? pack.findings : [];
+      target = normalizeTarget(pack.target || '');
+      findings = await hydrateFindingsFingerprints(
+        (Array.isArray(pack.findings) ? pack.findings : [])
+          .map(normalizeImportedFinding)
+          .filter(Boolean),
+        target,
+      );
       const packTs = pack.updatedAt || pack.exportedAt || '?';
       document.getElementById('headLine').textContent = targetUsableForApi(target)
         ? 'Alvo: ' + target + ' · pacote: ' + packTs
         : 'Sem alvo válido ainda · pacote: ' + packTs + ' — usa Target ($) no GHOSTRECON para sincronizar SQLite.';
       try {
+        await loadAiState();
         await loadServerState();
         render();
+        try {
+          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+        } catch (_) {}
         setMsg(
           targetUsableForApi(target)
-            ? 'Marca os achados que validaste manualmente. Gravação imediata na base (fingerprint). À esquerda: Importar JSON.'
+            ? 'Marca os achados que validaste manualmente. Gravação imediata na base (fingerprint). À esquerda: Importar JSON. Anotações (modelo + IA): botão «ANOTAÇÃO» acima — nova aba.'
             : 'Sem domínio válido: não há sincronização com a base. No GHOSTRECON, indica um alvo no Target ($) antes de gravar validações; podes importar JSON no painel à esquerda.',
           targetUsableForApi(target) ? 'ok' : '',
         );
@@ -1152,13 +1784,6 @@
         setMsg('Aviso: não foi possível ler a base — ' + (e.message || e), 'err');
       }
 
-      document.getElementById('list').addEventListener('click', (ev) => {
-        const b = ev.target.closest('.brain-add-btn');
-        if (!b) return;
-        const ffp = String(b.getAttribute('data-brain-fp') || '').toLowerCase();
-        const fx = findings.find((x) => String(x.fingerprint || '').toLowerCase() === ffp);
-        if (fx) void offerBrainModal(ffp, fx, { askFirst: false });
-      });
       const bm = document.getElementById('brainModal');
       bm?.addEventListener('click', (ev) => {
         if (ev.target === bm) closeBrainModal();
@@ -1178,6 +1803,7 @@
       });
     })();
 
+    document.getElementById('list')?.addEventListener('click', onListClick);
     wireReportJsonDock();
   </script>
 </body>

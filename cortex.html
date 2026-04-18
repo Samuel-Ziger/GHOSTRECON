@@ -363,7 +363,7 @@
     }
     .category-teach-head {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
       gap: 10px;
       margin-bottom: 6px;
@@ -375,28 +375,136 @@
       color: var(--accent-hi);
       letter-spacing: 0.02em;
     }
-    .category-teach-dismiss {
+    .category-teach-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .category-teach-edit-btn {
       flex-shrink: 0;
-      width: 26px;
+      min-width: 28px;
       height: 26px;
+      padding: 0 8px;
       border: 1px solid var(--border);
       border-radius: 4px;
       background: var(--bg3);
       color: var(--text2);
       cursor: pointer;
-      font-size: 16px;
+      font-size: 12px;
       line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
-    .category-teach-dismiss:hover {
+    .category-teach-edit-btn:hover:not(:disabled) {
       border-color: var(--accent-hi);
       color: var(--accent-hi);
     }
+    .category-teach-edit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .category-teach-para {
       margin: 0;
       font-size: 10px;
       color: var(--text2);
       line-height: 1.55;
     }
+    .category-teach-edit {
+      margin-top: 8px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .category-teach-edit.is-open { display: flex; }
+    .category-teach-input {
+      width: 100%;
+      min-height: 84px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg3);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.5;
+      padding: 8px;
+    }
+    .category-teach-edit-actions { display: flex; gap: 8px; }
+    .category-teach-btn {
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text2);
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+    }
+    .category-teach-btn:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+    .category-teach-btn:disabled { opacity: 0.6; cursor: wait; }
+    .category-desc {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+      background: rgba(52, 211, 153, 0.07);
+      max-width: min(56em, 100%);
+    }
+    .category-desc[hidden] { display: none !important; }
+    .category-desc-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .category-desc-head strong {
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: 0.02em;
+    }
+    .category-desc-text {
+      margin: 0;
+      font-size: 10px;
+      color: var(--text);
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+    .category-desc-actions { display: flex; gap: 8px; }
+    .category-desc-btn {
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text2);
+      padding: 5px 8px;
+      font-size: 9px;
+      font-family: var(--mono);
+      cursor: pointer;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .category-desc-btn:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+    .category-desc-edit {
+      margin-top: 8px;
+      display: none;
+      gap: 8px;
+      flex-direction: column;
+    }
+    .category-desc-edit.is-open { display: flex; }
+    .category-desc-input {
+      width: 100%;
+      min-height: 78px;
+      resize: vertical;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 8px;
+    }
+    .category-desc-hint { font-size: 9px; color: var(--dim); }
 
     .canvas-ghost-bg .ghost-anim-cortex {
       transform-origin: 24px 26px;
@@ -882,6 +990,53 @@
       color: var(--text);
       line-height: 1.5;
     }
+    .drawer-notes-edit {
+      margin: 0;
+      width: 100%;
+      min-height: 92px;
+      resize: vertical;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 8px;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+    .drawer-note-tools {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .drawer-note-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--text2);
+      user-select: none;
+    }
+    .drawer-note-check input { accent-color: var(--green); }
+    .drawer-note-save {
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text2);
+      padding: 6px 9px;
+      font-family: var(--mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .drawer-note-save:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+    .drawer-note-save:disabled { opacity: 0.6; cursor: wait; }
+    .drawer-note-status { font-size: 9px; color: var(--dim); min-height: 1em; }
+    .drawer-note-status.ok { color: var(--green); }
+    .drawer-note-status.err { color: var(--red); }
     .drawer-tag {
       display: inline-block;
       margin: 2px;
@@ -1031,9 +1186,18 @@
         <div id="categoryTeach" class="category-teach" hidden>
           <div class="category-teach-head">
             <strong id="categoryTeachHead"></strong>
-            <button type="button" class="category-teach-dismiss" id="categoryTeachDismiss" aria-label="Ocultar explicação">×</button>
+            <div class="category-teach-actions">
+              <button type="button" class="category-teach-edit-btn" id="categoryTeachEditBtn" aria-label="Editar descrição" title="Editar descrição">✎</button>
+            </div>
           </div>
           <p id="categoryTeachPara" class="category-teach-para"></p>
+          <div id="categoryTeachEditWrap" class="category-teach-edit">
+            <textarea id="categoryTeachInput" class="category-teach-input" maxlength="2000" placeholder="Descreve esta categoria..."></textarea>
+            <div class="category-teach-edit-actions">
+              <button type="button" class="category-teach-btn" id="categoryTeachSaveBtn">Guardar</button>
+              <button type="button" class="category-teach-btn" id="categoryTeachCancelBtn">Cancelar</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1076,7 +1240,9 @@
   function apiBase() { return new URL('.', window.location.href).origin; }
   function apiUrl(p) { return apiBase() + (p.startsWith('/') ? p : '/' + p); }
 
-  let categories = [], activeId = null, activeLinks = [], activeCategoryTitle = '', demoMode = false;
+  let categories = [], activeId = null, activeLinks = [], activeCategoryTitle = '', activeCategoryDescription = '', demoMode = false;
+  let csrf = '';
+  let drawerLinkRef = null;
 
   // ── demo data ──
   const DEMO_FP = {
@@ -1088,10 +1254,10 @@
     idor:'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
   };
   const CORTEX_DEMO_CATEGORIES = [
-    {id:9001,title:'XSS',linkCount:2,created_at:'2026-01-01T12:00:00.000Z'},
-    {id:9002,title:'SQL Injection',linkCount:1,created_at:'2026-01-01T12:00:00.000Z'},
-    {id:9003,title:'FTP Anonymous',linkCount:2,created_at:'2026-01-01T12:00:00.000Z'},
-    {id:9004,title:'IDOR',linkCount:1,created_at:'2026-01-01T12:00:00.000Z'},
+    {id:9001,title:'XSS',description:'Validações de Cross-Site Scripting confirmadas manualmente no fluxo do reporte.',linkCount:2,created_at:'2026-01-01T12:00:00.000Z'},
+    {id:9002,title:'SQL Injection',description:'Achados de SQLi com evidência de erro SQL ou alteração de comportamento na query.',linkCount:1,created_at:'2026-01-01T12:00:00.000Z'},
+    {id:9003,title:'FTP Anonymous',description:'Serviços FTP com acesso anónimo, listagem aberta ou upload sem autenticação forte.',linkCount:2,created_at:'2026-01-01T12:00:00.000Z'},
+    {id:9004,title:'IDOR',description:'Referências diretas inseguras a objetos (IDs/UUIDs) sem controlo de autorização por recurso.',linkCount:1,created_at:'2026-01-01T12:00:00.000Z'},
   ];
   const CORTEX_DEMO_LINKS = {
     9001:[
@@ -1153,8 +1319,11 @@
     if(snap&&typeof snap==='object'){
       const v=snap.value!=null?String(snap.value):'';
       const t=snap.type!=null?String(snap.type):'';
+      const owasp = Array.isArray(snap.owasp) ? snap.owasp.map((x)=>String((x&&x.id)||x||'').trim()).filter(Boolean) : [];
+      const mitre = Array.isArray(snap.mitre) ? snap.mitre.map((x)=>String((x&&x.id)||x||'').trim()).filter(Boolean) : [];
+      const tax = [...owasp.slice(0,2), ...mitre.slice(0,2)].join(', ');
       const line=[t,v].filter(Boolean).join(' — ');
-      if(line) return line.slice(0,250);
+      if(line) return (tax ? `${line} · ${tax}` : line).slice(0,250);
     }
     return link.notes?String(link.notes).slice(0,180):'(sem resumo)';
   }
@@ -1234,9 +1403,17 @@
       box.hidden = true;
       return;
     }
-    const { headline, text } = getCategoryTeach(label);
+    const custom = String(activeCategoryDescription || '').trim();
+    const { headline, text } = custom
+      ? { headline: 'Sobre esta categoria', text: custom }
+      : getCategoryTeach(label);
     $('categoryTeachHead').textContent = headline;
     $('categoryTeachPara').textContent = text;
+    const editBtn = $('categoryTeachEditBtn');
+    if (editBtn) {
+      editBtn.disabled = demoMode;
+      editBtn.title = demoMode ? 'Edição indisponível no modo demo' : 'Editar descrição';
+    }
     box.hidden = false;
   }
 
@@ -1244,6 +1421,13 @@
     const el=$('errBanner');
     el.style.display=msg?'block':'none';
     el.textContent=msg||'';
+  }
+
+  async function fetchCsrf() {
+    const r = await fetch(apiUrl('/api/csrf-token'));
+    const d = await r.json().catch(() => ({}));
+    csrf = String(d.token || '');
+    if (!csrf) throw new Error('CSRF vazio');
   }
 
   // ── search filter ──
@@ -1681,8 +1865,19 @@
 
   function openDrawer(link, categoryTitle){
     const drawer=$('drawer'), backdrop=$('drawerBackdrop');
+    drawerLinkRef = link;
+    const snapObj = link.snapshot && typeof link.snapshot === 'object' ? link.snapshot : {};
+    const marked = Boolean(snapObj.cortex_marked === true);
     $('drawerTitle').textContent=categoryTitle||'Detalhe';
     const snap=link.snapshot||{};
+    const owasp = Array.isArray(snap.owasp) ? snap.owasp : [];
+    const mitre = Array.isArray(snap.mitre) ? snap.mitre : [];
+    const owaspHtml = owasp.length
+      ? `<div class="drawer-section"><div class="drawer-label">OWASP</div><pre class="drawer-pre">${esc(owasp.map((x)=>String((x&&x.id)||x||'')).filter(Boolean).join(', '))}</pre></div>`
+      : '';
+    const mitreHtml = mitre.length
+      ? `<div class="drawer-section"><div class="drawer-label">MITRE ATT&CK</div><pre class="drawer-pre">${esc(mitre.map((x)=>String((x&&x.id)||x||'')).filter(Boolean).join(', '))}</pre></div>`
+      : '';
     const prio=snap.prio||'';
     const type=snap.type||'';
     const prioClass=prio==='high'?'drawer-tag-prio-high':prio==='medium'?'drawer-tag-prio-medium':'';
@@ -1691,16 +1886,72 @@
       <div class="drawer-section"><div class="drawer-label">Alvo</div><pre class="drawer-pre">${esc(link.target)}</pre></div>
       <div class="drawer-section"><div class="drawer-label">URL</div><pre class="drawer-pre">${esc(linkDisplayUrl(link))}</pre></div>
       <div class="drawer-section"><div class="drawer-label">Fingerprint</div><pre class="drawer-pre">${esc(link.fingerprint)}</pre></div>
-      <div class="drawer-section"><div class="drawer-label">Notas</div><pre class="drawer-pre">${esc(link.notes||'—')}</pre></div>
+      ${owaspHtml}
+      ${mitreHtml}
+      <div class="drawer-section">
+        <div class="drawer-label">Notas</div>
+        <textarea id="drawerNotesInput" class="drawer-notes-edit" placeholder="Escreve notas deste alvo...">${esc(link.notes||'')}</textarea>
+        <div class="drawer-note-tools">
+          <label class="drawer-note-check"><input type="checkbox" id="drawerMarkedCheck" ${marked?'checked':''}/> Marcar alvo</label>
+          <button type="button" class="drawer-note-save" id="drawerNotesSaveBtn">Guardar notas</button>
+          <span id="drawerNoteStatus" class="drawer-note-status"></span>
+        </div>
+      </div>
       <div class="drawer-section"><div class="drawer-label">Snapshot</div><pre class="drawer-pre">${esc(JSON.stringify(link.snapshot||{},null,2))}</pre></div>
     `;
+    $('drawerNotesSaveBtn')?.addEventListener('click', () => { void saveDrawerNotes(); });
     drawer.classList.add('is-open'); drawer.setAttribute('aria-hidden','false');
     backdrop.classList.add('is-open'); backdrop.setAttribute('aria-hidden','false');
   }
 
   function closeDrawer(){
+    drawerLinkRef = null;
     $('drawer').classList.remove('is-open'); $('drawer').setAttribute('aria-hidden','true');
     const b=$('drawerBackdrop'); b.classList.remove('is-open'); b.setAttribute('aria-hidden','true');
+  }
+
+  async function saveDrawerNotes() {
+    if (!drawerLinkRef || demoMode) return;
+    const btn = $('drawerNotesSaveBtn');
+    const ta = $('drawerNotesInput');
+    const ck = $('drawerMarkedCheck');
+    const st = $('drawerNoteStatus');
+    if (!btn || !ta || !ck || !st) return;
+    const notes = String(ta.value || '').slice(0, 2000);
+    const marked = Boolean(ck.checked);
+    btn.disabled = true;
+    st.className = 'drawer-note-status';
+    st.textContent = 'A guardar…';
+    try {
+      await fetchCsrf();
+      const snapshot = drawerLinkRef.snapshot && typeof drawerLinkRef.snapshot === 'object'
+        ? { ...drawerLinkRef.snapshot }
+        : {};
+      if (marked) snapshot.cortex_marked = true;
+      else delete snapshot.cortex_marked;
+      const r = await fetch(apiUrl('/api/manual-validations'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({
+          target: drawerLinkRef.target,
+          fingerprint: drawerLinkRef.fingerprint,
+          validated: true,
+          snapshot,
+          notes,
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || String(r.status));
+      drawerLinkRef.notes = notes;
+      drawerLinkRef.snapshot = snapshot;
+      st.className = 'drawer-note-status ok';
+      st.textContent = 'Notas guardadas.';
+    } catch (e) {
+      st.className = 'drawer-note-status err';
+      st.textContent = 'Falha: ' + (e.message || e);
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   async function selectCategory(id){
@@ -1709,6 +1960,7 @@
       activeLinks=CORTEX_DEMO_LINKS[id].map(x=>({...x}));
       const cat=CORTEX_DEMO_CATEGORIES.find(c=>c.id===id);
       activeCategoryTitle=cat?cat.title:'Categoria';
+      activeCategoryDescription=cat&&cat.description?String(cat.description):'';
       try{ const u=new URL(location.href); u.hash=String(id); history.replaceState(null,'',u.toString()); }catch(_){}
       renderCanvas(activeCategoryTitle); return;
     }
@@ -1718,10 +1970,11 @@
       if(!r.ok) throw new Error(d.error||String(r.status));
       activeLinks=Array.isArray(d.links)?d.links:[];
       activeCategoryTitle=d.category?.title||'Categoria';
+      activeCategoryDescription=d.category?.description ? String(d.category.description) : '';
       try{ const u=new URL(location.href); u.hash=String(id); history.replaceState(null,'',u.toString()); }catch(_){}
       renderCanvas(activeCategoryTitle);
     } catch(e){
-      activeLinks=[];activeCategoryTitle='';
+      activeLinks=[];activeCategoryTitle=''; activeCategoryDescription='';
       setErr(String(e.message||e)); renderCanvas('');
     }
   }
@@ -1747,13 +2000,55 @@
     const h=(location.hash||'').replace(/^#/,'').trim().toLowerCase();
     const n=h==='demo'?NaN:Number(h);
     if(Number.isFinite(n)&&n>0&&categories.some(c=>c.id===n)) await selectCategory(n);
-    else { activeId=null;activeLinks=[];activeCategoryTitle='';renderCanvas(''); }
+    else { activeId=null;activeLinks=[];activeCategoryTitle='';activeCategoryDescription='';renderCanvas(''); }
   }
 
   // ── events ──
-  $('categoryTeachDismiss')?.addEventListener('click', () => {
-    const b = $('categoryTeach');
-    if (b) b.hidden = true;
+  $('categoryTeachEditBtn')?.addEventListener('click', () => {
+    if (!activeId || demoMode) return;
+    const wrap = $('categoryTeachEditWrap');
+    const input = $('categoryTeachInput');
+    if (!wrap || !input) return;
+    const fallback = getCategoryTeach(String(activeCategoryTitle || '')).text || '';
+    input.value = String(activeCategoryDescription || fallback);
+    wrap.classList.add('is-open');
+    input.focus();
+    input.select();
+  });
+
+  $('categoryTeachCancelBtn')?.addEventListener('click', () => {
+    $('categoryTeachEditWrap')?.classList.remove('is-open');
+  });
+
+  $('categoryTeachSaveBtn')?.addEventListener('click', async () => {
+    if (!activeId || demoMode) return;
+    const btn = $('categoryTeachSaveBtn');
+    const input = $('categoryTeachInput');
+    const wrap = $('categoryTeachEditWrap');
+    if (!btn || !input || !wrap) return;
+    const description = String(input.value || '').trim().slice(0, 2000);
+    btn.disabled = true;
+    setErr('');
+    try {
+      await fetchCsrf();
+      const r = await fetch(apiUrl('/api/brain/categories/' + encodeURIComponent(String(activeId)) + '/description'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ description }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || String(r.status));
+      activeCategoryDescription = d.category?.description ? String(d.category.description) : description;
+      categories = categories.map((c) =>
+        Number(c.id) === Number(activeId) ? { ...c, description: activeCategoryDescription } : c,
+      );
+      applyCategoryTeach(String(activeCategoryTitle || '').trim());
+      wrap.classList.remove('is-open');
+    } catch (e) {
+      setErr('Não foi possível guardar descrição: ' + (e.message || e));
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   $('drawerClose').addEventListener('click', closeDrawer);

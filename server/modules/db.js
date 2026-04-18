@@ -1,9 +1,17 @@
 import * as sqlite from './db-sqlite.js';
 import * as supabase from './db-supabase.js';
 import * as pg from './db-pg.js';
+import { isReconTargetStorageKey } from './recon-target.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 export { fingerprintFinding, norm } from './db-common.js';
 export { resolveLocalProjectDbDir, sanitizePathSegment } from './db-sqlite.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.join(__dirname, '..', '..');
+const VALIDATE_DIR = path.join(ROOT, 'Validate');
 
 /** Conexão direta Postgres (recomendado no Node; IPv4 → Session Pooler no dashboard). */
 function useDatabaseUrl() {
@@ -29,6 +37,93 @@ export function storageLabel() {
   if (useDatabaseUrl()) return 'Supabase Postgres (DATABASE_URL)';
   if (useSupabaseApi()) return 'Supabase (API REST)';
   return 'SQLite (data/bugbounty.db)';
+}
+
+function ensureValidateDir() {
+  fs.mkdirSync(VALIDATE_DIR, { recursive: true });
+  return VALIDATE_DIR;
+}
+
+function isSha256FingerprintHex(fp) {
+  return /^[a-f0-9]{64}$/.test(String(fp || '').trim().toLowerCase());
+}
+
+function normalizeValidationArchiveRecord(row) {
+  const target = String(row?.target || '')
+    .trim()
+    .toLowerCase();
+  const fingerprint = String(row?.fingerprint || '')
+    .trim()
+    .toLowerCase();
+  if (!isReconTargetStorageKey(target)) return null;
+  if (!isSha256FingerprintHex(fingerprint)) return null;
+  return {
+    target,
+    fingerprint,
+    validated_at: String(row?.validated_at || row?.validatedAt || new Date().toISOString()),
+    notes: row?.notes != null ? String(row.notes) : '',
+    snapshot: row?.snapshot && typeof row.snapshot === 'object' ? row.snapshot : null,
+    brainCategoryId:
+      row?.brainCategoryId != null && Number.isFinite(Number(row.brainCategoryId))
+        ? Number(row.brainCategoryId)
+        : null,
+    brainCategoryTitle:
+      row?.brainCategoryTitle != null && String(row.brainCategoryTitle).trim()
+        ? String(row.brainCategoryTitle).trim()
+        : null,
+  };
+}
+
+function validationArchivePath(targetRaw, fingerprintRaw) {
+  const target = sqlite.sanitizePathSegment(String(targetRaw || '').trim().toLowerCase(), 'target');
+  const fp = String(fingerprintRaw || '').trim().toLowerCase();
+  return path.join(ensureValidateDir(), target, `${fp}.json`);
+}
+
+function writeValidationArchive(row) {
+  const rec = normalizeValidationArchiveRecord(row);
+  if (!rec) return;
+  const filePath = validationArchivePath(rec.target, rec.fingerprint);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(rec, null, 2), 'utf8');
+}
+
+function deleteValidationArchive(targetRaw, fingerprintRaw) {
+  const filePath = validationArchivePath(targetRaw, fingerprintRaw);
+  try {
+    fs.unlinkSync(filePath);
+  } catch (e) {
+    if (e?.code !== 'ENOENT') throw e;
+  }
+}
+
+function listValidationArchivesForTarget(targetRaw) {
+  const target = String(targetRaw || '')
+    .trim()
+    .toLowerCase();
+  if (!isReconTargetStorageKey(target)) return [];
+  const dir = path.join(ensureValidateDir(), sqlite.sanitizePathSegment(target, 'target'));
+  if (!fs.existsSync(dir)) return [];
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const full = path.join(dir, name);
+    try {
+      const raw = fs.readFileSync(full, 'utf8');
+      const rec = normalizeValidationArchiveRecord(JSON.parse(raw));
+      if (rec && rec.target === target) out.push(rec);
+    } catch {
+      /* ignora ficheiro inválido */
+    }
+  }
+  out.sort((a, b) => String(b.validated_at).localeCompare(String(a.validated_at)));
+  return out;
 }
 
 /**
@@ -99,34 +194,69 @@ export async function intelCountForTarget(target) {
   return sqlite.intelCountForTarget(target);
 }
 
-/** Validação manual de achados (SQLite local). Com Postgres/Supabase API ainda não persistido — devolve lista vazia. */
+/** Validação manual sempre em SQLite local + espelho em `Validate/`. */
 export async function listManualValidationsForTarget(target) {
-  if (useDatabaseUrl() || useSupabaseApi()) return [];
+  const fromArchive = listValidationArchivesForTarget(target);
+  const archiveByFp = new Map(fromArchive.map((x) => [x.fingerprint, x]));
   try {
-    return sqlite.listManualValidationsForTarget(target);
+    const fromDb = sqlite.listManualValidationsForTarget(target);
+    const merged = fromDb.map((x) => {
+      const a = archiveByFp.get(String(x.fingerprint || '').toLowerCase());
+      return a
+        ? {
+            ...x,
+            notes: a.notes != null ? String(a.notes) : x.notes,
+            snapshot: a.snapshot ?? x.snapshot ?? null,
+          }
+        : x;
+    });
+    const mergedFp = new Set(merged.map((x) => String(x.fingerprint || '').toLowerCase()));
+    for (const a of fromArchive) {
+      if (mergedFp.has(a.fingerprint)) continue;
+      merged.push({
+        fingerprint: a.fingerprint,
+        validated_at: a.validated_at,
+        notes: a.notes,
+        snapshot: a.snapshot,
+        brainCategoryId: a.brainCategoryId,
+        brainCategoryTitle: a.brainCategoryTitle,
+      });
+    }
+    return merged.sort((a, b) => String(b.validated_at).localeCompare(String(a.validated_at)));
   } catch (e) {
     console.error('[GHOSTRECON manual_validations list]', e?.message || e);
-    return [];
+    return fromArchive;
   }
 }
 
 export async function upsertManualValidation(row) {
-  if (useDatabaseUrl() || useSupabaseApi()) {
-    throw new Error('Validação manual só persiste em SQLite (sem DATABASE_URL / Supabase nesta versão).');
+  const out = sqlite.upsertManualValidation(row);
+  try {
+    writeValidationArchive({
+      target: row?.target,
+      fingerprint: row?.fingerprint,
+      validated_at: new Date().toISOString(),
+      snapshot: row?.snapshot ?? null,
+      notes: row?.notes ?? '',
+    });
+  } catch (e) {
+    console.error('[GHOSTRECON manual_validations archive write]', e?.message || e);
   }
-  return sqlite.upsertManualValidation(row);
+  return out;
 }
 
 export async function deleteManualValidation(target, fingerprint) {
-  if (useDatabaseUrl() || useSupabaseApi()) {
-    throw new Error('Validação manual só persiste em SQLite (sem DATABASE_URL / Supabase nesta versão).');
+  const out = sqlite.deleteManualValidation(target, fingerprint);
+  try {
+    deleteValidationArchive(target, fingerprint);
+  } catch (e) {
+    console.error('[GHOSTRECON manual_validations archive delete]', e?.message || e);
   }
-  return sqlite.deleteManualValidation(target, fingerprint);
+  return out;
 }
 
-/** Categorias do «cérebro» (SQLite local). Com Postgres/Supabase devolve lista vazia. */
+/** Categorias do «cérebro» sempre em SQLite local. */
 export async function listBrainCategories() {
-  if (useDatabaseUrl() || useSupabaseApi()) return [];
   try {
     return sqlite.listBrainCategories();
   } catch (e) {
@@ -136,21 +266,18 @@ export async function listBrainCategories() {
 }
 
 export async function createBrainCategory(title) {
-  if (useDatabaseUrl() || useSupabaseApi()) {
-    throw new Error('Cérebro só persiste em SQLite local (sem DATABASE_URL / Supabase nesta versão).');
-  }
   return sqlite.createBrainCategory(title);
 }
 
+export async function updateBrainCategoryDescription(id, description) {
+  return sqlite.updateBrainCategoryDescription(id, description);
+}
+
 export async function upsertBrainLink(row) {
-  if (useDatabaseUrl() || useSupabaseApi()) {
-    throw new Error('Cérebro só persiste em SQLite local (sem DATABASE_URL / Supabase nesta versão).');
-  }
   return sqlite.upsertBrainLink(row);
 }
 
 export async function getBrainCategoryById(id) {
-  if (useDatabaseUrl() || useSupabaseApi()) return null;
   try {
     return sqlite.getBrainCategoryById(id);
   } catch {
@@ -159,7 +286,6 @@ export async function getBrainCategoryById(id) {
 }
 
 export async function listBrainLinksForCategory(categoryId) {
-  if (useDatabaseUrl() || useSupabaseApi()) return [];
   try {
     return sqlite.listBrainLinksForCategory(categoryId);
   } catch (e) {

@@ -1131,6 +1131,36 @@
     outline-offset: 2px;
   }
 
+  .stabilize-shell-ref-panel {
+    margin-top: 10px;
+    max-height: min(440px, 56vh);
+    overflow-y: auto;
+    padding: 10px 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.22);
+  }
+  .stabilize-shell-ref-panel .findings-help-section-title {
+    margin-top: 14px;
+    margin-bottom: 6px;
+    font-size: 10px;
+  }
+  .stabilize-shell-ref-panel .findings-help-section-title:first-of-type {
+    margin-top: 0;
+  }
+  .stabilize-shell-ref-panel .gh-hint {
+    margin: 0 0 8px;
+    line-height: 1.45;
+  }
+  .stabilize-shell-ref-panel kbd {
+    font-family: var(--mono);
+    font-size: 8px;
+    padding: 1px 4px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.35);
+  }
+
   .bounty-context-presets {
     display: flex;
     flex-wrap: wrap;
@@ -2163,7 +2193,7 @@
       <div class="section-label">Target</div>
       <div class="input-wrap">
         <span class="input-prefix">$</span>
-        <input class="domain-input" id="domainInput" type="text" placeholder="example.com" autocomplete="off" spellcheck="false">
+        <input class="domain-input" id="domainInput" type="text" placeholder="exemplo.com · https://alvo/ · 10.0.0.1 · [2001:db8::1]" autocomplete="off" spellcheck="false">
       </div>
 
       <div class="toggle-row" style="margin-top:10px">
@@ -2585,6 +2615,12 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="waybackurls"><div class="checkbox-box"></div><span class="checkbox-text">waybackurls (archive URLs)</span><span class="tag tag-low">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="rdap"><div class="checkbox-box"></div><span class="checkbox-text">RDAP (registo domínio)</span><span class="tag tag-low">WHOIS+</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
+        <label class="checkbox-item" title="Após cada GET do probe: cabeçalhos suspeitos (stack, debug, proxy) e bloco sugerido para /etc/hosts quando houver vhost nos headers.">
+          <input type="checkbox" class="mod" value="header_intel">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Análise de headers (intel + /etc/hosts)</span>
+          <span class="tag tag-med">MED</span>
+        </label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wafw00f"><div class="checkbox-box"></div><span class="checkbox-text">WAF fingerprint (wafw00f)</span><span class="tag tag-med">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="robots_sitemap" checked><div class="checkbox-box"></div><span class="checkbox-text">robots.txt / sitemap</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="virustotal"><div class="checkbox-box"></div><span class="checkbox-text">VirusTotal subs</span><span class="tag tag-med">API</span></label>
@@ -2633,11 +2669,54 @@
       </div>
 
       <div class="module-group">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <div class="module-group-title" style="margin-bottom:0">// Shell — TTY</div>
+          <button
+            type="button"
+            class="sqlmap-help-btn"
+            title="Abrir cheatsheet de estabilização de shell (janela)"
+            onclick="openShellStabilizeModal()"
+          >
+            Shell
+          </button>
+        </div>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">
+          Referência para <strong>shell estável / TTY completo</strong> em pentest autorizado. Clica em <strong>Shell</strong> para abrir o pop-up com os comandos (copiar por linha). O servidor <strong>não executa</strong> nada.
+        </p>
+      </div>
+
+      <div class="module-group">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+          <div class="module-group-title" style="margin-bottom:0">// LinPEAS</div>
+          <button
+            type="button"
+            class="sqlmap-help-btn"
+            title="Copiar: wget da última release oficial (PEASS-ng)"
+            onclick="copyLinpeasWgetCmd(this)"
+          >
+            Linpeas
+          </button>
+        </div>
+        <p class="gh-hint" style="font-size:10px;margin:0;line-height:1.45">
+          Script de enumeração Linux (PEASS-ng). O botão <strong>Linpeas</strong> copia o <code>wget</code> para a área de transferência — sem pop-up. Só em alvos autorizados.
+        </p>
+      </div>
+
+      <div class="module-group">
         <div class="module-group-title">// API · specs · GraphQL</div>
         <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Liga <strong>Wayback</strong> e/ou <strong>Common Crawl</strong> para o corpus trazer URLs; o GraphQL só corre se existir URL com <code>graphql</code> nesse corpus (máx. 10). OpenAPI tenta paths típicos em cada origem HTTPS viva.</p>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="openapi_specs" id="modOpenapiSpecs"><div class="checkbox-box"></div><span class="checkbox-text">OpenAPI / Swagger leak</span><span class="tag tag-med">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="graphql_probe" id="modGraphqlProbe"><div class="checkbox-box"></div><span class="checkbox-text">GraphQL — introspecção mínima (1 POST)</span><span class="tag tag-high">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="micro_exploit"><div class="checkbox-box"></div><span class="checkbox-text">Micro-exploit XSS (pós-verify)</span><span class="tag tag-high">ACT</span></label>
+        <label
+          class="checkbox-item"
+          title="GET a shell.php, c99.php, cmd.php?cmd=id — só marca se a resposta parecer saída de `id` (uid=/gid=). Muitos falsos positivos possíveis; só em alvo autorizado."
+        >
+          <input type="checkbox" class="mod" value="webshell_probe" id="modWebshellProbe" />
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Webshell heurístico (GET cmd=id)</span>
+          <span class="tag tag-high">ACT</span>
+        </label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="stealth_requests"><div class="checkbox-box"></div><span class="checkbox-text">Stealth (jitter + UA rotativa)</span><span class="tag tag-low">NET</span></label>
       </div>
 
@@ -2659,6 +2738,39 @@
           <span class="tag tag-high">KALI</span>
         </label>
         <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Passagem geral + tags XSS/SQLi em URLs com parâmetros. Sem esta caixa, o scan Kali não invoca o Nuclei.</p>
+        <label
+          class="checkbox-item"
+          title="Só com Modo Kali. Substitui o nmap normal desta fase por: -A -sV -p- -Pn (todas as portas — muito lento). Máx. 3 hosts por defeito (GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS). Timeout 2h (GHOSTRECON_NMAP_AGGRESSIVE_TIMEOUT_MS). Args: GHOSTRECON_NMAP_AGGRESSIVE_ARGS."
+        >
+          <input type="checkbox" class="mod" value="kali_nmap_aggressive" id="modKaliNmapAggressive">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Nmap agressivo (Kali): -A -sV -p-</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">
+          Alvos = apex + subdomínios vivos (hostname ou IP do recon), não URL completa. Por defeito no máximo 3 hosts.
+        </p>
+        <label
+          class="checkbox-item"
+          title="Só com Modo Kali. Após o nmap TCP: segunda passagem com -sU -A -Pn -T4 só em portas UDP sensíveis (DNS, SNMP, NTP, …). Lista: GHOSTRECON_NMAP_UDP_PORTS ou por defeito. Máx. 5 hosts (GHOSTRECON_NMAP_UDP_MAX_HOSTS). Args: GHOSTRECON_NMAP_UDP_ARGS. Timeout: GHOSTRECON_NMAP_UDP_TIMEOUT_MS."
+        >
+          <input type="checkbox" class="mod" value="kali_nmap_udp" id="modKaliNmapUdp">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Nmap UDP sensível (Kali): -sU -A</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">
+          Não faz scan de todas as portas UDP — só um conjunto curado (rápido vs. <code>-p-</code> UDP).
+        </p>
+        <label
+          class="checkbox-item"
+          title="Só com Modo Kali após nmap TCP: se 3306/tcp estiver aberto, adiciona achados intel com mysql client, scripts nmap mysql-* e exemplo sqlmap -d (não executa nada automaticamente)."
+        >
+          <input type="checkbox" class="mod" value="mysql_3306_intel" id="modMysql3306Intel" checked />
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">MySQL 3306 — hints pós-nmap</span>
+          <span class="tag tag-med">KALI</span>
+        </label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="subfinder"><div class="checkbox-box"></div><span class="checkbox-text">Subfinder (Kali)</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="amass"><div class="checkbox-box"></div><span class="checkbox-text">Amass (Kali)</span><span class="tag tag-med">MED</span></label>
       </div>
@@ -2967,7 +3079,34 @@ let forcedDorkUrlQueue = [];
 let csrfToken = '';
 
 const BATCH_MAX_TARGETS = 25;
-const DOMAIN_TOKEN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$/;
+
+/** Chave de deduplicação (alinhada ao parser do servidor: domínio, URL ou IP). */
+function ghostreconNormalizeTargetKey(raw) {
+  const s0 = String(raw || '').trim();
+  if (!s0) return '';
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(s0)) return s0;
+  if (/^\[[0-9a-f:]+\]$/i.test(s0)) {
+    try {
+      return new URL(`https://${s0}/x`).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+  if (/^[0-9a-f:]+$/i.test(s0) && s0.includes(':')) {
+    try {
+      return new URL(`https://[${s0}]/x`).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+  try {
+    const c = /^[a-z][a-z0-9+.-]*:\/\//i.test(s0) ? s0 : `https://${s0}`;
+    const u = new URL(c);
+    return u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
 
 /** Domínios extra da lista (sem o primeiro alvo do campo $). */
 function parseBatchDomainsFromTextarea(maxEntries = BATCH_MAX_TARGETS) {
@@ -2982,11 +3121,10 @@ function parseBatchDomainsFromTextarea(maxEntries = BATCH_MAX_TARGETS) {
   const seen = new Set();
   const out = [];
   for (const p of parts) {
-    let norm = p.replace(/^https?:\/\//i, '').trim().split('/')[0].split(':')[0].toLowerCase();
-    if (!DOMAIN_TOKEN_RE.test(norm)) continue;
-    if (seen.has(norm)) continue;
-    seen.add(norm);
-    out.push(norm);
+    const k = ghostreconNormalizeTargetKey(p);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(p.trim());
     if (out.length >= maxEntries) break;
   }
   return out;
@@ -3653,6 +3791,50 @@ function copyPromptInjRow(btn) {
   }, 1400);
 }
 
+/** Copia bloco da cheatsheet Shell / TTY (mesmo layout que prompt injection). */
+function copyShellStabilizeRow(btn) {
+  copyPromptInjRow(btn);
+}
+
+function mountShellStabilizeFromTemplate(container) {
+  if (!container || container.dataset.shellContentMounted === '1') return;
+  const tpl = document.getElementById('shellStabilizeTemplate');
+  if (!tpl || !tpl.content) return;
+  container.appendChild(tpl.content.cloneNode(true));
+  container.dataset.shellContentMounted = '1';
+}
+
+const LINPEAS_WGET_CMD =
+  'wget https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh';
+
+function copyLinpeasWgetCmd(btn) {
+  copyText(LINPEAS_WGET_CMD);
+  if (!btn) return;
+  const prev = btn.textContent;
+  btn.textContent = '✓';
+  btn.disabled = true;
+  setTimeout(() => {
+    btn.textContent = prev;
+    btn.disabled = false;
+  }, 1400);
+}
+
+function openShellStabilizeModal() {
+  const scroll = document.getElementById('shellStabilizeModalScroll');
+  const ov = document.getElementById('shellStabilizeHelpOverlay');
+  if (!scroll || !ov) return;
+  mountShellStabilizeFromTemplate(scroll);
+  ov.classList.add('is-open');
+  ov.setAttribute('aria-hidden', 'false');
+}
+
+function closeShellStabilizeModal() {
+  const ov = document.getElementById('shellStabilizeHelpOverlay');
+  if (!ov) return;
+  ov.classList.remove('is-open');
+  ov.setAttribute('aria-hidden', 'true');
+}
+
 function filterFindings(f, el) {
   currentFilter = f;
   document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
@@ -3721,6 +3903,7 @@ function resetPipelineVisual() {
     'dorks',
     'secrets',
     'verify',
+    'webshell_probe',
     'sqlmap',
     'kali',
     'assets',
@@ -3954,6 +4137,9 @@ function openReportePage() {
       return;
     }
     sessionStorage.setItem('ghostrecon_reporte_payload', raw);
+    try {
+      localStorage.setItem('ghostrecon_reporte_payload_shared', raw);
+    } catch (_) {}
   } catch (e) {
     addLog('Reporte: não foi possível gravar o pacote (sessionStorage).', 'error');
     return;
@@ -4223,34 +4409,35 @@ async function startRecon() {
   const batchMode = Boolean(document.getElementById('batchModeToggle')?.checked);
   let targets = [];
   const d = document.getElementById('domainInput').value.trim();
+  const firstKey = ghostreconNormalizeTargetKey(d);
   if (batchMode) {
     if (!d) {
-      addLog('ERRO: Fila ativa — preenche primeiro o Target ($) com o domínio inicial.', 'error');
+      addLog('ERRO: Fila ativa — preenche primeiro o Target ($) com o alvo inicial.', 'error');
       return;
     }
-    if (!d.match(/^[a-zA-Z0-9][a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}$/)) {
-      addLog('ERRO: Domínio inválido no Target. Use formato: exemplo.com', 'error');
+    if (!firstKey) {
+      addLog('ERRO: Alvo inválido no Target. Usa domínio, URL http(s) ou endereço IP (IPv4 ou IPv6).', 'error');
       return;
     }
-    const first = d.replace(/^https?:\/\//i, '').trim().split('/')[0].split(':')[0].toLowerCase();
-    const seen = new Set([first]);
-    targets = [first];
+    const seen = new Set([firstKey]);
+    targets = [d];
     const restMax = Math.max(0, BATCH_MAX_TARGETS - 1);
-    for (const norm of parseBatchDomainsFromTextarea(restMax)) {
-      if (seen.has(norm)) continue;
-      seen.add(norm);
-      targets.push(norm);
+    for (const raw of parseBatchDomainsFromTextarea(restMax)) {
+      const k = ghostreconNormalizeTargetKey(raw);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      targets.push(raw);
     }
   } else {
     if (!d) {
-      addLog('ERRO: Insira um domínio alvo', 'error');
+      addLog('ERRO: Insira um alvo (domínio, URL ou IP)', 'error');
       return;
     }
-    if (!d.match(/^[a-zA-Z0-9][a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}$/)) {
-      addLog('ERRO: Domínio inválido. Use formato: exemplo.com', 'error');
+    if (!firstKey) {
+      addLog('ERRO: Alvo inválido. Usa domínio (exemplo.com), URL (https://…) ou IP (ex.: 10.0.0.1 ou [2001:db8::1]).', 'error');
       return;
     }
-    targets = [d.replace(/^https?:\/\//i, '').trim().split('/')[0].split(':')[0].toLowerCase()];
+    targets = [d];
   }
 
   batchTargetsSnapshot = targets.slice();
@@ -4775,7 +4962,7 @@ function buildGhFinalQuery() {
   }
   const domain = (document.getElementById('domainInput')?.value || '').trim();
   if (!domain) return { ok: false, reason: 'nodomain' };
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9-.]+\.[a-zA-Z]{2,}$/.test(domain)) return { ok: false, reason: 'baddomain' };
+  if (!ghostreconNormalizeTargetKey(domain)) return { ok: false, reason: 'baddomain' };
   if (!custom) return { ok: false, reason: 'empty' };
   const exact = document.getElementById('exactMatch')?.checked;
   const sitePart = exact ? `site:"${domain}"` : `site:${domain}`;
@@ -4929,7 +5116,15 @@ syncBatchWrapVisibility();
 document.getElementById('domainInput')?.addEventListener('input', updateGhPreview);
 document.getElementById('exactMatch')?.addEventListener('change', updateGhPreview);
 
-const FULL_MODULES_EXCLUDE = new Set(['shannon_whitebox', 'pentestgpt_validate', 'kali_ffuf', 'out_of_scope']);
+const FULL_MODULES_EXCLUDE = new Set([
+  'shannon_whitebox',
+  'pentestgpt_validate',
+  'kali_ffuf',
+  'kali_nmap_aggressive',
+  'kali_nmap_udp',
+  'webshell_probe',
+  'out_of_scope',
+]);
 function applyFullModulesPresetFromUi() {
   closeAiReportsConsentOverlay();
   window.__ghostreconAiConsentPending = false;
@@ -5678,6 +5873,158 @@ function closePromptInjHelpModal() {
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<template id="shellStabilizeTemplate">
+  <div class="shell-stabilize-root">
+    <p class="gh-hint" style="margin-top:0">
+      Uso apenas em <strong>alvos autorizados</strong> (pentest / CTF / laboratório). Isto não abre shell no servidor GHOSTRECON — é cheatsheet para colares na tua sessão.
+    </p>
+
+    <h3 class="findings-help-section-title">Python — spawn shell (pty)</h3>
+    <div class="sqlmap-cmd-list" aria-label="Python pty">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Python</span>
+        <code class="sqlmap-cmd-code">python -c 'import pty; pty.spawn("/bin/bash")'</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+
+    <h3 class="findings-help-section-title">TTY totalmente interactivo (passos)</h3>
+    <p class="gh-hint">Depois de obter shell rudimentar: melhor bash, <kbd>TERM</kbd>, fundo com <kbd>Ctrl</kbd>+<kbd>Z</kbd>, <code>stty</code> no teu terminal, e ajuste de geometria.</p>
+    <div class="sqlmap-cmd-list" aria-label="TTY interactivo">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Passo 1</span>
+        <code class="sqlmap-cmd-code">python3 -c 'import pty;pty.spawn("/bin/bash")'</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Passo 2</span>
+        <code class="sqlmap-cmd-code">export TERM=xterm</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+      <p class="gh-hint" style="margin:8px 0 4px">
+        <strong>Passo 3:</strong> no shell remoto, suspende com <kbd>Ctrl</kbd>+<kbd>Z</kbd>. Depois, no <em>teu</em> terminal local:
+      </p>
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Passo 4</span>
+        <code class="sqlmap-cmd-code">stty raw -echo; fg</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Passo 5</span>
+        <code class="sqlmap-cmd-code">stty rows 38 columns 116</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+      <p class="gh-hint" style="margin-top:6px">Substitui <code>38</code> / <code>116</code> pelas linhas e colunas reais (ex.: saída de <code>tput lines</code> e <code>tput cols</code> no terminal local).</p>
+    </div>
+
+    <h3 class="findings-help-section-title">Python — os.system</h3>
+    <div class="sqlmap-cmd-list" aria-label="os.system">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">os.system</span>
+        <code class="sqlmap-cmd-code">python -c 'import os; os.system("/bin/bash")'</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+
+    <h3 class="findings-help-section-title">Bash / sh</h3>
+    <div class="sqlmap-cmd-list" aria-label="Bash">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">sh -i</span>
+        <code class="sqlmap-cmd-code">/bin/sh -i</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+
+    <h3 class="findings-help-section-title">Perl</h3>
+    <div class="sqlmap-cmd-list" aria-label="Perl">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Perl -e</span>
+        <code class="sqlmap-cmd-code">perl -e 'exec "/bin/sh";'</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+
+    <h3 class="findings-help-section-title">Ruby</h3>
+    <div class="sqlmap-cmd-list" aria-label="Ruby">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Ruby -e</span>
+        <code class="sqlmap-cmd-code">ruby -e 'exec "/bin/sh"'</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+
+    <h3 class="findings-help-section-title">Lua</h3>
+    <p class="gh-hint" style="margin:0 0 6px">Linha de comandos ou, na REPL <code>lua</code>, podes correr <code>os.execute("/bin/sh")</code>.</p>
+    <div class="sqlmap-cmd-list" aria-label="Lua">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Lua -e</span>
+        <code class="sqlmap-cmd-code">lua -e 'os.execute("/bin/sh")'</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+
+    <h3 class="findings-help-section-title">IRB (Ruby)</h3>
+    <div class="sqlmap-cmd-list" aria-label="IRB">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">IRB</span>
+        <code class="sqlmap-cmd-code">exec "/bin/sh"</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+      <p class="gh-hint" style="margin-top:6px">Corre dentro de uma sessão <code>irb</code> já aberta.</p>
+    </div>
+
+    <h3 class="findings-help-section-title">Vim / Vi</h3>
+    <div class="sqlmap-cmd-list" aria-label="Vi">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">:!bash</span>
+        <code class="sqlmap-cmd-code">:!bash</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">Vi :shell</span>
+        <code class="sqlmap-cmd-code">:set shell=/bin/bash
+:shell</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+
+    <h3 class="findings-help-section-title">Nmap</h3>
+    <p class="gh-hint">Na consola interactiva do <strong>nmap</strong> (sem linha de comandos externa):</p>
+    <div class="sqlmap-cmd-list" aria-label="Nmap">
+      <div class="sqlmap-cmd-row">
+        <span class="sqlmap-cmd-label">nmap !</span>
+        <code class="sqlmap-cmd-code">!sh</code>
+        <button type="button" class="sqlmap-cmd-copy" title="Copiar" onclick="copyShellStabilizeRow(this)">Copiar</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<div
+  id="shellStabilizeHelpOverlay"
+  class="findings-help-overlay"
+  aria-hidden="true"
+  onclick="if (event.target === this) closeShellStabilizeModal()"
+>
+  <div
+    class="findings-help-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="shellStabilizeHelpTitle"
+    onclick="event.stopPropagation()"
+    style="width: min(800px, 100%)"
+  >
+    <button type="button" class="findings-help-close" onclick="closeShellStabilizeModal()" aria-label="Fechar">×</button>
+    <div class="findings-help-dialog-head">
+      <h2 id="shellStabilizeHelpTitle">Estabilizar shell — cheatsheet</h2>
+      <p class="findings-help-intro">
+        Comandos e passos de referência para TTY / upgrade de shell. Cada linha tem <strong>Copiar</strong>. Nada disto corre no servidor — só referência na UI.
+      </p>
+    </div>
+    <div id="shellStabilizeModalScroll" class="findings-help-scroll"></div>
   </div>
 </div>
 

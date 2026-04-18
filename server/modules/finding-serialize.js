@@ -16,6 +16,14 @@ function slimEvidence(ev, maxSnippet = 4000) {
   const o = { ...ev };
   if (typeof o.responseSnippet === 'string') o.responseSnippet = truncateStr(o.responseSnippet, maxSnippet);
   if (typeof o.requestSnippet === 'string') o.requestSnippet = truncateStr(o.requestSnippet, 2000);
+  if (Array.isArray(o.decodedExtractions)) {
+    o.decodedExtractions = o.decodedExtractions.slice(0, 5).map((d) => ({
+      encoding: d.encoding,
+      rawSample: truncateStr(d.rawSample, 96),
+      decodedUtf8: truncateStr(d.decodedUtf8, 3500),
+      decodedBytes: d.decodedBytes,
+    }));
+  }
   return o;
 }
 

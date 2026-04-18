@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { hostLiteralForUrl } from './recon-target.js';
 
 export function norm(s) {
   return String(s ?? '')
@@ -55,6 +56,7 @@ export function fingerprintFinding(target, f) {
  */
 export function findingsForRunsTable(target, findings) {
   const t = norm(target);
+  const tLit = hostLiteralForUrl(t);
   const out = [
     {
       type: 'domain',
@@ -62,7 +64,7 @@ export function findingsForRunsTable(target, findings) {
       score: 20,
       value: t,
       meta: 'domínio alvo',
-      url: `https://${t}`,
+      url: `https://${tLit}`,
     },
   ];
 
@@ -78,7 +80,7 @@ export function findingsForRunsTable(target, findings) {
       score: f.score ?? 52,
       value: sub,
       meta: f.meta ?? null,
-      url: f.url ?? `https://${sub}`,
+      url: f.url ?? `https://${hostLiteralForUrl(sub)}`,
     });
   }
   return out;

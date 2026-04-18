@@ -7,7 +7,9 @@ import { randomBytes } from 'crypto';
 import { fetchCrtShSubdomains } from './modules/subdomains.js';
 import { resolves } from './modules/dns.js';
 import { probeHttp, mapPool } from './modules/probe.js';
+import { extractSuspiciousHtmlComments } from './modules/html-surface.js';
 import { analyzeSecurityHeaders } from './modules/security-headers.js';
+import { analyzeSuspiciousResponseHeaders } from './modules/header-intel.js';
 import { peekTlsCertificate } from './modules/tls-cert.js';
 import { crawlRobotsAndSitemapsForOrigin } from './modules/robots-sitemap.js';
 import {
@@ -38,6 +40,8 @@ import { extractCveHintsFromTechStrings } from './modules/cve-hints.js';
 import { fetchDnsEnrichment } from './modules/dns-enrichment.js';
 import { fetchWellKnownSecurityTxt, fetchWellKnownOpenIdConfiguration } from './modules/wellknown.js';
 import { runEvidenceVerification, runMicroExploitVariants } from './modules/verify.js';
+import { runWebshellHeuristicProbe } from './modules/webshell-probe.js';
+import { buildMysqlConfigSurfaceCorrelationFindings } from './modules/mysql-config-correlation.js';
 import { runSqlmapModule } from './modules/sqlmap-runner.js';
 import { harvestOpenApiFromOrigins, tryGraphqlMinimalProbe } from './modules/openapi-harvest.js';
 import { dedupeBySemanticFamily } from './modules/semantic-dedupe.js';
@@ -62,6 +66,7 @@ import {
   deleteManualValidation,
   listBrainCategories,
   createBrainCategory,
+  updateBrainCategoryDescription,
   upsertBrainLink,
   getBrainCategoryById,
   listBrainLinksForCategory,
@@ -78,6 +83,7 @@ import {
 } from './modules/tool-path.js';
 import {
   runDualAiReports,
+  callOpenRouter,
   aiKeysConfigured,
   pickAiReportForWebhook,
   probeLmStudioConnection,
@@ -98,6 +104,15 @@ import { runHighPrioHttpRecheck } from './modules/recheck-high.js';
 import { runOptionalPlaywrightXssProbe } from './modules/browser-xss-verify.js';
 import { applyOwaspTagsToFindings, inferOwaspTags } from './modules/owasp-top10.js';
 import { applyMitreTagsToFindings, inferMitreTechniqueIds } from './modules/mitre-recon.js';
+import { parseReconTarget, hostLiteralForUrl, targetIsIp } from './modules/recon-target.js';
+
+function firstIpv4FromDnsRecords(records) {
+  for (const r of records || []) {
+    const m = String(r).match(/^A:([\d.]+)$/);
+    if (m) return m[1];
+  }
+  return '';
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -162,10 +177,10 @@ const app = express();
 app.use((req, res, next) => {
   const origin = String(req.headers.origin || '').trim();
   const hasOrigin = Boolean(origin);
-  const originAllowed = hasOrigin ? allowedOrigins.has(origin) : true;
+  const originAllowed = hasOrigin ? origin === 'null' || allowedOrigins.has(origin) : true;
 
   if (hasOrigin && originAllowed) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Origin', origin === 'null' ? '*' : origin);
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -186,14 +201,6 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '5mb' }));
-
-function isValidDomain(d) {
-  return /^[a-zA-Z0-9][a-zA-Z0-9-.]+\.[a-zA-Z]{2,}$/.test(d);
-}
-
-function normDomain(d) {
-  return d.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
-}
 
 function aiAutoReportsServerAllowed() {
   const v = String(process.env.GHOSTRECON_AI_AUTO ?? '1').trim().toLowerCase();
@@ -334,6 +341,8 @@ async function runPipeline(ctx) {
     pentestgptUrl: pentestgptUrlOverride = null,
     bountyContext: bountyContextBody = null,
   } = ctx;
+  const apexHostIsIp = targetIsIp(domain);
+
   let bountyCtx =
     bountyContextBody && typeof bountyContextBody === 'object' ? bountyContextBody : null;
   if (!bountyCtx && process.env.GHOSTRECON_BOUNTY_CONTEXT?.trim()) {
@@ -372,6 +381,7 @@ async function runPipeline(ctx) {
   /** Marcos extra no Ghostmap quando a fase Kali não corre (emitidos por `kali-scan.js` durante o scan). */
   const KALI_SUB_PIPE_STEPS = [
     'nmap',
+    'nmap_udp',
     'whois',
     'ffuf',
     'nuclei',
@@ -393,8 +403,16 @@ async function runPipeline(ctx) {
   const seenEp = new Set();
   let vtHostnames = [];
   let tlsSanHosts = [];
+  /** FQDN (lower) → primeiro IPv4 (A) visto no recon — para sugestões /etc/hosts no módulo header_intel. */
+  const dnsAForHost = new Map();
 
   log(`Alvo: ${domain} | Módulos: ${modules.join(', ')} | Perfil: ${runtimeProfile.name}`, 'info');
+  if (apexHostIsIp) {
+    log(
+      'Alvo é endereço IP — enumeração por CT/VirusTotal/subfinder e arquivo web por wildcard de domínio não se aplicam; HTTP/TLS/Kali seguem no IP.',
+      'info',
+    );
+  }
   log(exactMatch ? 'Modo: exact match (aspas nos dorks)' : 'Modo: broad match', 'info');
   const outOfScopeFromEnv = parseOutOfScopeEnv(process.env.GHOSTRECON_OUT_OF_SCOPE);
   let outOfScopeList = [...outOfScopeFromEnv];
@@ -412,7 +430,7 @@ async function runPipeline(ctx) {
   pipe('input', 'done');
 
   // ── SUBDOMAINS ──────────────────────────────
-  if (modules.includes('virustotal')) {
+  if (!apexHostIsIp && modules.includes('virustotal')) {
     const vt = await fetchVirustotalSubdomains(domain, process.env.VIRUSTOTAL_API_KEY);
     if (vt.ok && vt.items?.length) {
       vtHostnames = vt.items;
@@ -430,46 +448,53 @@ async function runPipeline(ctx) {
   if (runCrtSubdomains || runKaliSubfinderAmass) {
     pipe('subdomains', 'active');
     progress(12);
-    if (runCrtSubdomains) {
-      log('Consultando crt.sh (Certificate Transparency)...', 'info');
-      try {
-        allSubs = await fetchCrtShSubdomains(domain);
-        log(`${allSubs.length} nomes únicos em CT logs`, 'success');
-      } catch (e) {
-        log(`crt.sh: ${e.message}`, 'warn');
-      }
-      if (vtHostnames.length) {
-        const before = allSubs.length;
-        allSubs = [...new Set([...allSubs, ...vtHostnames])];
-        if (allSubs.length > before) log(`VirusTotal fundido em enum: +${allSubs.length - before} nome(s)`, 'info');
-      }
+    if (apexHostIsIp) {
+      log(
+        'Alvo é endereço IP — Certificate Transparency, VirusTotal (subdomínios), subfinder e amass são omitidos nesta fase.',
+        'info',
+      );
     } else {
-      log('crt.sh (subdomains) desativado — usando enum Kali (se selecionado).', 'info');
-    }
-
-    if (runKaliSubfinderAmass) {
-      if (modules.includes('subfinder')) {
+      if (runCrtSubdomains) {
+        log('Consultando crt.sh (Certificate Transparency)...', 'info');
         try {
-          const extra = await enumerateSubdomainsWithSubfinder(domain, log);
-          for (const h of extra) {
-            const hn = String(h).trim().toLowerCase();
-            if (hn) subfinderHostsNorm.add(hn);
-          }
-          if (extra.length) {
-            allSubs = [...new Set([...allSubs, ...extra])];
-          }
+          allSubs = await fetchCrtShSubdomains(domain);
+          log(`${allSubs.length} nomes únicos em CT logs`, 'success');
         } catch (e) {
-          log(`subfinder: ${e.message}`, 'warn');
+          log(`crt.sh: ${e.message}`, 'warn');
         }
+        if (vtHostnames.length) {
+          const before = allSubs.length;
+          allSubs = [...new Set([...allSubs, ...vtHostnames])];
+          if (allSubs.length > before) log(`VirusTotal fundido em enum: +${allSubs.length - before} nome(s)`, 'info');
+        }
+      } else {
+        log('crt.sh (subdomains) desativado — usando enum Kali (se selecionado).', 'info');
       }
-      if (modules.includes('amass')) {
-        try {
-          const extra = await enumerateSubdomainsWithAmass(domain, log);
-          if (extra.length) {
-            allSubs = [...new Set([...allSubs, ...extra])];
+
+      if (runKaliSubfinderAmass) {
+        if (modules.includes('subfinder')) {
+          try {
+            const extra = await enumerateSubdomainsWithSubfinder(domain, log);
+            for (const h of extra) {
+              const hn = String(h).trim().toLowerCase();
+              if (hn) subfinderHostsNorm.add(hn);
+            }
+            if (extra.length) {
+              allSubs = [...new Set([...allSubs, ...extra])];
+            }
+          } catch (e) {
+            log(`subfinder: ${e.message}`, 'warn');
           }
-        } catch (e) {
-          log(`amass: ${e.message}`, 'warn');
+        }
+        if (modules.includes('amass')) {
+          try {
+            const extra = await enumerateSubdomainsWithAmass(domain, log);
+            if (extra.length) {
+              allSubs = [...new Set([...allSubs, ...extra])];
+            }
+          } catch (e) {
+            log(`amass: ${e.message}`, 'warn');
+          }
         }
       }
     }
@@ -507,7 +532,7 @@ async function runPipeline(ctx) {
               score,
               value: host,
               meta: `DNS: ${r.records.join(', ')}${viaSubfinder ? ' · tool=subfinder' : ''}`,
-              url: `https://${host}`,
+              url: `https://${hostLiteralForUrl(host)}/`,
             },
             { how, relation },
           ),
@@ -515,6 +540,8 @@ async function runPipeline(ctx) {
         );
         subdomainsAlive.push(host);
         probedHosts.add(host);
+        const ipv4 = firstIpv4FromDnsRecords(r.records);
+        if (ipv4) dnsAForHost.set(String(host).trim().toLowerCase(), ipv4);
       } else {
         log(`✗ ${host} (sem A/AAAA)`, 'warn');
       }
@@ -541,28 +568,50 @@ async function runPipeline(ctx) {
   }
 
   if (modules.includes('rdap')) {
-    pipe('rdap', 'active');
-    progress(18);
-    log('Consultando RDAP (registo de domínio)...', 'info');
-    try {
-      const rd = await fetchRdapSummary(domain);
-      addFinding(
-        {
-          type: 'rdap',
-          prio: 'low',
-          score: 24,
-          value: rd.handle || domain,
-          meta: `Estado: ${rd.statuses || '—'} · NS: ${(rd.nameservers || []).slice(0, 10).join(', ') || '—'}`,
-        },
-        null,
-      );
-      if (rd.events?.length) log(`RDAP: ${rd.events.join(' | ')}`, 'info');
-    } catch (e) {
-      log(`RDAP: ${e.message}`, 'warn');
+    if (apexHostIsIp) {
+      log('RDAP omitido — alvo é endereço IP (este módulo consulta registo de domínio por FQDN).', 'info');
+      emit({ type: 'pipe', name: 'rdap', state: 'skip' });
+    } else {
+      pipe('rdap', 'active');
+      progress(18);
+      log('Consultando RDAP (registo de domínio)...', 'info');
+      try {
+        const rd = await fetchRdapSummary(domain);
+        addFinding(
+          {
+            type: 'rdap',
+            prio: 'low',
+            score: 24,
+            value: rd.handle || domain,
+            meta: `Estado: ${rd.statuses || '—'} · NS: ${(rd.nameservers || []).slice(0, 10).join(', ') || '—'}`,
+          },
+          null,
+        );
+        if (rd.events?.length) log(`RDAP: ${rd.events.join(' | ')}`, 'info');
+      } catch (e) {
+        log(`RDAP: ${e.message}`, 'warn');
+      }
+      pipe('rdap', 'done');
     }
-    pipe('rdap', 'done');
   } else {
     emit({ type: 'pipe', name: 'rdap', state: 'skip' });
+  }
+
+  if (apexHostIsIp) {
+    dnsAForHost.set(String(domain).trim(), String(domain).trim());
+  } else {
+    const hn = String(domain).trim().toLowerCase();
+    if (!dnsAForHost.has(hn)) {
+      try {
+        const rApex = await resolves(domain);
+        if (rApex.ok) {
+          const ipv4 = firstIpv4FromDnsRecords(rApex.records);
+          if (ipv4) dnsAForHost.set(hn, ipv4);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   // ── ALIVE / PROBE ───────────────────────────
@@ -574,7 +623,8 @@ async function runPipeline(ctx) {
   ].slice(0, runtimeProfile.maxHostsToProbe);
   const urlsToProbe = [];
   for (const h of hostsToProbe) {
-    urlsToProbe.push(`https://${h}/`, `http://${h}/`);
+    const hl = hostLiteralForUrl(h);
+    urlsToProbe.push(`https://${hl}/`, `http://${hl}/`);
   }
   log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
 
@@ -584,6 +634,7 @@ async function runPipeline(ctx) {
   });
 
   const seenTech = new Set();
+  const seenHtmlCommentIntel = new Set();
   for (const { r } of probeResults) {
     if (!r.ok) continue;
     const host = new URL(r.url).hostname;
@@ -625,6 +676,24 @@ async function runPipeline(ctx) {
             meta: 'waf=cloudflare',
             url: r.url,
           });
+        }
+      }
+      if (r.htmlSample && hostInReconScope(host, domain, outOfScopeList)) {
+        for (const h of extractSuspiciousHtmlComments(r.htmlSample)) {
+          const key = `${host}::${h.slice(0, 48)}`;
+          if (seenHtmlCommentIntel.has(key)) continue;
+          seenHtmlCommentIntel.add(key);
+          addFinding(
+            {
+              type: 'intel',
+              prio: 'med',
+              score: 52,
+              value: `Comentário HTML suspeito @ ${host}`,
+              meta: `html_comment • ${h.slice(0, 280)}`,
+              url: r.url,
+            },
+            null,
+          );
         }
       }
     }
@@ -705,6 +774,41 @@ async function runPipeline(ctx) {
     }
   }
 
+  if (modules.includes('header_intel')) {
+    for (const { r } of probeResults) {
+      if (!r.ok || !r.responseHeadersFlat?.length) continue;
+      if (r.status <= 0 || r.status >= 500) continue;
+      let pageHost = '';
+      try {
+        pageHost = new URL(r.url).hostname;
+      } catch {
+        continue;
+      }
+      const pickIp =
+        dnsAForHost.get(pageHost.toLowerCase()) ||
+        dnsAForHost.get(String(domain).trim().toLowerCase()) ||
+        (apexHostIsIp ? String(domain).trim() : '');
+      for (const hit of analyzeSuspiciousResponseHeaders(r.responseHeadersFlat, {
+        pageUrl: r.url,
+        pageHost,
+        apexDomain: domain,
+        primaryIpv4: pickIp || '',
+      })) {
+        addFinding(
+          {
+            type: 'intel',
+            prio: hit.prio,
+            score: hit.score,
+            value: hit.value,
+            meta: hit.meta,
+            url: r.url,
+          },
+          null,
+        );
+      }
+    }
+  }
+
   const originByHost = new Map();
   for (const { r } of probeResults) {
     if (!r.ok || r.status <= 0 || r.status >= 500) continue;
@@ -743,7 +847,7 @@ async function runPipeline(ctx) {
               score: soon ? 52 : 28,
               value: `${hostname} — cert válido até ${cert.validTo || '?'}`,
               meta: `Assunto: ${cert.subject || '—'} · Emissor: ${cert.issuer || '—'}${cert.daysLeft != null ? ` · ~${cert.daysLeft}d` : ''}`,
-              url: `https://${hostname}/`,
+              url: `https://${hostLiteralForUrl(hostname)}/`,
             },
             null,
           );
@@ -927,12 +1031,16 @@ async function runPipeline(ctx) {
   let waybackUrls = [];
   pipe('urls', 'active');
   if (modules.includes('wayback')) {
-    log('Coletando URLs do Wayback Machine (CDX)...', 'info');
-    try {
-      waybackUrls = await fetchWaybackUrls(domain);
-      log(`${waybackUrls.length} URLs únicas (200) no escopo *.${domain}`, 'success');
-    } catch (e) {
-      log(`Wayback: ${e.message}`, 'warn');
+    if (apexHostIsIp) {
+      log('Wayback (CDX) omitido — índice *.domínio não se aplica a alvo só-IP.', 'info');
+    } else {
+      log('Coletando URLs do Wayback Machine (CDX)...', 'info');
+      try {
+        waybackUrls = await fetchWaybackUrls(domain);
+        log(`${waybackUrls.length} URLs únicas (200) no escopo *.${domain}`, 'success');
+      } catch (e) {
+        log(`Wayback: ${e.message}`, 'warn');
+      }
     }
   } else {
     log('Wayback desativado', 'info');
@@ -940,27 +1048,36 @@ async function runPipeline(ctx) {
 
   let ccUrls = [];
   if (modules.includes('common_crawl')) {
-    log('Common Crawl (índice CDX)...', 'info');
-    try {
-      ccUrls = await fetchCommonCrawlUrls(domain);
-      log(`${ccUrls.length} URLs únicas (200) no Common Crawl`, 'success');
-    } catch (e) {
-      log(`Common Crawl: ${e.message}`, 'warn');
+    if (apexHostIsIp) {
+      log('Common Crawl omitido — padrão *.domínio não se aplica a alvo só-IP.', 'info');
+    } else {
+      log('Common Crawl (índice CDX)...', 'info');
+      try {
+        ccUrls = await fetchCommonCrawlUrls(domain);
+        log(`${ccUrls.length} URLs únicas (200) no Common Crawl`, 'success');
+      } catch (e) {
+        log(`Common Crawl: ${e.message}`, 'warn');
+      }
     }
   }
 
   let archiveCliUrls = [];
   if (runtimeProfile.includeCliArchives || modules.includes('gau') || modules.includes('waybackurls')) {
-    try {
-      archiveCliUrls = await fetchArchiveToolUrls(domain, log);
-    } catch (e) {
-      log(`Archive CLI: ${e.message}`, 'warn');
+    if (apexHostIsIp) {
+      log('gau / waybackurls (CLI) omitidos — arquivo por domínio não se aplica a alvo só-IP.', 'info');
+    } else {
+      try {
+        archiveCliUrls = await fetchArchiveToolUrls(domain, log);
+      } catch (e) {
+        log(`Archive CLI: ${e.message}`, 'warn');
+      }
     }
   }
 
   let urlCorpus = [...new Set([...waybackUrls, ...ccUrls, ...archiveCliUrls])];
   if (runtimeProfile.name === 'deep') {
-    const seeds = [`https://${domain}/`, `http://${domain}/`];
+    const apexLit = hostLiteralForUrl(domain);
+    const seeds = [`https://${apexLit}/`, `http://${apexLit}/`];
     for (const seed of seeds) {
       try {
         const k = await crawlWithKatana(seed, { depth: 3 });
@@ -1457,6 +1574,42 @@ async function runPipeline(ctx) {
       log(`Micro-exploit: ${e.message}`, 'warn');
     }
   }
+
+  if (modules.includes('webshell_probe')) {
+    pipe('webshell_probe', 'active');
+    try {
+      const origins = [];
+      const seenO = new Set();
+      for (const [, v] of originByHost) {
+        const o = String(v?.origin || '').trim();
+        if (!o || seenO.has(o) || origins.length >= 11) continue;
+        seenO.add(o);
+        origins.push(o.endsWith('/') ? o : `${o}/`);
+      }
+      try {
+        const hl = hostLiteralForUrl(domain);
+        for (const scheme of ['https', 'http']) {
+          const o = `${scheme}://${hl}/`;
+          if (!seenO.has(o) && origins.length < 12) {
+            seenO.add(o);
+            origins.push(o);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      const ws = await runWebshellHeuristicProbe({ origins, auth, modules, log, maxOrigins: 10 });
+      for (const w of ws) addFinding(w, null);
+      if (ws.length) log(`Webshell heurístico: ${ws.length} achado(s) — rever manualmente`, 'warn');
+      else log('Webshell heurístico: sem sinais fortes (cmd=id)', 'info');
+    } catch (e) {
+      log(`Webshell heurístico: ${e.message}`, 'warn');
+    }
+    pipe('webshell_probe', 'done');
+  } else {
+    pipe('webshell_probe', 'skip');
+  }
+
   // Param discovery ativo (fase 2): tentar em endpoints sem query
   try {
     const candidates = findings
@@ -1525,7 +1678,8 @@ async function runPipeline(ctx) {
         .map((h) => {
           const origin = originByHost.get(h)?.origin;
           if (origin) return origin;
-          return [`https://${h}/`, `http://${h}/`];
+          const hl = hostLiteralForUrl(h);
+          return [`https://${hl}/`, `http://${hl}/`];
         })
         .flat()
         .filter(Boolean);
@@ -1560,6 +1714,9 @@ async function runPipeline(ctx) {
 
       const runKaliNuclei = Boolean(modules.includes('kali_nuclei'));
       const runKaliFfuf = Boolean(modules.includes('kali_ffuf'));
+      const runKaliNmapAggressive = Boolean(modules.includes('kali_nmap_aggressive'));
+      const runKaliNmapUdp = Boolean(modules.includes('kali_nmap_udp'));
+      const runMysql3306Intel = Boolean(modules.includes('mysql_3306_intel'));
 
       await runKaliAggressiveScan({
         domain,
@@ -1573,6 +1730,9 @@ async function runPipeline(ctx) {
         sqliSignals,
         runNuclei: runKaliNuclei,
         runFfuf: runKaliFfuf,
+        runNmapAggressive: runKaliNmapAggressive,
+        runNmapUdp: runKaliNmapUdp,
+        runMysql3306Intel: runMysql3306Intel,
         auth,
         emit,
       });
@@ -1604,7 +1764,8 @@ async function runPipeline(ctx) {
         if (!prov) continue;
         let body = '';
         try {
-          const res = await fetch(`https://${h}/`, { redirect: 'follow', signal: AbortSignal.timeout(9000) });
+          const hl = hostLiteralForUrl(h);
+          const res = await fetch(`https://${hl}/`, { redirect: 'follow', signal: AbortSignal.timeout(9000) });
           body = await res.text();
         } catch {}
         const match = matchProviderBody(prov, body);
@@ -1615,7 +1776,7 @@ async function runPipeline(ctx) {
             score: match ? 82 : 60,
             value: `Takeover ${match ? 'CONFIRMED' : 'candidate'}: ${h} → ${prov.name}`,
             meta: `cname_chain=${chain.join(' > ').slice(0, 160)} • body_match=${match ? 'yes' : 'no'}`,
-            url: `https://${h}/`,
+            url: `https://${hostLiteralForUrl(h)}/`,
           },
           null,
         );
@@ -1648,6 +1809,13 @@ async function runPipeline(ctx) {
     if (cveHints.length && f.type === 'tech') {
       f.meta = [f.meta, 'cve_hint=true'].filter(Boolean).join(' • ');
     }
+  }
+  try {
+    const mysqlCorr = buildMysqlConfigSurfaceCorrelationFindings(findings, { max: 16 });
+    for (const c of mysqlCorr) addFinding(c, null);
+    if (mysqlCorr.length) log(`Correlação MySQL 3306 + ficheiros de config: ${mysqlCorr.length} achado(s)`, 'info');
+  } catch (e) {
+    log(`Correlação MySQL + config: ${e.message}`, 'warn');
   }
   applyPrioritizationV2(findings, bountyCtx);
 
@@ -2132,13 +2300,14 @@ app.post('/api/recon/stream', async (req, res) => {
         }
       : null;
 
-  if (!domainRaw || !isValidDomain(normDomain(domainRaw))) {
-    send({ type: 'error', message: 'Domínio inválido' });
+  const parsed = parseReconTarget(domainRaw);
+  if (!parsed.ok) {
+    send({ type: 'error', message: parsed.message || 'Alvo inválido' });
     res.end();
     return;
   }
 
-  const domain = normDomain(domainRaw);
+  const domain = parsed.target;
 
   const shannonPrecheck = req.body?.shannonPrecheck !== false;
   const shannonSkipDepsVerify = Boolean(req.body?.shannonSkipDepsVerify);
@@ -2507,9 +2676,25 @@ app.post('/api/brain/categories', async (req, res) => {
     return;
   }
   const title = req.body?.title;
+  const description = req.body?.description;
   try {
-    const out = await createBrainCategory(title);
+    const out = await createBrainCategory(title, description);
     res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post('/api/brain/categories/:id/description', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const id = Number(req.params.id);
+  const description = req.body?.description;
+  try {
+    const out = await updateBrainCategoryDescription(id, description);
+    res.json({ ok: true, category: out });
   } catch (e) {
     res.status(400).json({ ok: false, error: e?.message || String(e) });
   }
@@ -2684,8 +2869,72 @@ app.post('/api/manual-validations/ai-report', async (req, res) => {
       aiOpenrouterOnly: normalizeOpenrouterOnlyFlag(req.body?.aiOpenrouterOnly),
       aiPrimaryCloud: aiPrimaryRaw,
       onStatus: () => {},
+      /** Reporte: OpenRouter → Gemini → LM Studio (não LM entre as duas clouds). */
+      aiOpenrouterThenGeminiBeforeLm: true,
     });
     res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+const ANNOTATIONS_AI_SYSTEM_PT = [
+  'És um redactor técnico de relatórios de segurança ofensiva (pentest / red team).',
+  'Recebes anotações de campo em Markdown (português). Gera um relatório formal em Markdown, em português de Portugal, com:',
+  '- Título e metadados (alvo, data se existir na entrada).',
+  '- Resumo executivo (2–5 frases).',
+  '- Achados e riscos (tabela ou lista) com severidade estimada quando possível a partir do texto.',
+  '- Detalhe técnico por tema (portas/serviços, web, vetores, testes, exploração, impacto).',
+  '- Recomendações de mitigação concretas.',
+  '- Secção «Referências» só com OWASP/MITRE que apareçam nas anotações (não inventes códigos).',
+  'Regras: não inventes factos, URLs, portas, CVEs ou resultados de testes que não estejam nas anotações; se algo for incerto, indica-o explicitamente como hipótese ou «não documentado nas notas».',
+  'Responde apenas com o corpo Markdown do relatório (sem JSON).',
+].join(' ');
+
+/** Relatório Markdown só via OpenRouter a partir do texto das anotações do Reporte. */
+app.post('/api/manual-validations/annotations-ai', async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
+    return;
+  }
+  const markdown = String(req.body?.markdown || '').trim();
+  if (!markdown) {
+    res.status(400).json({ ok: false, error: 'Indica o campo markdown com as anotações.' });
+    return;
+  }
+  const targetOpt = String(req.body?.target || '')
+    .trim()
+    .toLowerCase();
+  if (targetOpt && !isValidManualValidationTarget(targetOpt)) {
+    res.status(400).json({ ok: false, error: 'domínio inválido' });
+    return;
+  }
+  const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!openrouterKey) {
+    res.status(503).json({ ok: false, error: 'OPENROUTER_API_KEY não configurada no servidor.' });
+    return;
+  }
+  const openrouterModel =
+    process.env.GHOSTRECON_OPENROUTER_MODEL?.trim() || 'google/gemma-4-31b-it';
+  const maxIn = Math.max(4000, Math.min(200000, Number(process.env.GHOSTRECON_ANNOTATIONS_AI_MAX_CHARS || 120000)));
+  const slice = markdown.length > maxIn ? `${markdown.slice(0, maxIn)}\n\n[… texto truncado …]` : markdown;
+  const userBlock = [
+    targetOpt ? `Alvo (referência): ${targetOpt}` : '',
+    '',
+    '---',
+    '',
+    'Anotações do analista:',
+    '',
+    slice,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  try {
+    const out = await callOpenRouter(userBlock, openrouterKey, openrouterModel, {
+      systemPrompt: ANNOTATIONS_AI_SYSTEM_PT,
+      jsonObject: false,
+    });
+    res.json({ ok: true, markdown: String(out || '').trim() });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }

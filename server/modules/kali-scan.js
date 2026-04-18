@@ -12,6 +12,8 @@ import {
   isWpscanApiRequired,
   countWpvulndbFindings,
 } from './wpscan.js';
+import { hostLiteralForUrl } from './recon-target.js';
+import { buildMysql3306IntelFindings } from './mysql-nmap-intel.js';
 
 const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt',
@@ -24,10 +26,14 @@ const XSS_VIBES_MAIN = join(XSS_VIBES_DIR, 'main.py');
 const XSS_VIBES_PAYLOADS = join(XSS_VIBES_DIR, 'payloads.json');
 
 function sanitizeHost(h) {
-  if (typeof h !== 'string' || h.length > 253 || h.length < 3) return null;
-  const s = h.trim().toLowerCase();
-  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(s)) return null;
-  return s;
+  if (typeof h !== 'string' || h.length < 3) return null;
+  const s = h.trim();
+  if (net.isIPv4(s)) return s;
+  if (net.isIPv6(s)) return s.toLowerCase();
+  if (s.length > 253) return null;
+  const t = s.toLowerCase();
+  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(t)) return null;
+  return t;
 }
 
 async function pathWhich(cmd) {
@@ -180,6 +186,23 @@ function getAttr(attrStr, key) {
   return m ? m[1] : '';
 }
 
+function serviceAttrsFromPortBlock(block) {
+  const selfClosing = block.match(/<service\s+([^/]*?)\s*\/>/);
+  if (selfClosing) return selfClosing[1];
+  const openTag = block.match(/<service\s+([^>]+)>/);
+  return openTag ? openTag[1] : '';
+}
+
+function portBlockIsOpen(block) {
+  const m = block.match(/<state\b[^>]*\bstate=["']([^"']+)["']/);
+  return Boolean(m && m[1] === 'open');
+}
+
+/**
+ * Extrai portas TCP/UDP abertas do XML do nmap (`-oX`).
+ * O formato real com `-sV` quase sempre usa `<service …><cpe>…</cpe></service>`;
+ * o regex antigo só aceitava `<service …/>` e descartava todas as linhas.
+ */
 export function parseNmapXml(xml) {
   const rows = [];
   const parts = xml.split(/<host[\s>]/);
@@ -191,11 +214,12 @@ export function parseNmapXml(xml) {
       (hc.match(/<address addr="([^"]+)" addrtype="ipv6"/) || [])[1] ||
       'unknown';
 
-    const portRe =
-      /<port protocol="(\w+)" portid="(\d+)">\s*<state state="open"[^>]*\/>\s*<service([^/]*)\/>/g;
+    const portBlockRe = /<port protocol="(\w+)" portid="(\d+)">[\s\S]*?<\/port>/g;
     let m;
-    while ((m = portRe.exec(hc)) !== null) {
-      const attrs = m[3];
+    while ((m = portBlockRe.exec(hc)) !== null) {
+      const block = m[0];
+      if (!portBlockIsOpen(block)) continue;
+      const attrs = serviceAttrsFromPortBlock(block);
       const name = getAttr(attrs, 'name');
       const product = getAttr(attrs, 'product');
       const version = getAttr(attrs, 'version');
@@ -216,18 +240,69 @@ export function parseNmapXml(xml) {
   return rows;
 }
 
-async function runNmapOnHosts(hosts, log) {
+async function runNmapOnHosts(hosts, log, opts = {}) {
+  const aggressive = Boolean(opts.aggressive);
   const dir = await mkdtemp(join(tmpdir(), 'ghnr-'));
   const xmlPath = join(dir, 'nmap.xml');
-  const extra = (process.env.GHOSTRECON_NMAP_ARGS || '-sV -Pn -T4 --host-timeout 180s')
-    .split(/\s+/)
-    .filter(Boolean);
+  const extra = aggressive
+    ? (process.env.GHOSTRECON_NMAP_AGGRESSIVE_ARGS || '-A -sV -p- -Pn')
+        .split(/\s+/)
+        .filter(Boolean)
+    : (process.env.GHOSTRECON_NMAP_ARGS || '-sV -Pn -T4 --host-timeout 180s')
+        .split(/\s+/)
+        .filter(Boolean);
   const args = [...extra, '-oX', xmlPath, ...hosts];
   log(`nmap ${args.slice(0, -hosts.length).join(' ')} [${hosts.length} hosts]`, 'info');
+  const timeoutMs = aggressive
+    ? Math.max(300_000, Number(process.env.GHOSTRECON_NMAP_AGGRESSIVE_TIMEOUT_MS || 7_200_000))
+    : 660_000;
   try {
-    const proc = await runProc('nmap', args, 660000);
+    const proc = await runProc('nmap', args, timeoutMs);
     if (proc.code !== 0) {
       log(`nmap terminou com código ${proc.code}`, 'warn');
+    }
+    const xml = await readFile(xmlPath, 'utf8');
+    return parseNmapXml(xml);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Portas UDP frequentemente relevantes (DNS, DHCP, TFTP, NTP, SNMP, IKE, SIP, SSDP, …). */
+function sensitiveUdpPortsSpec() {
+  const raw = process.env.GHOSTRECON_NMAP_UDP_PORTS;
+  if (raw && String(raw).trim()) {
+    const list = String(raw)
+      .trim()
+      .split(/[\s,]+/)
+      .filter((x) => /^\d{1,5}$/.test(x) && Number(x) >= 1 && Number(x) <= 65535);
+    return [...new Set(list)].join(',');
+  }
+  return [
+    53, 67, 68, 69, 111, 123, 135, 137, 138, 161, 162, 500, 514, 520, 631, 1434, 1900, 2049, 3478, 4500, 5060,
+    5061, 5353, 11211, 1812, 1813, 3391,
+  ].join(',');
+}
+
+async function runNmapUdpOnHosts(hosts, log) {
+  const portCsv = sensitiveUdpPortsSpec();
+  if (!portCsv) {
+    log('nmap UDP: lista de portas vazia — skip', 'warn');
+    return [];
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'ghnrudp-'));
+  const xmlPath = join(dir, 'nmap-udp.xml');
+  const extra = (process.env.GHOSTRECON_NMAP_UDP_ARGS || '-sU -A -Pn -T4')
+    .split(/\s+/)
+    .filter(Boolean);
+  const pArg = `U:${portCsv}`;
+  const args = [...extra, '-p', pArg, '-oX', xmlPath, ...hosts];
+  log(`nmap ${args.slice(0, -hosts.length).join(' ')} [${hosts.length} hosts]`, 'info');
+  const timeoutMs = Math.max(120_000, Number(process.env.GHOSTRECON_NMAP_UDP_TIMEOUT_MS || 2_700_000));
+  try {
+    const proc = await runProc('nmap', args, timeoutMs);
+    if (proc.code !== 0) {
+      log(`nmap UDP terminou com código ${proc.code}`, 'warn');
     }
     const xml = await readFile(xmlPath, 'utf8');
     return parseNmapXml(xml);
@@ -774,6 +849,145 @@ async function tryFtpAnonymousLogin({
   });
 }
 
+/**
+ * Findings / dorks / FTP / searchsploit / URLs ffuf a partir de linhas parseadas do XML nmap (TCP ou UDP).
+ * @param {'tcp'|'udp'} scanKind
+ */
+async function ingestNmapScanRows(rows, ctx) {
+  const {
+    log,
+    addFinding,
+    cap,
+    emit,
+    seenQueries,
+    seenExploitGoogle,
+    exploitGoogleMax,
+    ftpChecked,
+    baseUrlsForFfuf,
+    scanKind,
+  } = ctx;
+  const label = scanKind === 'udp' ? 'nmap UDP' : 'nmap';
+  log(`${label}: ${rows.length} serviço(s) em portas abertas`, 'success');
+  for (const row of rows) {
+    const line = `${row.proto}/${row.port} ${row.host} — ${row.name || '?'} ${row.product || ''} ${row.version || ''}`.trim();
+    let url = null;
+    const rowHl = hostLiteralForUrl(row.host);
+    if (row.port === '443') url = `https://${rowHl}/`;
+    else if (row.port === '80') url = `http://${rowHl}/`;
+    const metaBase = row.searchBlob || row.name || 'nmap';
+    const meta = scanKind === 'udp' ? `udp • ${metaBase}` : metaBase;
+    addFinding({
+      type: 'nmap',
+      prio: 'med',
+      score: scanKind === 'udp' ? 54 : 56,
+      value: line,
+      meta,
+      url,
+    });
+
+    const exploitGq = buildExploitVersionGoogleQuery(row);
+    if (exploitGq && typeof emit === 'function' && seenExploitGoogle.size < exploitGoogleMax) {
+      const gk = exploitGq.toLowerCase();
+      if (!seenExploitGoogle.has(gk)) {
+        seenExploitGoogle.add(gk);
+        const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(exploitGq)}`;
+        emit({
+          type: 'dork',
+          googleUrl,
+          query: exploitGq,
+          mod: 'nmap_version_exploit_google',
+          prio: 'med',
+          forceOpen: true,
+        });
+        addFinding(
+          {
+            type: 'dork',
+            prio: 'med',
+            score: 50,
+            value: exploitGq,
+            meta: 'Categoria: nmap_version_exploit_google • sugestão Google (versão nmap / Exploit-DB contexto)',
+            url: googleUrl,
+          },
+          'dorks',
+        );
+        log(`Google (versão nmap): ${exploitGq}`, 'info');
+      }
+    }
+
+    if (isFtpServiceRow(row)) {
+      const k = `${row.host}:${row.port}`;
+      if (!ftpChecked.has(k)) {
+        ftpChecked.add(k);
+        const ftpTimeout = Math.max(4000, Number(process.env.GHOSTRECON_FTP_ANON_TIMEOUT_MS || 12000));
+        log(`[FTP] Teste de login anônimo em ${k} (PASS vazio, depois e-mail)`, 'info');
+        try {
+          const r = await tryFtpAnonymousLogin({
+            host: row.host,
+            port: Number(row.port) || 21,
+            timeoutMs: ftpTimeout,
+          });
+          if (r.ok) {
+            addFinding({
+              type: 'security',
+              prio: 'high',
+              score: 91,
+              value: `FTP anonymous login enabled @ ${k}`,
+              meta: [
+                'service=ftp',
+                r.banner ? `banner=${String(r.banner).slice(0, 90)}` : null,
+                r.userReply ? `user=${r.userReply}` : null,
+                r.passReply ? `pass=${r.passReply}` : null,
+                r.passUsed === '' ? 'auth=anonymous-empty-pass' : r.passUsed ? `auth=anonymous-pass:${r.passUsed}` : null,
+                Array.isArray(r.triedPasses) && r.triedPasses.length
+                  ? `tried=${r.triedPasses.map((p) => (p === '' ? '<empty>' : p)).join(',')}`
+                  : null,
+                'evidence=active_check',
+              ]
+                .filter(Boolean)
+                .join(' • '),
+              url: null,
+            });
+            const authHow =
+              r.passUsed === '' ? 'PASS <empty>' : r.passUsed ? `PASS ${r.passUsed}` : 'sem PASS';
+            log(`[FTP] ⚠ login anônimo permitido em ${k} (${authHow})`, 'warn');
+          } else {
+            const why = r.error || r.passReply || r.userReply || 'negado';
+            log(`[FTP] ${k} sem login anônimo (${String(why).slice(0, 120)})`, 'info');
+          }
+        } catch (e) {
+          log(`[FTP] erro no teste ${k}: ${e?.message || e}`, 'warn');
+        }
+      }
+    }
+
+    if (cap.tools.searchsploit && row.searchBlob && seenQueries.size < 12) {
+      const key = row.searchBlob.toLowerCase().slice(0, 60);
+      if (seenQueries.has(key)) continue;
+      seenQueries.add(key);
+      const hits = await searchExploitDbOne(row.searchBlob, log);
+      for (const hit of hits.slice(0, 4)) {
+        const title = exploitTitle(hit);
+        addFinding({
+          type: 'exploit',
+          prio: 'high',
+          score: 82,
+          value: title,
+          meta: `Exploit-DB / searchsploit — ref. a «${row.searchBlob.slice(0, 50)}»`,
+          url: exploitUrl(hit) || undefined,
+        });
+      }
+      if (hits.length) log(`searchsploit: ${hits.length} entrada(s) para «${row.searchBlob.slice(0, 40)}…»`, 'find');
+    }
+  }
+  for (const row of rows) {
+    if (row.port === '443' || row.port === '80') {
+      const rh = hostLiteralForUrl(row.host);
+      const u = row.port === '443' ? `https://${rh}/` : `http://${rh}/`;
+      if (!baseUrlsForFfuf.includes(u)) baseUrlsForFfuf.push(u);
+    }
+  }
+}
+
 function parseWhoisText(domainOrHost, whoisText) {
   // Formatos variam por registrar; usamos regexes comuns.
   const registrar = pickFirstMatch(/Registrar:\s*(.+)$/im, whoisText) || pickFirstMatch(/registrar:\s*(.+)$/im, whoisText);
@@ -847,6 +1061,18 @@ export async function runKaliAggressiveScan({
   runNuclei = false,
   /** Só corre ffuf se o módulo UI `kali_ffuf` estiver activo (e modo Kali no servidor). */
   runFfuf = false,
+  /**
+   * Módulo UI `kali_nmap_aggressive`: nmap com `-A -sV -p-` (todas as portas) — muito lento;
+   * substitui o perfil normal desta fase. Ver `GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS` e timeout.
+   */
+  runNmapAggressive = false,
+  /**
+   * Módulo UI `kali_nmap_udp`: segunda passagem nmap `-sU -A` só em portas UDP sensíveis
+   * (lista curada ou `GHOSTRECON_NMAP_UDP_PORTS`). Corre após o nmap TCP desta fase.
+   */
+  runNmapUdp = false,
+  /** Módulo UI `mysql_3306_intel`: após nmap TCP, achados `intel` com comandos de referência se 3306/tcp aberto. */
+  runMysql3306Intel = false,
   /** Cookie / headers do recon (dalfox `--cookie`, xss_vibes `-H`). */
   auth = null,
   /** NDJSON: eventos `dork` para fila de Google (pesquisas «exploit pra …» por versão nmap). */
@@ -858,16 +1084,30 @@ export async function runKaliAggressiveScan({
   };
 
   const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
-  const hosts = [...new Set(rawHosts)].slice(0, 22);
+  const hostsAll = [...new Set(rawHosts)].slice(0, 22);
+  const maxAggHosts = Math.max(
+    1,
+    Math.min(12, Number(process.env.GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS || 3)),
+  );
+  const hosts = runNmapAggressive ? hostsAll.slice(0, maxAggHosts) : hostsAll;
+  const maxUdpHosts = Math.max(
+    1,
+    Math.min(12, Number(process.env.GHOSTRECON_NMAP_UDP_MAX_HOSTS || 5)),
+  );
+  const hostsUdp = hostsAll.slice(0, maxUdpHosts);
 
   log('═══ MODO KALI / SCAN ATIVO ═══', 'section');
   log('Apenas em alvos com autorização explícita (bug bounty / pentest autorizado).', 'warn');
+  if (runNmapAggressive) {
+    log(
+      `nmap AGRESSIVO: ${hosts.length} host(s) (máx. ${maxAggHosts} — -p- escaneia todas as portas; pode demorar horas). Args: ${process.env.GHOSTRECON_NMAP_AGGRESSIVE_ARGS || '-A -sV -p- -Pn'}`,
+      'warn',
+    );
+  }
   log(`Alvos nmap (${hosts.length}): ${hosts.join(', ')}`, 'info');
 
-  const baseUrlsForFfuf = [
-    `https://${domain}/`,
-    `http://${domain}/`,
-  ];
+  const apexLit = hostLiteralForUrl(domain);
+  const baseUrlsForFfuf = [`https://${apexLit}/`, `http://${apexLit}/`];
   const seenQueries = new Set();
   const seenExploitGoogle = new Set();
   const exploitGoogleMax = Math.max(
@@ -878,122 +1118,26 @@ export async function runKaliAggressiveScan({
 
   if (cap.tools.nmap) {
     pipeTool('nmap', 'active');
+    let tcpNmapRows = [];
     try {
-      const rows = await runNmapOnHosts(hosts, log);
-      log(`nmap: ${rows.length} serviço(s) em portas abertas`, 'success');
-      for (const row of rows) {
-        const line = `${row.proto}/${row.port} ${row.host} — ${row.name || '?'} ${row.product || ''} ${row.version || ''}`.trim();
-        let url = null;
-        if (row.port === '443') url = `https://${row.host}/`;
-        else if (row.port === '80') url = `http://${row.host}/`;
-        addFinding({
-          type: 'nmap',
-          prio: 'med',
-          score: 56,
-          value: line,
-          meta: row.searchBlob || row.name || 'nmap',
-          url,
-        });
-
-        const exploitGq = buildExploitVersionGoogleQuery(row);
-        if (exploitGq && typeof emit === 'function' && seenExploitGoogle.size < exploitGoogleMax) {
-          const gk = exploitGq.toLowerCase();
-          if (!seenExploitGoogle.has(gk)) {
-            seenExploitGoogle.add(gk);
-            const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(exploitGq)}`;
-            emit({
-              type: 'dork',
-              googleUrl,
-              query: exploitGq,
-              mod: 'nmap_version_exploit_google',
-              prio: 'med',
-              /** UI: abre mesmo com «Abrir dorks» desligado */
-              forceOpen: true,
-            });
-            addFinding(
-              {
-                type: 'dork',
-                prio: 'med',
-                score: 50,
-                value: exploitGq,
-                meta: 'Categoria: nmap_version_exploit_google • sugestão Google (versão nmap / Exploit-DB contexto)',
-                url: googleUrl,
-              },
-              'dorks',
-            );
-            log(`Google (versão nmap): ${exploitGq}`, 'info');
-          }
-        }
-
-        if (isFtpServiceRow(row)) {
-          const k = `${row.host}:${row.port}`;
-          if (!ftpChecked.has(k)) {
-            ftpChecked.add(k);
-            const ftpTimeout = Math.max(4000, Number(process.env.GHOSTRECON_FTP_ANON_TIMEOUT_MS || 12000));
-            log(`[FTP] Teste de login anônimo em ${k} (PASS vazio, depois e-mail)`, 'info');
-            try {
-              const r = await tryFtpAnonymousLogin({
-                host: row.host,
-                port: Number(row.port) || 21,
-                timeoutMs: ftpTimeout,
-              });
-              if (r.ok) {
-                addFinding({
-                  type: 'security',
-                  prio: 'high',
-                  score: 91,
-                  value: `FTP anonymous login enabled @ ${k}`,
-                  meta: [
-                    'service=ftp',
-                    r.banner ? `banner=${String(r.banner).slice(0, 90)}` : null,
-                    r.userReply ? `user=${r.userReply}` : null,
-                    r.passReply ? `pass=${r.passReply}` : null,
-                    r.passUsed === '' ? 'auth=anonymous-empty-pass' : r.passUsed ? `auth=anonymous-pass:${r.passUsed}` : null,
-                    Array.isArray(r.triedPasses) && r.triedPasses.length
-                      ? `tried=${r.triedPasses.map((p) => (p === '' ? '<empty>' : p)).join(',')}`
-                      : null,
-                    'evidence=active_check',
-                  ]
-                    .filter(Boolean)
-                    .join(' • '),
-                  url: null,
-                });
-                const authHow =
-                  r.passUsed === '' ? 'PASS <empty>' : r.passUsed ? `PASS ${r.passUsed}` : 'sem PASS';
-                log(`[FTP] ⚠ login anônimo permitido em ${k} (${authHow})`, 'warn');
-              } else {
-                const why = r.error || r.passReply || r.userReply || 'negado';
-                log(`[FTP] ${k} sem login anônimo (${String(why).slice(0, 120)})`, 'info');
-              }
-            } catch (e) {
-              log(`[FTP] erro no teste ${k}: ${e?.message || e}`, 'warn');
-            }
-          }
-        }
-
-        if (cap.tools.searchsploit && row.searchBlob && seenQueries.size < 12) {
-          const key = row.searchBlob.toLowerCase().slice(0, 60);
-          if (seenQueries.has(key)) continue;
-          seenQueries.add(key);
-          const hits = await searchExploitDbOne(row.searchBlob, log);
-          for (const hit of hits.slice(0, 4)) {
-            const title = exploitTitle(hit);
-            addFinding({
-              type: 'exploit',
-              prio: 'high',
-              score: 82,
-              value: title,
-              meta: `Exploit-DB / searchsploit — ref. a «${row.searchBlob.slice(0, 50)}»`,
-              url: exploitUrl(hit) || undefined,
-            });
-          }
-          if (hits.length) log(`searchsploit: ${hits.length} entrada(s) para «${row.searchBlob.slice(0, 40)}…»`, 'find');
-        }
-      }
-      for (const row of rows) {
-        if (row.port === '443' || row.port === '80') {
-          const u = row.port === '443' ? `https://${row.host}/` : `http://${row.host}/`;
-          if (!baseUrlsForFfuf.includes(u)) baseUrlsForFfuf.push(u);
+      tcpNmapRows = await runNmapOnHosts(hosts, log, { aggressive: runNmapAggressive });
+      const ingestCtx = {
+        log,
+        addFinding,
+        cap,
+        emit,
+        seenQueries,
+        seenExploitGoogle,
+        exploitGoogleMax,
+        ftpChecked,
+        baseUrlsForFfuf,
+      };
+      await ingestNmapScanRows(tcpNmapRows, { ...ingestCtx, scanKind: 'tcp' });
+      if (runMysql3306Intel && tcpNmapRows.length) {
+        const mysqlHints = buildMysql3306IntelFindings(tcpNmapRows);
+        if (mysqlHints.length) {
+          log(`MySQL 3306/tcp: +${mysqlHints.length} achado(s) intel (follow-up)`, 'info');
+          for (const f of mysqlHints) addFinding(f, null);
         }
       }
     } catch (e) {
@@ -1001,8 +1145,38 @@ export async function runKaliAggressiveScan({
     } finally {
       pipeTool('nmap', 'done');
     }
+
+    if (runNmapUdp) {
+      pipeTool('nmap_udp', 'active');
+      try {
+        log(
+          `nmap UDP (módulo kali_nmap_udp): -sU -A em portas sensíveis — ${hostsUdp.length} host(s) (máx. ${maxUdpHosts}). Portas: env GHOSTRECON_NMAP_UDP_PORTS ou lista por defeito.`,
+          'info',
+        );
+        const udpRows = await runNmapUdpOnHosts(hostsUdp, log);
+        await ingestNmapScanRows(udpRows, {
+          log,
+          addFinding,
+          cap,
+          emit,
+          seenQueries,
+          seenExploitGoogle,
+          exploitGoogleMax,
+          ftpChecked,
+          baseUrlsForFfuf,
+          scanKind: 'udp',
+        });
+      } catch (e) {
+        log(`nmap UDP: ${e.message}`, 'error');
+      } finally {
+        pipeTool('nmap_udp', 'done');
+      }
+    } else {
+      pipeTool('nmap_udp', 'skip');
+    }
   } else {
     pipeTool('nmap', 'skip');
+    pipeTool('nmap_udp', 'skip');
   }
 
   // ── WHOIS (Kali) ──

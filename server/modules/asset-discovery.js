@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import { collectUniqueIpv4 } from './ip-intel.js';
+import { hostLiteralForUrl } from './recon-target.js';
 
 async function fetchIpRdap(ip) {
   try {
@@ -55,7 +56,7 @@ export async function discoverAssetHints(domain, subdomainsAlive = [], tlsSanHos
       score: 60,
       value: `Potential related asset from SAN: ${h}`,
       meta: 'asset_discovery=tls_san • validate scope',
-      url: `https://${h}/`,
+      url: `https://${hostLiteralForUrl(h)}/`,
     });
   }
 

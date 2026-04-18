@@ -45,8 +45,18 @@ export function buildExploitChecklist(findings) {
   if (hasParam(/redirect|url|next|return|dest|callback|goto/i) || hasUrl(/[?&](url|redirect|next|return)=/i)) {
     items.push('Open Redirect / SSRF: payloads em parâmetros de URL/redirect; encadear com webhooks internos.');
   }
-  if (hasParam(/file|path|doc|page|template|include|load/i) || hasUrl(/[?&](file|path|page)=/i)) {
-    items.push('LFI / path traversal: ../ sequences, wrappers php://, paths relativos.');
+  if (
+    hasParam(/file|path|doc|page|template|include|load|text|txt|article|load_file/i) ||
+    hasUrl(/[?&](file|path|page|text|include)=/i)
+  ) {
+    items.push(
+      'LFI / path traversal: ../ e ficheiros sensíveis; php://filter, file://, data://, expect://; php://input (POST); /proc/self/fd; parâmetro `text` com include("files/".$_GET) é padrão CTF; RFI só com autorização (URLs controladas).',
+    );
+  }
+  if (hasUrl(/\/shell\.php\b/i) || hasUrl(/[?&]cmd=/i)) {
+    items.push(
+      'Webshell / RCE: rotas tipo shell.php?cmd= (validar se é backdoor ou falso positivo); após LFI, ver logs Apache e ficheiros .php graváveis em webroot.',
+    );
   }
   if (hasParam(/q|query|search|keyword|s=/i) || hasUrl(/\/search|\/query|\?q=/i)) {
     items.push('XSS refletido: quebras em campos de pesquisa e parâmetros refletidos no HTML.');
