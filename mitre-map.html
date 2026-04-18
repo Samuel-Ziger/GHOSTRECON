@@ -2778,6 +2778,7 @@
 
       function onMessage(ev) {
         const m=ev.data||{};
+        if (m.type==='reporte_payload') return;
         lastMessageAt = Date.now();
         updateLiveHud();
         if (m.type==='target') {

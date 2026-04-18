@@ -6,6 +6,8 @@ Opcionalmente integra **clone local de repositórios GitHub** (com URLs manuais 
 
 A interface é uma página estática **`index.html`** servida pelo **Express**; o pipeline corre no servidor e envia eventos em **NDJSON** para o browser. Na **sidebar** tens ainda o hub **Ghostmap**, **Cortex** e **Reporte** — três ecrãs dedicados a narrativa de ameaça, grafo por categorias e triagem humana (secção **«Três vistas»** abaixo).
 
+**Fluxo rápido (Reporte + Anotações):** vê a página estática **[`como-usar.html`](como-usar.html)** (abre no mesmo servidor que o `index.html`).
+
 ---
 
 ## Três vistas: Ghostmap, Cortex e Reporte
@@ -31,6 +33,12 @@ O recon produz **muitos** achados em pouco tempo. Além da lista e do log no `in
 ### Reporte (`reporte.html`) — checklist manual, notas e base para IA
 
 **O que faz:** é o **balcão de triagem humana** por alvo: ao abrir a partir do `index.html`, recebe o pacote em **`sessionStorage`** (`ghostrecon_reporte_payload`) com findings da sessão e o **target**. Podes **importar** JSON pelo painel lateral (só entrada; exportações **JSON / Plataforma / MD / TXT** continuam na **barra inferior** do index). Gravações de estado passam por **`GET` / `POST /api/manual-validations`** (CSRF); opcionalmente **`POST /api/manual-validations/ai-report`** gera relatório IA sobre **apenas** o que validaste.
+
+**Anotações (`anotacao.html`):** no Reporte, o botão **ANOTAÇÃO** abre uma **nova aba** com o modelo de campo (10 secções) e IA (OpenRouter). O **preenchimento automático** das secções a partir do checklist usa **só achados com o toggle de validação ligado** (e «Atualizar a partir das validações» reprocessa todos os validados). O resto das caixas é manual.
+
+**Alvo do pacote vs. URLs dos achados:** se o `target` do JSON divergir do primeiro host inferido a partir dos achados, aparece um **aviso** no topo do Reporte — as validações SQLite usam sempre o **domínio do pacote**.
+
+**Subconjuntos (alívio para sessionStorage):** na barra inferior do `index.html`, ao lado de **⬇ JSON**, tens **⬇ JSON · high** e **⬇ JSON · validados**, e botões **Reporte · high** / **Reporte · validados** para abrir a checklist já filtrada (listas muito grandes deixam de bloquear o `sessionStorage`).
 
 **Utilidade:** programas de bounty e pentest pago valorizam **confirmação explícita** — o Reporte é onde marcas *confirmado / falso positivo / a investigar*, anotas contexto que o automático não tem, e fechas um **«conjunto de verdade»** antes de submeter ou de gerar texto com IA. Alimenta o Cortex: o que aqui validas torna-se matéria prima para **ligações** e categorias no cérebro.
 

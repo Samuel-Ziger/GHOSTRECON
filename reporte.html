@@ -269,6 +269,17 @@
     }
     .log.err { color: var(--err); }
     .log.ok { color: var(--ok); }
+    .reporte-banner-warn {
+      display: none;
+      margin-top: 10px;
+      padding: 8px 10px;
+      border: 1px solid rgba(255, 191, 0, 0.45);
+      background: rgba(255, 191, 0, 0.08);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.45;
+      color: #ffd88a;
+    }
     footer {
       position: fixed;
       left: 0;
@@ -555,6 +566,20 @@
       color: var(--dim);
       margin: 0;
     }
+    .reporte-live-pill {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 4px 9px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 255, 136, 0.45);
+      color: var(--ok);
+      background: rgba(0, 255, 136, 0.08);
+    }
+    .reporte-live-pill[hidden] {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -593,6 +618,7 @@
     <div class="reporte-hd-inner">
       <h1>Reporte — checklist manual</h1>
       <div class="sub" id="headLine">A carregar…</div>
+      <div id="targetMismatchBanner" class="reporte-banner-warn" role="status" aria-live="polite"></div>
     </div>
   </header>
   <main>
@@ -603,11 +629,17 @@
         type="button"
         class="btn-primary"
         id="btnAnotacao"
-        title="Abre o modelo de anotações + IA (OpenRouter) numa nova aba, com o pacote actual desta checklist"
+        title="Abre anotações noutra aba. O preenchimento automático das secções usa só achados que estiverem validados (toggle ON) nesta checklist."
       >
         ANOTAÇÃO
       </button>
       <span class="sub" id="countLine"></span>
+      <span
+        class="reporte-live-pill"
+        id="reporteLivePill"
+        hidden
+        title="Recebes achados em tempo real pelo mesmo BroadcastChannel que o Ghostmap enquanto o recon corre no GHOSTRECON (mesmo browser, sessão ghostrecon_mitre_live_session_id)."
+        >Ao vivo</span>
     </div>
     <div id="list"></div>
     <div class="log" id="msg"></div>
@@ -673,12 +705,13 @@
   </div>
   <footer>
     <span class="sub" id="footHint"
-      >Marca apenas o que testaste manualmente. Opcional: após validar, podes ligar ao <strong>cérebro</strong> (SQLite) por tipo de vulnerabilidade. O botão <strong>ANOTAÇÃO</strong> acima abre o modelo de campo + IA noutra aba. Os fingerprints coincidem com recons futuros no mesmo alvo.</span>
+      >Marca apenas o que testaste manualmente. Com o recon activo no GHOSTRECON, o badge <strong>Ao vivo</strong> indica que esta aba recebe achados pelo BroadcastChannel (o mesmo canal que o Ghostmap). Opcional: após validar, podes ligar ao <strong>cérebro</strong> (SQLite) por tipo de vulnerabilidade. O botão <strong>ANOTAÇÃO</strong> acima abre o modelo de campo + IA noutra aba. Os fingerprints coincidem com recons futuros no mesmo alvo.</span>
   </footer>
   <script>
     const REPORTE_PAYLOAD_KEY = 'ghostrecon_reporte_payload';
     const REPORTE_PAYLOAD_SHARED_KEY = 'ghostrecon_reporte_payload_shared';
     const ANOTACAO_PAYLOAD_KEY = 'ghostrecon_anotacao_payload';
+    const MITRE_LIVE_SESSION_STORAGE_KEY = 'ghostrecon_mitre_live_session_id';
 
     function getApiBase() {
       try {
@@ -702,6 +735,9 @@
     const validatedFp = new Set();
     let serverItems = [];
     let aiUseOpenrouter = false;
+    let packSubsetFilter = null;
+    let reporteLiveBc = null;
+    let reporteLiveApplySeq = 0;
     const FP_URL_NORMALIZE_TYPES = new Set([
       'endpoint',
       'param',
@@ -857,7 +893,16 @@
         validatedFp.clear();
         return;
       }
-      const r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)));
+      let r;
+      try {
+        r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)));
+      } catch (_) {
+        serverItems = [];
+        validatedFp.clear();
+        const err = new Error('REPORTE_OFFLINE');
+        err.reporteOffline = true;
+        throw err;
+      }
       if (!r.ok) throw new Error('GET validações: ' + r.status);
       const d = await r.json();
       serverItems = Array.isArray(d.items) ? d.items : [];
@@ -865,6 +910,93 @@
       for (const it of serverItems) {
         if (it.fingerprint) validatedFp.add(String(it.fingerprint).toLowerCase());
       }
+    }
+
+    function updateReporteLivePill(visible) {
+      const el = document.getElementById('reporteLivePill');
+      if (!el) return;
+      el.hidden = !visible;
+    }
+
+    function reporteApplySubsetFilter(rowsIn, subset) {
+      if (!subset) return rowsIn.map((x) => ({ ...x }));
+      const arr = rowsIn.map((x) => ({ ...x }));
+      if (subset === 'high') {
+        return arr.filter((f) => {
+          const p = String(f.prio != null ? f.prio : f.priority != null ? f.priority : '').toLowerCase();
+          return p === 'high' || p === 'critical';
+        });
+      }
+      if (subset === 'validated') {
+        return arr.filter((f) => {
+          const fp = String(f.fingerprint || '').trim().toLowerCase();
+          return fp && validatedFp.has(fp);
+        });
+      }
+      return arr;
+    }
+
+    async function applyReporteLivePayload(m) {
+      const seq = ++reporteLiveApplySeq;
+      updateReporteLivePill(true);
+      const newTarget = normalizeTarget(m.target || '');
+      target = newTarget;
+      try {
+        await loadServerState();
+      } catch (_) {
+        /* offline: mantém checklist com validações já em memória */
+      }
+      if (seq !== reporteLiveApplySeq) return;
+      const rowsIn = (Array.isArray(m.findings) ? m.findings : [])
+        .map(normalizeImportedFinding)
+        .filter(Boolean);
+      let rows = reporteApplySubsetFilter(rowsIn, packSubsetFilter);
+      if (rows.length > REPORT_IMPORT_MAX) rows = rows.slice(0, REPORT_IMPORT_MAX);
+      const hydrated = await hydrateFindingsFingerprints(rows, target);
+      if (seq !== reporteLiveApplySeq) return;
+      findings = hydrated;
+      try {
+        syncPayloadToSession();
+      } catch (_) {}
+      const ts = String(m.updatedAt || '').slice(0, 19).replace('T', ' ') || '?';
+      const elHd = document.getElementById('headLine');
+      if (elHd) {
+        elHd.textContent = targetUsableForApi(target)
+          ? 'Alvo: ' + target + ' · ao vivo · ' + ts
+          : 'Sem alvo válido · ao vivo · ' + ts;
+      }
+      updateTargetMismatchBanner();
+      if (seq !== reporteLiveApplySeq) return;
+      render();
+      try {
+        if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+      } catch (_) {}
+      setMsg('Actualização ao vivo do GHOSTRECON — ' + findings.length + ' achado(s) nesta vista.', 'ok');
+    }
+
+    function startReporteMitreBroadcastListener() {
+      if (typeof BroadcastChannel === 'undefined') return;
+      let id = '';
+      try {
+        id = localStorage.getItem(MITRE_LIVE_SESSION_STORAGE_KEY) || '';
+      } catch (_) {}
+      if (!id) return;
+      if (reporteLiveBc) {
+        try {
+          reporteLiveBc.close();
+        } catch (_) {}
+        reporteLiveBc = null;
+      }
+      try {
+        reporteLiveBc = new BroadcastChannel('ghostrecon-mitre-' + id);
+      } catch (_) {
+        return;
+      }
+      reporteLiveBc.onmessage = (ev) => {
+        const msg = ev.data || {};
+        if (msg.type !== 'reporte_payload' || !msg.live) return;
+        void applyReporteLivePayload(msg);
+      };
     }
 
     async function loadAiState() {
@@ -1019,6 +1151,25 @@
         : 'Sem alvo válido — importa JSON com "target" ou indica o Target ($) no GHOSTRECON.';
     }
 
+    function updateTargetMismatchBanner() {
+      const el = document.getElementById('targetMismatchBanner');
+      if (!el) return;
+      const inferred = deriveTargetFromFindings(findings);
+      const pkg = normalizeTarget(target);
+      if (targetUsableForApi(pkg) && targetUsableForApi(inferred) && inferred && pkg && inferred !== pkg) {
+        el.style.display = 'block';
+        el.textContent =
+          'Alvo do pacote: «' +
+          pkg +
+          '» — primeiro host inferido a partir dos achados: «' +
+          inferred +
+          '». As validações gravam-se em SQLite para o alvo do pacote; confirma se é o domínio correcto.';
+      } else {
+        el.style.display = 'none';
+        el.textContent = '';
+      }
+    }
+
     async function applyReporteJsonImportText(raw) {
       const trimmed = String(raw || '').trim();
       if (!trimmed) throw new Error('Campo JSON vazio.');
@@ -1042,7 +1193,19 @@
       findings = await hydrateFindingsFingerprints(rows, target);
       syncPayloadToSession();
       updateHeadLineFromState();
-      await loadServerState();
+      updateTargetMismatchBanner();
+      try {
+        await loadServerState();
+      } catch (e) {
+        if (e && e.reporteOffline) {
+          setMsg(
+            'Servidor ou API inacessível (rede, CORS ou `npm start`). Validações SQLite não lidas; a checklist usa só o pacote local.',
+            'err',
+          );
+        } else {
+          setMsg(String(e.message || e), 'err');
+        }
+      }
       render();
       try {
         if (validatedFp.size > 0) resyncAllValidatedAnnotations();
@@ -1275,7 +1438,15 @@
             });
             const d = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(d.error || String(r.status));
-            await loadServerState();
+            try {
+              await loadServerState();
+            } catch (e2) {
+              if (e2 && e2.reporteOffline) {
+                setMsg('Ligado ao cérebro, mas não foi possível reler validações (servidor offline). Recarrega quando a API voltar.', 'err');
+              } else {
+                throw e2;
+              }
+            }
             render();
             const label =
               cats.find((c) => c.id === selectedId)?.title ||
@@ -1314,9 +1485,11 @@
         return;
       }
       let nVal = 0;
+      let nVis = 0;
       for (const f of findings) {
         const fp = String(f.fingerprint || '').toLowerCase();
         if (!/^[a-f0-9]{64}$/.test(fp)) continue;
+        nVis++;
         const on = validatedFp.has(fp);
         if (on) nVal++;
         const prev = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fp);
@@ -1419,8 +1592,21 @@
         }
         list.appendChild(row);
       }
+      if (findings.length && !nVis) {
+        const warn = document.createElement('div');
+        warn.className = 'reporte-banner-warn';
+        warn.setAttribute('role', 'status');
+        warn.textContent =
+          'Nenhum achado tem fingerprint SHA-256 válido neste pacote — a checklist fica vazia. Reimporta JSON do recon ou reabre o Reporte a partir do hub.';
+        list.insertBefore(warn, list.firstChild);
+      }
       document.getElementById('countLine').textContent =
-        findings.length + ' achados · ' + validatedFp.size + ' com validação na base (nesta vista)';
+        nVis +
+        ' na checklist (de ' +
+        findings.length +
+        ' no pacote) · ' +
+        validatedFp.size +
+        ' com validação na base (nesta vista)';
       updateAiButton();
     }
 
@@ -1531,6 +1717,8 @@
       if (full) {
         if (typ === 'nmap' || /\d+\/(tcp|udp)/i.test(val)) {
           m.s2 = appendDedupeLine(m.s2, '- ' + (val || '(serviço sem descrição)'));
+        } else if (typ === 'security' || typ === 'nuclei') {
+          m.s2 = appendDedupeLine(m.s2, '- [' + typ + '] ' + (val || '—'));
         }
 
         if (typ === 'tech' || typ === 'wappalyzer' || typ === 'fingerprint' || typ === 'cms') {
@@ -1540,7 +1728,18 @@
           m.s3 = appendDedupeLine(m.s3, '- [endpoint] ' + (u || val));
         } else if (typ === 'param' || typ === 'parameter') {
           m.s3 = appendDedupeLine(m.s3, '- [parâmetro] ' + val + (url ? ' @ ' + url : ''));
-        } else if (url && (typ === 'js' || typ === 'security' || typ === 'header')) {
+        } else if (
+          typ === 'js' ||
+          typ === 'security' ||
+          typ === 'header' ||
+          typ === 'nuclei' ||
+          typ === 'tls' ||
+          typ === 'intel' ||
+          typ === 'dalfox' ||
+          typ === 'wpscan' ||
+          typ === 'xss' ||
+          typ === 'sqli'
+        ) {
           m.s3 = appendDedupeLine(m.s3, '- [' + typ + '] ' + val + (url ? ' — ' + url : ''));
         }
 
@@ -1677,13 +1876,18 @@
           setMsg('Checklist carregada do run #' + loaded.runId + '. A sincronizar validações…', '');
         }
         await loadServerState();
+        updateTargetMismatchBanner();
         render();
         try {
           if (validatedFp.size > 0) resyncAllValidatedAnnotations();
         } catch (_) {}
         setMsg('Sincronizado com a base.', 'ok');
       } catch (e) {
-        setMsg(String(e.message || e), 'err');
+        if (e && e.reporteOffline) {
+          setMsg('Servidor inacessível ao sincronizar validações. Verifica `npm start` e a rede.', 'err');
+        } else {
+          setMsg(String(e.message || e), 'err');
+        }
       }
     });
 
@@ -1739,22 +1943,30 @@
     });
 
     (async function init() {
+      try {
       const raw = readPayloadRawFromStorage();
       if (!raw) {
-        document.getElementById('headLine').textContent = 'Abre esta página a partir do botão «Reporte» no GHOSTRECON.';
+        document.getElementById('headLine').textContent = 'Sem pacote — abre a partir do GHOSTRECON.';
         findings = [];
         target = '';
         render();
-        setMsg('Sem dados desta sessão. Abre pelo botão «Reporte» no GHOSTRECON ou clica «Recarregar da base».', 'err');
+        setMsg(
+          'Sem pacote na sessão (sessionStorage vazio). No GHOSTRECON clica «Reporte» com achados na lista, ou usa «Recarregar da base» aqui para carregar um run da SQLite.',
+          'err',
+        );
         return;
       }
       let pack;
       try {
         pack = JSON.parse(raw);
       } catch {
-        setMsg('Pacote JSON inválido.', 'err');
+        setMsg('Pacote JSON inválido (parse). Cola um JSON com target + findings ou importa ficheiro.', 'err');
         return;
       }
+      packSubsetFilter =
+        pack.subsetFilter && pack.subsetFilter !== 'all'
+          ? String(pack.subsetFilter).toLowerCase()
+          : null;
       target = normalizeTarget(pack.target || '');
       findings = await hydrateFindingsFingerprints(
         (Array.isArray(pack.findings) ? pack.findings : [])
@@ -1766,6 +1978,13 @@
       document.getElementById('headLine').textContent = targetUsableForApi(target)
         ? 'Alvo: ' + target + ' · pacote: ' + packTs
         : 'Sem alvo válido ainda · pacote: ' + packTs + ' — usa Target ($) no GHOSTRECON para sincronizar SQLite.';
+      updateTargetMismatchBanner();
+      if (!findings.length) {
+        setMsg(
+          'Pacote recebido mas sem achados na lista (findings vazio). Corre o recon no GHOSTRECON ou importa JSON com achados no painel à esquerda.',
+          'err',
+        );
+      }
       try {
         await loadAiState();
         await loadServerState();
@@ -1773,15 +1992,24 @@
         try {
           if (validatedFp.size > 0) resyncAllValidatedAnnotations();
         } catch (_) {}
-        setMsg(
-          targetUsableForApi(target)
-            ? 'Marca os achados que validaste manualmente. Gravação imediata na base (fingerprint). À esquerda: Importar JSON. Anotações (modelo + IA): botão «ANOTAÇÃO» acima — nova aba.'
-            : 'Sem domínio válido: não há sincronização com a base. No GHOSTRECON, indica um alvo no Target ($) antes de gravar validações; podes importar JSON no painel à esquerda.',
-          targetUsableForApi(target) ? 'ok' : '',
-        );
+        if (findings.length) {
+          setMsg(
+            targetUsableForApi(target)
+              ? 'Marca só o que testaste: o toggle grava na SQLite por alvo. «ANOTAÇÃO» abre outra aba — o preenchimento automático lá usa apenas linhas já validadas aqui.'
+              : 'Sem domínio válido: não há sincronização com a base. No GHOSTRECON, indica um alvo no Target ($) antes de gravar validações; podes importar JSON no painel à esquerda.',
+            targetUsableForApi(target) ? 'ok' : '',
+          );
+        }
       } catch (e) {
         render();
-        setMsg('Aviso: não foi possível ler a base — ' + (e.message || e), 'err');
+        if (e && e.reporteOffline) {
+          setMsg(
+            'Servidor ou API inacessível (rede, CORS ou `npm start`). A checklist mostra o pacote local; validações SQLite não foram lidas.',
+            'err',
+          );
+        } else {
+          setMsg('Não foi possível ler a base (HTTP ou erro): ' + (e.message || e), 'err');
+        }
       }
 
       const bm = document.getElementById('brainModal');
@@ -1801,6 +2029,16 @@
           ev.preventDefault();
         }
       });
+      } finally {
+        if (!window.__ghostreconReporteStorageWired) {
+          window.__ghostreconReporteStorageWired = true;
+          window.addEventListener('storage', (ev) => {
+            if (ev.key !== MITRE_LIVE_SESSION_STORAGE_KEY) return;
+            startReporteMitreBroadcastListener();
+          });
+        }
+        startReporteMitreBroadcastListener();
+      }
     })();
 
     document.getElementById('list')?.addEventListener('click', onListClick);

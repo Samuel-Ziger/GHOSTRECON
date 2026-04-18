@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GHOSTRECON — Como usar (Reporte e Anotações)</title>
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --bg2: #121a24;
+      --border: #2a3848;
+      --text: #c8d0dc;
+      --dim: #7a8a9e;
+      --accent: #00d4ff;
+      --ok: #00ff88;
+      --mono: ui-monospace, 'Cascadia Code', monospace;
+      --sans: system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1.55;
+      padding: 24px 20px 48px;
+      max-width: 720px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    h1 {
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 0 0 8px;
+    }
+    h2 {
+      font-size: 13px;
+      margin: 28px 0 10px;
+      color: var(--ok);
+    }
+    p, li { margin: 0 0 12px; }
+    ol { padding-left: 1.2rem; }
+    code {
+      font-family: var(--mono);
+      font-size: 12px;
+      background: var(--bg2);
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+    }
+    a {
+      color: var(--accent);
+    }
+    a:hover {
+      color: #a7ecff;
+    }
+    .back {
+      margin-bottom: 20px;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <p class="back"><a href="index.html">← Voltar ao GHOSTRECON</a></p>
+  <h1>Guia mínimo</h1>
+  <p><strong>Reporte</strong> e <strong>Anotações</strong> trabalham em conjunto com a mesma lista de achados e o mesmo alvo (<code>target</code>).</p>
+
+  <h2>1. GHOSTRECON → Reporte</h2>
+  <ol>
+    <li>No <code>index.html</code>, corre o recon ou carrega achados na lista.</li>
+    <li>Clica <strong>Reporte</strong> no hub (sidebar). Abre-se <code>reporte.html</code> com o pacote em <code>sessionStorage</code>.</li>
+    <li>Marca com o toggle só o que testaste manualmente — grava na <strong>SQLite</strong> por fingerprint e alvo.</li>
+  </ol>
+
+  <h2>2. Reporte → Anotações</h2>
+  <ol>
+    <li>Na barra do Reporte, clica <strong>ANOTAÇÃO</strong>. Abre-se <code>anotacao.html</code> noutra aba.</li>
+    <li>
+      O preenchimento automático das secções (e o botão «Atualizar a partir das validações») usa
+      <strong>apenas achados já validados</strong> na checklist. Tudo o resto podes escrever à mão.
+    </li>
+    <li><strong>Descarregar .md</strong> exporta o modelo; <strong>IA</strong> envia o Markdown à OpenRouter (servidor com <code>OPENROUTER_API_KEY</code>).</li>
+  </ol>
+
+  <h2>3. Listas enormes</h2>
+  <p>
+    Na barra inferior do GHOSTRECON usa <strong>⬇ JSON · high</strong> ou <strong>⬇ JSON · validados</strong>, ou abre
+    <strong>Reporte · high</strong> / <strong>Reporte · validados</strong>, para não encher o
+    <code>sessionStorage</code>. Depois podes importar o JSON no painel «Importar» do Reporte.
+  </p>
+
+  <h2>4. Problemas frequentes</h2>
+  <ul>
+    <li><strong>Sem pacote</strong> no Reporte: volta ao hub e clica Reporte de novo (ou «Recarregar da base» no Reporte).</li>
+    <li><strong>Servidor offline</strong>: o Reporte avisa se não conseguir falar com a API (<code>npm start</code>, rede, CORS).</li>
+    <li><strong>Alvo do pacote ≠ host nos URLs</strong>: aparece um aviso amarelo no topo do Reporte — confirma qual domínio queres gravar na SQLite.</li>
+  </ul>
+
+  <p class="back" style="margin-top: 32px"><a href="README.md">Documentação completa (README)</a> no repositório.</p>
+</body>
+</html>

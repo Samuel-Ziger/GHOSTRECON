@@ -253,9 +253,10 @@
       <button type="button" class="btn-primary" id="annBtnAi">IA</button>
     </div>
     <p class="intro" id="introP">
-      O mesmo pacote de achados que enviaste ao <strong>Reporte</strong> é usado aqui. As validações na base continuam a
-      preencher estas caixas (via «Sincronizar» ou ao validar no Reporte). O botão <strong>IA</strong> envia o Markdown à
-      <strong>OpenRouter</strong>.
+      O mesmo pacote de achados que enviaste ao <strong>Reporte</strong> é usado aqui. Não há checklist duplicada: as
+      caixas abaixo preenchem‑se com achados <strong>já validados</strong> no Reporte (secções 2–5). Se validaste no
+      Reporte com esta aba aberta, volta aqui e usa <strong>Sincronizar validações</strong> ou muda de aba e volta — a
+      página re‑lê a base ao ficar visível. O botão <strong>IA</strong> envia o Markdown à <strong>OpenRouter</strong>.
     </p>
     <div class="ann-sec">
       <label for="annS1">1. Identificação do alvo</label>
@@ -442,7 +443,16 @@
         validatedFp.clear();
         return;
       }
-      const r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)));
+      let r;
+      try {
+        r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)));
+      } catch (_) {
+        serverItems = [];
+        validatedFp.clear();
+        const err = new Error('REPORTE_OFFLINE');
+        err.reporteOffline = true;
+        throw err;
+      }
       if (!r.ok) throw new Error('GET validações: ' + r.status);
       const d = await r.json();
       serverItems = Array.isArray(d.items) ? d.items : [];
@@ -695,6 +705,8 @@
       if (full) {
         if (typ === 'nmap' || /\d+\/(tcp|udp)/i.test(val)) {
           m.s2 = appendDedupeLine(m.s2, '- ' + (val || '(serviço sem descrição)'));
+        } else if (typ === 'security' || typ === 'nuclei') {
+          m.s2 = appendDedupeLine(m.s2, '- [' + typ + '] ' + (val || '—'));
         }
         if (typ === 'tech' || typ === 'wappalyzer' || typ === 'fingerprint' || typ === 'cms') {
           m.s3 = appendDedupeLine(m.s3, '- [tech] ' + (val || typ));
@@ -703,7 +715,18 @@
           m.s3 = appendDedupeLine(m.s3, '- [endpoint] ' + (u || val));
         } else if (typ === 'param' || typ === 'parameter') {
           m.s3 = appendDedupeLine(m.s3, '- [parâmetro] ' + val + (url ? ' @ ' + url : ''));
-        } else if (url && (typ === 'js' || typ === 'security' || typ === 'header')) {
+        } else if (
+          typ === 'js' ||
+          typ === 'security' ||
+          typ === 'header' ||
+          typ === 'nuclei' ||
+          typ === 'tls' ||
+          typ === 'intel' ||
+          typ === 'dalfox' ||
+          typ === 'wpscan' ||
+          typ === 'xss' ||
+          typ === 'sqli'
+        ) {
           m.s3 = appendDedupeLine(m.s3, '- [' + typ + '] ' + val + (url ? ' — ' + url : ''));
         }
         const prio = String(f.prio || '').toLowerCase();
@@ -891,7 +914,11 @@
         updateHeadLineFromState();
         setMsg('Sincronizado com a base.', 'ok');
       } catch (e) {
-        setMsg(String(e.message || e), 'err');
+        if (e && e.reporteOffline) {
+          setMsg('Servidor inacessível ao sincronizar. Verifica `npm start` e a rede.', 'err');
+        } else {
+          setMsg(String(e.message || e), 'err');
+        }
       }
     });
 
@@ -977,7 +1004,7 @@
       try {
         pack = JSON.parse(raw);
       } catch {
-        setMsg('Pacote JSON inválido.', 'err');
+        setMsg('Pacote JSON inválido (parse). Volta ao Reporte e reenvia com «ANOTAÇÃO».', 'err');
         return;
       }
       target = normalizeTarget(pack.target || '');
@@ -988,6 +1015,12 @@
         target,
       );
       updateHeadLineFromState();
+      if (!findings.length) {
+        setMsg(
+          'Pacote sem achados na lista. No GHOSTRECON corre o recon ou exporta JSON com findings antes de abrir Anotações.',
+          'err',
+        );
+      }
       try {
         await loadAiState();
         await loadServerState();
@@ -995,16 +1028,38 @@
           if (validatedFp.size > 0) resyncAllValidatedAnnotations();
         } catch (_) {}
         applyInitialAnnDom();
-        setMsg(
-          targetUsableForApi(target)
-            ? 'Pacote carregado. Edita as secções ou usa IA / Descarregar .md.'
-            : 'Sem domínio válido: validações SQLite podem não sincronizar até indicares o alvo no hub.',
-          targetUsableForApi(target) ? 'ok' : '',
-        );
+        if (findings.length) {
+          setMsg(
+            targetUsableForApi(target)
+              ? 'Pacote carregado. Secções automáticas = só validados no Reporte; o resto é manual. IA / .md abaixo.'
+              : 'Sem domínio válido: validações SQLite podem não sincronizar até indicares o alvo no hub.',
+            targetUsableForApi(target) ? 'ok' : '',
+          );
+        }
       } catch (e) {
         applyInitialAnnDom();
-        setMsg('Aviso: base — ' + (e.message || e), 'err');
+        if (e && e.reporteOffline) {
+          setMsg(
+            'Servidor ou API inacessível (`npm start`, rede ou CORS). Validações não lidas; podes editar notas à mesma.',
+            'err',
+          );
+        } else {
+          setMsg('Erro ao falar com a base: ' + (e.message || e), 'err');
+        }
       }
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        void (async () => {
+          try {
+            await loadServerState();
+            if (validatedFp.size > 0) {
+              const map = resyncAllValidatedAnnotations();
+              applyAnnMapToDom(map);
+            }
+          } catch (_) {}
+        })();
+      });
     })();
   </script>
 </body>

@@ -13,3 +13,25 @@ test('dedupe semântico colapsa endpoints da mesma família', () => {
   assert.equal(out.merged, 2);
   assert.equal(out.findings[0].prio, 'high');
 });
+
+test('dedupe semântico não colapsa duas linhas nmap só porque partilham url http', () => {
+  const input = [
+    {
+      type: 'nmap',
+      prio: 'med',
+      score: 56,
+      value: 'tcp/80 10.0.0.1 — http Apache',
+      url: 'http://10.0.0.1/',
+    },
+    {
+      type: 'nmap',
+      prio: 'med',
+      score: 56,
+      value: 'tcp/8080 10.0.0.1 — http-proxy',
+      url: null,
+    },
+  ];
+  const out = dedupeBySemanticFamily(input);
+  assert.equal(out.findings.length, 2);
+  assert.equal(out.merged, 0);
+});

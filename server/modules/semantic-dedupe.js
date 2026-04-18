@@ -13,6 +13,10 @@ function findingFamilyKey(f) {
     const v = String(f.value || '').toLowerCase();
     return `param:${v.replace(/[?=]/g, '')}`;
   }
+  /** `nmap` com `url` http(s) colapsava todas as portas 80/443 do mesmo host num só achado. Chave = linha completa. */
+  if (t === 'nmap') {
+    return `nmap:${String(f?.value || '').toLowerCase()}`;
+  }
   if (f?.url || /^https?:\/\//i.test(String(f?.value || ''))) {
     return `${t}:${familyFromUrl(f.url || f.value)}`;
   }

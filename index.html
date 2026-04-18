@@ -2440,7 +2440,7 @@
             type="button"
             class="mitre-map-btn reporte-hub-btn"
             id="reporteHubBtn"
-            title="Checklist manual + SQLite. Abre com os achados da sessão; no Reporte importas JSON pelo painel «Importar» à esquerda."
+            title="Checklist manual + SQLite. Abre com os achados da sessão; com o recon a correr, a aba Reporte actualiza ao vivo (BroadcastChannel, mesmo canal que o Ghostmap). Importar JSON: painel «Importar»."
             aria-label="Abrir Reporte — nova aba"
             onclick="openReportePage()"
           >
@@ -3047,6 +3047,10 @@
       <div class="stat" style="margin-left:auto">
         <div class="export-section" style="padding:0">
           <button class="export-btn" onclick="exportJSON()">⬇ JSON</button>
+          <button class="export-btn" onclick="void exportJSONSubset('high')" title="Só prioridade high/critical — menor ficheiro para Reporte / sessionStorage">⬇ JSON · high</button>
+          <button class="export-btn" onclick="void exportJSONSubset('validated')" title="Só fingerprints já validados na SQLite para este alvo">⬇ JSON · validados</button>
+          <button class="export-btn" onclick="void openReportePageWithSubset('high')" title="Abre Reporte só com achados HIGH">Reporte · high</button>
+          <button class="export-btn" onclick="void openReportePageWithSubset('validated')" title="Abre Reporte só com achados já validados na base">Reporte · validados</button>
           <button class="export-btn" onclick="exportPlatformBundle()">⬇ Plataforma</button>
           <button class="export-btn" onclick="exportMarkdown()">⬇ MD</button>
           <button class="export-btn" onclick="exportTXT()">⬇ TXT</button>
@@ -3077,6 +3081,10 @@ let dorkUrlQueue = [];
 /** Fila de Google «exploit pra …» (nmap): ignora o toggle «Abrir dorks». */
 let forcedDorkUrlQueue = [];
 let csrfToken = '';
+/** Reporte ao vivo (mesmo BroadcastChannel que o Ghostmap): throttle + flush imediato em rescore/done */
+let __reporteLiveThrottleTimer = null;
+let __reporteLiveLastSentAt = 0;
+const REPORTE_LIVE_BC_MIN_MS = 520;
 
 const BATCH_MAX_TARGETS = 25;
 
@@ -3502,9 +3510,11 @@ function addFinding(f) {
   // para garantir que `endpoint` e `param` fiquem lado a lado (independente da ordem de descoberta).
   if (currentFilter === 'all') {
     refreshFindingsList();
+    postReporteLivePayload(false);
     return;
   }
   if (findingMatchesFilter(f)) renderFinding(f);
+  postReporteLivePayload(false);
 }
 
 /** Escapa HTML e converte **negrito** para <strong> (texto de proveniência do servidor). */
@@ -4116,24 +4126,116 @@ async function refreshManualValidationFps() {
   }
 }
 
-function openReportePage() {
+/**
+ * Chave de alvo para pacote Reporte / SQLite: com recon parado, o Target ($) na UI
+ * prevalece sobre `targetDomain` residual (ex. IP do run anterior); com recon activo,
+ * usa o host actual do pipeline (fila / cascata).
+ */
+function ghostreconReportTargetKey() {
   const fromInput = (document.getElementById('domainInput')?.value || '').trim().toLowerCase();
-  const t = (targetDomain || fromInput || '').trim().toLowerCase();
-  const list = Array.isArray(findings) ? findings.map((x) => ({ ...x })) : [];
+  if (isRunning) {
+    return (targetDomain || fromInput || '').trim().toLowerCase();
+  }
+  return (fromInput || targetDomain || '').trim().toLowerCase();
+}
+
+/**
+ * Envia snapshot de findings para abas `reporte.html` via BroadcastChannel `ghostrecon-mitre-*`.
+ * Só durante `isRunning`; mensagens extra são ignoradas pelo Ghostmap.
+ */
+function postReporteLivePayload(immediate) {
+  if (!isRunning) return;
+  if (typeof BroadcastChannel === 'undefined') return;
+  if (!window.__mitreLiveBc) return;
+  const flush = () => {
+    __reporteLiveThrottleTimer = null;
+    __reporteLiveLastSentAt = Date.now();
+    try {
+      const rawList = Array.isArray(findings) ? findings.map((x) => ({ ...x })) : [];
+      const t = ghostreconReportTargetKey();
+      const payload = {
+        type: 'reporte_payload',
+        live: true,
+        target: t,
+        updatedAt: new Date().toISOString(),
+        findings: rawList,
+      };
+      const raw = JSON.stringify(payload);
+      if (raw.length > 4_500_000) return;
+      window.__mitreLiveBc.postMessage(payload);
+    } catch (_) {}
+  };
+  if (immediate) {
+    if (__reporteLiveThrottleTimer) {
+      clearTimeout(__reporteLiveThrottleTimer);
+      __reporteLiveThrottleTimer = null;
+    }
+    flush();
+    return;
+  }
+  const now = Date.now();
+  const elapsed = now - __reporteLiveLastSentAt;
+  if (elapsed >= REPORTE_LIVE_BC_MIN_MS) {
+    flush();
+    return;
+  }
+  if (!__reporteLiveThrottleTimer) {
+    __reporteLiveThrottleTimer = setTimeout(flush, Math.max(40, REPORTE_LIVE_BC_MIN_MS - elapsed));
+  }
+}
+
+/** Subconjunto para Reporte / export (alivia sessionStorage em alvos enormes). */
+function filterFindingsForReporteSubset(list, subset) {
+  if (!subset || subset === 'all') return Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
+  const arr = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
+  if (subset === 'high') {
+    return arr.filter((f) => {
+      const p = String(f.prio != null ? f.prio : f.priority != null ? f.priority : '').toLowerCase();
+      return p === 'high' || p === 'critical';
+    });
+  }
+  if (subset === 'validated') {
+    const fps = window.__ghostreconManualFp;
+    if (!fps || !fps.size) return [];
+    return arr.filter((f) => {
+      const fp = String(f.fingerprint || '').trim().toLowerCase();
+      return fp && fps.has(fp);
+    });
+  }
+  return arr;
+}
+
+async function openReportePageWithSubset(subset, targetWindowName) {
+  const t = ghostreconReportTargetKey();
+  const full = Array.isArray(findings) ? findings.map((x) => ({ ...x })) : [];
+  if (subset === 'validated') await refreshManualValidationFps();
+  const list = filterFindingsForReporteSubset(full, subset || 'all');
   if (!t) {
-    addLog('Reporte: abrindo sem alvo — importa um JSON no painel «Importar» para preencher a checklist; para gravar validações no SQLite, indica um domínio válido no Target ($).', 'info');
+    addLog('Reporte: sem alvo — importa JSON no Reporte ou indica Target ($) para gravar validações na SQLite.', 'info');
+  } else if (!list.length && full.length) {
+    if (subset === 'high') addLog('Reporte: filtro HIGH não devolveu achados — abre checklist vazia para este filtro.', 'warn');
+    if (subset === 'validated') {
+      addLog(
+        'Reporte: nenhum achado validado na base para este alvo — checklist vazia. Valida no Reporte ou abre sem filtro.',
+        'warn',
+      );
+    }
   } else if (!list.length) {
-    addLog('Reporte: abrindo com lista vazia — podes importar JSON à esquerda ou voltar após o recon.', 'info');
+    addLog('Reporte: lista vazia — corre o recon ou importa JSON.', 'info');
   }
   const payload = {
     target: t,
     updatedAt: new Date().toISOString(),
     findings: list,
+    subsetFilter: subset || undefined,
   };
   try {
     const raw = JSON.stringify(payload);
     if (raw.length > 4_500_000) {
-      addLog('Reporte: demasiados achados para sessionStorage — usa ⬇ JSON / ⬇ Plataforma na barra inferior e importa um subconjunto no Reporte.', 'warn');
+      addLog(
+        'Reporte: pacote ainda grande — usa «⬇ JSON · high» ou «· validados» na barra inferior e importa no Reporte.',
+        'warn',
+      );
       return;
     }
     sessionStorage.setItem('ghostrecon_reporte_payload', raw);
@@ -4145,8 +4247,14 @@ function openReportePage() {
     return;
   }
   const u = new URL('reporte.html', window.location.href);
-  const w = window.open(u.href, '_blank', 'noopener,noreferrer');
+  const winName =
+    typeof targetWindowName === 'string' && targetWindowName.trim() ? targetWindowName.trim() : '_blank';
+  const w = window.open(u.href, winName, 'noopener,noreferrer');
   if (!w) addLog('Reporte: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
+}
+
+function openReportePage() {
+  void openReportePageWithSubset(null);
 }
 
 function openCortexPage(ev) {
@@ -4157,7 +4265,7 @@ function openCortexPage(ev) {
   else if (ev && ev.shiftKey) addLog('Cortex: modo demonstração (dados fictícios).', 'info');
 }
 
-function openMitreMapPage() {
+function openMitreMapPage(targetWindowName) {
   if (typeof BroadcastChannel === 'undefined') {
     addLog('Ghostmap: BroadcastChannel não disponível neste browser.', 'warn');
     return;
@@ -4173,8 +4281,31 @@ function openMitreMapPage() {
   }
   const u = new URL('mitre-map.html', window.location.href);
   u.hash = id;
-  const w = window.open(u.href, '_blank', 'noopener,noreferrer');
+  const winName =
+    typeof targetWindowName === 'string' && targetWindowName.trim() ? targetWindowName.trim() : '_blank';
+  const w = window.open(u.href, winName, 'noopener,noreferrer');
   if (!w) addLog('Ghostmap: popup bloqueado — permite popups para este site ou abre manualmente: ' + u.href, 'warn');
+}
+
+/** Ghostmap + Reporte no mesmo gesto do RUN (antes do primeiro await), janelas nomeadas para reutilizar. */
+function openGhostmapAndReporteOnReconStartSync() {
+  const winOpts = 'noopener,noreferrer';
+  if (typeof BroadcastChannel === 'undefined') {
+    addLog('Ghostmap: BroadcastChannel indisponível — abre mitre-map.html manualmente.', 'warn');
+  } else if (!ensureGhostmapLiveChannel()) {
+    addLog('Ghostmap: não foi possível criar a ligação ao vivo.', 'warn');
+  } else {
+    const id = window.__mitreLiveSessionId;
+    if (id) {
+      const ug = new URL('mitre-map.html', window.location.href);
+      ug.hash = id;
+      if (!window.open(ug.href, 'ghostrecon_ghostmap', winOpts)) {
+        addLog('Ghostmap: popup bloqueado — permite janelas em pop-up para ver o mapa ao vivo.', 'warn');
+      }
+    }
+  }
+  void openReportePageWithSubset(null, 'ghostrecon_reporte');
+  addLog('Ghostmap e Reporte abertos automaticamente (ou reutilizados nas mesmas janelas).', 'info');
 }
 
 // ─── MAIN RECON PIPELINE (backend NDJSON) ─────────────────
@@ -4263,6 +4394,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           findings = incoming;
         }
         refreshFindingsList();
+        postReporteLivePayload(true);
         const mitreIds = [];
         const owaspIds = [];
         const owaspDetails = [];
@@ -4388,6 +4520,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
             refreshFindingsList();
           } catch (_) {}
         });
+        postReporteLivePayload(true);
         loadRunsHistory();
         lastPipelineBundle = {
           correlation: ev.correlation ?? null,
@@ -4441,7 +4574,7 @@ async function startRecon() {
   }
 
   batchTargetsSnapshot = targets.slice();
-  targetDomain = targets[targets.length - 1];
+  targetDomain = targets[0];
   lastPipelineBundle = null;
   window.__lastReconCoverage = null;
 
@@ -4454,6 +4587,11 @@ async function startRecon() {
   }
 
   isRunning = true;
+  if (__reporteLiveThrottleTimer) {
+    clearTimeout(__reporteLiveThrottleTimer);
+    __reporteLiveThrottleTimer = null;
+  }
+  __reporteLiveLastSentAt = 0;
   logStarted = false;
   findings = [];
   void refreshManualValidationFps().then(() => {
@@ -4524,6 +4662,8 @@ async function startRecon() {
     document.getElementById('statusText').textContent = 'ERRO';
     isRunning = false;
   };
+
+  openGhostmapAndReporteOnReconStartSync();
 
   try {
     if (aiReportsEnabled && lmStudioOnly) {
@@ -4828,6 +4968,29 @@ function exportJSON() {
     ? `ghostrecon_fila_${batchTargetsSnapshot.length}_${Date.now()}.json`
     : `ghostrecon_${targetDomain}_${Date.now()}.json`;
   download(name, JSON.stringify(out, null, 2), 'application/json');
+}
+
+async function exportJSONSubset(subset) {
+  if (subset === 'validated') await refreshManualValidationFps();
+  const list = filterFindingsForReporteSubset(findings, subset);
+  const multi = batchTargetsSnapshot.length > 1;
+  const pn = (document.getElementById('projectNameInput')?.value || '').trim();
+  const out = {
+    projectName: pn || undefined,
+    target: targetDomain,
+    targets: multi ? batchTargetsSnapshot.slice() : undefined,
+    timestamp: new Date().toISOString(),
+    stats,
+    reconCoverage: window.__lastReconCoverage || undefined,
+    subsetFilter: subset,
+    findings: list.map(mapFindingForJsonExport),
+  };
+  const tag = subset === 'high' ? 'high' : 'validados';
+  const name = multi
+    ? `ghostrecon_${tag}_fila_${batchTargetsSnapshot.length}_${Date.now()}.json`
+    : `ghostrecon_${tag}_${targetDomain}_${Date.now()}.json`;
+  download(name, JSON.stringify(out, null, 2), 'application/json');
+  addLog(`Export JSON (${tag}): ${list.length} achado(s).`, 'info');
 }
 
 function exportPlatformBundle() {
