@@ -43,14 +43,13 @@ Em termos simples: você aponta um alvo autorizado e a stack devolve **visibilid
 ### 3) `Cortex`
 O “cérebro” da operação. Organiza conhecimento validado em categorias, liga achados por fingerprint e transforma descobertas em base reutilizável.
 
-### 4) `Reporter` (no projeto: **Reporte**)
+### 4) `Reporter`
 Área de validação manual. Aqui o analista marca o que realmente confirmou, reduz ruído e gera material de reporte com foco no que importa.
 
 ### 5) `Anotação`
 Editor de anotações técnicas com apoio de IA para acelerar a redação e consolidar aprendizado operacional do run.
 
 ### 6) `Ghost Intelligence`
-No código, aparece como `Ghost Intelligence` (frontend do Ghost local).  
 É a camada de IA local para chat, memória, ingestão de runs e análise guiada.
 
 ---
