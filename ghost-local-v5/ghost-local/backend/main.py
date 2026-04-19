@@ -33,6 +33,20 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 memory  = GhostMemory()
 grecon  = GhostreconParser(memory)
 OLLAMA  = "http://localhost:11434"
+DEFAULT_OPENAI_MODEL = os.getenv("GHOST_OPENAI_DEFAULT_MODEL", os.getenv("GHOST_PRIMARY_MODEL", "mistral:7b"))
+FORCE_PORTUGUESE = os.getenv("GHOST_FORCE_PORTUGUESE", "1").strip().lower() in ("1", "true", "yes", "on")
+PORTUGUESE_ENFORCER = (
+    "Responda sempre em português brasileiro (pt-BR), mantendo termos técnicos em inglês apenas quando necessário."
+)
+
+
+def with_portuguese_enforcer(system_text: str) -> str:
+    base = str(system_text or "").strip()
+    if not FORCE_PORTUGUESE:
+        return base
+    if "português" in base.lower() or "pt-br" in base.lower():
+        return base
+    return f"{base}\n\n{PORTUGUESE_ENFORCER}" if base else PORTUGUESE_ENFORCER
 
 # ─────────────────────────────────────────────────────
 #  SYSTEM PROMPT  — consciente do GHOSTRECON
@@ -421,7 +435,7 @@ async def quick_prompts():
 async def chat_stream(req: ChatRequest):
     ctx_str, ctx_docs = build_context(req.message, req.memory_k, req.memory_category)
     gr_ctx = build_ghostrecon_ctx(req.ghostrecon_context)
-    system = (req.system_override or BASE_SYSTEM) + ctx_str + gr_ctx
+    system = with_portuguese_enforcer((req.system_override or BASE_SYSTEM) + ctx_str + gr_ctx)
 
     msgs = [{"role": m.role, "content": m.content} for m in req.history]
     msgs.append({"role": "user", "content": req.message})
@@ -533,6 +547,7 @@ async def openai_compat(req: OAIRequest):
     """Endpoint OpenAI-compatible para integração direta com GHOSTRECON cascade"""
     # Extrai system prompt das mensagens se existir
     system_msg = next((m.content for m in req.messages if m.role == "system"), BASE_SYSTEM)
+    system_msg = with_portuguese_enforcer(system_msg)
     user_msgs  = [{"role": m.role, "content": m.content} for m in req.messages if m.role != "system"]
 
     # RAG rápido baseado na última mensagem
@@ -540,8 +555,8 @@ async def openai_compat(req: OAIRequest):
     ctx_str, _ = build_context(last_user, 5, None)
     full_system = system_msg + ctx_str
 
-    # Modelo: mapeia "ghost" para o modelo configurado
-    model = req.model if req.model != "ghost" else "deepseek-coder-v2:16b"
+    # Modelo: mapeia "ghost" para um default local configuravel (leve por defeito).
+    model = req.model if req.model != "ghost" else DEFAULT_OPENAI_MODEL
 
     payload = {
         "model": model,
@@ -594,10 +609,26 @@ async def openai_compat(req: OAIRequest):
 @app.get("/v1/models")
 async def oai_models():
     """OpenAI-compatible model list"""
-    return {"object": "list", "data": [
-        {"id": "ghost", "object": "model", "owned_by": "ghost"},
-        {"id": "deepseek-coder-v2:16b", "object": "model", "owned_by": "ollama"},
-    ]}
+    data = [{"id": "ghost", "object": "model", "owned_by": "ghost"}]
+    seen = {"ghost"}
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{OLLAMA}/api/tags", timeout=5)
+            if r.is_success:
+                models = (r.json() or {}).get("models", [])
+                for m in models:
+                    mid = str(m.get("name", "")).strip()
+                    if not mid or mid in seen:
+                        continue
+                    data.append({"id": mid, "object": "model", "owned_by": "ollama"})
+                    seen.add(mid)
+    except Exception:
+        # fallback minimo sem bloquear endpoint
+        pass
+
+    if DEFAULT_OPENAI_MODEL not in seen:
+        data.append({"id": DEFAULT_OPENAI_MODEL, "object": "model", "owned_by": "ollama"})
+    return {"object": "list", "data": data}
 
 # ─────────────────────────────────────────────────────
 #  GHOSTRECON — INTEGRAÇÃO
