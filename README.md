@@ -4,7 +4,7 @@ Framework local de recon, OSINT, validacao e priorizacao para bug bounty e pente
 
 ---
 
-## O que e esta ferramenta (sem tecniquês)
+## O que e esta ferramenta 
 
 O `GHOSTRECON` e uma central de investigacao de superficie de ataque. Em vez de executar dezenas de ferramentas separadas e depois tentar juntar tudo na mao, ele organiza todo o ciclo em um fluxo unico: descobrir ativos, achar sinais de falha, validar o que realmente importa, priorizar por risco e transformar isso em inteligencia acionavel.
 
@@ -22,7 +22,7 @@ Em termos simples: voce aponta um alvo autorizado e a stack devolve **visibilida
 
 ---
 
-## O poder da stack (por que isso e forte)
+## O poder da stack 
 
 - **Velocidade operacional**: sai de “setup de ferramentas” para “investigacao real”.
 - **Menos cegueira**: correlacao entre sinais que normalmente ficam espalhados.
@@ -32,7 +32,7 @@ Em termos simples: voce aponta um alvo autorizado e a stack devolve **visibilida
 
 ---
 
-## Componentes principais (explicacao nao tecnica)
+## Componentes principais 
 
 ### 1) `GHOSTRECON` (nucleo)
 E o motor principal: recebe alvo, executa os modulos de recon, transmite o progresso ao vivo e salva o resultado para comparacoes futuras.
