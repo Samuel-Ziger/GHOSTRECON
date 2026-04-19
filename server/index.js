@@ -23,7 +23,7 @@ import { fetchCommonCrawlUrls } from './modules/commoncrawl.js';
 import { fetchRdapSummary } from './modules/rdap.js';
 import { fetchVirustotalSubdomains } from './modules/virustotal.js';
 import { compareRuns } from './modules/db-compare.js';
-import { postReconWebhook, postAiReportWebhook } from './modules/webhook-notify.js';
+import { postReconWebhook, postAiReportWebhook, postReconDeltaFullWebhook } from './modules/webhook-notify.js';
 import { fetchWaybackUrls, filterInterestingUrls, extractJsUrls } from './modules/wayback.js';
 import { extractParamsFromUrls } from './modules/params.js';
 import { analyzeJsUrl } from './modules/js-analyzer.js';
@@ -2189,33 +2189,21 @@ async function runPipeline(ctx) {
     }
   }
 
-  const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
-  if (whUrl && runId != null) {
-    const findingsByType = {};
-    for (const f of findings) {
-      const t = f?.type || 'unknown';
-      findingsByType[t] = (findingsByType[t] || 0) + 1;
-    }
-    let runDiffSummary = null;
-    try {
+  let reconDeltaForWebhook = null;
+  try {
+    if (runId != null) {
       const runs = await listRuns(120);
       const nt = domain.trim().toLowerCase();
       const prev = runs.find((r) => String(r.target).trim().toLowerCase() === nt && r.id < runId);
       if (prev) {
         const diff = await compareRuns(prev.id, runId);
         if (!diff.error) {
-          runDiffSummary = {
+          reconDeltaForWebhook = {
             baselineId: diff.baselineId,
-            newerId: diff.newerId,
             baselineCreatedAt: diff.baselineCreatedAt,
             newerCreatedAt: diff.newerCreatedAt,
-            addedCount: diff.addedCount,
+            added: diff.added,
             removedCount: diff.removedCount,
-            addedSample: diff.added.slice(0, 10).map((x) => ({
-              type: x.type,
-              prio: x.prio,
-              value: String(x.value ?? '').slice(0, 240),
-            })),
             removedSample: diff.removed.slice(0, 10).map((x) => ({
               type: x.type,
               prio: x.prio,
@@ -2224,8 +2212,35 @@ async function runPipeline(ctx) {
           };
         }
       }
-    } catch (e) {
-      console.warn('[GHOSTRECON webhook diff]', e?.message || e);
+    }
+  } catch (e) {
+    console.warn('[GHOSTRECON webhook diff]', e?.message || e);
+  }
+
+  const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
+  if (whUrl && runId != null) {
+    const findingsByType = {};
+    for (const f of findings) {
+      const t = f?.type || 'unknown';
+      findingsByType[t] = (findingsByType[t] || 0) + 1;
+    }
+    let runDiffSummary = null;
+    if (reconDeltaForWebhook) {
+      const d = reconDeltaForWebhook;
+      runDiffSummary = {
+        baselineId: d.baselineId,
+        newerId: runId,
+        baselineCreatedAt: d.baselineCreatedAt,
+        newerCreatedAt: d.newerCreatedAt,
+        addedCount: d.added.length,
+        removedCount: d.removedCount,
+        addedSample: d.added.slice(0, 10).map((x) => ({
+          type: x.type,
+          prio: x.prio,
+          value: String(x.value ?? '').slice(0, 240),
+        })),
+        removedSample: d.removedSample || [],
+      };
     }
     const shannonSummary =
       findings
@@ -2259,6 +2274,27 @@ async function runPipeline(ctx) {
         provider: picked.provider,
         relatorio: picked.relatorio,
         proximos_passos: picked.proximos_passos,
+      });
+      if (reconDeltaForWebhook) {
+        void postReconDeltaFullWebhook(whAi, {
+          target: domain,
+          runId,
+          baselineId: reconDeltaForWebhook.baselineId,
+          baselineCreatedAt: reconDeltaForWebhook.baselineCreatedAt,
+          newerCreatedAt: reconDeltaForWebhook.newerCreatedAt,
+          added: reconDeltaForWebhook.added,
+          removedCount: reconDeltaForWebhook.removedCount,
+        });
+      }
+    } else if (reconDeltaForWebhook) {
+      void postReconDeltaFullWebhook(whAi, {
+        target: domain,
+        runId,
+        baselineId: reconDeltaForWebhook.baselineId,
+        baselineCreatedAt: reconDeltaForWebhook.baselineCreatedAt,
+        newerCreatedAt: reconDeltaForWebhook.newerCreatedAt,
+        added: reconDeltaForWebhook.added,
+        removedCount: reconDeltaForWebhook.removedCount,
       });
     }
   }
@@ -2552,6 +2588,29 @@ app.post('/api/ai-reports', async (req, res) => {
     const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
     if (whUrl) {
       const picked = pickAiReportForWebhook(out);
+      let reconDeltaApi = null;
+      const rid = payload.runId != null ? Number(payload.runId) : null;
+      if (Number.isFinite(rid)) {
+        try {
+          const runs = await listRuns(120);
+          const nt = targetDomain.trim().toLowerCase();
+          const prev = runs.find((r) => String(r.target).trim().toLowerCase() === nt && r.id < rid);
+          if (prev) {
+            const diff = await compareRuns(prev.id, rid);
+            if (!diff.error) {
+              reconDeltaApi = {
+                baselineId: diff.baselineId,
+                baselineCreatedAt: diff.baselineCreatedAt,
+                newerCreatedAt: diff.newerCreatedAt,
+                added: diff.added,
+                removedCount: diff.removedCount,
+              };
+            }
+          }
+        } catch (e) {
+          console.warn('[GHOSTRECON webhook diff ai-reports]', e?.message || e);
+        }
+      }
       if (picked) {
         void postAiReportWebhook(whUrl, {
           target: targetDomain,
@@ -2559,6 +2618,27 @@ app.post('/api/ai-reports', async (req, res) => {
           provider: picked.provider,
           relatorio: picked.relatorio,
           proximos_passos: picked.proximos_passos,
+        });
+        if (reconDeltaApi) {
+          void postReconDeltaFullWebhook(whUrl, {
+            target: targetDomain,
+            runId: rid,
+            baselineId: reconDeltaApi.baselineId,
+            baselineCreatedAt: reconDeltaApi.baselineCreatedAt,
+            newerCreatedAt: reconDeltaApi.newerCreatedAt,
+            added: reconDeltaApi.added,
+            removedCount: reconDeltaApi.removedCount,
+          });
+        }
+      } else if (reconDeltaApi) {
+        void postReconDeltaFullWebhook(whUrl, {
+          target: targetDomain,
+          runId: rid,
+          baselineId: reconDeltaApi.baselineId,
+          baselineCreatedAt: reconDeltaApi.baselineCreatedAt,
+          newerCreatedAt: reconDeltaApi.newerCreatedAt,
+          added: reconDeltaApi.added,
+          removedCount: reconDeltaApi.removedCount,
         });
       }
     }
