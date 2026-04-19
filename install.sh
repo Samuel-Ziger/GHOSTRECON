@@ -6,15 +6,82 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IAS_DIR="$ROOT_DIR/IAs"
 XSS_DIR="$ROOT_DIR/Xss/xss_vibes"
 PROFILE="full"
-INSTALL_IAS=1
+INSTALL_SHANNON=1
+INSTALL_PENTESTGPT=1
 INSTALL_PLAYWRIGHT=1
 INSTALL_DOCKER=1
 INSTALL_SUPABASE=1
 INSTALL_GHOST_LOCAL=1
+# 1 = valor definido na linha de comando; nao perguntar no modo interativo
+CLI_DOCKER=0
+CLI_SHANNON=0
+CLI_PENTESTGPT=0
+ASSUME_DEFAULTS=0
 
 log() { printf '[GHOSTRECON] %s\n' "$*"; }
 warn() { printf '[GHOSTRECON][WARN] %s\n' "$*" >&2; }
 die() { printf '[GHOSTRECON][ERRO] %s\n' "$*" >&2; exit 1; }
+
+# Retorna 0 = sim, 1 = nao. default: y ou n
+prompt_yes_no() {
+  local question="$1"
+  local default="${2:-y}"
+  local reply lower
+  while true; do
+    if [ "$default" = "y" ]; then
+      printf '[GHOSTRECON] %s [Y/n] ' "$question"
+    else
+      printf '[GHOSTRECON] %s [y/N] ' "$question"
+    fi
+    if ! read -r reply </dev/tty 2>/dev/null; then
+      reply=""
+    fi
+    lower="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+      y|yes|s|sim) return 0 ;;
+      n|no|nao) return 1 ;;
+      "")
+        [ "$default" = "y" ] && return 0 || return 1
+        ;;
+      *) printf '[GHOSTRECON] Responda y ou n.\n' ;;
+    esac
+  done
+}
+
+# Ajusta INSTALL_* conforme respostas (so em TTY e sem -y, e sem --skip-* daquele item).
+prompt_optional_installs() {
+  [ "${ASSUME_DEFAULTS:-0}" -eq 1 ] && return 0
+  [ -t 0 ] || return 0
+
+  if [ "${CLI_DOCKER:-0}" -eq 0 ]; then
+    if prompt_yes_no "Instalar Docker (docker.io, compose plugin e usuario no grupo docker)?" y; then
+      INSTALL_DOCKER=1
+    else
+      INSTALL_DOCKER=0
+      log "Docker: pulado por escolha."
+    fi
+  fi
+
+  local sh_def="y" pt_def="y"
+  case "$PROFILE" in minimal|passive) sh_def="n"; pt_def="n" ;; esac
+
+  if [ "${CLI_SHANNON:-0}" -eq 0 ]; then
+    if prompt_yes_no "Clonar e preparar Shannon (IAs/shannon)? (perfil: ${PROFILE})" "$sh_def"; then
+      INSTALL_SHANNON=1
+    else
+      INSTALL_SHANNON=0
+      log "Shannon: pulado por escolha."
+    fi
+  fi
+  if [ "${CLI_PENTESTGPT:-0}" -eq 0 ]; then
+    if prompt_yes_no "Clonar e preparar PentestGPT (IAs/PentestGPT)? (perfil: ${PROFILE})" "$pt_def"; then
+      INSTALL_PENTESTGPT=1
+    else
+      INSTALL_PENTESTGPT=0
+      log "PentestGPT: pulado por escolha."
+    fi
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -27,13 +94,31 @@ Perfis:
   --profile full      Passive + modo Kali + Playwright + IAs opcionais
 
 Opcoes:
-  --skip-ias          Nao clona/prepara Shannon e PentestGPT
+  --skip-ias          Nao clona/prepara Shannon nem PentestGPT (sem perguntar)
+  --skip-shannon      Nao prepara Shannon (sem perguntar)
+  --skip-pentestgpt   Nao prepara PentestGPT (sem perguntar)
   --skip-playwright   Nao instala Chromium do Playwright
-  --skip-docker       Nao instala Docker
+  --skip-docker       Nao instala Docker (sem perguntar)
   --skip-supabase     Nao instala Supabase CLI global
   --skip-ghost-local  Nao prepara a IA local GHOST (ghost-local-v5)
+  -y, --yes           Nao pergunta; usa os padroes atuais / flags --skip-*
   -h, --help          Mostra esta ajuda
+
+Interativo:
+  Em terminal (stdin TTY), pergunta por Docker, Shannon e PentestGPT em qualquer
+  perfil — salvo -y/--yes ou --skip-* correspondente. Sem TTY, perfis minimal/passive
+  nao incluem Shannon/Pentest por padrao; perfil full mantem inclusao por padrao.
 EOF
+}
+
+# Sem TTY: minimal/passive nao puxam IAs por padrao (comportamento classico).
+apply_profile_ia_defaults() {
+  case "$PROFILE" in
+    minimal|passive)
+      [ "${CLI_SHANNON:-0}" -eq 0 ] && INSTALL_SHANNON=0
+      [ "${CLI_PENTESTGPT:-0}" -eq 0 ] && INSTALL_PENTESTGPT=0
+      ;;
+  esac
 }
 
 need_cmd() {
@@ -279,6 +364,9 @@ clone_if_missing() {
 }
 
 prepare_shannon() {
+  if [ "${INSTALL_SHANNON:-0}" -ne 1 ]; then
+    return
+  fi
   local shannon_dir="$IAS_DIR/shannon"
   clone_if_missing "https://github.com/keygraph/shannon.git" "$shannon_dir"
   if [ -d "$shannon_dir" ]; then
@@ -293,6 +381,9 @@ prepare_shannon() {
 }
 
 prepare_pentestgpt() {
+  if [ "${INSTALL_PENTESTGPT:-0}" -ne 1 ]; then
+    return
+  fi
   local pentest_dir="$IAS_DIR/PentestGPT"
   clone_if_missing "https://github.com/GreyDGL/PentestGPT.git" "$pentest_dir"
   if [ -d "$pentest_dir" ]; then
@@ -367,19 +458,34 @@ while [ $# -gt 0 ]; do
       [ -n "$PROFILE" ] || die "Faltou valor para --profile"
       ;;
     --skip-ias)
-      INSTALL_IAS=0
+      INSTALL_SHANNON=0
+      INSTALL_PENTESTGPT=0
+      CLI_SHANNON=1
+      CLI_PENTESTGPT=1
+      ;;
+    --skip-shannon)
+      INSTALL_SHANNON=0
+      CLI_SHANNON=1
+      ;;
+    --skip-pentestgpt)
+      INSTALL_PENTESTGPT=0
+      CLI_PENTESTGPT=1
       ;;
     --skip-playwright)
       INSTALL_PLAYWRIGHT=0
       ;;
     --skip-docker)
       INSTALL_DOCKER=0
+      CLI_DOCKER=1
       ;;
     --skip-supabase)
       INSTALL_SUPABASE=0
       ;;
     --skip-ghost-local)
       INSTALL_GHOST_LOCAL=0
+      ;;
+    -y|--yes)
+      ASSUME_DEFAULTS=1
       ;;
     -h|--help)
       usage
@@ -397,8 +503,12 @@ case "$PROFILE" in
   *) die "Perfil invalido: $PROFILE" ;;
 esac
 
+apply_profile_ia_defaults
+
 detect_debian_like || die "Este instalador foi feito para Debian/Kali."
 need_cmd apt-get || die "apt-get nao encontrado."
+
+prompt_optional_installs
 
 ensure_shell_path
 install_base_apt_packages
@@ -416,14 +526,13 @@ if [ "$PROFILE" = "passive" ] || [ "$PROFILE" = "full" ]; then
   install_go_security_tools
 fi
 
+prepare_shannon
+prepare_pentestgpt
+
 if [ "$PROFILE" = "full" ]; then
   install_apt_security_tools
   install_playwright
   prepare_ghost_local
-  if [ "$INSTALL_IAS" -eq 1 ]; then
-    prepare_shannon
-    prepare_pentestgpt
-  fi
 fi
 
 verify_install
@@ -437,6 +546,7 @@ Notas:
   - Se o Docker foi instalado agora, talvez precise relogar para o grupo docker surtir efeito.
   - O arquivo .env foi copiado do exemplo se nao existia; preencha as chaves/API keys antes de usar tudo.
   - PentestGPT e Shannon podem exigir configuracoes adicionais e credenciais proprias.
+  - Modo interativo: em TTY pergunta por Docker, Shannon e PentestGPT em qualquer perfil; use -y para pular perguntas.
 
 Comandos uteis:
   npm start
