@@ -1,108 +1,290 @@
 # GHOSTRECON
 
-Framework local de recon, OSINT e priorizacao de superficie para bug bounty e pentest autorizado, com pipeline em streaming NDJSON, UI web completa, correlacao de achados e camada de IA (cloud e local).
+Framework local de recon, OSINT, validacao e priorizacao para bug bounty e pentest autorizado, com pipeline em streaming, UI operacional e camada de IA (cloud + local).
 
 ---
 
-## Visao Geral
+## O que e esta ferramenta (sem tecniquês)
 
-O projeto combina:
+O `GHOSTRECON` e uma central de investigacao de superficie de ataque. Em vez de executar dezenas de ferramentas separadas e depois tentar juntar tudo na mao, ele organiza todo o ciclo em um fluxo unico: descobrir ativos, achar sinais de falha, validar o que realmente importa, priorizar por risco e transformar isso em inteligencia acionavel.
 
-- **Orquestrador principal em Node.js/Express** (`server/index.js`) com dezenas de modulos de recon.
-- **UI web local** (`index.html`) com controle fino de modulos, perfis e fluxo de analise.
-- **Paineis auxiliares**: Ghostmap (`mitre-map.html`), Cortex (`cortex.html`), Reporte (`reporte.html`), anotacoes (`anotacao.html`).
-- **Persistencia flexivel**: SQLite local, Postgres via `DATABASE_URL`, ou Supabase API.
-- **IA em cascata**: Gemini -> OpenRouter -> Claude -> endpoint OpenAI-compatible local.
-- **Ghost local** (`ghost-local-v5`) como backend FastAPI para chat, memoria, ingest de runs e endpoint OpenAI-compatible.
-
-Resultado: um stack pronto para **descobrir, validar, priorizar e documentar** achados com mais contexto tecnico.
+Em termos simples: voce aponta um alvo autorizado e a stack devolve **visibilidade**, **contexto**, **prioridade** e **material pronto para decisao tecnica**.
 
 ---
 
-## Principais Capacidades
+## O que ele faz na pratica
 
-- **Recon passivo + semi-ativo**: CT logs, Wayback, Common Crawl, RDAP, DNS enrichment, robots/sitemap, headers/TLS, WAF fingerprint, OpenAPI/GraphQL probe.
-- **Coleta de leaks e codigo**: GitHub search, clone opcional de repositorios para analise complementar, validacao de secrets.
-- **Validacao de evidencia**: verificador de sinais (XSS/SQLi/LFI/redirect/IDOR), micro exploit, webshell probe, descoberta ativa de parametros.
-- **Modo Kali opcional**: `nmap`, `nuclei`, `ffuf`, `sqlmap`, `dalfox`, `wpscan`, `subfinder`, `amass`, `xss_vibes` e correlacoes extras.
-- **Correlacao e priorizacao**: score, dedupe semantico, CVE hints, templates de relatorio, recheck de achados HIGH.
-- **Base de conhecimento**: validacoes manuais + categorias do Cortex + sync opcional para o Ghost (`/memory/teach`).
+- Mapeia superficie digital (subdominios, URLs historicas, headers, DNS, metadados).
+- Procura sinais relevantes (possiveis XSS/SQLi/LFI, leaks, exposicao de servicos, pontos sensiveis).
+- Cruza dados e reduz ruido (dedupe, score, tags OWASP/MITRE).
+- Separa o que e so barulho do que merece tempo do analista.
+- Ajuda a transformar achados em narrativa tecnica (reportes, anotacoes e relatorios IA).
 
 ---
 
-## Arquitetura (alto nivel)
+## O poder da stack (por que isso e forte)
+
+- **Velocidade operacional**: sai de “setup de ferramentas” para “investigacao real”.
+- **Menos cegueira**: correlacao entre sinais que normalmente ficam espalhados.
+- **Menos falso positivo**: camada de validacao e checklist manual.
+- **Mais inteligencia acumulada**: Cortex + memoria local do Ghost reaproveitam conhecimento.
+- **Modo escalavel**: funciona no basico passivo e evolui para modo Kali/ativo quando necessario.
+
+---
+
+## Componentes principais (explicacao nao tecnica)
+
+### 1) `GHOSTRECON` (nucleo)
+E o motor principal: recebe alvo, executa os modulos de recon, transmite o progresso ao vivo e salva o resultado para comparacoes futuras.
+
+### 2) `GhostMao` (no projeto: **Ghostmap**)
+No codigo, o nome existente e `Ghostmap` (`mitre-map.html`).  
+E o painel visual de risco/tatica: mostra o que foi encontrado com leitura orientada por MITRE/OWASP para facilitar entendimento rapido.
+
+### 3) `Cortex`
+O “cerebro” da operacao. Organiza conhecimento validado em categorias, liga achados por fingerprint e transforma descobertas em base reutilizavel.
+
+### 4) `Reporter` (no projeto: **Reporte**)
+Area de validacao manual. Aqui o analista marca o que realmente confirmou, reduz ruido e gera material de reporte com foco no que importa.
+
+### 5) `Anotacao`
+Editor de anotacoes tecnicas com apoio de IA para acelerar redacao e consolidar aprendizado operacional do run.
+
+### 6) `GhostIntelegince` (no projeto: **Ghost Intelligence**)
+No codigo, aparece como `Ghost Intelligence` (frontend do Ghost local).  
+E a camada de IA local para chat, memoria, ingestao de runs e analise guiada.
+
+---
+
+## Como usar em poucos minutos
+
+```bash
+npm install
+cp .env.example .env
+npm start
+```
+
+Depois:
+
+- UI principal: `http://127.0.0.1:3847/`
+- Ghost local (GUI): `http://127.0.0.1:8000/gui/`
+- Endpoint OpenAI-compatible local: `http://127.0.0.1:8000/v1/chat/completions`
+
+---
+
+## Visao tecnica detalhada (cirurgica)
+
+## 1) Arquitetura geral
 
 ```mermaid
 flowchart LR
-  A[UI index.html] -->|POST /api/recon/stream| B[Node API server/index.js]
-  B --> C[Modulos recon/passivo/semi-ativo]
-  B --> D[Persistencia SQLite/Postgres/Supabase]
-  B --> E[Correlacao + score + dedupe]
-  B --> F[AI reports em cascata]
-  B --> G[Ghost KB sync opcional]
-  F --> H[Gemini/OpenRouter/Claude]
-  F --> I[Ghost local /v1/chat/completions]
-  J[Ghost local FastAPI] --> K[/gui /memory /ghostrecon/ingest]
+  A[UI principal index.html] -->|POST /api/recon/stream| B[API Node server/index.js]
+  B --> C[Pipeline runPipeline]
+  C --> D[Modulos recon OSINT validacao]
+  C --> E[Persistencia SQLite Postgres Supabase]
+  C --> F[Correlacao score dedupe OWASP MITRE]
+  C --> G[Relatorios IA em cascata]
+  C --> H[Webhook e diff de runs]
+  C --> I[Sync opcional para Ghost KB]
+  J[Ghost local FastAPI] --> K[/chat /memory /ghostrecon /v1/chat/completions]
+  G --> L[Gemini OpenRouter Claude]
+  G --> M[Fallback local LM Studio Ghost]
 ```
 
 ---
 
-## Estrutura do Repositorio
+## 2) Estrutura do repositorio
 
 ```text
 GHOSTRECON/
-|- server/                       # API principal + pipeline + modulos
-|  |- index.js
-|  |- modules/                  # 70+ modulos
-|  |- tests/                    # 25 testes node --test
-|  `- scripts/                  # utilitarios (mitre extract, bridge, smoke IA)
-|- scripts/
-|  `- start-stack.sh            # sobe Ghost local + API principal
+|- server/                             # API principal, pipeline, modulos
+|  |- index.js                         # entrypoint Node/Express
+|  |- modules/                         # modulos recon, IA, db, correlacao
+|  |- tests/                           # 25 testes (node --test)
+|  `- scripts/                         # utilitarios (MITRE, bridge PentestGPT, smoke IA)
+|- scripts/start-stack.sh              # sobe Ghost local + API Node
 |- ghost-local-v5/
-|  |- start                      # wrapper para ghost-local/start.sh
-|  |- ghost-local/               # FastAPI local + UI + memoria
-|  `- hexstrike-ai/              # integracao opcional HexStrike
-|- Xss/xss_vibes/                # scanner auxiliar python
-|- supabase/                     # config e migrations SQL
-|- index.html                    # UI principal
-|- mitre-map.html                # Ghostmap
-|- cortex.html                   # modo cerebro
-|- reporte.html                  # validacao manual + IA
-|- anotacao.html                 # anotacoes tecnicas com IA
-|- install.sh                    # instalacao por perfil
-|- Dockerfile                    # imagem minima do servidor
-`- .env.example                  # referencias de configuracao
+|  |- start                            # wrapper de start do ghost-local
+|  |- ghost-local/
+|  |  |- backend/main.py               # FastAPI (chat/memory/ingest/codescan)
+|  |  `- frontend/index.html           # Ghost Intelligence
+|  `- hexstrike-ai/                    # stack opcional HexStrike + MCP
+|- Xss/xss_vibes/                      # scanner auxiliar Python
+|- supabase/                           # schema e migrations
+|- index.html                          # hub operacional principal
+|- mitre-map.html                      # Ghostmap
+|- cortex.html                         # Cortex
+|- reporte.html                        # Reporter/validacao manual
+|- anotacao.html                       # Anotacoes com apoio IA
+|- como-usar.html                      # guia de uso UI
+|- install.sh                          # instalador por perfil
+|- Dockerfile                          # imagem minima da API
+`- .env.example                        # configuracoes
 ```
 
 ---
 
-## Requisitos
+## 3) Fluxo de execucao ponta a ponta
 
-- Linux Debian/Kali (recomendado para instalacao completa)
-- Node.js >= 18 (Docker usa Node 22)
-- Python 3 para componentes auxiliares (`ghost-local-v5`, `xss_vibes`)
-- `npm` e acesso de rede para APIs/ferramentas opcionais
-
-Para recursos avancados:
-
-- Chaves de API (Gemini, OpenRouter, Shodan, VT, etc.)
-- Ferramentas Kali no PATH (quando usar `kaliMode`)
-- Docker (opcional para fluxos Shannon/PentestGPT de terceiros)
+1. `npm start` executa `scripts/start-stack.sh`.
+2. O script tenta subir o Ghost local em `:8000` e valida `/health`.
+3. Em seguida sobe a API Node (`server/index.js`) em `:3847`.
+4. A UI (`index.html`) aciona `POST /api/recon/stream` e recebe NDJSON.
+5. `runPipeline()` orquestra as fases:
+   - normalizacao de alvo/escopo,
+   - enumeracao de superficie,
+   - extracao e enriquecimento,
+   - validacoes de evidencia,
+   - modulo Kali opcional,
+   - correlacao/priorizacao,
+   - persistencia + diff.
+6. Com IA habilitada, a stack gera relatorios em cascata (cloud/local).
+7. Opcionalmente envia webhook e sincroniza conhecimento no Ghost.
 
 ---
 
-## Instalacao
+## 4) Camadas funcionais do pipeline
 
-### 1) Rapida (manual)
+### Recon / enumeracao
+- subdominios, wayback, common crawl, RDAP, DNS enrichment.
+- security headers, robots/sitemap, probes HTTP/TLS/WAF.
+- discovery de OpenAPI/GraphQL e superficie historica.
+
+### Leak / codigo
+- GitHub search + fluxo opcional de clone para analise complementar.
+- correlacao de segredos por projeto/alvo.
+
+### Validacao / evidencia
+- verificacoes para sinais de SQLi/LFI/XSS/redirect/IDOR e correlatos.
+- probes tecnicos especificos (ex.: webshell, sqlmap runner, etc.).
+
+### Kali mode (opcional)
+- integracoes com `nmap`, `ffuf`, `nuclei`, `sqlmap`, `wpscan`, `subfinder`, `amass`, `dalfox`, `xss_vibes`.
+- profundidade depende do perfil e das ferramentas presentes no PATH.
+
+### Correlacao / priorizacao
+- score, dedupe semantico, tags OWASP/MITRE e hints de exploracao.
+- recheck para achados de maior severidade.
+
+---
+
+## 5) Interfaces e paineis
+
+- `index.html`: cockpit principal (run, stream ao vivo, filtros, export).
+- `mitre-map.html` (Ghostmap): visualizacao MITRE/OWASP e feed ao vivo.
+- `cortex.html`: base de conhecimento/categorizacao de achados validados.
+- `reporte.html` (Reporter): checklist manual e consolidacao de validacoes.
+- `anotacao.html`: notas tecnicas estruturadas + geracao IA.
+- `ghost-local-v5/ghost-local/frontend/index.html` (Ghost Intelligence): chat/memoria/analise local.
+
+---
+
+## 6) API principal (rotas tecnicas)
+
+### Recon e estado
+- `POST /api/recon/stream`
+- `GET /api/csrf-token`
+- `GET /api/health`
+- `GET /api/capabilities`
+- `POST /api/tool-path-refresh`
+
+### Runs / diff / intel
+- `GET /api/runs`
+- `GET /api/runs/:id`
+- `GET /api/runs/:newerId/diff/:baselineId`
+- `GET /api/intel/:target`
+- `GET /api/project-secret-peers?project=...`
+
+### Cortex / validacao manual
+- `GET|POST /api/brain/categories`
+- `POST /api/brain/categories/:id/description`
+- `POST /api/brain/link`
+- `GET /api/brain/category/:id`
+- `GET|POST /api/manual-validations/:target`
+- `POST /api/manual-validations/ai-report`
+- `POST /api/manual-validations/annotations-ai`
+
+### Integracoes IA
+- `POST /api/ai-reports`
+- `POST /api/pentestgpt-ping`
+- `POST /api/shannon/prep`
+- `GET /api/ai/lmstudio-check`
+
+Observacao: rotas mutaveis usam protecao por CSRF (`X-CSRF-Token`).
+
+---
+
+## 7) Ghost local (FastAPI) e Ghost Intelligence
+
+No modulo `ghost-local-v5/ghost-local/backend/main.py`, o backend local fornece:
+
+- streaming de chat (`/chat/stream`);
+- endpoint OpenAI-compatible (`/v1/chat/completions`);
+- memoria (`/memory/*`);
+- ingestao e analise de runs do GHOSTRECON (`/ghostrecon/ingest/*`, `/ghostrecon/analyze`);
+- codescan (`/codescan/*`).
+
+Scripts importantes:
+
+- `ghost-local-v5/ghost-local/setup.sh`
+- `ghost-local-v5/ghost-local/start.sh`
+- `ghost-local-v5/start`
+
+Opcional: pode iniciar HexStrike junto com `GHOST_START_HEXSTRIKE=1`.
+
+---
+
+## 8) Persistencia e dados
+
+Camadas suportadas:
+
+1. SQLite local (`data/bugbounty.db`) - padrao.
+2. Postgres via `DATABASE_URL`.
+3. Supabase API (`SUPABASE_URL` + chaves).
+
+Pontos tecnicos relevantes:
+
+- runs e findings persistidos para historico/delta;
+- intel deduplicada por fingerprint;
+- correlacao de segredos em projetos com multiplos alvos;
+- validacoes manuais e links Cortex armazenados para reaproveitamento.
+
+---
+
+## 9) IA em cascata e fallback
+
+Fluxo de relatorio IA no servidor principal:
+
+1. Gemini.
+2. OpenRouter.
+3. Claude (Anthropic direto, quando aplicavel).
+4. fallback local OpenAI-compatible (LM Studio ou Ghost local).
+
+Variaveis de controle (exemplos):
+
+- `GEMINI_API_KEY` / `GOOGLE_AI_API_KEY`
+- `OPENROUTER_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `GHOSTRECON_LMSTUDIO_*`
+- `GHOSTRECON_AI_*`
+
+Integracoes opcionais:
+
+- Shannon (`shannon_whitebox`);
+- PentestGPT (`pentestgpt_validate`) + bridge local (`npm run pentestgpt-bridge`).
+
+---
+
+## 10) Instalacao por perfil
+
+### Rapida
 
 ```bash
 npm install
 cp .env.example .env
 ```
 
-Depois ajuste as variaveis que for usar.
-
-### 2) Instalador por perfil (`install.sh`)
+### Instalador orientado (`install.sh`)
 
 ```bash
 chmod +x install.sh
@@ -114,9 +296,9 @@ chmod +x install.sh
 
 Perfis:
 
-- `minimal`: base Node + deps do projeto.
-- `passive`: minimal + ferramentas de recon passivo/auxiliar.
-- `full`: passive + stack Kali ampla + Playwright + preparo Ghost local + IAs opcionais.
+- `minimal`: base Node + dependencias de projeto.
+- `passive`: `minimal` + stack passiva/auxiliar.
+- `full`: `passive` + modo Kali, Playwright, IA local e extras.
 
 Flags uteis:
 
@@ -128,202 +310,7 @@ Flags uteis:
 
 ---
 
-## Como Rodar
-
-### Subir stack completa (recomendado)
-
-```bash
-npm start
-```
-
-Isso executa `scripts/start-stack.sh`, que:
-
-1. sobe o Ghost local em `:8000` (se disponivel), e
-2. inicia a API GHOSTRECON em `:3847`.
-
-### Modos separados
-
-```bash
-npm run start:api    # somente API Node (3847)
-npm run start:ghost  # somente Ghost local (8000)
-npm run dev          # API com watch
-```
-
-URLs principais:
-
-- `http://127.0.0.1:3847/` -> UI principal
-- `http://127.0.0.1:8000/gui/` -> UI do Ghost local
-- `http://127.0.0.1:8000/v1/chat/completions` -> endpoint OpenAI-compatible local
-
----
-
-## Fluxo Operacional do Pipeline
-
-Resumo real do `runPipeline`:
-
-1. Normaliza alvo e escopo (incluindo lista out-of-scope).
-2. Enumera superficie (subs, DNS, RDAP, alive, TLS, headers, robots/sitemap, archive URLs).
-3. Extrai parametros/JS/dorks e busca leaks em codigo.
-4. Aplica verificacoes de evidencia e provas complementares.
-5. Opcional: executa modulos Kali/ativos.
-6. Correlaciona, prioriza, deduplica e monta templates.
-7. Aplica tags OWASP + MITRE.
-8. Persiste run, calcula delta vs run anterior e emite eventos finais.
-9. Opcional: gera relatorios IA e envia webhook.
-
-Saida em `POST /api/recon/stream` e em **NDJSON** (eventos `log`, `pipe`, `finding`, `stats`, `done`, etc.).
-
----
-
-## Modulos e Perfis de Recon
-
-No `index.html`, os modulos sao marcados por checkbox (`class="mod"`). Grupos relevantes:
-
-- **Core passivo**: `subdomains`, `wayback`, `common_crawl`, `rdap`, `dns_enrichment`, `security_headers`, `robots_sitemap`.
-- **OSINT/API**: `virustotal`, `shodan`, `google_cse`, `openapi_specs`, `graphql_probe`.
-- **Leak/code**: `github`, `pastebin`.
-- **Validacao**: `verify_sqli_deep`, `micro_exploit`, `webshell_probe`, `sqlmap`.
-- **Kali**: `subfinder`, `amass`, `kali_ffuf`, `kali_nuclei`, `kali_nmap_aggressive`, `kali_nmap_udp`, `mysql_3306_intel`.
-- **Integracoes IA**: `shannon_whitebox`, `pentestgpt_validate`.
-
-Perfis:
-
-- `quick`: menor cobertura e menor custo.
-- `standard`: equilibrio default.
-- `deep`: mais profundidade e volume de superficie.
-
----
-
-## UI e Paginas
-
-- `index.html`: console principal, stream ao vivo, selecao de modulos e export.
-- `mitre-map.html`: timeline/visual de tags MITRE e OWASP.
-- `cortex.html`: categorizacao de achados validados.
-- `reporte.html`: checklist de validacao manual + relatorio IA sobre subset validado.
-- `anotacao.html`: redacao de anotacoes com endpoint de IA de anotacoes.
-- `como-usar.html`: guia de operacao da interface.
-
----
-
-## API (rotas importantes)
-
-### Recon e capacidade
-
-- `GET /api/csrf-token`
-- `POST /api/recon/stream`
-- `GET /api/capabilities`
-- `GET /api/health`
-- `POST /api/tool-path-refresh`
-
-### Runs/intel
-
-- `GET /api/runs`
-- `GET /api/runs/:id`
-- `GET /api/runs/:newerId/diff/:baselineId`
-- `GET /api/intel/:target`
-- `GET /api/project-secret-peers?project=...`
-
-### Cortex e validacoes
-
-- `GET|POST /api/brain/categories`
-- `POST /api/brain/categories/:id/description`
-- `POST /api/brain/link`
-- `GET /api/brain/category/:id`
-- `GET|POST /api/manual-validations*`
-
-### IA e integracoes
-
-- `POST /api/ai-reports`
-- `GET /api/ai/lmstudio-check`
-- `POST /api/pentestgpt-ping`
-- `POST /api/shannon/prep`
-
-> Endpoints mutaveis exigem `X-CSRF-Token`.
-
----
-
-## Persistencia e Dados
-
-Camadas de armazenamento suportadas:
-
-1. **SQLite local** (default): `data/bugbounty.db`
-2. **Postgres via `DATABASE_URL`**
-3. **Supabase REST** (`SUPABASE_URL` + chave)
-
-Extras:
-
-- Espelho opcional por projeto em `escopo/<projeto>/<alvo>/ghostrecon.db`
-- Arquivo de validacoes em `Validate/<target>/<fingerprint>.json`
-- Intel deduplicada por fingerprint em `bounty_intel`
-- Correlacao de segredos entre alvos de mesmo projeto (`project_secret_peers`)
-
----
-
-## Ghost Local (`ghost-local-v5`)
-
-Backend FastAPI com:
-
-- chat em streaming (`/chat/stream`)
-- endpoint OpenAI-compatible (`/v1/chat/completions`)
-- memoria (`/memory/*`)
-- ingest de runs GHOSTRECON (`/ghostrecon/ingest/*`)
-- analise guiada de runs (`/ghostrecon/analyze`)
-- codescan de repositorio/arquivo/snippet (`/codescan/*`)
-
-Scripts principais:
-
-- `ghost-local-v5/ghost-local/setup.sh`
-- `ghost-local-v5/ghost-local/start.sh`
-- `ghost-local-v5/start`
-
-HexStrike local pode ser iniciado junto quando `GHOST_START_HEXSTRIKE=1`.
-
----
-
-## Integracao IA no Servidor Principal
-
-Fluxo de relatorio em cascata (`server/modules/ai-dual-report.js`):
-
-1. Gemini
-2. OpenRouter
-3. Claude (Anthropic)
-4. Local OpenAI-compatible (LM Studio / Ghost)
-
-Chaves e knobs estao em `.env.example`, com destaque para:
-
-- `GEMINI_API_KEY` / `GOOGLE_AI_API_KEY`
-- `OPENROUTER_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `GHOSTRECON_LMSTUDIO_*`
-- `GHOSTRECON_AI_*`
-
-Tambem existe bridge opcional para validacao estilo PentestGPT:
-
-```bash
-npm run pentestgpt-bridge
-```
-
----
-
-## Variaveis de Ambiente (guia rapido)
-
-O arquivo `.env.example` esta bastante documentado. Ordem pratica de setup:
-
-1. **Obrigatorio basico**
-   - `PORT` (default 3847)
-2. **Banco**
-   - `DATABASE_URL` ou `SUPABASE_URL` + chave
-3. **IA**
-   - `GEMINI_API_KEY` / `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY`
-   - `GHOSTRECON_LMSTUDIO_*` (para fallback local)
-4. **Modulos externos**
-   - `VIRUSTOTAL_API_KEY`, `WPSCAN_API_TOKEN`, `GITHUB_TOKEN`, etc.
-5. **Operacao**
-   - `GHOSTRECON_RL_MAX`, `GHOSTRECON_OUT_OF_SCOPE`, `GHOSTRECON_WEBHOOK_URL`
-
----
-
-## Scripts NPM
+## 11) Scripts NPM
 
 ```bash
 npm start
@@ -341,14 +328,9 @@ npm run db:migration:new
 
 ---
 
-## Testes
+## 12) Testes automatizados
 
-Suite atual: **25 testes** em `server/tests/*.test.js`, cobrindo pontos criticos como:
-
-- parsing e correlacao de findings
-- perfil runtime e tooling
-- deteccoes (OWASP/MITRE/header/webshell/sqlmap/wpscan)
-- integrações e sanitizacao de entrada
+A base inclui **25 testes** em `server/tests/*.test.js`, cobrindo parser, runtime profile, correlacao, deteccoes e integracoes de modulos.
 
 Execucao:
 
@@ -358,35 +340,61 @@ npm test
 
 ---
 
-## Docker (modo minimo)
+## 13) Docker (imagem minima)
 
-Build:
+Build/execucao:
 
 ```bash
 docker build -t ghostrecon .
 docker run --rm -p 3847:3847 --env-file .env ghostrecon
 ```
 
-Observacoes:
+Importante:
 
-- O `Dockerfile` copia apenas `server/` + `index.html`.
-- Paginas adicionais (`mitre-map.html`, `cortex.html`, `reporte.html`, etc.) nao entram por padrao.
-- Ferramentas Kali nao estao embutidas nessa imagem minima.
-
----
-
-## Troubleshooting Rapido
-
-- **Porta 3847 ocupada**: ajuste `PORT` ou finalize processo anterior.
-- **CSRF invalido**: sempre buscar token em `GET /api/csrf-token` antes de `POST`.
-- **Kali nao disponivel**: validar `GET /api/capabilities` e PATH de ferramentas.
-- **IA nao responde**: rodar `npm run test:ai` e checar chaves no `.env`.
-- **Ghost local offline**: verificar `ghost-local-v5/ghost-local/ghost.log`.
-- **Supabase/Postgres falhando**: revisar `DATABASE_URL` e conectividade TLS.
+- o `Dockerfile` atual inclui `server/` + `index.html`;
+- paineis auxiliares (`mitre-map.html`, `cortex.html`, `reporte.html`, `anotacao.html`) nao entram por padrao nessa imagem;
+- ferramentas Kali externas nao fazem parte da imagem minima.
 
 ---
 
-## Uso Responsavel
+## 14) Variaveis de ambiente (mapa pratico)
 
-Ferramenta para **ambientes autorizados**. Mesmo modulos passivos podem gerar trafego e consultas externas. Modulos ativos/Kali e fluxos de verificacao podem ser intrusivos. Respeite escopo contratual, regras de programa e legislacao aplicavel.
+O arquivo `.env.example` esta comentado em profundidade. Ordem recomendada de configuracao:
 
+1. **Basico**
+   - `PORT`
+2. **Banco**
+   - `DATABASE_URL` ou `SUPABASE_*`
+3. **IA**
+   - `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `GHOSTRECON_LMSTUDIO_*`
+4. **APIs de recon**
+   - `VIRUSTOTAL_API_KEY`, `GITHUB_TOKEN`, `SHODAN_API_KEY`, `WPSCAN_API_TOKEN` etc.
+5. **Operacao**
+   - rate limit, out-of-scope, webhook, knobs de timeout/retries.
+
+---
+
+## 15) Troubleshooting rapido
+
+- Porta ocupada: ajuste `PORT`/`GHOST_PORT` ou finalize processo existente.
+- Erro CSRF: obtenha token em `GET /api/csrf-token` antes de POSTs mutaveis.
+- Modo Kali incompleto: valide `GET /api/capabilities` e ferramentas no PATH.
+- IA falhando: rode `npm run test:ai` e revise variaveis no `.env`.
+- Ghost local offline: revise `ghost-local-v5/ghost-local/ghost.log`.
+- Falha Postgres/Supabase: valide URL/chaves/TLS e conectividade externa.
+
+---
+
+## 16) Limites e riscos operacionais
+
+- Ferramenta para uso **apenas autorizado**.
+- Modulos ativos podem ser intrusivos e gerar trafego relevante.
+- Integracoes externas dependem de quota, latencia e disponibilidade de terceiros.
+- Exposicao de dados locais (logs/db/artifacts) exige higiene operacional e controle de versionamento.
+
+---
+
+## 17) Uso responsavel
+
+Use somente em ambientes com permissao explicita (contrato, programa, escopo formal).  
+Respeite legislacao local, regras de disclosure e politicas do alvo.
