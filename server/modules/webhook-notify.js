@@ -2,6 +2,8 @@
  * Notificação opcional pós-recon (Slack/Discord/custom) e relatório IA (Discord: embeds).
  */
 
+import { generateCriticalSecurityAlertText } from './ai-dual-report.js';
+
 function isDiscordWebhookUrl(url) {
   try {
     const u = new URL(String(url || '').trim());
@@ -315,5 +317,81 @@ export async function postReconWebhook(webhookUrl, payload) {
     if (!res.ok) logWebhookHttpError(res, await readWebhookFailureBody(res));
   } catch (e) {
     console.warn('[GHOSTRECON webhook]', e?.message || e);
+  }
+}
+
+/**
+ * Alerta imediato (Critical): FTP anónimo com upload STOR confirmado.
+ * Opcionalmente reescreve o texto com IA (`GHOSTRECON_FTP_CRITICAL_AI`).
+ */
+export async function postFtpAnonymousWritableCriticalWebhook(webhookUrl, payload) {
+  const u = String(webhookUrl || '').trim();
+  if (!u) return;
+  const target = String(payload?.target || '—').slice(0, 240);
+  const ftpEndpoint = String(payload?.ftpEndpoint || '').slice(0, 120);
+  const probeFile = payload?.probeFile ? String(payload.probeFile).slice(0, 160) : '';
+  const probeDetail = payload?.probeDetail ? String(payload.probeDetail).slice(0, 200) : '';
+
+  const factsMarkdown = [
+    `- Serviço: **FTP** com login anónimo e **upload (STOR)** confirmado por teste controlado.`,
+    `- Endpoint: \`${ftpEndpoint}\``,
+    probeFile ? `- Ficheiro de teste criado e apagado (DELE): \`${probeFile}\`` : null,
+    probeDetail ? `- Detalhe: ${probeDetail}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  let description = '';
+  try {
+    const ai = await generateCriticalSecurityAlertText({
+      title: 'FTP anónimo com escrita (upload permitido)',
+      factsMarkdown,
+    });
+    description = (ai && ai.trim()) || `**CRITICAL** — FTP anónimo permite escrita em \`${ftpEndpoint}\`. Impacto típico: armazenamento de malware, defacement, exfiltração. Verificar imediatamente permissões vsftpd/proftpd e firewall.`;
+  } catch (e) {
+    console.warn('[GHOSTRECON FTP webhook IA]', e?.message || e);
+    description = `**CRITICAL** — FTP anónimo com upload em \`${ftpEndpoint}\`.`;
+  }
+  description = description.slice(0, 3900);
+
+  try {
+    if (isDiscordWebhookUrl(u)) {
+      const res = await fetch(u, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: `**GHOSTRECON** · 🚨 **CRITICAL** · \`${target}\``,
+          embeds: [
+            {
+              title: 'FTP anónimo — escrita (upload) permitida',
+              description,
+              color: 0xed4245,
+              footer: { text: `FTP ${ftpEndpoint}`.slice(0, 2048) },
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+      if (!res.ok) logWebhookHttpError(res, await readWebhookFailureBody(res));
+      return;
+    }
+    const res = await fetch(u, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'ghostrecon',
+        kind: 'ftp_anonymous_writable_critical',
+        severity: 'critical',
+        target,
+        ftpEndpoint,
+        probeFile: probeFile || null,
+        probeDetail: probeDetail || null,
+        description,
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) logWebhookHttpError(res, await readWebhookFailureBody(res));
+  } catch (e) {
+    console.warn('[GHOSTRECON FTP critical webhook]', e?.message || e);
   }
 }

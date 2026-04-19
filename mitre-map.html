@@ -1062,6 +1062,38 @@
       pointer-events: auto;
     }
 
+    /* ─── Segredos partilhados entre alvos (mesmo projeto) ─── */
+    .psp-bar {
+      position: relative;
+      z-index: 90;
+      margin: 0 16px 10px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 157, 77, 0.35);
+      border-radius: 8px;
+      background: linear-gradient(135deg, rgba(255, 157, 77, 0.08), rgba(11, 16, 23, 0.95));
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    }
+    .psp-bar-head {
+      margin-bottom: 8px;
+    }
+    .psp-bar-title {
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--mitre);
+    }
+    .psp-list {
+      margin: 0;
+      padding: 0 0 0 16px;
+      color: var(--dim2);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .psp-list li { margin: 4px 0; }
+    .psp-preview { color: var(--text); opacity: 0.85; }
+
     .branch-json-dock-panel-head {
       display: flex;
       align-items: center;
@@ -1592,6 +1624,13 @@
       <span id="statePill" class="pill waiting">À espera</span>
     </div>
   </header>
+
+  <div id="projectSecretPeersBar" class="psp-bar" hidden>
+    <div class="psp-bar-head">
+      <span class="psp-bar-title">Segredos partilhados entre alvos (mesmo projeto)</span>
+    </div>
+    <ul id="projectSecretPeersList" class="psp-list"></ul>
+  </div>
 
   <div id="branchJsonDockWrap" class="branch-json-dock-wrap" hidden>
     <button
@@ -2311,6 +2350,27 @@
         return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
       }
 
+      function renderProjectSecretPeersBar(dups) {
+        const bar = document.getElementById('projectSecretPeersBar');
+        const ul = document.getElementById('projectSecretPeersList');
+        if (!bar || !ul) return;
+        if (!Array.isArray(dups) || !dups.length) {
+          bar.hidden = true;
+          ul.innerHTML = '';
+          return;
+        }
+        bar.hidden = false;
+        ul.innerHTML = '';
+        for (const d of dups) {
+          const li = document.createElement('li');
+          const kind = escapeHtml(d.kind_hint || 'secret');
+          const tg = Array.isArray(d.targets) ? d.targets.map(escapeHtml).join(', ') : '';
+          const pv = escapeHtml(String(d.preview || '').slice(0, 140));
+          li.innerHTML = `<strong>${kind}</strong> · ${tg}<span class="psp-preview"> — ${pv}</span>`;
+          ul.appendChild(li);
+        }
+      }
+
       function appendCascadeDivider(domain, meta) {
         const emp = feedRoot.querySelector('.empty-state');
         if (emp) emp.remove();
@@ -2834,6 +2894,12 @@
           if (Array.isArray(m.owaspDetails)) addOwaspHits(m.owaspDetails);
           pushEvent({t:Date.now(),kind:'findings_rescore',mitreIds:m.mitreIds,owaspIds:m.owaspIds});
           scheduleJsonRefresh(); return;
+        }
+        if (m.type === 'project_secret_peers') {
+          renderProjectSecretPeersBar(Array.isArray(m.duplicates) ? m.duplicates : []);
+          pushEvent({ t: Date.now(), kind: 'project_secret_peers', duplicates: m.duplicates });
+          scheduleJsonRefresh();
+          return;
         }
         if (m.type==='run_end') {
           statePill.textContent='Stream terminado'; statePill.className='pill';

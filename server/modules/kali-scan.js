@@ -14,6 +14,8 @@ import {
 } from './wpscan.js';
 import { hostLiteralForUrl } from './recon-target.js';
 import { buildMysql3306IntelFindings } from './mysql-nmap-intel.js';
+import { probeFtpAnonymousWritable } from './ftp-anon-write-probe.js';
+import { postFtpAnonymousWritableCriticalWebhook } from './webhook-notify.js';
 
 const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt',
@@ -865,6 +867,7 @@ async function ingestNmapScanRows(rows, ctx) {
     ftpChecked,
     baseUrlsForFfuf,
     scanKind,
+    domain: reconTarget,
   } = ctx;
   const label = scanKind === 'udp' ? 'nmap UDP' : 'nmap';
   log(`${label}: ${rows.length} serviço(s) em portas abertas`, 'success');
@@ -927,29 +930,77 @@ async function ingestNmapScanRows(rows, ctx) {
             timeoutMs: ftpTimeout,
           });
           if (r.ok) {
-            addFinding({
-              type: 'security',
-              prio: 'high',
-              score: 91,
-              value: `FTP anonymous login enabled @ ${k}`,
-              meta: [
-                'service=ftp',
-                r.banner ? `banner=${String(r.banner).slice(0, 90)}` : null,
-                r.userReply ? `user=${r.userReply}` : null,
-                r.passReply ? `pass=${r.passReply}` : null,
-                r.passUsed === '' ? 'auth=anonymous-empty-pass' : r.passUsed ? `auth=anonymous-pass:${r.passUsed}` : null,
-                Array.isArray(r.triedPasses) && r.triedPasses.length
-                  ? `tried=${r.triedPasses.map((p) => (p === '' ? '<empty>' : p)).join(',')}`
-                  : null,
-                'evidence=active_check',
-              ]
-                .filter(Boolean)
-                .join(' • '),
-              url: null,
-            });
-            const authHow =
-              r.passUsed === '' ? 'PASS <empty>' : r.passUsed ? `PASS ${r.passUsed}` : 'sem PASS';
-            log(`[FTP] ⚠ login anônimo permitido em ${k} (${authHow})`, 'warn');
+            let w = { writable: false };
+            try {
+              w = await probeFtpAnonymousWritable({
+                host: row.host,
+                port: Number(row.port) || 21,
+                timeoutMs: Math.max(8000, Number(process.env.GHOSTRECON_FTP_WRITE_PROBE_TIMEOUT_MS || 15000)),
+              });
+            } catch (e) {
+              log(`[FTP] write probe: ${e?.message || e}`, 'warn');
+            }
+            if (w.writable) {
+              addFinding({
+                type: 'security',
+                prio: 'high',
+                score: 99,
+                value: `CRITICAL: FTP anonymous write (upload) @ ${k}`,
+                meta: [
+                  'service=ftp',
+                  'severity=critical',
+                  'anonymous_upload=stor_confirmed',
+                  w.probeFile ? `probe_file=${w.probeFile}` : null,
+                  w.detail ? `probe=${w.detail}` : null,
+                  r.banner ? `banner=${String(r.banner).slice(0, 80)}` : null,
+                  'evidence=stor_dele',
+                ]
+                  .filter(Boolean)
+                  .join(' • '),
+                url: null,
+              });
+              log(`[FTP] CRITICAL: escrita anónima (upload) permitida em ${k}`, 'error');
+              if (typeof emit === 'function') {
+                emit({
+                  type: 'intel',
+                  line: `☠ CRITICAL: FTP anonymous upload (STOR) permitido em ${k}`,
+                });
+              }
+              const wh = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
+              if (wh) {
+                void postFtpAnonymousWritableCriticalWebhook(wh, {
+                  target: reconTarget || row.host,
+                  ftpEndpoint: k,
+                  probeFile: w.probeFile,
+                  probeDetail: w.detail,
+                });
+              }
+            } else {
+              addFinding({
+                type: 'security',
+                prio: 'high',
+                score: 91,
+                value: `FTP anonymous login enabled @ ${k}`,
+                meta: [
+                  'service=ftp',
+                  r.banner ? `banner=${String(r.banner).slice(0, 90)}` : null,
+                  r.userReply ? `user=${r.userReply}` : null,
+                  r.passReply ? `pass=${r.passReply}` : null,
+                  r.passUsed === '' ? 'auth=anonymous-empty-pass' : r.passUsed ? `auth=anonymous-pass:${r.passUsed}` : null,
+                  Array.isArray(r.triedPasses) && r.triedPasses.length
+                    ? `tried=${r.triedPasses.map((p) => (p === '' ? '<empty>' : p)).join(',')}`
+                    : null,
+                  'evidence=active_check',
+                  w.detail === 'probe_disabled' ? 'write_probe=skipped' : null,
+                ]
+                  .filter(Boolean)
+                  .join(' • '),
+                url: null,
+              });
+              const authHow =
+                r.passUsed === '' ? 'PASS <empty>' : r.passUsed ? `PASS ${r.passUsed}` : 'sem PASS';
+              log(`[FTP] ⚠ login anônimo permitido em ${k} (${authHow})`, 'warn');
+            }
           } else {
             const why = r.error || r.passReply || r.userReply || 'negado';
             log(`[FTP] ${k} sem login anônimo (${String(why).slice(0, 120)})`, 'info');
@@ -1131,6 +1182,7 @@ export async function runKaliAggressiveScan({
         exploitGoogleMax,
         ftpChecked,
         baseUrlsForFfuf,
+        domain,
       };
       await ingestNmapScanRows(tcpNmapRows, { ...ingestCtx, scanKind: 'tcp' });
       if (runMysql3306Intel && tcpNmapRows.length) {
@@ -1164,6 +1216,7 @@ export async function runKaliAggressiveScan({
           exploitGoogleMax,
           ftpChecked,
           baseUrlsForFfuf,
+          domain,
           scanKind: 'udp',
         });
       } catch (e) {

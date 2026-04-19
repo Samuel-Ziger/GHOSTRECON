@@ -1138,3 +1138,58 @@ export function aiKeysConfigured() {
     both: [g, o, c].filter(Boolean).length >= 2,
   };
 }
+
+const CRITICAL_ALERT_SYSTEM_OR = `És analista de segurança. Responde só com o texto do alerta em português (máximo 700 caracteres). Sem título em markdown pesado; pode usar negrito Discord ** assim **. Usa apenas factos do pedido.`;
+
+/** Texto curto para webhook (Gemini → OpenRouter → LM Studio). `null` se não houver chaves ou falha. */
+export async function generateCriticalSecurityAlertText({ title, factsMarkdown }) {
+  const v = String(process.env.GHOSTRECON_FTP_CRITICAL_AI ?? '1').trim().toLowerCase();
+  if (['0', 'false', 'no', 'off'].includes(v)) return null;
+
+  const userBlock = `Escreve um alerta urgente mas profissional para equipa de bug bounty / pentest (Discord).\n\n## ${title}\n\n${factsMarkdown}`;
+  const geminiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_AI_API_KEY?.trim();
+  const geminiModel = process.env.GHOSTRECON_GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+  const orKey = process.env.OPENROUTER_API_KEY?.trim();
+  const orModel = process.env.GHOSTRECON_OPENROUTER_MODEL?.trim() || 'google/gemma-2-9b-it';
+  const lmModel = process.env.GHOSTRECON_LMSTUDIO_MODEL?.trim() || 'local-model';
+
+  if (geminiKey) {
+    try {
+      const t = await callGemini(userBlock, geminiKey, geminiModel);
+      return String(t || '')
+        .trim()
+        .slice(0, 1200);
+    } catch {
+      /* next */
+    }
+  }
+  if (orKey) {
+    try {
+      const t = await callOpenRouter(userBlock, orKey, orModel, {
+        jsonObject: false,
+        systemPrompt: CRITICAL_ALERT_SYSTEM_OR,
+      });
+      return String(t || '')
+        .trim()
+        .slice(0, 1200);
+    } catch {
+      /* next */
+    }
+  }
+  if (
+    ['1', 'true', 'yes', 'on'].includes(String(process.env.GHOSTRECON_LMSTUDIO_ENABLED || '').trim().toLowerCase())
+    || process.env.GHOSTRECON_LMSTUDIO_MODEL?.trim()
+  ) {
+    try {
+      const t = await callLmStudio(userBlock, lmModel, {
+        systemPrompt: CRITICAL_ALERT_SYSTEM_OR,
+      });
+      return String(t || '')
+        .trim()
+        .slice(0, 1200);
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}

@@ -72,6 +72,8 @@ import {
   listBrainLinksForCategory,
   storageLabel,
   fingerprintFinding,
+  listProjectSecretDuplicates,
+  sanitizePathSegment,
 } from './modules/db.js';
 import { collectUniqueIpv4, shodanHostSummary } from './modules/ip-intel.js';
 import { googleCseSearch } from './modules/google-cse.js';
@@ -105,6 +107,7 @@ import { runOptionalPlaywrightXssProbe } from './modules/browser-xss-verify.js';
 import { applyOwaspTagsToFindings, inferOwaspTags } from './modules/owasp-top10.js';
 import { applyMitreTagsToFindings, inferMitreTechniqueIds } from './modules/mitre-recon.js';
 import { parseReconTarget, hostLiteralForUrl, targetIsIp } from './modules/recon-target.js';
+import { secretMaterialFingerprint } from './modules/db-common.js';
 
 function firstIpv4FromDnsRecords(records) {
   for (const r of records || []) {
@@ -1273,13 +1276,14 @@ async function runPipeline(ctx) {
     }
     const sec = scanSecrets(a.body || '');
     for (const s of sec) {
+      const fpMeta = s.correlationFp ? `value_fp=${s.correlationFp}` : '';
       addFinding(
         {
           type: 'secret',
           prio: 'high',
           score: 92,
           value: `[${s.kind}] ${s.masked}`,
-          meta: `Possível segredo em JS (verificar falso positivo)`,
+          meta: ['Possível segredo em JS (verificar falso positivo)', fpMeta].filter(Boolean).join(' • '),
           url: jsUrl,
         },
         'secrets',
@@ -1399,13 +1403,15 @@ async function runPipeline(ctx) {
     const gh = await githubCodeSearch(domain, process.env.GITHUB_TOKEN);
     if (gh.ok && gh.items?.length) {
       for (const it of gh.items) {
+        const ghMat = `${it.repo || ''}|${it.path || ''}`;
+        const ghf = secretMaterialFingerprint('github_code_hit', ghMat);
         addFinding(
           {
             type: 'secret',
             prio: 'high',
             score: 78,
             value: `${it.repo || ''}/${it.path || ''}`,
-            meta: 'Resultado GitHub Code Search — revisar manualmente',
+            meta: `Resultado GitHub Code Search — revisar manualmente • value_fp=${ghf}`,
             url: it.html_url,
           },
           'secrets',
@@ -2076,6 +2082,13 @@ async function runPipeline(ctx) {
         'info',
       );
     }
+    if (saved.projectSecretDuplicates?.length) {
+      emit({ type: 'project_secret_peers', duplicates: saved.projectSecretDuplicates });
+      log(
+        `Correlação de segredos (mesmo projeto): ${saved.projectSecretDuplicates.length} valor(es) aparecem em 2+ alvos — Ghostmap / GET /api/project-secret-peers`,
+        'warn',
+      );
+    }
     try {
       const runs = await listRuns(120);
       const nt = domain.trim().toLowerCase();
@@ -2429,6 +2442,21 @@ app.post('/api/tool-path-refresh', (req, res) => {
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'ghostrecon' });
+});
+
+/** Segredos com o mesmo value_fp em mais de um alvo (requer nome de projeto na UI e achados com value_fp no meta). */
+app.get('/api/project-secret-peers', (req, res) => {
+  const project = String(req.query.project || '').trim();
+  if (!project) {
+    res.status(400).json({ ok: false, error: 'Query ?project= é obrigatório (nome do projeto na UI).' });
+    return;
+  }
+  try {
+    const duplicates = listProjectSecretDuplicates(project);
+    res.json({ ok: true, project: sanitizePathSegment(project), duplicates });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 app.get('/api/capabilities', async (_req, res) => {

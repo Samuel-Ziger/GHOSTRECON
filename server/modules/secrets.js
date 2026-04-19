@@ -1,6 +1,8 @@
 /**
  * Heurísticas — possíveis segredos (mascarar na saída).
  */
+import { secretMaterialFingerprint } from './db-common.js';
+
 const PATTERNS = [
   { name: 'AWS Access Key', re: /\b(AKIA[0-9A-Z]{16})\b/g, mask: (s) => s.slice(0, 8) + '…' },
   {
@@ -26,6 +28,7 @@ export function scanSecrets(text, maxPerKind = 3) {
       findings.push({
         kind: name,
         masked: typeof mask === 'function' ? mask(raw) : String(raw).slice(0, 12) + '…',
+        correlationFp: secretMaterialFingerprint(name, raw),
       });
       n++;
     }

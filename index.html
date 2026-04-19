@@ -4458,6 +4458,9 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
           addLog(`HOT ${String(s.type || '?').toUpperCase()}: ${String(s.value || '').slice(0, 120)}`, 'warn');
         }
       }
+      if (ev.type === 'project_secret_peers' && Array.isArray(ev.duplicates) && ev.duplicates.length) {
+        mitreLivePost({ type: 'project_secret_peers', duplicates: ev.duplicates });
+      }
       if (ev.type === 'ai_report') {
         if (ev.phase === 'start') {
           addLog(`IA (automático): ${ev.target || targetDomain}…`, 'info');
