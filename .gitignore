@@ -23,3 +23,9 @@ IAs/PentestGPT/
 # Supabase CLI (ligação local ao projeto remoto)
 supabase/.branches/
 supabase/.temp/
+
+# Ghost local runtime artefacts
+ghost-local-v5/ghost-local/backend/__pycache__/
+ghost-local-v5/ghost-local/backend/ghost_data/
+ghost-local-v5/ghost-local/ghost.log
+ghost-local-v5/hexstrike-ai/hexstrike.log

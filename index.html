@@ -897,6 +897,88 @@
     50% { box-shadow: 0 0 25px rgba(255,170,0,0.6); }
   }
 
+  /* ===== FLOATING GHOST BUTTON ===== */
+  .ghost-fab {
+    position: fixed;
+    right: 18px;
+    bottom: 22px;
+    z-index: 1600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 60px;
+    height: 60px;
+    border: 1px solid rgba(0, 212, 255, 0.45);
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 28% 24%, rgba(232, 251, 255, 0.22), transparent 54%),
+      linear-gradient(145deg, rgba(8, 18, 30, 0.98), rgba(4, 8, 16, 0.98));
+    box-shadow:
+      0 0 0 1px rgba(0, 212, 255, 0.15),
+      0 0 22px rgba(0, 212, 255, 0.2),
+      0 10px 30px rgba(0, 0, 0, 0.5);
+    color: var(--accent);
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+  .ghost-fab:hover {
+    transform: translateY(-2px) scale(1.02);
+    border-color: rgba(0, 255, 136, 0.52);
+    box-shadow:
+      0 0 0 1px rgba(0, 255, 136, 0.24),
+      0 0 28px rgba(0, 212, 255, 0.28),
+      0 12px 34px rgba(0, 0, 0, 0.55);
+  }
+  .ghost-fab:active {
+    transform: translateY(0) scale(0.98);
+  }
+  .ghost-fab:focus-visible {
+    outline: 2px solid var(--accent2);
+    outline-offset: 3px;
+  }
+  .ghost-fab svg {
+    width: 31px;
+    height: 34px;
+    display: block;
+    filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.45));
+  }
+  .ghost-fab .ghost-fab-tip {
+    position: absolute;
+    right: 70px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    opacity: 0;
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: var(--text-bright);
+    background: rgba(8, 14, 24, 0.94);
+    border: 1px solid var(--border-bright);
+    padding: 7px 10px;
+    box-shadow: 0 0 16px rgba(0, 0, 0, 0.45);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .ghost-fab:hover .ghost-fab-tip,
+  .ghost-fab:focus-visible .ghost-fab-tip {
+    opacity: 1;
+    transform: translateY(-50%) translateX(-2px);
+  }
+
+  @media (max-width: 900px) {
+    .ghost-fab {
+      width: 54px;
+      height: 54px;
+      right: 12px;
+      bottom: 14px;
+    }
+    .ghost-fab .ghost-fab-tip {
+      display: none;
+    }
+  }
+
   /* ===== MODULES SECTION ===== */
   .modules-section {
     padding: 16px 20px;
@@ -3061,6 +3143,44 @@
   </div>
 </div>
 
+<button
+  type="button"
+  class="ghost-fab"
+  id="ghostFabBtn"
+  title="Abrir Ghost (IA local). Clique: popup reutilizável. Shift+clique: nova aba."
+  aria-label="Abrir Ghost IA local"
+  onclick="openGhostAssistantUi(event)"
+>
+  <span class="ghost-fab-tip">Ghost IA</span>
+  <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="ghostFabGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#e8fbff" />
+        <stop offset="45%" stop-color="#5ee0ff" />
+        <stop offset="100%" stop-color="#00a8d4" />
+      </linearGradient>
+      <linearGradient id="ghostFabSheen" x1="15%" y1="0%" x2="75%" y2="85%">
+        <stop offset="0%" stop-color="rgba(255,255,255,0.38)" />
+        <stop offset="45%" stop-color="rgba(255,255,255,0)" />
+        <stop offset="100%" stop-color="rgba(0,45,70,0.22)" />
+      </linearGradient>
+    </defs>
+    <path
+      fill="url(#ghostFabGrad)"
+      stroke="rgba(0,212,255,0.45)"
+      stroke-width="0.55"
+      d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
+    />
+    <path
+      fill="url(#ghostFabSheen)"
+      d="M 24 8 C 15 8 9 15 9 23.5 V 33 Q 16 28 24 32 Q 32 28 39 33 V 23.5 C 39 15 33 8 24 8 Z"
+      opacity="0.88"
+    />
+    <ellipse cx="17" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+    <ellipse cx="31" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+  </svg>
+</button>
+
 <script>
 // ─── STATE ────────────────────────────────────────────────
 let findings = [];
@@ -4263,6 +4383,37 @@ function openCortexPage(ev) {
   const w = window.open(u.href, '_blank', 'noopener,noreferrer');
   if (!w) addLog('Cortex: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
   else if (ev && ev.shiftKey) addLog('Cortex: modo demonstração (dados fictícios).', 'info');
+}
+
+function resolveGhostAssistantUrl() {
+  try {
+    const raw = String(localStorage.getItem('ghostrecon_ghost_ui_url') || '').trim();
+    if (raw) return new URL(raw, window.location.href).href;
+  } catch (_) {}
+  const proto = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  const host = window.location.hostname || '127.0.0.1';
+  return `${proto}//${host}:8000/gui/`;
+}
+
+function openGhostAssistantUi(ev) {
+  const url = resolveGhostAssistantUrl();
+  const popupFeatures = 'popup=yes,noopener,noreferrer,width=1320,height=900';
+  let w = null;
+  if (!(ev && ev.shiftKey)) {
+    w = window.open(url, 'ghostrecon_ghost_ui', popupFeatures);
+  }
+  if (!w) {
+    w = window.open(url, '_blank', 'noopener,noreferrer');
+  }
+  if (!w) {
+    addLog('Ghost IA: popup bloqueado — abre manualmente: ' + url, 'warn');
+    return;
+  }
+  if (ev && ev.shiftKey) {
+    addLog('Ghost IA aberto em nova aba.', 'info');
+  } else {
+    addLog('Ghost IA aberto em janela dedicada (reutilizável).', 'info');
+  }
 }
 
 function openMitreMapPage(targetWindowName) {

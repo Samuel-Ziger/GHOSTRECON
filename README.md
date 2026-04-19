@@ -1,6 +1,7 @@
 # GHOSTRECON
 
-**Framework de OSINT e reconhecimento** para **bug bounty** e pentest autorizado. Um servidor **Node.js + Express** orquestra recolha **passiva** (Certificate Transparency, arquivos web, DNS, cabeçalhos, TLS, APIs públicas), fases **semi-ativas** (HTTP, verificação com evidência) e, opcionalmente, **modo Kali** (nmap, nuclei, ffuf, wpscan, dalfox, sqlmap, xss_vibes, …). A UI (`index.html`) consome o pipeline em **NDJSON**; há ainda **Ghostmap**, **Cortex** e **Reporte** — três ecrãs para narrativa de ameaça, grafo por categorias e triagem humana.
+**Framework de OSINT e reconhecimento** para **bug bounty** e pentest autorizado. Um servidor **Node.js + Express** orquestra recolha **passiva** (Certificate Transparency, arquivos web, DNS, cabeçalhos, TLS, APIs públicas), fases **semi-ativas** (HTTP, verificação com evidência) e, opcionalmente, **modo Kali** (nmap, nuclei, ffuf, wpscan, dalfox, sqlmap, xss_vibes, …). A UI (`index.html`) consome o pipeline em **NDJSON**; há ainda **Ghostmap**, **Cortex** e **Reporte** — três ecrãs para narrativa de ameaça, grafo por categorias e triagem humana.  
+Inclui integração com **Ghost Intelligence** (IA local em `ghost-local-v5`) com arranque unificado.
 
 ```bash
 npm install && npm start
@@ -40,8 +41,9 @@ npm install && npm start
 | **Verificação** | `verify` (XSS/SQLi/open redirect/IDOR/LFI com evidência), `micro_exploit`, **webshell heurístico**, descoberta activa de parâmetros, **`sqlmap`** opcional, **Playwright** para XSS DOM opcional |
 | **Kali** | nmap (incl. perfis agressivo/UDP opcionais), searchsploit, ffuf, nuclei, dalfox, wpscan, whois, **xss_vibes** (Python), **intel MySQL 3306** + correlação com ficheiros de config no score |
 | **Inteligência** | Priorização v2, CVE hints (NVD/OSV), correlação, dedupe semântico, templates de relatório, checklist e sugestões, **snapshot de cobertura de recon** (`recon_coverage`) |
-| **UI extra** | Ghostmap (MITRE/OWASP ao vivo), Cortex (categorias + SQLite), Reporte + anotações IA |
-| **IA** | Relatórios Markdown (Gemini, OpenRouter, Claude, LM Studio em cascata) |
+| **UI extra** | Ghostmap (MITRE/OWASP ao vivo), Cortex (categorias + SQLite), Reporte + anotações IA, botão flutuante para abrir Ghost Intelligence |
+| **IA** | Relatórios Markdown (Gemini, OpenRouter, Claude, endpoint OpenAI-compatible local em cascata) |
+| **Ghost Intelligence (local)** | UI e API FastAPI em `ghost-local-v5` (`/gui`, `/v1/chat/completions`, `/memory/*`, ingest `/ghostrecon/*`) |
 | **Integrações** | Shannon Lite (white-box), PentestGPT HTTP, webhooks (incl. Discord) |
 
 ---
@@ -57,7 +59,9 @@ npm install && npm start
 
 ```bash
 npm install
-npm start          # produção
+npm start          # stack: Ghost local (porta 8000) + API GHOSTRECON (3847)
+npm run start:api  # só API GHOSTRECON
+npm run start:ghost # só Ghost Intelligence
 npm run dev        # node --watch
 npm test           # node --test server/tests/*.test.js
 ```
@@ -70,7 +74,7 @@ Script bash com perfis:
 |--------|----------|
 | `minimal` | APT base, Node 22, `npm install`, `.env` a partir de `.env.example` |
 | `passive` | Minimal + ferramentas Go (subfinder, nuclei, katana, gau, waybackurls, dalfox), deps Python do **xss_vibes**, Supabase CLI (`.deb` GitHub) |
-| `full` | Passive + exploitdb, amass, wpscan, Playwright/Chromium, clones opcionais **Shannon** + **PentestGPT** |
+| `full` | Passive + exploitdb, amass, wpscan, Playwright/Chromium, preparação do **Ghost local** (`ghost-local-v5`) + clones opcionais **Shannon** + **PentestGPT** |
 
 ```bash
 chmod +x install.sh
@@ -78,7 +82,7 @@ chmod +x install.sh
 ./install.sh --profile full --skip-ias --skip-docker
 ```
 
-Opções: `--skip-ias`, `--skip-playwright`, `--skip-docker`, `--skip-supabase`.
+Opções: `--skip-ias`, `--skip-playwright`, `--skip-docker`, `--skip-supabase`, `--skip-ghost-local`.
 
 ---
 
@@ -86,7 +90,7 @@ Opções: `--skip-ias`, `--skip-playwright`, `--skip-docker`, `--skip-supabase`.
 
 | Ficheiro | Função |
 |----------|--------|
-| [`index.html`](index.html) | Consola principal: domínio, perfil (`quick` / `standard` / `deep`), módulos, modo Kali, stream NDJSON, exportações, hub sidebar |
+| [`index.html`](index.html) | Consola principal: domínio, perfil (`quick` / `standard` / `deep`), módulos, modo Kali, stream NDJSON, exportações, hub sidebar + botão flutuante **Ghost IA** |
 | [`mitre-map.html`](mitre-map.html) | **Ghostmap** — timeline MITRE/OWASP; `BroadcastChannel` + `localStorage` com a sessão principal |
 | [`cortex.html`](cortex.html) | **Cortex** — categorias, links fingerprint ↔ categoria (`/api/brain/*`), grafo local; demo: `?demo=1` ou Shift+clique |
 | [`reporte.html`](reporte.html) | **Reporte** — checklist manual, validações, IA sobre validados; payload via `sessionStorage` |
@@ -165,7 +169,17 @@ Validação HTTP **POST** com `ghostPayload` — URL `GHOSTRECON_PENTESTGPT_URL`
 
 ### Relatórios IA
 
-Cascata configurável (Gemini, OpenRouter, Claude, LM Studio). `GET /api/capabilities` expõe `ai`, `shannon`, `pentestgpt`.
+Cascata configurável (Gemini, OpenRouter, Claude, endpoint local OpenAI-compatible).  
+Por padrão o `.env.example` já aponta o fallback local para `http://127.0.0.1:8000/v1` (Ghost Intelligence).  
+`GET /api/capabilities` expõe `ai`, `shannon`, `pentestgpt`.
+
+### Ghost Intelligence (ghost-local-v5)
+
+- Serviço FastAPI local em `ghost-local-v5/ghost-local/backend/main.py`.
+- UI: `http://127.0.0.1:8000/gui/`.
+- Endpoint OpenAI-compatible: `http://127.0.0.1:8000/v1/chat/completions`.
+- `npm start` usa `scripts/start-stack.sh` para subir Ghost + API principal.
+- O botão flutuante “fantasma” no `index.html` abre o Ghost em popup reutilizável (Shift+clique abre nova aba).
 
 ### Webhook
 
@@ -227,6 +241,11 @@ Exemplo mínimo de corpo para `POST /api/recon/stream`:
 - **Supabase API:** `SUPABASE_URL` + chave (`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, …).
 - Migrações: `supabase/migrations/`; atalho SQL: `supabase/COPIAR_PARA_SQL_EDITOR.sql`.
 - Com **nome de projeto** na UI: espelho opcional em `escopo/{projeto}/{domínio}/`.
+- Correlação de segredos entre alvos do mesmo projeto: `GET /api/project-secret-peers?project=...`.
+
+### Sincronização Cortex -> Ghost KB
+
+Quando um achado **já validado manualmente** é ligado a uma categoria no Cortex (`POST /api/brain/link`), o servidor tenta sincronizar esse conhecimento para o Ghost (`/memory/teach`) com snapshot/notes/category do achado (best-effort, não bloqueia fluxo de UI).
 
 Comandos npm: `npm run db:link`, `npm run db:push`, `npm run db:migration:new`.
 
@@ -242,7 +261,7 @@ Comandos npm: `npm run db:link`, `npm run db:push`, `npm run db:migration:new`.
 
 ## Variáveis de ambiente
 
-Lista completa e comentários: **[`.env.example`](.env.example)**. Inclui: APIs (VT, Shodan, GitHub, Google CSE), base de dados, Shannon, PentestGPT, IA, webhook, Kali, wpscan, xss_vibes, Playwright, stealth, scope global, Common Crawl CDX, limites de relatório IA.
+Lista completa e comentários: **[`.env.example`](.env.example)**. Inclui: APIs (VT, Shodan, GitHub, Google CSE), base de dados, Shannon, PentestGPT, IA, webhook, Kali, wpscan, xss_vibes, Playwright, stealth, scope global, Common Crawl CDX, limites de relatório IA, integração Ghost local e sync de conhecimento Cortex -> Ghost (`GHOSTRECON_GHOST_*`).
 
 ---
 
@@ -277,8 +296,10 @@ GHOSTRECON/
 ├── index.html, mitre-map.html, cortex.html, reporte.html, …
 ├── package.json
 ├── install.sh
+├── scripts/start-stack.sh
 ├── Dockerfile
 ├── .env.example
+├── ghost-local-v5/          # Ghost Intelligence local (FastAPI + UI + opcional HexStrike)
 ├── mitre-attack/recon-bundle.json
 ├── mitre-attack/cti/          # clone MITRE/cti (opcional, não versionado)
 ├── IAs/README.md            # Shannon + PentestGPT (clones em IAs/, ignorados)

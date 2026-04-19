@@ -4,7 +4,9 @@
   "description": "Framework passivo de OSINT / recon para bug bounty",
   "type": "module",
   "scripts": {
-    "start": "node server/index.js",
+    "start": "bash scripts/start-stack.sh",
+    "start:api": "node server/index.js",
+    "start:ghost": "bash ghost-local-v5/ghost-local/start.sh",
     "dev": "node --watch server/index.js",
     "test": "node --test server/tests/*.test.js",
     "mitre:extract": "node server/scripts/extract-mitre-recon-bundle.mjs",

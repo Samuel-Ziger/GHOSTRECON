@@ -10,6 +10,7 @@ INSTALL_IAS=1
 INSTALL_PLAYWRIGHT=1
 INSTALL_DOCKER=1
 INSTALL_SUPABASE=1
+INSTALL_GHOST_LOCAL=1
 
 log() { printf '[GHOSTRECON] %s\n' "$*"; }
 warn() { printf '[GHOSTRECON][WARN] %s\n' "$*" >&2; }
@@ -30,6 +31,7 @@ Opcoes:
   --skip-playwright   Nao instala Chromium do Playwright
   --skip-docker       Nao instala Docker
   --skip-supabase     Nao instala Supabase CLI global
+  --skip-ghost-local  Nao prepara a IA local GHOST (ghost-local-v5)
   -h, --help          Mostra esta ajuda
 EOF
 }
@@ -44,6 +46,16 @@ append_line_if_missing() {
   touch "$file"
   if ! grep -Fqx "$line" "$file"; then
     printf '%s\n' "$line" >>"$file"
+  fi
+}
+
+set_env_key_if_missing() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  touch "$file"
+  if ! grep -Eq "^${key}=" "$file"; then
+    printf '%s=%s\n' "$key" "$value" >>"$file"
   fi
 }
 
@@ -207,6 +219,25 @@ setup_env_file() {
     log "Criando .env a partir do exemplo"
     cp "$ROOT_DIR/.env.example" "$ROOT_DIR/.env"
   fi
+  if [ -f "$ROOT_DIR/.env" ] && [ "$INSTALL_GHOST_LOCAL" -eq 1 ]; then
+    set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_LMSTUDIO_ENABLED" "1"
+    set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_LMSTUDIO_BASE_URL" "http://127.0.0.1:8000/v1"
+    set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_LMSTUDIO_MODEL" "ghost"
+    set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_LMSTUDIO_API_KEY" "lm-studio"
+  fi
+}
+
+prepare_ghost_local() {
+  if [ "$INSTALL_GHOST_LOCAL" -ne 1 ]; then
+    return
+  fi
+  local setup_script="$ROOT_DIR/ghost-local-v5/ghost-local/setup.sh"
+  if [ ! -f "$setup_script" ]; then
+    warn "ghost-local-v5 nao encontrado; pulando preparo da IA local."
+    return
+  fi
+  log "Preparando GHOST local (venv + dependencias Python)"
+  bash "$setup_script" --deps-only --skip-start
 }
 
 # CORRIGIDO: evita o erro de "externally-managed-environment" tentando uv primeiro,
@@ -347,6 +378,9 @@ while [ $# -gt 0 ]; do
     --skip-supabase)
       INSTALL_SUPABASE=0
       ;;
+    --skip-ghost-local)
+      INSTALL_GHOST_LOCAL=0
+      ;;
     -h|--help)
       usage
       exit 0
@@ -385,6 +419,7 @@ fi
 if [ "$PROFILE" = "full" ]; then
   install_apt_security_tools
   install_playwright
+  prepare_ghost_local
   if [ "$INSTALL_IAS" -eq 1 ]; then
     prepare_shannon
     prepare_pentestgpt
@@ -405,6 +440,8 @@ Notas:
 
 Comandos uteis:
   npm start
+  npm run start:api
+  npm run start:ghost
   npm test
   npm run db:link
   npm run db:push

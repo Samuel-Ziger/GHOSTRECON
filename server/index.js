@@ -108,6 +108,7 @@ import { applyOwaspTagsToFindings, inferOwaspTags } from './modules/owasp-top10.
 import { applyMitreTagsToFindings, inferMitreTechniqueIds } from './modules/mitre-recon.js';
 import { parseReconTarget, hostLiteralForUrl, targetIsIp } from './modules/recon-target.js';
 import { secretMaterialFingerprint } from './modules/db-common.js';
+import { syncValidatedCortexFindingToGhostKb } from './modules/ghost-kb-sync.js';
 
 function firstIpv4FromDnsRecords(records) {
   for (const r of records || []) {
@@ -2820,7 +2821,22 @@ app.post('/api/brain/link', async (req, res) => {
   const categoryId = req.body?.categoryId;
   try {
     const out = await upsertBrainLink({ target, fingerprint: fp, categoryId });
-    res.json({ ok: true, ...out });
+    let ghostKbSync = { ok: false, skipped: true, reason: 'not_attempted' };
+    try {
+      const category = await getBrainCategoryById(Number(categoryId));
+      const validated = await listManualValidationsForTarget(target);
+      const row = validated.find((x) => String(x.fingerprint || '').trim().toLowerCase() === fp);
+      ghostKbSync = await syncValidatedCortexFindingToGhostKb({
+        target,
+        fingerprint: fp,
+        snapshot: row?.snapshot || null,
+        notes: row?.notes || '',
+        brainCategoryTitle: category?.title || '',
+      });
+    } catch (e) {
+      ghostKbSync = { ok: false, error: e?.message || String(e) };
+    }
+    res.json({ ok: true, ...out, ghostKbSync });
   } catch (e) {
     res.status(400).json({ ok: false, error: e?.message || String(e) });
   }
