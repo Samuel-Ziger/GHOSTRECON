@@ -1,0 +1,23 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "0885ae16751f0cd2e35f9f1509d3ed0231d130c976203e19eddb18b4870d5ab3",
+  "validated_at": "2026-04-20T16:57:31.544Z",
+  "notes": "",
+  "snapshot": {
+    "type": "tech",
+    "prio": "low",
+    "value": "Server: Apache/2.4.29 (Ubuntu)",
+    "url": "",
+    "meta": "Detectado em 44.215.28.115 — [COMP 28 | STANDARD] • cve_hint=true — bounty_prob=32/100",
+    "mitre": [
+      {
+        "id": "T1592",
+        "title": "Gather Victim Host Information",
+        "label": "T1592 — Gather Victim Host Information (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1592/"
+      }
+    ]
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}

@@ -1,0 +1,23 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "ee21430fc3e2b53f45e39110262ee170820c27b8a9d2369c355ce928a23f1034",
+  "validated_at": "2026-04-20T17:06:36.769Z",
+  "notes": "",
+  "snapshot": {
+    "type": "nmap",
+    "prio": "med",
+    "value": "tcp/80 lagus.sy — http Apache httpd 2.4.29",
+    "url": "http://lagus.sy/",
+    "meta": "Apache httpd 2.4.29 http — [COMP 60 | STANDARD] superfície nmap — bounty_prob=60/100",
+    "mitre": [
+      {
+        "id": "T1595",
+        "title": "Active Scanning",
+        "label": "T1595 — Active Scanning (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1595/"
+      }
+    ]
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}

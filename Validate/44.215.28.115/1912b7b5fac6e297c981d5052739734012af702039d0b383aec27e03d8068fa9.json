@@ -1,0 +1,15 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "1912b7b5fac6e297c981d5052739734012af702039d0b383aec27e03d8068fa9",
+  "validated_at": "2026-04-20T10:47:24.064Z",
+  "notes": "",
+  "snapshot": {
+    "type": "asset",
+    "prio": "low",
+    "value": "IP asset: 44.215.28.115",
+    "url": "https://rdap.org/ip/44.215.28.115",
+    "meta": "asset_discovery=ip_asn • asn=NET-44-192-0-0-2 — [COMP 38 | STANDARD] — bounty_prob=38/100"
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}
