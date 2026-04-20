@@ -1,0 +1,23 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "b9c0e57de727d93e02b5844e0f7984c8e3e0b703b91611e545ad49865f5ac508",
+  "validated_at": "2026-04-20T17:03:31.067Z",
+  "notes": "",
+  "snapshot": {
+    "type": "nmap",
+    "prio": "med",
+    "value": "tcp/21 lagus.sy — ftp vsftpd 3.0.3",
+    "url": "",
+    "meta": "vsftpd 3.0.3 ftp — [COMP 60 | STANDARD] superfície nmap — bounty_prob=60/100",
+    "mitre": [
+      {
+        "id": "T1595",
+        "title": "Active Scanning",
+        "label": "T1595 — Active Scanning (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1595/"
+      }
+    ]
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}

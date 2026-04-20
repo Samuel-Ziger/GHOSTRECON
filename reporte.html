@@ -711,6 +711,8 @@
     const REPORTE_PAYLOAD_KEY = 'ghostrecon_reporte_payload';
     const REPORTE_PAYLOAD_SHARED_KEY = 'ghostrecon_reporte_payload_shared';
     const ANOTACAO_PAYLOAD_KEY = 'ghostrecon_anotacao_payload';
+    /** Nova aba não vê o sessionStorage do Reporte — o handoff tem de ir para localStorage. */
+    const ANOTACAO_HANDOFF_LS_KEY = 'ghostrecon_anotacao_handoff_v1';
     const MITRE_LIVE_SESSION_STORAGE_KEY = 'ghostrecon_mitre_live_session_id';
 
     function getApiBase() {
@@ -1771,12 +1773,39 @@
       return m;
     }
 
+    function findingFromValidationSnapshot(fp, row) {
+      const fpL = String(fp).toLowerCase();
+      const snap = row && row.snapshot && typeof row.snapshot === 'object' ? row.snapshot : null;
+      if (!snap) return null;
+      return {
+        type: snap.type != null ? String(snap.type) : '',
+        prio: snap.prio != null ? String(snap.prio) : '',
+        value: snap.value != null ? String(snap.value) : '',
+        url: snap.url != null ? String(snap.url) : '',
+        meta: snap.meta != null ? String(snap.meta) : '',
+        owasp: snap.owasp,
+        mitre: snap.mitre,
+        fingerprint: fpL,
+      };
+    }
+
+    function resolveFindingForValidatedFp(fp) {
+      const fpL = String(fp).toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(fpL)) return null;
+      const fromList = findings.find((x) => String(x.fingerprint || '').toLowerCase() === fpL);
+      if (fromList) return fromList;
+      const row = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fpL);
+      return findingFromValidationSnapshot(fpL, row);
+    }
+
     function resyncAllValidatedAnnotations() {
       let map = readAnnMap() || emptyAnnMap();
       if (!String(map.s1 || '').trim()) map.s1 = defaultAnnSection1();
-      for (const f of findings) {
-        const fp = String(f.fingerprint || '').toLowerCase();
-        if (!/^[a-f0-9]{64}$/.test(fp) || !validatedFp.has(fp)) continue;
+      for (const fp0 of validatedFp) {
+        const fp = String(fp0).toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(fp)) continue;
+        const f = resolveFindingForValidatedFp(fp);
+        if (!f) continue;
         const prev = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fp);
         const notes = prev && prev.notes != null ? String(prev.notes) : '';
         map = mergeFindingIntoAnnMap(map, f, fp, notes);
@@ -1841,28 +1870,80 @@
       btn.dataset.state = state ? 'ON' : 'OFF';
     }
 
-    function openAnotacaoFromReporte() {
+    async function openAnotacaoFromReporte() {
+      /** Linhas vindas do GET SQLite (notas / snapshot). */
+      const fromServer = (Array.isArray(serverItems) ? serverItems : [])
+        .map((row) => {
+          if (!row || typeof row !== 'object') return null;
+          const fp = String(row.fingerprint || '').trim().toLowerCase();
+          if (!/^[a-f0-9]{64}$/.test(fp)) return null;
+          return {
+            fingerprint: fp,
+            notes: row.notes != null ? String(row.notes) : '',
+            snapshot: row.snapshot && typeof row.snapshot === 'object' ? row.snapshot : null,
+            validated_at: row.validated_at != null ? String(row.validated_at) : '',
+          };
+        })
+        .filter(Boolean);
+      const byFp = new Map(fromServer.map((row) => [row.fingerprint, row]));
+      /** Toggles em memória podem estar à frente do último GET — inclui todo o validatedFp. */
+      for (const f of findings) {
+        const fp = String(f.fingerprint || '').trim().toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(fp) || !validatedFp.has(fp)) continue;
+        if (!byFp.has(fp)) {
+          byFp.set(fp, {
+            fingerprint: fp,
+            notes: '',
+            snapshot: snapshotFromFinding(f),
+            validated_at: '',
+          });
+        }
+      }
+      const payloadValidations = [...byFp.values()];
       const payload = {
         target: normalizeTarget(target),
         updatedAt: new Date().toISOString(),
         findings: findings.map((x) => ({ ...x })),
+        manualValidations: payloadValidations,
       };
       let raw;
       try {
         raw = JSON.stringify(payload);
         if (raw.length > 4_500_000) {
-          throw new Error('Pacote demasiado grande para sessionStorage (máx. ~4,5 MB).');
+          throw new Error('Pacote demasiado grande (máx. ~4,5 MB).');
         }
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+        return;
+      }
+
+      const u = new URL('anotacao.html', window.location.href);
+      try {
+        await fetchCsrf();
+        const r = await fetch(apiUrl('/api/anotacao-handoff'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+          body: JSON.stringify({ payload }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'POST handoff: ' + r.status);
+        if (!d.ok || !d.id) throw new Error(d.error || 'Resposta do servidor sem id de handoff.');
+        u.searchParams.set('handoff', String(d.id));
+      } catch (e) {
+        setMsg('Aviso handoff: ' + (e.message || e) + ' (fallback: localStorage / sessão).', 'err');
+      }
+
+      try {
         sessionStorage.setItem(ANOTACAO_PAYLOAD_KEY, raw);
         sessionStorage.setItem(REPORTE_PAYLOAD_KEY, raw);
         try {
           localStorage.setItem(REPORTE_PAYLOAD_SHARED_KEY, raw);
+          localStorage.setItem(ANOTACAO_HANDOFF_LS_KEY, raw);
         } catch (_) {}
       } catch (e) {
         setMsg(String(e.message || e), 'err');
         return;
       }
-      const u = new URL('anotacao.html', window.location.href);
       const w = window.open(u.href, '_blank', 'noopener,noreferrer');
       if (!w) setMsg('Popup bloqueado — permite popups para abrir Anotações.', 'err');
       else setMsg('Aba «Anotações» aberta; esta checklist mantém-se.', 'ok');
@@ -1939,7 +2020,7 @@
     });
 
     document.getElementById('btnAnotacao').addEventListener('click', () => {
-      openAnotacaoFromReporte();
+      void openAnotacaoFromReporte();
     });
 
     (async function init() {

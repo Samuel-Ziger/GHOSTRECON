@@ -1,0 +1,23 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "9f98aa81312c98b212d6ea580f75bfd268c017739274997360d12f1bf974969f",
+  "validated_at": "2026-04-20T10:47:56.894Z",
+  "notes": "",
+  "snapshot": {
+    "type": "nmap",
+    "prio": "med",
+    "value": "tcp/445 ec2-44-215-28-115.compute-1.amazonaws.com — netbios-ssn Samba smbd 3.X - 4.X",
+    "url": "",
+    "meta": "Samba smbd 3.X - 4.X netbios-ssn workgroup: WORKGROUP — [COMP 60 | STANDARD] superfície nmap — bounty_prob=60/100",
+    "mitre": [
+      {
+        "id": "T1595",
+        "title": "Active Scanning",
+        "label": "T1595 — Active Scanning (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1595/"
+      }
+    ]
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}

@@ -1,0 +1,23 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "90ef7a39bb4cf46a807bf6edbca07f12b3704bfc83c8497e086677bb64184ccd",
+  "validated_at": "2026-04-20T16:51:30.550Z",
+  "notes": "",
+  "snapshot": {
+    "type": "nmap",
+    "prio": "med",
+    "value": "tcp/22 lagus.sy — ssh OpenSSH 7.6p1 Ubuntu 4ubuntu0.7",
+    "url": "",
+    "meta": "OpenSSH 7.6p1 Ubuntu 4ubuntu0.7 ssh Ubuntu Linux; protocol 2.0 — [COMP 60 | STANDARD] superfície nmap — bounty_prob=60/100",
+    "mitre": [
+      {
+        "id": "T1595",
+        "title": "Active Scanning",
+        "label": "T1595 — Active Scanning (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1595/"
+      }
+    ]
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}

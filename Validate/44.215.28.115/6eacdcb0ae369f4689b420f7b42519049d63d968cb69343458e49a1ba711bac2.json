@@ -1,0 +1,36 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "6eacdcb0ae369f4689b420f7b42519049d63d968cb69343458e49a1ba711bac2",
+  "validated_at": "2026-04-20T16:46:36.404Z",
+  "notes": "",
+  "snapshot": {
+    "type": "security",
+    "prio": "high",
+    "value": "FTP anonymous login enabled @ lagus.sy:21",
+    "url": "",
+    "meta": "service=ftp • banner=(vsFTPd 3.0.3) • user=331 Please specify the password. • pass=230 Login successful. • auth=anonymous-empty-pass • tried=<empty> • evidence=active_check — [COMP 91 | ELEVATED] — bounty_prob=94/100",
+    "owasp": [
+      {
+        "id": "A02",
+        "title": "Security Misconfiguration",
+        "label": "A02:2025 — Security Misconfiguration"
+      }
+    ],
+    "mitre": [
+      {
+        "id": "T1592",
+        "title": "Gather Victim Host Information",
+        "label": "T1592 — Gather Victim Host Information (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1592/"
+      },
+      {
+        "id": "T1595",
+        "title": "Active Scanning",
+        "label": "T1595 — Active Scanning (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1595/"
+      }
+    ]
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}

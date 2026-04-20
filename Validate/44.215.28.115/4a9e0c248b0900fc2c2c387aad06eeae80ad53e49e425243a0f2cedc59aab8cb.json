@@ -1,0 +1,23 @@
+{
+  "target": "44.215.28.115",
+  "fingerprint": "4a9e0c248b0900fc2c2c387aad06eeae80ad53e49e425243a0f2cedc59aab8cb",
+  "validated_at": "2026-04-20T16:51:03.291Z",
+  "notes": "",
+  "snapshot": {
+    "type": "nmap",
+    "prio": "med",
+    "value": "tcp/139 lagus.sy — netbios-ssn Samba smbd 3.X - 4.X",
+    "url": "",
+    "meta": "Samba smbd 3.X - 4.X netbios-ssn workgroup: WORKGROUP — [COMP 60 | STANDARD] superfície nmap — bounty_prob=60/100",
+    "mitre": [
+      {
+        "id": "T1595",
+        "title": "Active Scanning",
+        "label": "T1595 — Active Scanning (reconnaissance)",
+        "url": "https://attack.mitre.org/techniques/T1595/"
+      }
+    ]
+  },
+  "brainCategoryId": null,
+  "brainCategoryTitle": null
+}
