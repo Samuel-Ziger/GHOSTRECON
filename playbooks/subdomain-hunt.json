@@ -1,0 +1,18 @@
+{
+  "name": "subdomain-hunt",
+  "description": "Caçada ampla de subdomínios — crt.sh, VirusTotal, ferramentas Kali (subfinder/amass/assetfinder), DNS enrichment.",
+  "profile": "aggressive",
+  "tags": ["recon", "subdomains", "osint"],
+  "targetHint": "apex domain",
+  "modules": [
+    "crtsh",
+    "virustotal",
+    "subdomains",
+    "kali_subdomains",
+    "dns_enrich",
+    "tls",
+    "http",
+    "rdap",
+    "asset_discovery"
+  ]
+}

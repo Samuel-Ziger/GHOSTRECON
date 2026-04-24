@@ -1,0 +1,20 @@
+{
+  "name": "wordpress",
+  "description": "Alvo WordPress: wpscan, users enum, plugins, /wp-json, xmlrpc, themes, backup files.",
+  "profile": "standard",
+  "tags": ["wordpress", "cms"],
+  "targetHint": "blog.*, wp.*, *.wordpress.com",
+  "modules": [
+    "crtsh",
+    "http",
+    "tls",
+    "wpscan",
+    "robots_sitemap",
+    "wayback",
+    "js_analyze",
+    "security_headers",
+    "header_intel",
+    "well_known",
+    "github"
+  ]
+}

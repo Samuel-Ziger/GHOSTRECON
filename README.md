@@ -249,3 +249,227 @@ Necessidade de higiene de dados locais
 
 Use somente em ambientes com autorização explícita (contrato, programa ou escopo formal).
 Respeite a legislação local, políticas do alvo e regras de disclosure.
+
+---
+
+## 18) CLI headless (`ghostrecon`)
+
+Toda a pipeline é acessível em modo headless pela CLI, sem necessidade de UI. Útil
+para CI/CD, cron jobs e integração com outros stacks. A CLI reaproveita 100% do
+pipeline via `/api/recon/stream` (HTTP+NDJSON), sem forkar lógica.
+
+```bash
+# Após npm install
+npx ghostrecon run --target example.com --modules crtsh,http,github --output run.json
+npx ghostrecon run --target api.example.com --playbook api-first
+npx ghostrecon runs --target example.com --limit 10
+npx ghostrecon diff --baseline 12 --newer 18 --format summary
+npx ghostrecon playbooks
+npx ghostrecon playbooks --show api-first
+npx ghostrecon export --run 42 --to github --repo myorg/myrepo --severity high
+npx ghostrecon projects --add --name acme --description "Acme bounty program"
+npx ghostrecon projects --name acme --scope-add "*.acme.com"
+```
+
+Principais opções de `run`:
+
+| Opção | Descrição |
+|-------|-----------|
+| `--target` | Domínio alvo (obrigatório) |
+| `--modules` | CSV de módulos (ex.: `crtsh,http,github`) |
+| `--playbook` | Perfil pré-configurado (ver `playbooks/`) |
+| `--profile` | `standard` · `stealth` · `aggressive` |
+| `--output FILE` | Grava JSON agregado final |
+| `--format` | `json` · `ndjson` · `summary` |
+| `--exact-match` | Subs apenas do alvo exato |
+| `--kali` | Módulos Kali (requer ferramentas locais) |
+| `--auth-header K=V` | Repetível — headers extras |
+| `--auth-cookie` | Cookie bruto para requests autenticadas |
+| `--project NAME` | Atribui o run a um projeto |
+| `--start-server` | Auto-spawn do API em background |
+| `--timeout SEC` | Timeout global (default 1800) |
+
+A CLI usa CSRF token automaticamente e faz auto-start do server local se `--start-server`
+for passado (ou erra com mensagem clara caso contrário).
+
+## 19) Scheduler, diff e alertas new-only
+
+O subcomando `schedule` roda recons periódicos e, usando `compareRuns` + o
+diff-engine interno, alerta **apenas quando há findings novos** (dedupe por
+fingerprint SHA-1 dos achados). Evita ruído de "mesmo alerta todo dia".
+
+```bash
+ghostrecon schedule \
+  --target api.example.com \
+  --interval 6h \
+  --playbook api-first \
+  --webhook https://discord.com/api/webhooks/XXXXX/YYYYY \
+  --min-severity high \
+  --only-new
+```
+
+- Estado persistido em `.ghostrecon-schedule/<target>.json` (última runId,
+  fingerprints vistos, histórico).
+- Suporta Discord (embeds nativos), Slack (`text` mrkdwn) e webhook genérico.
+- Flag `--once` roda uma única iteração (útil em cron externo). `--max-runs N`
+  limita o número total de iterações.
+- Interval aceita `30s`, `15m`, `6h`, `2d`.
+
+Endpoint equivalente no server:
+
+```
+GET /api/runs/:newerId/diff-summary/:baselineId?minSeverity=medium&onlyNew=1
+```
+
+## 20) Playbooks
+
+Playbooks são ficheiros JSON (ou YAML minimalista) em `playbooks/` que
+pré-selecionam módulos e perfil de pipeline para cenários comuns.
+
+Bundled:
+
+| Nome | Uso |
+|------|-----|
+| `api-first` | Superfície API (OpenAPI, GraphQL, params) |
+| `wordpress` | WordPress — wpscan, temas, plugins, xmlrpc |
+| `cloud-takeover` | CNAMEs órfãos em S3/Azure/GitHub Pages |
+| `subdomain-hunt` | Enumeração agressiva (crtsh + VT + amass + subfinder) |
+| `secrets-leak` | GitHub code search, wayback, dorks, JS crawl |
+| `quick-triage` | Primeiro passo rápido (~60s) |
+
+Ver `playbooks/README.md` para formato completo. Aponte `GHOSTRECON_PLAYBOOKS_DIR`
+para diretórios extras (suporta múltiplos paths separados por `:` POSIX ou `;`
+Windows).
+
+## 21) Evidências ricas com Playwright
+
+O módulo `server/modules/evidence-capture.js` captura, por finding, screenshot
+PNG + DOM snippet + response headers + console logs via Playwright headless. É
+invocado sob demanda pelo endpoint:
+
+```
+POST /api/evidence/capture/:runId
+{
+  "minSeverity": "medium",
+  "maxCaptures": 25,
+  "fullPage": false
+}
+```
+
+Saída persistida em `.ghostrecon-evidence/<runId>/f<idx>_<slug>.{png,html,json}`.
+Os findings recebem `evidence.captures = { screenshot, dom, meta }` — referenciados
+diretamente pelo Reporter e pelo export de Markdown/HackerOne.
+
+## 22) CVE enrichment (versão → exploit)
+
+Cruza tech strings (de `tech-versions.js`, banners ou version-page) com:
+
+- OSV.dev (sem API key)
+- NVD 2.0 (com ou sem API key)
+- ExploitDB search (heurístico, opcional)
+- Nuclei templates locais (se `GHOSTRECON_NUCLEI_TEMPLATES_DIR` definido)
+
+Severidade derivada do CVSS. **Banners são degradados em 1 step** (falsos
+positivos comuns — servidores mentem versão). Findings têm campos `cve`, `cvss`,
+`exploitPublic`, `exploitSources`.
+
+Endpoint:
+
+```
+POST /api/cve/enrich
+{
+  "techStrings": ["nginx/1.18.0", "openssl/1.1.1k"],
+  "source": "banner",
+  "checkExploits": true
+}
+```
+
+## 23) Inbound webhooks (hub)
+
+Ferramentas externas (subfinder, amass, nuclei, dnsx, cron scripts) podem
+enviar eventos para o GHOSTRECON, que os armazena por target para merge no
+próximo recon.
+
+Configure chaves no `.env`:
+
+```
+GHOSTRECON_INBOUND_KEYS=subfinder:key1,nuclei:key2
+```
+
+Envie eventos com HMAC SHA-256:
+
+```bash
+BODY='{"template-id":"cve-2021-44228","matched-at":"https://api.example.com/","info":{"severity":"critical","name":"Log4Shell"}}'
+SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "key2" | awk '{print $2}')
+curl -X POST http://127.0.0.1:3847/api/inbound/nuclei \
+  -H "x-ghostrecon-signature: sha256=$SIG" \
+  -H "content-type: application/json" \
+  -d "$BODY"
+```
+
+Auto-detecta payloads Subfinder/Amass/Nuclei. Leitura via
+`GET /api/inbound/:source/:target` (Bearer token = chave da source).
+
+## 24) Projects (multi-alvo)
+
+Agrupa runs por programa/cliente — reduz context switching quando você caça em
+vários programas simultaneamente.
+
+```bash
+ghostrecon projects --add --name acme --description "Acme bounty"
+ghostrecon projects --name acme --scope-add "*.acme.com" --scope-add "api.acme.io"
+ghostrecon projects --show acme
+ghostrecon run --target api.acme.com --project acme --playbook api-first
+```
+
+Storage local em `.ghostrecon-projects/projects.json` (zero dependências extras
+de DB). Endpoints:
+
+```
+GET    /api/projects
+GET    /api/projects/:name
+POST   /api/projects          (CSRF)
+DELETE /api/projects/:name    (CSRF)
+```
+
+## 25) Workflow export (Linear/Jira/GitHub)
+
+Exporta findings de um run como issues em:
+
+- **GitHub Issues** — `--to github --repo owner/name --github-token $GITHUB_TOKEN`
+- **Linear** — `--to linear --linear-team TEAM_ID --linear-token $LINEAR_API_KEY`
+- **Jira Cloud** — `--to jira --jira-url $BASE --jira-project KEY --jira-user me@ex.com --jira-token $JIRA_TOKEN`
+- **Markdown** — `--to markdown --output out.md` (HackerOne/Bugcrowd-ready)
+
+Cada issue carrega: título com severidade, body reprodutível (evidence, OWASP,
+MITRE, CVE), labels/priorities mapeadas da severidade, link para o Reporter
+(se `GHOSTRECON_REPORTER_BASE` definido). Use `--dry-run` para preview sem
+POST.
+
+## 26) Variáveis de ambiente novas
+
+| Variável | Propósito |
+|----------|-----------|
+| `GHOSTRECON_SERVER` | URL da API usada pela CLI (default `http://127.0.0.1:3847`) |
+| `GHOSTRECON_PLAYBOOKS_DIR` | Diretórios extra de playbooks (`:` ou `;`) |
+| `GHOSTRECON_PROJECTS_DIR` | Caminho do JSON store de projetos |
+| `GHOSTRECON_INBOUND_DIR` | Onde guardar eventos inbound (`.ghostrecon-inbound`) |
+| `GHOSTRECON_INBOUND_KEYS` | `source1:key1,source2:key2` (HMAC shared secrets) |
+| `GHOSTRECON_NUCLEI_TEMPLATES_DIR` | Dir local de templates Nuclei para match de CVE→exploit |
+| `GHOSTRECON_REPORTER_BASE` | URL base do Reporter para links em issues exportados |
+| `GITHUB_TOKEN` / `LINEAR_API_KEY` / `JIRA_USER` / `JIRA_TOKEN` | Credenciais para export |
+
+## 27) Tests
+
+Novos testes em `server/tests/` (node --test):
+
+- `cli-args.test.js` — parser de argumentos, parseDuration, kvListToObject
+- `diff-engine.test.js` — fingerprint estável, filtros por severidade, shouldAlert
+- `playbooks.test.js` — loader + YAML mínimo
+- `cve-enrichment.test.js` — parseTechString + OSV/NVD mock + banner degrade
+- `inbound-webhooks.test.js` — normalização Nuclei/Subfinder/Amass/custom
+- `projects.test.js` — CRUD + scope wildcard
+- `workflow-export.test.js` — Markdown + GitHub issue formato
+
+Rodar: `npm test` ou `npm run test:cli` (subset das novas features).
+

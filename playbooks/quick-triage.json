@@ -1,0 +1,14 @@
+{
+  "name": "quick-triage",
+  "description": "Pass rápido (~60s) para reconhecimento inicial: crtsh + http + tls + security-headers + js-analyze.",
+  "profile": "stealth",
+  "tags": ["quick", "triage", "first-pass"],
+  "modules": [
+    "crtsh",
+    "http",
+    "tls",
+    "security_headers",
+    "header_intel",
+    "js_analyze"
+  ]
+}

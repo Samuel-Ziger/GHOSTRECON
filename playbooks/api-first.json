@@ -1,0 +1,22 @@
+{
+  "name": "api-first",
+  "description": "Foco em superfície de API: OpenAPI/Swagger/GraphQL, endpoints com /api, /v1, /v2, actuator, params discovery.",
+  "profile": "standard",
+  "tags": ["api", "rest", "graphql", "openapi"],
+  "targetHint": "api.*, *.api.*, *.dev/api/*",
+  "modules": [
+    "crtsh",
+    "http",
+    "tls",
+    "robots_sitemap",
+    "openapi_harvest",
+    "graphql",
+    "wayback",
+    "param_discovery",
+    "header_intel",
+    "security_headers",
+    "js_analyze",
+    "commoncrawl",
+    "well_known"
+  ]
+}

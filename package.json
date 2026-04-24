@@ -9,12 +9,17 @@
     "start:ghost": "bash ghost-local-v5/ghost-local/start.sh",
     "dev": "node --watch server/index.js",
     "test": "node --test server/tests/*.test.js",
+    "test:cli": "node --test server/tests/cli-*.test.js",
     "mitre:extract": "node server/scripts/extract-mitre-recon-bundle.mjs",
     "pentestgpt-bridge": "node server/scripts/pentestgpt-ghost-bridge.mjs",
     "test:ai": "node server/scripts/test-ai-apis-smoke.js",
+    "cli": "node bin/ghostrecon.mjs",
     "db:link": "supabase link --project-ref lchttisqazjuapczstkm",
     "db:push": "supabase db push",
     "db:migration:new": "supabase migration new"
+  },
+  "bin": {
+    "ghostrecon": "./bin/ghostrecon.mjs"
   },
   "engines": {
     "node": ">=18"
