@@ -113,6 +113,7 @@ import { registerInboundWebhooks } from './modules/inbound-webhooks.js';
 import { registerNewApiRoutes } from './modules/api-extensions.js';
 import { getEngagement, preRunChecklist, attachRunToEngagement } from './modules/engagement.mjs';
 import { gateModules, applyWatermarkHeaders } from './modules/opsec.mjs';
+import { createIdentityController, normalizeIdentityOptions } from './modules/identity-controller.mjs';
 import { recordAction } from './modules/team-concurrency.mjs';
 
 function firstIpv4FromDnsRecords(records) {
@@ -351,6 +352,7 @@ async function runPipeline(ctx) {
     bountyContext: bountyContextBody = null,
     engagementId: engagementIdRaw = null,
     engagementOperator: engagementOperatorRaw = null,
+    identityCtrl = null,
   } = ctx;
   const apexHostIsIp = targetIsIp(domain);
 
@@ -640,7 +642,7 @@ async function runPipeline(ctx) {
   log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
 
   const probeResults = await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
-    const r = await probeHttp(u, { auth, modules });
+    const r = await probeHttp(u, { auth, modules, identityCtrl });
     return { u, r };
   });
 
@@ -1568,12 +1570,20 @@ async function runPipeline(ctx) {
   pipe('verify', 'active');
   progress(84);
   try {
+    if (identityCtrl?.enabled) {
+      const st = identityCtrl.getStats();
+      log(
+        `Rotação de identidade: ativa (proxies=${st.proxies}, backoff≈${st.backoffMul.toFixed(1)})`,
+        'info',
+      );
+    }
     const verified = await runEvidenceVerification({
       findings,
       auth,
       log,
       maxEndpoints: runtimeProfile.maxVerifyEndpoints,
       modules,
+      identityCtrl,
     });
     for (const vf of verified) addFinding(vf, null);
     if (verified.length) log(`Verify: ${verified.length} resultado(s) xss/sqli/open_redirect/idor/lfi`, 'success');
@@ -1582,7 +1592,14 @@ async function runPipeline(ctx) {
   }
   if (modules.includes('micro_exploit')) {
     try {
-      const micro = await runMicroExploitVariants({ findings, auth, log, modules, maxTests: 16 });
+      const micro = await runMicroExploitVariants({
+        findings,
+        auth,
+        log,
+        modules,
+        maxTests: 16,
+        identityCtrl,
+      });
       for (const mf of micro) addFinding(mf, null);
     } catch (e) {
       log(`Micro-exploit: ${e.message}`, 'warn');
@@ -2497,6 +2514,9 @@ app.post('/api/recon/stream', async (req, res) => {
     process.env.PATH = prependExtraPathToEnvPath(extraPathRaw, savedEnvPath);
   }
 
+  const identityOpts = normalizeIdentityOptions(modules, req.body?.identity);
+  const identityCtrl = createIdentityController({ ...identityOpts, modules });
+
   try {
     await runPipeline({
       domain,
@@ -2526,6 +2546,7 @@ app.post('/api/recon/stream', async (req, res) => {
         req.body?.bountyContext && typeof req.body.bountyContext === 'object' ? req.body.bountyContext : null,
       engagementId: engagementIdRaw || null,
       engagementOperator: operatorRaw || null,
+      identityCtrl,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });

@@ -68,17 +68,20 @@ function detectWaf(headers, bodySnippet = '') {
 }
 
 export async function probeHttp(url, opts = {}) {
-  const { auth, modules = [] } = opts;
-  await stealthPause(modules);
+  const { auth, modules = [], identityCtrl = null } = opts;
+  if (!identityCtrl?.enabled) await stealthPause(modules);
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), limits.probeTimeoutMs);
   try {
-    const res = await fetch(url, {
+    const fetchInit = {
       method: 'GET',
       redirect: 'follow',
       signal: controller.signal,
       headers: buildRequestHeaders(auth, modules),
-    });
+    };
+    const res = identityCtrl?.enabled
+      ? await identityCtrl.fetchHtmlProbe(url, fetchInit)
+      : await fetch(url, fetchInit);
     const buf = await res.arrayBuffer();
     const slice = buf.byteLength > limits.maxBodySnippet ? buf.slice(0, limits.maxBodySnippet) : buf;
     const text = new TextDecoder('utf-8', { fatal: false }).decode(slice);
