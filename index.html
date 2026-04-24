@@ -2272,6 +2272,64 @@
         </div>
       </details>
 
+      <details class="bounty-context-details" id="engagementOpsecDetails" style="margin-top:8px">
+        <summary class="bounty-context-summary" title="Engagement, OPSEC no stream e rotação de identidade">
+          <span class="bounty-context-summary-main">
+            <span>Engagement · OPSEC · identidade</span>
+            <span class="bounty-context-summary-hint">opcional · checklist + watermark + 403/429</span>
+          </span>
+        </summary>
+        <div class="bounty-context-panel-inner">
+          <p class="gh-hint" style="font-size:9px;margin:10px 0 8px;line-height:1.45">
+            Com <strong>ID de engagement</strong> existente no servidor, corre <code>preRunChecklist</code>, aplica watermark nos headers e regista a corrida no engagement.
+            <strong>Perfil OPSEC</strong> e <strong>confirmar ativo</strong> alimentam <code>gateModules</code> (igual à CLI).
+          </p>
+          <div class="section-label" style="font-size:10px;margin-top:4px">Engagement ID</div>
+          <input id="engagementIdInput" class="domain-input" type="text" placeholder="uuid ou id do engagement" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          <div class="section-label" style="font-size:10px;margin-top:8px">Operador (watermark / auditoria)</div>
+          <input id="engagementOperatorInput" class="domain-input" type="text" placeholder="handle ou identificador curto" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          <div class="toggle-row" style="margin-top:10px">
+            <span class="toggle-label" title="Confirmação de recon ativo exigida pelo gate OPSEC">Confirmar ativo</span>
+            <label class="toggle">
+              <input type="checkbox" id="confirmActiveToggle">
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+          <div class="toggle-row" style="align-items:center;gap:10px;margin-top:8px">
+            <span class="toggle-label">Perfil OPSEC</span>
+            <select id="opsecProfileSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
+              <option value="passive">passive</option>
+              <option value="stealth">stealth</option>
+              <option value="standard" selected>standard</option>
+              <option value="aggressive">aggressive</option>
+            </select>
+          </div>
+          <div class="section-label" style="font-size:10px;margin-top:10px">Playbook (nome — pré-checklist)</div>
+          <input id="playbookNameInput" class="domain-input" type="text" placeholder="ex.: quick-triage" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          <hr style="border:0;border-top:1px solid var(--border);margin:14px 0 10px;opacity:.75">
+          <div class="section-label" style="font-size:10px">Rotação de identidade</div>
+          <p class="gh-hint" style="font-size:9px;margin:6px 0 8px;line-height:1.45">
+            Retentativas em 403, backoff em 429, heurística captcha/WAF; proxies <code>http(s)://</code> uma por linha (máx. 32). Podes também marcar o módulo <strong>identity_rotation</strong> na lista de módulos.
+          </p>
+          <div class="toggle-row">
+            <span class="toggle-label" title="Envia identity.enabled no JSON (ou usa só o módulo / proxies)">Forçar no JSON (<code>identity.enabled</code>)</span>
+            <label class="toggle">
+              <input type="checkbox" id="identityBodyEnabledToggle">
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label" title="Reagir a 403/429/captcha com nova UA ou proxy">Comportamento inteligente</span>
+            <label class="toggle">
+              <input type="checkbox" id="identityBehaviorToggle" checked>
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+          <div class="section-label" style="font-size:10px;margin-top:8px">Pool de proxies (uma URL por linha)</div>
+          <textarea id="identityProxyPoolInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:64px;margin-top:4px;font-size:10px" placeholder="http://127.0.0.1:8888"></textarea>
+        </div>
+      </details>
+
       <div class="section-label">Target</div>
       <div class="input-wrap">
         <span class="input-prefix">$</span>
@@ -2800,6 +2858,7 @@
           <span class="tag tag-high">ACT</span>
         </label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="stealth_requests"><div class="checkbox-box"></div><span class="checkbox-text">Stealth (jitter + UA rotativa)</span><span class="tag tag-low">NET</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="identity_rotation"><div class="checkbox-box"></div><span class="checkbox-text">Rotação de identidade (probe + verify)</span><span class="tag tag-low">NET</span></label>
       </div>
 
       <div class="module-group">
@@ -3460,6 +3519,81 @@ function initAuthUi() {
     if (h && j?.headers?.Authorization) h.value = String(j.headers.Authorization);
     if (c && j?.cookie) c.value = String(j.cookie);
   } catch {}
+}
+
+const ENG_OPSEC_LS = {
+  engagementId: 'ghostrecon_engagement_id',
+  operator: 'ghostrecon_operator',
+  opsec: 'ghostrecon_opsec_profile',
+  playbook: 'ghostrecon_playbook_name',
+  identityProxies: 'ghostrecon_identity_proxy_pool',
+  identityBehavior: 'ghostrecon_identity_behavior',
+  identityBodyEnabled: 'ghostrecon_identity_body_enabled',
+  confirmActive: 'ghostrecon_confirm_active',
+};
+
+function persistEngagementOpsecField(key, value) {
+  try {
+    if (value == null || value === '') localStorage.removeItem(key);
+    else localStorage.setItem(key, String(value));
+  } catch {}
+}
+
+function initEngagementOpsecUi() {
+  try {
+    const eid = localStorage.getItem(ENG_OPSEC_LS.engagementId);
+    const op = localStorage.getItem(ENG_OPSEC_LS.operator);
+    const os = localStorage.getItem(ENG_OPSEC_LS.opsec);
+    const pb = localStorage.getItem(ENG_OPSEC_LS.playbook);
+    const px = localStorage.getItem(ENG_OPSEC_LS.identityProxies);
+    const ib = localStorage.getItem(ENG_OPSEC_LS.identityBehavior);
+    const ide = localStorage.getItem(ENG_OPSEC_LS.identityBodyEnabled);
+    const ca = localStorage.getItem(ENG_OPSEC_LS.confirmActive);
+    const elE = document.getElementById('engagementIdInput');
+    const elO = document.getElementById('engagementOperatorInput');
+    const elOs = document.getElementById('opsecProfileSelect');
+    const elPb = document.getElementById('playbookNameInput');
+    const elPx = document.getElementById('identityProxyPoolInput');
+    const elBeh = document.getElementById('identityBehaviorToggle');
+    const elIdEn = document.getElementById('identityBodyEnabledToggle');
+    const elCa = document.getElementById('confirmActiveToggle');
+    if (elE && eid) elE.value = eid;
+    if (elO && op) elO.value = op;
+    if (elOs && os && ['passive', 'stealth', 'standard', 'aggressive'].includes(os)) elOs.value = os;
+    if (elPb && pb) elPb.value = pb;
+    if (elPx && px) elPx.value = px;
+    if (elBeh && ib === '0') elBeh.checked = false;
+    if (elIdEn && ide === '1') elIdEn.checked = true;
+    if (elCa && ca === '1') elCa.checked = true;
+  } catch {}
+
+  const wireText = (id, key) => {
+    const n = document.getElementById(id);
+    if (!n) return;
+    n.addEventListener('change', () => persistEngagementOpsecField(key, n.value));
+    n.addEventListener('blur', () => persistEngagementOpsecField(key, n.value));
+  };
+  const wireSelect = (id, key) => {
+    const n = document.getElementById(id);
+    if (!n) return;
+    n.addEventListener('change', () => persistEngagementOpsecField(key, n.value));
+  };
+  const wireCheckbox = (id, key, { alwaysZeroOne } = {}) => {
+    const n = document.getElementById(id);
+    if (!n) return;
+    n.addEventListener('change', () => {
+      if (alwaysZeroOne) persistEngagementOpsecField(key, n.checked ? '1' : '0');
+      else persistEngagementOpsecField(key, n.checked ? '1' : '');
+    });
+  };
+  wireText('engagementIdInput', ENG_OPSEC_LS.engagementId);
+  wireText('engagementOperatorInput', ENG_OPSEC_LS.operator);
+  wireSelect('opsecProfileSelect', ENG_OPSEC_LS.opsec);
+  wireText('playbookNameInput', ENG_OPSEC_LS.playbook);
+  wireText('identityProxyPoolInput', ENG_OPSEC_LS.identityProxies);
+  wireCheckbox('identityBehaviorToggle', ENG_OPSEC_LS.identityBehavior, { alwaysZeroOne: true });
+  wireCheckbox('identityBodyEnabledToggle', ENG_OPSEC_LS.identityBodyEnabled);
+  wireCheckbox('confirmActiveToggle', ENG_OPSEC_LS.confirmActive);
 }
 
 // ─── CLOCK ────────────────────────────────────────────────
@@ -4931,6 +5065,37 @@ async function startRecon() {
       if (useOos) streamBody.outOfScope = oosText || '';
       if (projectName) streamBody.projectName = projectName;
       if (bountyContext) streamBody.bountyContext = bountyContext;
+
+      const engId = (document.getElementById('engagementIdInput')?.value || '').trim();
+      if (engId) streamBody.engagementId = engId;
+      const opHand = (document.getElementById('engagementOperatorInput')?.value || '').trim();
+      if (opHand) streamBody.operator = opHand;
+      if (document.getElementById('confirmActiveToggle')?.checked) streamBody.confirmActive = true;
+      const opsecV = String(document.getElementById('opsecProfileSelect')?.value || 'standard')
+        .trim()
+        .toLowerCase();
+      if (['passive', 'stealth', 'standard', 'aggressive'].includes(opsecV)) {
+        streamBody.opsecProfile = opsecV;
+      }
+      const pbn = (document.getElementById('playbookNameInput')?.value || '').trim();
+      if (pbn) streamBody.playbook = pbn;
+
+      const identityMod = selectedMods.includes('identity_rotation');
+      const idBodyOn = Boolean(document.getElementById('identityBodyEnabledToggle')?.checked);
+      const proxyLines = (document.getElementById('identityProxyPoolInput')?.value || '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 32);
+      const behaviorOn = document.getElementById('identityBehaviorToggle')?.checked !== false;
+      if (identityMod || idBodyOn || proxyLines.length) {
+        streamBody.identity = {
+          enabled: identityMod || idBodyOn || proxyLines.length > 0,
+          behavior: behaviorOn,
+          proxyPool: proxyLines,
+        };
+      }
+
       return streamBody;
     };
 
@@ -5727,6 +5892,7 @@ fetchKaliCapabilities();
 loadRunsHistory();
 initProfileUi();
 initAuthUi();
+initEngagementOpsecUi();
 (function syncGhostmapButtonForBrowser() {
   const btn = document.getElementById('mitreMapBtn');
   if (!btn || typeof BroadcastChannel !== 'undefined') return;

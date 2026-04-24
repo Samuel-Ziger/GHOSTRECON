@@ -250,29 +250,51 @@ function buildHeaders(auth = {}, modules = []) {
   return h;
 }
 
-async function fetchText(url, { auth, timeoutMs = 12000, modules = [] } = {}) {
-  await stealthPause(modules);
-  const res = await fetch(url, {
+async function fetchText(url, { auth, timeoutMs = 12000, modules = [], identityCtrl = null } = {}) {
+  const init = {
     method: 'GET',
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
     headers: buildHeaders(auth, modules),
-  });
+  };
+  if (identityCtrl?.enabled) {
+    const res = await identityCtrl.fetchVerifyGet(url, init);
+    const text = await res.text().catch(() => '');
+    return {
+      status: res.status,
+      headers: res.headers,
+      text: text.slice(0, 160000),
+      location: res.headers.get('location') || '',
+    };
+  }
+  await stealthPause(modules);
+  const res = await fetch(url, init);
   const text = await res.text().catch(() => '');
   return { status: res.status, headers: res.headers, text: text.slice(0, 160000), location: res.headers.get('location') || '' };
 }
 
 /** POST com corpo textual (php://input, uploads simulados). */
-async function fetchPostText(url, body, { auth, timeoutMs = 12000, modules = [] } = {}) {
-  await stealthPause(modules);
+async function fetchPostText(url, body, { auth, timeoutMs = 12000, modules = [], identityCtrl = null } = {}) {
   const headers = { ...buildHeaders(auth, modules), 'Content-Type': 'text/plain; charset=utf-8' };
-  const res = await fetch(url, {
+  const init = {
     method: 'POST',
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
     headers,
     body: String(body ?? ''),
-  });
+  };
+  if (identityCtrl?.enabled) {
+    const res = await identityCtrl.fetchVerifyPost(url, init);
+    const text = await res.text().catch(() => '');
+    return {
+      status: res.status,
+      headers: res.headers,
+      text: text.slice(0, 160000),
+      location: res.headers.get('location') || '',
+    };
+  }
+  await stealthPause(modules);
+  const res = await fetch(url, init);
   const text = await res.text().catch(() => '');
   return { status: res.status, headers: res.headers, text: text.slice(0, 160000), location: res.headers.get('location') || '' };
 }
@@ -340,14 +362,14 @@ function sqlErrorResponseSnippet(text) {
  * Sondas extra (ORDER BY 1..N, UNION NULL×k, NULL FROM DUAL, OR 1=1 em login).
  * Só com módulo verify_sqli_deep; não enumera information_schema nem sleep.
  */
-async function collectSqliDeepMeta(u, paramKey, baseVal, auth, modules, rb, errBase) {
+async function collectSqliDeepMeta(u, paramKey, baseVal, auth, modules, rb, errBase, identityCtrl = null) {
   const bits = [];
   const orderSnapshots = [];
   for (let n = 1; n <= 12; n++) {
     const x = new URL(u.href);
     x.searchParams.set(paramKey, `${baseVal}' ORDER BY ${n}--+`);
     try {
-      const r = await fetchText(x.href, { auth, modules });
+      const r = await fetchText(x.href, { auth, modules, identityCtrl });
       orderSnapshots.push({ n, sqlErr: responseLooksLikeSqlError(r.text), status: r.status });
     } catch {
       orderSnapshots.push({ n, sqlErr: false, status: 0 });
@@ -366,7 +388,7 @@ async function collectSqliDeepMeta(u, paramKey, baseVal, auth, modules, rb, errB
     const x = new URL(u.href);
     x.searchParams.set(paramKey, `${baseVal}' UNION SELECT ${unionSel}-- -`);
     try {
-      const r = await fetchText(x.href, { auth, modules });
+      const r = await fetchText(x.href, { auth, modules, identityCtrl });
       unionSnaps.push({ k, sqlErr: responseLooksLikeSqlError(r.text), len: r.text.length, status: r.status });
     } catch {
       unionSnaps.push({ k, sqlErr: false, len: 0, status: 0 });
@@ -378,7 +400,7 @@ async function collectSqliDeepMeta(u, paramKey, baseVal, auth, modules, rb, errB
   const xdu = new URL(u.href);
   xdu.searchParams.set(paramKey, `${baseVal}' UNION SELECT NULL FROM DUAL-- -`);
   try {
-    const rd = await fetchText(xdu.href, { auth, modules });
+    const rd = await fetchText(xdu.href, { auth, modules, identityCtrl });
     const r1 = unionSnaps[0];
     if (r1 && responseLooksLikeSqlError(rd.text) !== r1.sqlErr) bits.push('dual_sql_ne_k1');
     else if (r1 && r1.len > 40 && Math.abs(rd.text.length - r1.len) / r1.len > 0.16) bits.push('dual_d_body');
@@ -390,7 +412,7 @@ async function collectSqliDeepMeta(u, paramKey, baseVal, auth, modules, rb, errB
     const xa = new URL(u.href);
     xa.searchParams.set(paramKey, `${baseVal}' OR '1'='1'--+`);
     try {
-      const ra = await fetchText(xa.href, { auth, modules });
+      const ra = await fetchText(xa.href, { auth, modules, identityCtrl });
       const lb = rb.text.length;
       const la = ra.text.length;
       if (ra.status !== rb.status || (lb > 80 && Math.abs(la - lb) / lb > 0.12)) bits.push('or_true_delta');
@@ -462,13 +484,14 @@ function pushVerificationFinding(out, kind, classification, score, value, meta, 
 async function runLfiVerificationOnParam(u, paramKey, out, auth, modules, opts = {}) {
   const p = String(paramKey);
   const synth = opts.payloadSet === 'synth';
+  const identityCtrl = opts.identityCtrl || null;
   const payloads = synth ? LFI_VERIFY_PAYLOADS_SYNTH : LFI_VERIFY_PAYLOADS;
   let lfiGetConfirmed = false;
   for (const payload of payloads) {
     const x = new URL(u.href);
     x.searchParams.set(p, payload);
     try {
-      const r = await fetchText(x.href, { auth, modules });
+      const r = await fetchText(x.href, { auth, modules, identityCtrl });
       const scanText = decodeHtmlNumericEntitiesForLfi(r.text);
       const { classification, marker, score } = classifyLfiResponse(scanText, payload);
       let needle = '';
@@ -515,7 +538,7 @@ async function runLfiVerificationOnParam(u, paramKey, out, auth, modules, opts =
     try {
       const xIn = new URL(u.href);
       xIn.searchParams.set(p, 'php://input');
-      const rIn = await fetchPostText(xIn.href, `${LFI_PHP_INPUT_POST_MARKER}\n`, { auth, modules });
+      const rIn = await fetchPostText(xIn.href, `${LFI_PHP_INPUT_POST_MARKER}\n`, { auth, modules, identityCtrl });
       const inClass = classifyLfiResponse(rIn.text, 'php://input', {
         postBodyMarker: LFI_PHP_INPUT_POST_MARKER,
       });
@@ -546,7 +569,14 @@ async function runLfiVerificationOnParam(u, paramKey, out, auth, modules, opts =
   return lfiGetConfirmed;
 }
 
-export async function runEvidenceVerification({ findings, auth, log, maxEndpoints = 36, modules = [] }) {
+export async function runEvidenceVerification({
+  findings,
+  auth,
+  log,
+  maxEndpoints = 36,
+  modules = [],
+  identityCtrl = null,
+}) {
   const out = [];
   const endpointUrls = collectEndpointUrlsForVerify(findings, maxEndpoints);
 
@@ -574,7 +604,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         const x = new URL(u.href);
         x.searchParams.set(p, payload);
         try {
-          const r = await fetchText(x.href, { auth, modules });
+          const r = await fetchText(x.href, { auth, modules, identityCtrl });
           const reflectedRaw = r.text.includes(payload);
           const reflectedMarker = r.text.includes(marker);
           const escaped = r.text.includes('&lt;') && r.text.includes(marker);
@@ -613,8 +643,8 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         t.searchParams.set(p, testVal);
         try {
           const [rb, rt] = await Promise.all([
-            fetchText(b.href, { auth, modules }),
-            fetchText(t.href, { auth, modules }),
+            fetchText(b.href, { auth, modules, identityCtrl }),
+            fetchText(t.href, { auth, modules, identityCtrl }),
           ]);
           const errBase = responseLooksLikeSqlError(rb.text);
           const errTest = responseLooksLikeSqlError(rt.text);
@@ -627,7 +657,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
             (classification === 'confirmed' || classification === 'probable')
           ) {
             try {
-              deepSqli = await collectSqliDeepMeta(u, p, baseVal, auth, modules, rb, errBase);
+              deepSqli = await collectSqliDeepMeta(u, p, baseVal, auth, modules, rb, errBase, identityCtrl);
             } catch {
               /* ignore */
             }
@@ -665,7 +695,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         const x = new URL(u.href);
         x.searchParams.set(p, 'https://example.org/');
         try {
-          const r = await fetchText(x.href, { auth, modules });
+          const r = await fetchText(x.href, { auth, modules, identityCtrl });
           const loc = String(r.location || '');
           const confirmed = /^https?:\/\/example\.org\/?/i.test(loc);
           const probable = !confirmed && /example\.org/i.test(r.text);
@@ -701,8 +731,8 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
         t.searchParams.set(p, '2');
         try {
           const [rb, rt] = await Promise.all([
-            fetchText(b.href, { auth, modules }),
-            fetchText(t.href, { auth, modules }),
+            fetchText(b.href, { auth, modules, identityCtrl }),
+            fetchText(t.href, { auth, modules, identityCtrl }),
           ]);
           const sameStatus = rb.status === rt.status;
           const bodyChanged = rb.text.slice(0, 4000) !== rt.text.slice(0, 4000);
@@ -733,7 +763,7 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
       }
 
       if (LFI_PARAM_RE.test(param)) {
-        const ok = await runLfiVerificationOnParam(u, p, out, auth, modules);
+        const ok = await runLfiVerificationOnParam(u, p, out, auth, modules, { identityCtrl });
         if (ok) lfiConfirmedOnUrl = true;
       }
     }
@@ -743,7 +773,8 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
       const maxSynth = params.length === 0 ? 12 : 6;
       const extras = pool.filter((sp) => !triedKeys.has(String(sp).toLowerCase())).slice(0, maxSynth);
       for (const sp of extras) {
-        if (await runLfiVerificationOnParam(u, sp, out, auth, modules, { payloadSet: 'synth' })) break;
+        if (await runLfiVerificationOnParam(u, sp, out, auth, modules, { payloadSet: 'synth', identityCtrl }))
+          break;
       }
     }
   }
@@ -754,7 +785,14 @@ export async function runEvidenceVerification({ findings, auth, log, maxEndpoint
 /**
  * Segunda ronda leve: variantes de payload em XSS classificados como probable (micro-exploit).
  */
-export async function runMicroExploitVariants({ findings, auth, log, modules = [], maxTests = 14 }) {
+export async function runMicroExploitVariants({
+  findings,
+  auth,
+  log,
+  modules = [],
+  maxTests = 14,
+  identityCtrl = null,
+}) {
   const out = [];
   const tried = new Set();
   let count = 0;
@@ -779,7 +817,7 @@ export async function runMicroExploitVariants({ findings, auth, log, modules = [
     const x = new URL(u.href);
     x.searchParams.set(p, payload);
     try {
-      const r = await fetchText(x.href, { auth, modules });
+      const r = await fetchText(x.href, { auth, modules, identityCtrl });
       const raw = r.text.includes(payload);
       const loose = /onload\s*=\s*alert/i.test(r.text) && /<svg/i.test(r.text);
       const classification = raw ? 'confirmed' : loose ? 'probable' : 'noisy';

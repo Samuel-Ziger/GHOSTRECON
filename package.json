@@ -31,7 +31,8 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "playwright": "^1.59.1",
-    "postgres": "^3.4.8"
+    "postgres": "^3.4.8",
+    "undici": "^7.5.0"
   },
   "devDependencies": {
     "supabase": "^2.84.1"
