@@ -1,0 +1,18 @@
+{
+  "name": "cloud-takeover",
+  "description": "Caça subdomain takeover em CNAMEs órfãos (S3, Azure, GitHub Pages, Heroku, Fastly, Netlify, etc.).",
+  "profile": "standard",
+  "tags": ["takeover", "cloud", "cname"],
+  "targetHint": "*.example.com com zonas dispersas",
+  "modules": [
+    "crtsh",
+    "virustotal",
+    "subdomains",
+    "dns_enrich",
+    "takeover",
+    "http",
+    "tls",
+    "well_known",
+    "asset_discovery"
+  ]
+}

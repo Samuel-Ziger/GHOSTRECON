@@ -109,6 +109,11 @@ import { applyMitreTagsToFindings, inferMitreTechniqueIds } from './modules/mitr
 import { parseReconTarget, hostLiteralForUrl, targetIsIp } from './modules/recon-target.js';
 import { secretMaterialFingerprint } from './modules/db-common.js';
 import { syncValidatedCortexFindingToGhostKb } from './modules/ghost-kb-sync.js';
+import { registerInboundWebhooks } from './modules/inbound-webhooks.js';
+import { registerNewApiRoutes } from './modules/api-extensions.js';
+import { getEngagement, preRunChecklist, attachRunToEngagement } from './modules/engagement.mjs';
+import { gateModules, applyWatermarkHeaders } from './modules/opsec.mjs';
+import { recordAction } from './modules/team-concurrency.mjs';
 
 function firstIpv4FromDnsRecords(records) {
   for (const r of records || []) {
@@ -188,7 +193,7 @@ app.use((req, res, next) => {
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, X-Engagement-Id');
   if (req.method === 'OPTIONS') {
     if (!originAllowed) {
       res.sendStatus(403);
@@ -344,6 +349,8 @@ async function runPipeline(ctx) {
     shannonGithubRepos = null,
     pentestgptUrl: pentestgptUrlOverride = null,
     bountyContext: bountyContextBody = null,
+    engagementId: engagementIdRaw = null,
+    engagementOperator: engagementOperatorRaw = null,
   } = ctx;
   const apexHostIsIp = targetIsIp(domain);
 
@@ -2065,6 +2072,29 @@ async function runPipeline(ctx) {
     runId = saved.runId;
     intelMerge = saved.intelMerge;
     log(`Recon gravado — run #${runId} → ${storageLabel()}`, 'success');
+    const eid = engagementIdRaw != null ? String(engagementIdRaw).trim() : '';
+    if (eid && runId != null) {
+      try {
+        await attachRunToEngagement(eid, {
+          runId,
+          target: domain,
+          by: engagementOperatorRaw != null ? String(engagementOperatorRaw).trim() || null : null,
+        });
+      } catch (e) {
+        log(`Engagement: falha ao anexar run — ${e?.message || e}`, 'warn');
+      }
+      try {
+        await recordAction({
+          operator: engagementOperatorRaw != null ? String(engagementOperatorRaw).trim() || 'api' : 'api',
+          target: domain,
+          action: 'run-complete',
+          runId,
+          metadata: { engagementId: eid },
+        });
+      } catch (e) {
+        log(`Team trail: falha ao registar — ${e?.message || e}`, 'warn');
+      }
+    }
     const sqlitePath = saved.localMirrorPath || saved.dbPath;
     if (sqlitePath) {
       log(`SQLite no disco: ${sqlitePath}`, 'success');
@@ -2359,6 +2389,87 @@ app.post('/api/recon/stream', async (req, res) => {
 
   const domain = parsed.target;
 
+  const engagementIdRaw = req.body?.engagementId != null ? String(req.body.engagementId).trim() : '';
+  const operatorRaw = req.body?.operator != null ? String(req.body.operator).trim() : '';
+  const confirmActive = Boolean(req.body?.confirmActive);
+  const rawOpsec = String(req.body?.opsecProfile || process.env.GHOSTRECON_OPSEC_PROFILE || 'standard')
+    .trim()
+    .toLowerCase();
+  const allowedOpsec = new Set(['passive', 'stealth', 'standard', 'aggressive']);
+  const opsecProfile = allowedOpsec.has(rawOpsec) ? rawOpsec : 'standard';
+  const playbookNameForCheck =
+    req.body?.playbook != null ? String(req.body.playbook).trim() : '';
+
+  let engagement = null;
+  if (engagementIdRaw) {
+    try {
+      engagement = await getEngagement(engagementIdRaw);
+    } catch (e) {
+      send({ type: 'error', message: `engagement: ${e?.message || e}` });
+      res.end();
+      return;
+    }
+    if (!engagement) {
+      send({ type: 'error', message: `engagement "${engagementIdRaw}" não encontrado` });
+      res.end();
+      return;
+    }
+  }
+
+  const checklist = preRunChecklist({
+    engagement,
+    target: domain,
+    modules,
+    playbook: playbookNameForCheck || null,
+  });
+  if (!checklist.ok) {
+    send({
+      type: 'error',
+      message: 'Pré-checklist (engagement / escopo) falhou — ver campo checklist',
+      checklist,
+    });
+    res.end();
+    return;
+  }
+  for (const w of checklist.warnings || []) {
+    send({ type: 'log', msg: `[engagement] ${w}`, level: 'warn' });
+  }
+
+  let gate;
+  try {
+    gate = gateModules({
+      modules,
+      profile: opsecProfile,
+      confirm: confirmActive || process.env.GHOSTRECON_CONFIRM_ACTIVE === '1',
+      engagement,
+    });
+  } catch (e) {
+    send({ type: 'error', message: `OPSEC: ${e?.message || e}` });
+    res.end();
+    return;
+  }
+  if (!gate.ok) {
+    send({
+      type: 'error',
+      message: gate.reason || 'Módulos bloqueados por perfil OPSEC',
+      opsec: { blocked: gate.blocked, needsConfirm: gate.needsConfirm, profile: gate.profile },
+    });
+    res.end();
+    return;
+  }
+
+  let authForPipeline = auth;
+  if (engagementIdRaw) {
+    const baseHeaders = { ...(auth?.headers && typeof auth.headers === 'object' ? auth.headers : {}) };
+    authForPipeline = {
+      headers: applyWatermarkHeaders(baseHeaders, {
+        engagementId: engagementIdRaw,
+        operator: operatorRaw || undefined,
+      }),
+      cookie: auth?.cookie ? String(auth.cookie) : '',
+    };
+  }
+
   const shannonPrecheck = req.body?.shannonPrecheck !== false;
   const shannonSkipDepsVerify = Boolean(req.body?.shannonSkipDepsVerify);
   if (modules.includes('shannon_whitebox') && shannonPrecheck && !shannonSkipDepsVerify) {
@@ -2393,7 +2504,7 @@ app.post('/api/recon/stream', async (req, res) => {
       modules,
       emit: send,
       kaliMode,
-      auth,
+      auth: authForPipeline,
       profile,
       outOfScope: req.body?.outOfScope,
       projectName: req.body?.projectName,
@@ -2413,6 +2524,8 @@ app.post('/api/recon/stream', async (req, res) => {
       pentestgptUrl: req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl) : null,
       bountyContext:
         req.body?.bountyContext && typeof req.body.bountyContext === 'object' ? req.body.bountyContext : null,
+      engagementId: engagementIdRaw || null,
+      engagementOperator: operatorRaw || null,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
@@ -3109,6 +3222,12 @@ app.post('/api/manual-validations/annotations-ai', async (req, res) => {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
+
+// === Extensões produzidas pelo roadmap (CLI/scheduler/playbooks/CVE/inbound/projects) ===
+// Inbound webhooks: POST /api/inbound/:source e GET /api/inbound/:source/:target
+registerInboundWebhooks(app);
+// Rotas auxiliares (playbooks list, cve enrich on-demand, projects CRUD, evidence trigger)
+registerNewApiRoutes(app, { validateCsrfToken });
 
 app.use(express.static(ROOT, { index: false }));
 app.get('/', (_req, res) => {
