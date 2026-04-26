@@ -115,6 +115,21 @@ import { getEngagement, preRunChecklist, attachRunToEngagement } from './modules
 import { gateModules, applyWatermarkHeaders } from './modules/opsec.mjs';
 import { createIdentityController, normalizeIdentityOptions } from './modules/identity-controller.mjs';
 import { recordAction } from './modules/team-concurrency.mjs';
+import { buildAuthzPlan, runAuthzMatrix, fingerprintBody } from './modules/authz-matrix.mjs';
+import { summarizeValue, prioritize as prioritizeBounty } from './modules/bounty-estimator.mjs';
+import { applyScopeFilter, dedupeFindings as dedupeBountyFindings } from './modules/bounty-scope.mjs';
+import { applyChains } from './modules/chaining.mjs';
+import { bruteforceCloud } from './modules/cloud-bruteforce.mjs';
+import { monitorCt, classifyNewSubs } from './modules/ct-monitor.mjs';
+import { buildVerificationPlan } from './modules/dom-xss-verify.mjs';
+import { probeGraphqlEndpoint } from './modules/graphql-recon.mjs';
+import { jsBundleToFindings } from './modules/js-intel.mjs';
+import { analyzeJwt } from './modules/jwt-lab.mjs';
+import { buildOobPayloads } from './modules/oob-collaborator.mjs';
+import { detectOriginCandidates, originDiscoveryToFindings, resolveSubsForOrigin } from './modules/origin-discovery.mjs';
+import { mutatePayload } from './modules/payload-mutator.mjs';
+import { buildRacePlan } from './modules/race-harness.mjs';
+import { planSpray } from './modules/cred-spray.mjs';
 
 function firstIpv4FromDnsRecords(records) {
   for (const r of records || []) {
@@ -125,6 +140,19 @@ function firstIpv4FromDnsRecords(records) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sevToPrio = (sev) => {
+  const s = String(sev || '').toLowerCase();
+  if (s === 'critical' || s === 'high') return 'high';
+  if (s === 'medium') return 'med';
+  return 'low';
+};
+const sevToScore = (sev) => {
+  const s = String(sev || '').toLowerCase();
+  if (s === 'critical') return 95;
+  if (s === 'high') return 86;
+  if (s === 'medium') return 68;
+  return 42;
+};
 
 const reconRlHits = new Map();
 const csrfTokens = new Map();
@@ -563,6 +591,59 @@ async function runPipeline(ctx) {
   } else {
     log('Subdomain discovery desativado', 'info');
     pipe('subdomains', 'done');
+  }
+
+  if (!apexHostIsIp && modules.includes('ct_monitor')) {
+    pipe('ct_monitor', 'active');
+    try {
+      const ct = await monitorCt(domain, {
+        fetcher: async (url) => {
+          const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+          return r.ok ? r.json() : [];
+        },
+      });
+      for (const f of ct.findings || []) {
+        addFinding({
+          type: 'intel',
+          prio: sevToPrio(f.severity),
+          score: sevToScore(f.severity),
+          value: f.title,
+          meta: f.description,
+          url: f.evidence?.host ? `https://${hostLiteralForUrl(f.evidence.host)}/` : undefined,
+        });
+      }
+      const hot = classifyNewSubs(ct.fresh || []).filter((x) => x.hot);
+      if (hot.length) {
+        log(`CT monitor: ${ct.fresh.length} novo(s), ${hot.length} subdomínio(s) sensível(is)`, 'warn');
+      } else {
+        log(`CT monitor: ${ct.fresh.length} novo(s)`, 'info');
+      }
+    } catch (e) {
+      log(`CT monitor: ${e.message}`, 'warn');
+    }
+    pipe('ct_monitor', 'done');
+  }
+
+  if (!apexHostIsIp && modules.includes('origin_discovery')) {
+    pipe('origin_discovery', 'active');
+    try {
+      const discovered = await resolveSubsForOrigin(domain);
+      const report = detectOriginCandidates({ apex: domain, subdomainIps: discovered });
+      for (const f of originDiscoveryToFindings(report, { target: domain })) {
+        addFinding({
+          type: 'intel',
+          prio: sevToPrio(f.severity),
+          score: sevToScore(f.severity),
+          value: f.title,
+          meta: f.description,
+          url: f.evidence?.host ? `https://${hostLiteralForUrl(f.evidence.host)}/` : undefined,
+        });
+      }
+      log(`Origin discovery: ${report.candidates?.length || 0} candidato(s)`, 'info');
+    } catch (e) {
+      log(`Origin discovery: ${e.message}`, 'warn');
+    }
+    pipe('origin_discovery', 'done');
   }
 
   // ── DNS ENRICHMENT (TXT/MX/SPF/DMARC) ─────────
@@ -1129,6 +1210,50 @@ async function runPipeline(ctx) {
     }
   }
 
+  if (modules.includes('graphql_recon')) {
+    const gqlUrls = [...new Set(urlCorpus.filter((u) => /graphql/i.test(u)))].slice(0, 8);
+    if (!gqlUrls.length) {
+      log('GraphQL recon: sem endpoints com "graphql" no corpus', 'info');
+    } else {
+      pipe('graphql_recon', 'active');
+      try {
+        const headers = { ...(auth?.headers || {}) };
+        if (auth?.cookie) headers.Cookie = auth.cookie;
+        for (const gqlUrl of gqlUrls) {
+          const out = await probeGraphqlEndpoint(gqlUrl, {
+            headers,
+            executor: async (query, variables, extraHeaders) => {
+              const r = await fetch(gqlUrl, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', ...headers, ...(extraHeaders || {}) },
+                body: JSON.stringify({ query, variables }),
+                signal: AbortSignal.timeout(15000),
+              });
+              try {
+                return await r.json();
+              } catch {
+                return { errors: [{ message: `HTTP ${r.status}` }] };
+              }
+            },
+          });
+          for (const f of out.findings || []) {
+            addFinding({
+              type: 'intel',
+              prio: sevToPrio(f.severity),
+              score: sevToScore(f.severity),
+              value: f.title,
+              meta: f.description,
+              url: gqlUrl,
+            });
+          }
+        }
+      } catch (e) {
+        log(`GraphQL recon: ${e.message}`, 'warn');
+      }
+      pipe('graphql_recon', 'done');
+    }
+  }
+
   const waybackSet = new Set(waybackUrls);
   const ccSet = new Set(ccUrls);
   const interesting = filterInterestingUrls(urlCorpus);
@@ -1256,6 +1381,23 @@ async function runPipeline(ctx) {
     if (!a.ok) {
       log(`JS skip: ${jsUrl} (${a.error || a.status})`, 'warn');
       continue;
+    }
+    if (modules.includes('js_intel')) {
+      try {
+        const intel = jsBundleToFindings(a.body || '', { url: jsUrl, target: domain });
+        for (const jf of intel.findings || []) {
+          addFinding({
+            type: 'intel',
+            prio: sevToPrio(jf.severity),
+            score: sevToScore(jf.severity),
+            value: jf.title,
+            meta: jf.description,
+            url: jsUrl,
+          });
+        }
+      } catch (e) {
+        log(`JS intel: ${e.message}`, 'warn');
+      }
     }
     for (const ep of a.endpoints.slice(0, 25)) {
       const { score, prio } = scoreEndpointPath(ep);
@@ -1686,6 +1828,201 @@ async function runPipeline(ctx) {
 
   pipe('verify', 'done');
 
+  if (modules.includes('authz_matrix')) {
+    pipe('authz_matrix', 'active');
+    try {
+      const endpointUrls = [...new Set(findings.filter((f) => f.type === 'endpoint' && /^https?:\/\//i.test(String(f.value || ''))).map((f) => f.value))].slice(0, 8);
+      const requests = endpointUrls.map((u) => {
+        try {
+          return { method: 'GET', path: new URL(u).pathname || '/', perUser: /\/(me|profile|account|user)/i.test(u), adminOnly: /\/admin/i.test(u) };
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      const personas = [
+        { id: 'anon', expectedRole: 'guest', headers: {} },
+        ...(auth?.cookie || (auth?.headers && Object.keys(auth.headers).length)
+          ? [{ id: 'auth', expectedRole: 'user', headers: { ...(auth?.headers || {}), ...(auth?.cookie ? { Cookie: auth.cookie } : {}) } }]
+          : []),
+      ];
+      if (requests.length && personas.length > 1) {
+        const plan = buildAuthzPlan(requests, personas);
+        const matrix = await runAuthzMatrix({
+          requests,
+          personas,
+          concurrency: 2,
+          executor: async (reqShape, persona) => {
+            const picked = endpointUrls.find((u) => {
+              try { return new URL(u).pathname === reqShape.path; } catch { return false; }
+            });
+            if (!picked) return { status: 0, fingerprint: null, bodyLen: 0 };
+            const r = await fetch(picked, { method: reqShape.method || 'GET', headers: persona.headers || {}, signal: AbortSignal.timeout(12000) });
+            const body = await r.text();
+            return { status: r.status, fingerprint: fingerprintBody(body), bodyLen: body.length };
+          },
+        });
+        for (const f of matrix.findings || []) {
+          addFinding({
+            type: 'intel',
+            prio: sevToPrio(f.severity),
+            score: sevToScore(f.severity),
+            value: f.title,
+            meta: f.description,
+          });
+        }
+        log(`AuthZ matrix: ${plan.length} tentativa(s), ${matrix.findings?.length || 0} sinal(is)`, 'info');
+      } else {
+        log('AuthZ matrix: insuficiente (requer endpoints HTTP + contexto autenticado)', 'info');
+      }
+    } catch (e) {
+      log(`AuthZ matrix: ${e.message}`, 'warn');
+    }
+    pipe('authz_matrix', 'done');
+  }
+
+  if (modules.includes('jwt_lab')) {
+    pipe('jwt_lab', 'active');
+    try {
+      const candidates = [];
+      if (auth?.cookie) candidates.push(...String(auth.cookie).split(/[;,\s]+/).filter((x) => x.split('.').length === 3));
+      for (const v of Object.values(auth?.headers || {})) {
+        const s = String(v || '');
+        const m = s.match(/([A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/);
+        if (m?.[1]) candidates.push(m[1]);
+      }
+      const seen = new Set();
+      for (const tok of candidates) {
+        if (seen.has(tok)) continue;
+        seen.add(tok);
+        const r = analyzeJwt(tok);
+        if (!r.ok) continue;
+        for (const f of r.findings || []) {
+          addFinding({
+            type: 'intel',
+            prio: sevToPrio(f.severity),
+            score: sevToScore(f.severity),
+            value: `JWT lab: ${f.issue}`,
+            meta: f.detail,
+          });
+        }
+      }
+      log(`JWT lab: ${seen.size} token(s) analisado(s)`, 'info');
+    } catch (e) {
+      log(`JWT lab: ${e.message}`, 'warn');
+    }
+    pipe('jwt_lab', 'done');
+  }
+
+  if (modules.includes('dom_xss_verify')) {
+    pipe('dom_xss_verify', 'active');
+    try {
+      const urls = [...new Set(findings.filter((f) => f.type === 'endpoint' && /\?/.test(String(f.value || ''))).map((f) => f.value))].slice(0, 6);
+      const plan = buildVerificationPlan({ urls, params: ['q', 'search', 'id'], maxPerUrl: 3 });
+      if (plan.length) {
+        addFinding({
+          type: 'intel',
+          prio: 'med',
+          score: 58,
+          value: `DOM XSS verify plan: ${plan.length} probes`,
+          meta: 'Plano gerado para validação browser-assisted (Playwright/manual).',
+        });
+      }
+    } catch (e) {
+      log(`DOM XSS verify: ${e.message}`, 'warn');
+    }
+    pipe('dom_xss_verify', 'done');
+  }
+
+  if (modules.includes('payload_mutator')) {
+    pipe('payload_mutator', 'active');
+    try {
+      const variants = mutatePayload(`' OR 1=1--`, { context: 'generic' }).slice(0, 12);
+      addFinding({
+        type: 'intel',
+        prio: 'low',
+        score: 44,
+        value: `Payload mutator ready: ${variants.length} variantes`,
+        meta: `Amostra: ${variants.slice(0, 3).join(' | ').slice(0, 220)}`,
+      });
+    } catch (e) {
+      log(`Payload mutator: ${e.message}`, 'warn');
+    }
+    pipe('payload_mutator', 'done');
+  }
+
+  if (modules.includes('race_harness')) {
+    pipe('race_harness', 'active');
+    try {
+      const candidate = findings.find((f) => f.type === 'endpoint' && /coupon|payment|transfer|withdraw|cart|checkout/i.test(String(f.value || '')));
+      if (candidate?.value) {
+        const plan = buildRacePlan({ request: { method: 'POST', url: candidate.value, headers: auth?.headers || {}, body: '{}' }, parallel: 20 });
+        addFinding({
+          type: 'intel',
+          prio: 'med',
+          score: 60,
+          value: `Race harness plan criado (${plan.total} paralelos)`,
+          meta: `Alvo candidato: ${candidate.value}`,
+          url: candidate.value,
+        });
+      } else {
+        log('Race harness: sem endpoint financeiro óbvio para plano automático', 'info');
+      }
+    } catch (e) {
+      log(`Race harness: ${e.message}`, 'warn');
+    }
+    pipe('race_harness', 'done');
+  }
+
+  if (modules.includes('oob_collaborator')) {
+    pipe('oob_collaborator', 'active');
+    try {
+      const token = randomBytes(8).toString('hex');
+      const host = String(process.env.GHOSTRECON_OOB_HOST || '127.0.0.1');
+      const payloads = buildOobPayloads({ token, host, httpPort: Number(process.env.GHOSTRECON_OOB_HTTP_PORT || 8054) });
+      addFinding({
+        type: 'intel',
+        prio: 'med',
+        score: 57,
+        value: `OOB payload pack gerado (${token})`,
+        meta: `ssrf=${payloads.ssrf[0]} xxe=${payloads.xxe[0]}`.slice(0, 340),
+      });
+    } catch (e) {
+      log(`OOB collaborator: ${e.message}`, 'warn');
+    }
+    pipe('oob_collaborator', 'done');
+  }
+
+  if (modules.includes('cred_spray')) {
+    pipe('cred_spray', 'active');
+    try {
+      const users = String(process.env.GHOSTRECON_SPRAY_USERS || '')
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .slice(0, 100);
+      const passwords = String(process.env.GHOSTRECON_SPRAY_PASSWORDS || '')
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .slice(0, 20);
+      if (users.length && passwords.length) {
+        const plan = planSpray({ users, passwords, usersPerBatch: 25 });
+        addFinding({
+          type: 'intel',
+          prio: 'low',
+          score: 38,
+          value: `Cred spray plan: ${plan.estimateTotal} tentativas`,
+          meta: `batches=${plan.batches.length} cooldownMs=${plan.cooldownMs}`,
+        });
+      } else {
+        log('Cred spray: defina GHOSTRECON_SPRAY_USERS e GHOSTRECON_SPRAY_PASSWORDS para gerar plano', 'info');
+      }
+    } catch (e) {
+      log(`Cred spray: ${e.message}`, 'warn');
+    }
+    pipe('cred_spray', 'done');
+  }
+
   // ── KALI: nmap / searchsploit / ffuf / nuclei ──
   if (kaliMode) {
     pipe('kali', 'active');
@@ -1821,6 +2158,40 @@ async function runPipeline(ctx) {
   }
   pipe('assets', 'done');
 
+  if (modules.includes('cloud_bruteforce') && !apexHostIsIp) {
+    pipe('cloud_bruteforce', 'active');
+    try {
+      const rootName = String(domain).split('.')[0];
+      const bf = await bruteforceCloud({
+        name: rootName,
+        target: domain,
+        executor: async ({ method, url }) => {
+          try {
+            const r = await fetch(url, { method, redirect: 'manual', signal: AbortSignal.timeout(10000) });
+            const body = await r.text();
+            return { status: r.status, body };
+          } catch (e) {
+            return { error: e?.message || String(e) };
+          }
+        },
+      });
+      for (const f of bf.findings || []) {
+        addFinding({
+          type: 'intel',
+          prio: sevToPrio(f.severity),
+          score: sevToScore(f.severity),
+          value: f.title,
+          meta: f.description,
+          url: f.evidence?.url || undefined,
+        });
+      }
+      log(`Cloud bruteforce: ${bf.summary?.public || 0} público(s) / ${bf.findings?.length || 0} total`, 'info');
+    } catch (e) {
+      log(`Cloud bruteforce: ${e.message}`, 'warn');
+    }
+    pipe('cloud_bruteforce', 'done');
+  }
+
   // ── PRIORIZAÇÃO V2 + CVE hints + CORRELATION + INTEL ──
   pipe('score', 'active');
   progress(93);
@@ -1855,6 +2226,72 @@ async function runPipeline(ctx) {
     findings.length = 0;
     findings.push(...semantic.findings);
     log(`Dedupe semântico: ${semantic.merged} achado(s) colapsado(s) por família`, 'info');
+  }
+
+  if (modules.includes('chaining')) {
+    try {
+      const chained = applyChains({ findings });
+      if (chained?.chains?.length) {
+        findings.length = 0;
+        findings.push(...(chained.findings || []));
+        log(`Chaining: ${chained.chains.length} cadeia(s) detectada(s)`, 'warn');
+      }
+    } catch (e) {
+      log(`Chaining: ${e.message}`, 'warn');
+    }
+  }
+
+  if (modules.includes('bounty_scope')) {
+    try {
+      const scope = Array.isArray(bountyCtx?.scope) ? bountyCtx.scope : [];
+      if (scope.length) {
+        const shaped = findings.map((f) => ({
+          category: f.type || 'intel',
+          title: String(f.value || ''),
+          evidence: { url: f.url || undefined, target: domain },
+        }));
+        const filtered = applyScopeFilter(shaped, scope);
+        const removed = (filtered.outOfScope || []).length;
+        if (removed > 0) log(`Bounty scope: ${removed} achado(s) fora de escopo no contexto atual`, 'warn');
+      } else {
+        log('Bounty scope: sem bountyContext.scope no payload, skip filtro', 'info');
+      }
+      const dedupe = await dedupeBountyFindings(
+        findings.map((f) => ({
+          category: f.type || 'intel',
+          title: String(f.value || ''),
+          evidence: { url: f.url || undefined, target: domain },
+        })),
+      );
+      if ((dedupe.duplicate || []).length) {
+        log(`Bounty dedupe: ${(dedupe.duplicate || []).length} potencial(is) duplicado(s) de submissão`, 'info');
+      }
+    } catch (e) {
+      log(`Bounty scope/dedupe: ${e.message}`, 'warn');
+    }
+  }
+
+  if (modules.includes('bounty_estimator')) {
+    try {
+      const normalized = findings.map((f) => ({
+        severity: f.prio === 'high' ? 'high' : f.prio === 'med' ? 'medium' : 'low',
+        category: f.type || 'intel',
+      }));
+      const value = summarizeValue(normalized, { tier: String(bountyCtx?.tier || 'standard').toLowerCase() });
+      const top = prioritizeBounty(normalized, { tier: String(bountyCtx?.tier || 'standard').toLowerCase() }).slice(0, 3);
+      log(`Bounty estimator: total esperado ~${value.totalExpected} (${Object.entries(value.byRecommendation).map(([k, v]) => `${k}:${v}`).join(', ')})`, 'info');
+      for (const t of top) {
+        addFinding({
+          type: 'intel',
+          prio: t.estimate.recommendation === 'go-now' ? 'high' : t.estimate.recommendation === 'priority' ? 'med' : 'low',
+          score: Math.min(98, Math.max(30, Math.round(t.estimate.ratio / 2))),
+          value: `Bounty value hint: ${t.estimate.recommendation}`,
+          meta: `expected=${t.estimate.expectedPayout} ratio=${t.estimate.ratio}/h`,
+        });
+      }
+    } catch (e) {
+      log(`Bounty estimator: ${e.message}`, 'warn');
+    }
   }
   stats.high = findings.filter((f) => f.prio === 'high').length;
   emit({ type: 'stats', stats: { ...stats } });
