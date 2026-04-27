@@ -1,0 +1,46 @@
+{
+  "name": "lovable-hunt",
+  "description": "Caça em apps gerados pela plataforma Lovable (vibe-coded). Foca em: fingerprint Lovable/Supabase, RLS quebrado/ausente (CVE-2025-48757), anon key embutida no bundle, secrets client-side (sk_, sb-, eyJ, re_, AIza), CORS permissivo, headers ausentes, IDOR/BOLA, e padrões comuns de auth quebrada.",
+  "profile": "standard",
+  "tags": [
+    "lovable",
+    "supabase",
+    "rls",
+    "vibe-coded",
+    "bola",
+    "secrets",
+    "client-side",
+    "cve-2025-48757"
+  ],
+  "targetHint": "*.lovable.app, *.lovable.dev, *.supabase.co",
+  "modules": [
+    "subdomains",
+    "ct_monitor",
+    "dns_enrichment",
+    "rdap",
+    "http",
+    "lovable_fingerprint",
+    "curl_probe",
+    "security_headers",
+    "header_intel",
+    "robots_sitemap",
+    "wellknown_security_txt",
+    "html_surface",
+    "openapi_specs",
+    "graphql_probe",
+    "wayback",
+    "common_crawl",
+    "js_intel",
+    "github",
+    "google_cse",
+    "dom_xss_verify",
+    "authz_matrix",
+    "jwt_lab",
+    "micro_exploit",
+    "chaining",
+    "bounty_scope"
+  ],
+  "limits": {
+    "notes": "Lovable apps tendem a expor anon key no JS bundle. js_intel + github + wayback geralmente já entregam secrets. Combinar com playbooks/lovable-checklist.md para o probe manual de RLS."
+  }
+}

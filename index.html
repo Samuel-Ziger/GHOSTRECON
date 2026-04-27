@@ -1673,6 +1673,66 @@
   .filter-tab:hover { color: var(--text); }
   .filter-tab.active { color: var(--accent); border-color: var(--accent); }
 
+  .findings-search-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(10, 14, 20, 0.35);
+  }
+  .findings-search-input {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 10px;
+    outline: none;
+  }
+  .findings-search-input:focus { border-color: var(--accent); }
+  .findings-search-clear {
+    padding: 7px 10px;
+    font-size: 9px;
+    border: 1px solid rgba(255, 102, 136, 0.5);
+    color: #ff9ab0;
+    background: rgba(255, 102, 136, 0.08);
+  }
+  .findings-search-clear:hover {
+    border-color: #ff6688;
+    color: #ffd3de;
+    background: rgba(255, 102, 136, 0.16);
+  }
+  .findings-search-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 12px 10px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(10, 14, 20, 0.35);
+  }
+  .findings-search-chip {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 9px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .findings-search-chip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .findings-search-chip.is-active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(0, 212, 255, 0.12);
+  }
+
   .panel-title-row {
     display: flex;
     align-items: center;
@@ -2437,6 +2497,17 @@
           <input id="authHeaderInput" class="domain-input" type="text" placeholder="Bearer eyJ..." style="padding:8px 10px">
           <div class="toggle-label" style="margin:8px 0 6px">Cookie (opcional)</div>
           <input id="authCookieInput" class="domain-input" type="text" placeholder="session=abc123" style="padding:8px 10px">
+          <div class="toggle-row" style="margin-top:10px">
+            <span class="toggle-label" title="Headers de identificação exigidos por alguns programas de bug bounty">Headers de programa (bug bounty)</span>
+            <label class="toggle">
+              <input type="checkbox" id="programHeadersToggle">
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+          <div id="programHeadersWrap" style="display:none;margin-top:8px">
+            <div class="toggle-label" style="margin-bottom:6px">Headers extras (1 por linha, formato <code>Nome: valor</code>)</div>
+            <textarea id="programHeadersInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:72px;font-size:10px" placeholder="X-BugBounty-Research: true&#10;X-Security-Researcher: seu_handle&#10;From: voce@email.com"></textarea>
+          </div>
           <div style="display:flex;gap:8px;margin-top:8px">
             <button type="button" class="find-btn" onclick="saveAuthConfig()">Salvar auth</button>
             <button type="button" class="find-btn" onclick="clearAuthConfig()">Limpar</button>
@@ -2621,13 +2692,6 @@
     <div class="modules-section">
       <div class="section-label">
         <span>Modules</span>
-        <button
-          type="button"
-          class="findings-help-trigger"
-          onclick="openModulesHelpModal()"
-          title="O que faz cada módulo?"
-          aria-label="Ajuda: módulos"
-        >?</button>
       </div>
 
       <div class="module-group">
@@ -2754,6 +2818,8 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="gau"><div class="checkbox-box"></div><span class="checkbox-text">gau (archive URLs)</span><span class="tag tag-low">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="waybackurls"><div class="checkbox-box"></div><span class="checkbox-text">waybackurls (archive URLs)</span><span class="tag tag-low">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="rdap"><div class="checkbox-box"></div><span class="checkbox-text">RDAP (registo domínio)</span><span class="tag tag-low">WHOIS+</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="lovable_fingerprint"><div class="checkbox-box"></div><span class="checkbox-text">Lovable fingerprint (RLS/secrets/auth)</span><span class="tag tag-high">HIGH</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="curl_probe"><div class="checkbox-box"></div><span class="checkbox-text">Curl probe (métodos/auth/CORS/diff)</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item" title="Após cada GET do probe: cabeçalhos suspeitos (stack, debug, proxy) e bloco sugerido para /etc/hosts quando houver vhost nos headers.">
           <input type="checkbox" class="mod" value="header_intel">
@@ -3143,6 +3209,7 @@
         </div>
         <div class="filter-tabs" id="filterTabs">
           <div class="filter-tab active" onclick="filterFindings('all', this)">ALL</div>
+          <div class="filter-tab" onclick="filterFindings('dorks', this)">DORKS</div>
           <div class="filter-tab" onclick="filterFindings('high', this)">🔴 HIGH</div>
           <div class="filter-tab" onclick="filterFindings('med', this)">🟡 MED</div>
           <div class="filter-tab" onclick="filterFindings('low', this)">🟢 LOW</div>
@@ -3167,6 +3234,29 @@
           <div class="filter-tab" onclick="filterFindings('security', this)">SEC</div>
           <div class="filter-tab" onclick="filterFindings('tls', this)">TLS</div>
           <div class="filter-tab" onclick="filterFindings('rdap', this)">RDAP</div>
+        </div>
+        <div class="findings-search-row">
+          <input
+            id="findingsSearchInput"
+            class="findings-search-input"
+            type="text"
+            placeholder="Pesquisar achados (tipo, valor, URL, meta)..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="button" id="findingsSearchClear" class="findings-search-clear" title="Limpa a pesquisa de achados">Limpar busca</button>
+        </div>
+        <div class="findings-search-chips" id="findingsSearchChips">
+          <button type="button" class="findings-search-chip" data-q="login">login</button>
+          <button type="button" class="findings-search-chip" data-q="admin">admin</button>
+          <button type="button" class="findings-search-chip" data-q="api">api</button>
+          <button type="button" class="findings-search-chip" data-q="graphql">graphql</button>
+          <button type="button" class="findings-search-chip" data-q="sqli">sqli</button>
+          <button type="button" class="findings-search-chip" data-q="xss">xss</button>
+          <button type="button" class="findings-search-chip" data-q="idor">idor</button>
+          <button type="button" class="findings-search-chip" data-q="secret">secret</button>
+          <button type="button" class="findings-search-chip" data-q="token">token</button>
+          <button type="button" class="findings-search-chip" data-q="cors">cors</button>
         </div>
         <div class="findings-list" id="findingsList">
           <div style="text-align:center;padding:40px;color:var(--text-dim);font-family:var(--mono);font-size:11px">
@@ -3246,6 +3336,7 @@ let findings = [];
 /** Fingerprints com validação manual persistida (GET /api/manual-validations). */
 window.__ghostreconManualFp = new Set();
 let currentFilter = 'all';
+let findingsSearchQuery = '';
 let isRunning = false;
 let stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
 let targetDomain = '';
@@ -3429,7 +3520,6 @@ function dismissFindingFingerprint(fp) {
   } catch {}
   const i = findings.findIndex((x) => x.fingerprint === fp);
   if (i >= 0) findings.splice(i, 1);
-  document.getElementById('findCount').textContent = findings.length + ' achados';
   refreshFindingsList();
 }
 
@@ -3465,6 +3555,22 @@ function getOptionalAuthConfig() {
   }
 }
 
+function parseProgramHeadersText(raw) {
+  const out = {};
+  const lines = String(raw || '').split(/\r?\n/);
+  for (const ln of lines) {
+    const s = String(ln || '').trim();
+    if (!s) continue;
+    const idx = s.indexOf(':');
+    if (idx <= 0) continue;
+    const k = s.slice(0, idx).trim();
+    const v = s.slice(idx + 1).trim();
+    if (!k || !v) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 function getReconProfile() {
   const sel = document.getElementById('reconProfileSelect');
   if (sel?.value && ['quick', 'standard', 'deep'].includes(String(sel.value).toLowerCase())) {
@@ -3482,9 +3588,20 @@ function getReconProfile() {
 function saveAuthConfig() {
   const authHeader = (document.getElementById('authHeaderInput')?.value || '').trim();
   const authCookie = (document.getElementById('authCookieInput')?.value || '').trim();
+  const useProgramHeaders = Boolean(document.getElementById('programHeadersToggle')?.checked);
+  const programHeadersRaw = (document.getElementById('programHeadersInput')?.value || '').trim();
   const headers = {};
   if (authHeader) headers.Authorization = authHeader;
-  const payload = { headers, cookie: authCookie };
+  if (useProgramHeaders) {
+    const extra = parseProgramHeadersText(programHeadersRaw);
+    Object.assign(headers, extra);
+  }
+  const payload = {
+    headers,
+    cookie: authCookie,
+    programHeadersEnabled: useProgramHeaders,
+    programHeadersRaw: useProgramHeaders ? programHeadersRaw : '',
+  };
   localStorage.setItem('ghostrecon_auth_json', JSON.stringify(payload));
   addLog('Auth opcional salva no browser (localStorage).', 'info');
 }
@@ -3493,8 +3610,14 @@ function clearAuthConfig() {
   localStorage.removeItem('ghostrecon_auth_json');
   const h = document.getElementById('authHeaderInput');
   const c = document.getElementById('authCookieInput');
+  const t = document.getElementById('programHeadersToggle');
+  const w = document.getElementById('programHeadersWrap');
+  const p = document.getElementById('programHeadersInput');
   if (h) h.value = '';
   if (c) c.value = '';
+  if (t) t.checked = false;
+  if (w) w.style.display = 'none';
+  if (p) p.value = '';
   addLog('Auth opcional removida.', 'info');
 }
 
@@ -3510,15 +3633,28 @@ function initProfileUi() {
 }
 
 function initAuthUi() {
+  const t = document.getElementById('programHeadersToggle');
+  const w = document.getElementById('programHeadersWrap');
+  const syncProgramHeadersUi = () => {
+    if (w) w.style.display = t?.checked ? 'block' : 'none';
+  };
+  t?.addEventListener('change', syncProgramHeadersUi);
   try {
     const raw = localStorage.getItem('ghostrecon_auth_json');
-    if (!raw) return;
+    if (!raw) {
+      syncProgramHeadersUi();
+      return;
+    }
     const j = JSON.parse(raw);
     const h = document.getElementById('authHeaderInput');
     const c = document.getElementById('authCookieInput');
+    const p = document.getElementById('programHeadersInput');
     if (h && j?.headers?.Authorization) h.value = String(j.headers.Authorization);
     if (c && j?.cookie) c.value = String(j.cookie);
+    if (t) t.checked = Boolean(j?.programHeadersEnabled);
+    if (p && j?.programHeadersRaw) p.value = String(j.programHeadersRaw);
   } catch {}
+  syncProgramHeadersUi();
 }
 
 const ENG_OPSEC_LS = {
@@ -3745,13 +3881,35 @@ function updateStat(key, val) {
 
 // ─── FINDINGS ────────────────────────────────────────────
 /** Filtro virtual `subfinder`: subdomínios cujo meta inclui tool=subfinder (enum Kali). */
+function isDorkFindingType(t) {
+  const x = String(t || '').toLowerCase();
+  return x === 'dork' || x === 'dorks';
+}
+
 function findingMatchesFilter(f) {
   const x = currentFilter;
-  if (x === 'all') return true;
+  if (x === 'all') return !isDorkFindingType(f.type);
+  if (x === 'dorks') return isDorkFindingType(f.type);
   if (x === 'subfinder') {
     return f.type === 'subdomain' && /\btool=subfinder\b/.test(String(f.meta || ''));
   }
   return f.prio === x || f.type === x;
+}
+
+function findingMatchesSearch(f) {
+  const q = String(findingsSearchQuery || '').trim().toLowerCase();
+  if (!q) return true;
+  const blob = [f.type, f.prio, f.value, f.url, f.meta, f.source]
+    .map((x) => String(x || '').toLowerCase())
+    .join('\n');
+  return blob.includes(q);
+}
+
+function syncFindingsSearchChipsUi() {
+  const q = String(findingsSearchQuery || '').trim().toLowerCase();
+  document.querySelectorAll('.findings-search-chip').forEach((chip) => {
+    chip.classList.toggle('is-active', String(chip.dataset.q || '').toLowerCase() === q && q.length > 0);
+  });
 }
 
 function addFinding(f) {
@@ -3759,7 +3917,6 @@ function addFinding(f) {
   // índice para manter ordenação consistente em re-renderizações
   f.__idx = findings.length;
   findings.push(f);
-  document.getElementById('findCount').textContent = findings.length + ' achados';
   // Em "ALL" reordenamos a lista inteira sempre que chega algo novo,
   // para garantir que `endpoint` e `param` fiquem lado a lado (independente da ordem de descoberta).
   if (currentFilter === 'all') {
@@ -3767,7 +3924,9 @@ function addFinding(f) {
     postReporteLivePayload(false);
     return;
   }
-  if (findingMatchesFilter(f)) renderFinding(f);
+  if (findingMatchesFilter(f) && findingMatchesSearch(f)) renderFinding(f);
+  const shown = findings.filter((x) => findingMatchesFilter(x) && findingMatchesSearch(x)).length;
+  document.getElementById('findCount').textContent = shown + ' de ' + findings.length + ' achados';
   postReporteLivePayload(false);
 }
 
@@ -4109,9 +4268,9 @@ function filterFindings(f, el) {
 function refreshFindingsList() {
   const list = document.getElementById('findingsList');
   list.innerHTML = '';
-  document.getElementById('findCount').textContent = findings.length + ' achados';
   const f = currentFilter;
-  const filtered = findings.filter((x) => f === 'all' || findingMatchesFilter(x));
+  const filtered = findings.filter((x) => findingMatchesFilter(x) && findingMatchesSearch(x));
+  document.getElementById('findCount').textContent = filtered.length + ' de ' + findings.length + ' achados';
   if (f === 'all') {
     // Agrupar endpoints e params para não ficarem "separados" por outros tipos.
     const rank = {
@@ -4152,6 +4311,31 @@ function refreshFindingsList() {
   }
   filtered.forEach(x => renderFinding(x));
 }
+
+const findingsSearchInputEl = document.getElementById('findingsSearchInput');
+const findingsSearchClearEl = document.getElementById('findingsSearchClear');
+const findingsSearchChipsEl = document.getElementById('findingsSearchChips');
+findingsSearchInputEl?.addEventListener('input', () => {
+  findingsSearchQuery = String(findingsSearchInputEl.value || '');
+  syncFindingsSearchChipsUi();
+  refreshFindingsList();
+});
+findingsSearchClearEl?.addEventListener('click', () => {
+  if (findingsSearchInputEl) findingsSearchInputEl.value = '';
+  findingsSearchQuery = '';
+  syncFindingsSearchChipsUi();
+  refreshFindingsList();
+});
+findingsSearchChipsEl?.addEventListener('click', (ev) => {
+  const chip = ev.target?.closest?.('.findings-search-chip');
+  if (!chip) return;
+  const q = String(chip.dataset.q || '').trim();
+  const cur = String(findingsSearchQuery || '').trim().toLowerCase();
+  findingsSearchQuery = cur === q.toLowerCase() ? '' : q;
+  if (findingsSearchInputEl) findingsSearchInputEl.value = findingsSearchQuery;
+  syncFindingsSearchChipsUi();
+  refreshFindingsList();
+});
 
 function resetPipelineVisual() {
   [
@@ -4897,7 +5081,11 @@ async function startRecon() {
     stats[k] = 0;
     updateStat(k, 0);
   });
-  document.getElementById('findCount').textContent = '0 achados';
+  findingsSearchQuery = '';
+  const fsIn = document.getElementById('findingsSearchInput');
+  if (fsIn) fsIn.value = '';
+  syncFindingsSearchChipsUi();
+  document.getElementById('findCount').textContent = '0 de 0 achados';
   const ib = document.getElementById('intelBanner');
   if (ib) {
     ib.style.display = 'none';
@@ -6068,15 +6256,61 @@ function closePromptInjHelpModal() {
   >
     <button type="button" class="findings-help-close" onclick="closeFindingsHelpModal()" aria-label="Fechar">×</button>
     <div class="findings-help-dialog-head">
-      <h2 id="findingsHelpTitle">AJUDA — ACHADOS</h2>
+      <h2 id="findingsHelpTitle">GUIA RÁPIDO — ONBOARDING</h2>
       <p class="findings-help-intro">
-        Os <strong>separadores</strong> filtram os cartões pela prioridade ou pelo tipo. A <strong>barra de números</strong> em baixo resume contagens enviadas pelo servidor durante o recon. Com <strong>fila de alvos</strong>, esses contadores <em>somam</em> todos os alvos da mesma corrida. Alguns tipos de cartão só aparecem com modo Kali ou módulos activos.
+        Use este guia como atalho para quem abriu a ferramenta pela primeira vez: primeiro escolha o <strong>objetivo</strong>, depois os <strong>módulos</strong>, e por fim filtre os resultados na lista de <strong>Findings</strong>.
       </p>
     </div>
     <div class="findings-help-scroll">
+      <h3 class="findings-help-section-title" style="margin-top:0;padding-top:0;border-top:none">COMEÇO RÁPIDO POR OBJETIVO</h3>
+      <dl class="findings-help-dl">
+        <dt>Quero caçar API (rápido)</dt>
+        <dd>Marque <strong>OpenAPI/Swagger</strong>, <strong>GraphQL</strong>, <strong>authz_matrix</strong>, <strong>curl_probe</strong>, <strong>jwt_lab</strong> e rode em perfil <code>standard</code>. Depois filtre em <strong>API / ENDPOINTS / PARAMS / GRAPHQL / IDOR / SQLI</strong>.</dd>
+        <dt>Quero priorizar risco</dt>
+        <dd>Use separadores <strong>HIGH</strong> e busca rápida por chips (<code>admin</code>, <code>login</code>, <code>sqli</code>, <code>idor</code>, <code>secret</code>).</dd>
+        <dt>Tenho programa privado com login</dt>
+        <dd>Preencha autenticação opcional (cookie/header) para melhorar cobertura de <strong>Broken Access Control</strong>, IDOR e endpoints internos.</dd>
+        <dt>Quero reduzir ruído visual</dt>
+        <dd>Use <strong>ALL</strong> para visão geral (sem dorks), <strong>DORKS</strong separado, e a mini busca em Findings para focar só no tema desejado.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">VOCABULÁRIO RÁPIDO (RÓTULOS DA UI)</h3>
+      <dl class="findings-help-dl">
+        <dt>Projeto (pasta local)</dt>
+        <dd>Nome lógico para guardar runs/corpus localmente em <code>escopo/&lt;nome&gt;/&lt;domínio&gt;/ghostrecon.db</code> (quando habilitado), além de Postgres/Supabase se configurados.</dd>
+        <dt>Alvo ($)</dt>
+        <dd>Domínio, URL, IPv4 ou IPv6 principal da corrida.</dd>
+        <dt>Fila de alvos (sequencial)</dt>
+        <dd>Processa vários alvos um por vez (mais estável para rate limit e OPSEC).</dd>
+        <dt>Fora de escopo</dt>
+        <dd>Hosts/domínios/URLs que não devem entrar no corpus.</dd>
+        <dt>Correspondência exata</dt>
+        <dd>Restringe buscas (dorks) ao alvo estrito, com menos expansão lateral.</dd>
+        <dt>Abrir dorks (Google)</dt>
+        <dd>Controla abertura automática de abas Google para dorks.</dd>
+        <dt>Completo (Full)</dt>
+        <dd>Preset que ativa grande parte dos módulos de recon automaticamente.</dd>
+        <dt>Recon subs</dt>
+        <dd>Após alvo principal, executa recon também em subdomínios descobertos.</dd>
+        <dt>Kali (scan ativo)</dt>
+        <dd>Habilita módulos CLI mais intrusivos (nmap, nuclei, ffuf, etc.) quando disponíveis no PATH.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">SE O NAVEGADOR TRADUZIR RÓTULO ESTRANHO</h3>
+      <dl class="findings-help-dl">
+        <dt>"Abra os idiotas (Google)"</dt>
+        <dd>Leia como <strong>Abrir dorks (Google)</strong>.</dd>
+        <dt>"Submarinos de reconhecimento"</dt>
+        <dd>Leia como <strong>Recon subs</strong>.</dd>
+        <dt>"Sonda de curvatura"</dt>
+        <dd>Leia como <strong>curl_probe</strong> (métodos/auth/CORS/diff).</dd>
+        <dt>"Impressão digital adorável"</dt>
+        <dd>Leia como <strong>lovable_fingerprint</strong> (RLS/segredos/auth).</dd>
+      </dl>
+
       <dl class="findings-help-dl">
         <dt>ALL</dt>
-        <dd>Todos os cartões da sessão actual, com ordenação por tipo (subdomínios, endpoints, parâmetros, depois scans e heurísticas).</dd>
+        <dd>Visão geral da sessão (exclui dorks para reduzir ruído). Dorks ficam no separador <strong>DORKS</strong>.</dd>
         <dt>🔴 HIGH</dt>
         <dd>Apenas achados com prioridade <strong>alta</strong> (heurística de risco ou confirmações mais fortes).</dd>
         <dt>🟡 MED</dt>

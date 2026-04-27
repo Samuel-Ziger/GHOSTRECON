@@ -259,6 +259,11 @@ export function createIdentityController(opts = {}) {
       proxies: proxies.length,
       health: Object.fromEntries([...health.entries()].slice(0, 16)),
     }),
+    getCurrentProxy: () => {
+      if (!proxies.length) return null;
+      return proxies[proxyIdx % proxies.length] || null;
+    },
+    getProxyPool: () => [...proxies],
     /** Para probeHttp (redirect follow). */
     async fetchHtmlProbe(url, init) {
       if (!enabled) return fetch(url, init);

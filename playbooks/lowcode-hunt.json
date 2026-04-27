@@ -1,0 +1,46 @@
+{
+  "name": "lowcode-hunt",
+  "description": "Caça focada em apps low-code/no-code (Bubble, Webflow, OutSystems, Mendix, Appsmith): authz/IDOR, exposição de APIs internas, credenciais no client, CORS e surface API.",
+  "profile": "standard",
+  "tags": [
+    "lowcode",
+    "nocode",
+    "api",
+    "idor",
+    "authz",
+    "secrets",
+    "cors"
+  ],
+  "targetHint": "*.bubbleapps.io, *.webflow.io, *.outsystemscloud.com, *.mendixcloud.com, *.appsmith.com",
+  "modules": [
+    "subdomains",
+    "ct_monitor",
+    "dns_enrichment",
+    "rdap",
+    "http",
+    "security_headers",
+    "header_intel",
+    "robots_sitemap",
+    "wellknown_security_txt",
+    "html_surface",
+    "openapi_specs",
+    "graphql_probe",
+    "graphql_recon",
+    "wayback",
+    "common_crawl",
+    "js_intel",
+    "github",
+    "google_cse",
+    "authz_matrix",
+    "jwt_lab",
+    "dom_xss_verify",
+    "curl_probe",
+    "micro_exploit",
+    "chaining",
+    "bounty_scope",
+    "bounty_estimator"
+  ],
+  "limits": {
+    "notes": "Para alvo com autenticação, passe auth-cookie/auth-header para melhorar cobertura de Broken Access Control/IDOR. Para SQLi profundo, combinar com módulo sqlmap."
+  }
+}
