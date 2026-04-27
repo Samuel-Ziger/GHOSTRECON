@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { SQLI_PARAM_RE, responseLooksLikeSqlError, evidenceHash } from './verify.js';
 
 function runProc(cmd, args, timeoutMs) {
@@ -63,8 +66,43 @@ export function sniffSqlmapHints(text) {
   return { dbms, database };
 }
 
-function buildCurlArgs(url, auth) {
-  const args = ['-sS', '-m', '14', '-g', '-L', '--max-redirs', '2', '-A', 'GhostRecon-sqlmap-preflight/1.0'];
+function resolveCurlProfile(profile = 'standard') {
+  const p = String(profile || 'standard').toLowerCase();
+  if (p === 'stealth') return { timeoutSec: 18, retry: 1, retryDelaySec: 2, useHttp2: false };
+  if (p === 'aggressive') return { timeoutSec: 24, retry: 3, retryDelaySec: 1, useHttp2: true };
+  if (p === 'quick') return { timeoutSec: 10, retry: 1, retryDelaySec: 1, useHttp2: true };
+  return { timeoutSec: 14, retry: 2, retryDelaySec: 1, useHttp2: true };
+}
+
+function buildCurlArgs({ url, auth, profile = 'standard', proxy = null, headerFile, bodyFile }) {
+  const cfg = resolveCurlProfile(profile);
+  const args = [
+    '-sS',
+    '--fail-with-body',
+    '-g',
+    '-L',
+    '--max-redirs',
+    '2',
+    '--tlsv1.2',
+    '--compressed',
+    '-A',
+    'GhostRecon-sqlmap-preflight/1.1',
+    '-m',
+    String(cfg.timeoutSec),
+    '--retry',
+    String(cfg.retry),
+    '--retry-delay',
+    String(cfg.retryDelaySec),
+    '--retry-connrefused',
+    '-D',
+    headerFile,
+    '-o',
+    bodyFile,
+    '-w',
+    '{"http_code":"%{http_code}","time_total":"%{time_total}","redirect_url":"%{redirect_url}","size_download":"%{size_download}","remote_ip":"%{remote_ip}","url_effective":"%{url_effective}"}',
+  ];
+  if (cfg.useHttp2) args.push('--http2');
+  if (proxy) args.push('--proxy', String(proxy));
   if (auth?.cookie) args.push('-H', `Cookie: ${String(auth.cookie)}`);
   if (auth?.headers && typeof auth.headers === 'object') {
     for (const [k, v] of Object.entries(auth.headers)) {
@@ -76,12 +114,49 @@ function buildCurlArgs(url, auth) {
   return args;
 }
 
-async function curlGet(url, auth, timeoutMs = 16000) {
+function resolveCurlProxy(identityCtrl = null) {
+  const fromCtrl = identityCtrl?.getCurrentProxy?.();
+  if (fromCtrl) return fromCtrl;
+  const envPool = String(process.env.GHOSTRECON_PROXY_POOL || '')
+    .split(/[,;\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return envPool[0] || null;
+}
+
+async function curlGet(url, auth, { timeoutMs = 16000, profile = 'standard', identityCtrl = null } = {}) {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-curl-sqlmap-'));
+  const headerFile = path.join(tmpDir, 'headers.txt');
+  const bodyFile = path.join(tmpDir, 'body.txt');
+  const proxy = resolveCurlProxy(identityCtrl);
   try {
-    const r = await runProc('curl', buildCurlArgs(url, auth), timeoutMs);
-    return { ok: true, body: r.stdout, stderr: r.stderr, code: r.code };
+    const r = await runProc(
+      'curl',
+      buildCurlArgs({ url, auth, profile, proxy, headerFile, bodyFile }),
+      timeoutMs,
+    );
+    const body = await fs.readFile(bodyFile, 'utf8').catch(() => '');
+    const headersRaw = await fs.readFile(headerFile, 'utf8').catch(() => '');
+    let metrics = {};
+    try {
+      metrics = JSON.parse(String(r.stdout || '{}').trim() || '{}');
+    } catch {
+      metrics = {};
+    }
+    const httpCode = Number(metrics.http_code || 0);
+    return {
+      ok: true,
+      body,
+      headersRaw,
+      stderr: r.stderr,
+      code: Number.isFinite(httpCode) ? httpCode : 0,
+      metrics,
+      proxyUsed: proxy || null,
+    };
   } catch (e) {
-    return { ok: false, error: e?.message || String(e), body: '', stderr: '', code: -1 };
+    return { ok: false, error: e?.message || String(e), body: '', stderr: '', code: -1, metrics: {}, proxyUsed: proxy || null };
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -184,7 +259,7 @@ function sqlmapOutputSuggestsInjection(combined) {
  * @param {function} opts.log
  * @param {number} [opts.maxTargets]
  */
-export async function runSqlmapModule({ findings, auth, log, maxTargets = 2 }) {
+export async function runSqlmapModule({ findings, auth, log, maxTargets = 2, profile = 'standard', identityCtrl = null }) {
   const outFindings = [];
   const logFn = typeof log === 'function' ? log : () => {};
 
@@ -226,11 +301,11 @@ export async function runSqlmapModule({ findings, auth, log, maxTargets = 2 }) {
     const tickUrl = setSearchParam(t.url, t.param, `${t.baseVal}'`);
 
     logFn(`sqlmap: curl baseline → ${baseUrl.slice(0, 120)}${baseUrl.length > 120 ? '…' : ''}`, 'info');
-    const c0 = await curlGet(baseUrl, auth);
+    const c0 = await curlGet(baseUrl, auth, { profile, identityCtrl });
     if (!c0.ok) logFn(`sqlmap: curl baseline falhou: ${c0.error || c0.stderr}`, 'warn');
 
     logFn(`sqlmap: curl com aspas → ?${t.param}=…'`, 'info');
-    const c1 = await curlGet(tickUrl, auth);
+    const c1 = await curlGet(tickUrl, auth, { profile, identityCtrl });
     if (!c1.ok) logFn(`sqlmap: curl (') falhou: ${c1.error || c1.stderr}`, 'warn');
 
     const errBase = responseLooksLikeSqlError(c0.body);
@@ -239,7 +314,7 @@ export async function runSqlmapModule({ findings, auth, log, maxTargets = 2 }) {
     const hintsBase = sniffSqlmapHints(c0.body);
 
     logFn(
-      `sqlmap: pré-flight ?${t.param}= • sql_err_baseline=${errBase ? 'yes' : 'no'} • sql_err_tick=${errTick ? 'yes' : 'no'} • status_curl=${c1.code}`,
+      `sqlmap: pré-flight ?${t.param}= • sql_err_baseline=${errBase ? 'yes' : 'no'} • sql_err_tick=${errTick ? 'yes' : 'no'} • status_curl=${c1.code} • t=${c1.metrics?.time_total || '?'}s • ip=${c1.metrics?.remote_ip || '?'}${c1.proxyUsed ? ` • proxy=${c1.proxyUsed}` : ''}`,
       'info',
     );
     if (hintsTick.dbms || hintsBase.dbms) {
@@ -295,7 +370,17 @@ export async function runSqlmapModule({ findings, auth, log, maxTargets = 2 }) {
         url: tickUrl,
         verification: {
           classification: inj ? 'confirmed' : 'probable',
-          evidence: { ...evidence, evidenceHash: evidenceHash(evidence) },
+          evidence: {
+            ...evidence,
+            curl: {
+              baseline: c0.metrics,
+              tick: c1.metrics,
+              baselineStatus: c0.code,
+              tickStatus: c1.code,
+              proxy: c1.proxyUsed || null,
+            },
+            evidenceHash: evidenceHash(evidence),
+          },
           verifiedAt: new Date().toISOString(),
         },
       });

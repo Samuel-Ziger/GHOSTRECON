@@ -130,6 +130,8 @@ import { detectOriginCandidates, originDiscoveryToFindings, resolveSubsForOrigin
 import { mutatePayload } from './modules/payload-mutator.mjs';
 import { buildRacePlan } from './modules/race-harness.mjs';
 import { planSpray } from './modules/cred-spray.mjs';
+import { fingerprintLovable } from './modules/lovable-fingerprint.js';
+import { runCurlProbeModule } from './modules/curl-probe.mjs';
 
 function firstIpv4FromDnsRecords(records) {
   for (const r of records || []) {
@@ -469,6 +471,26 @@ async function runPipeline(ctx) {
   pipe('input', 'active');
   progress(5);
   pipe('input', 'done');
+
+  // ── LOVABLE FINGERPRINT ───────────────────────
+  if (!apexHostIsIp && modules.includes('lovable_fingerprint')) {
+    pipe('lovable_fingerprint', 'active');
+    try {
+      const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
+      log(`Lovable fingerprint: analisando ${targetUrl}`, 'info');
+      const lov = await fingerprintLovable(targetUrl);
+      const lovFindings = Array.isArray(lov?.findings) ? lov.findings : [];
+      for (const f of lovFindings) addFinding(withProvenance(f, 'lovable_fingerprint'));
+      if (lovFindings.length) {
+        log(`Lovable fingerprint: ${lovFindings.length} achado(s)`, 'success');
+      } else {
+        log('Lovable fingerprint: sem achados relevantes', 'info');
+      }
+    } catch (e) {
+      log(`Lovable fingerprint: ${e?.message || e}`, 'warn');
+    }
+    pipe('lovable_fingerprint', 'done');
+  }
 
   // ── SUBDOMAINS ──────────────────────────────
   if (!apexHostIsIp && modules.includes('virustotal')) {
@@ -1815,7 +1837,14 @@ async function runPipeline(ctx) {
     pipe('sqlmap', 'active');
     try {
       const maxT = Math.max(1, Math.min(6, Number(process.env.GHOSTRECON_SQLMAP_TARGETS) || 2));
-      const sm = await runSqlmapModule({ findings, auth, log, maxTargets: maxT });
+      const sm = await runSqlmapModule({
+        findings,
+        auth,
+        log,
+        maxTargets: maxT,
+        profile: runtimeProfile.name,
+        identityCtrl,
+      });
       for (const x of sm) addFinding(x, null);
       if (sm.length) log(`sqlmap: ${sm.length} achado(s) SQLi (ferramenta) registado(s)`, 'success');
     } catch (e) {
@@ -1824,6 +1853,28 @@ async function runPipeline(ctx) {
     pipe('sqlmap', 'done');
   } else {
     pipe('sqlmap', 'skip');
+  }
+
+  if (modules.includes('curl_probe')) {
+    pipe('curl_probe', 'active');
+    try {
+      const cp = await runCurlProbeModule({
+        target: domain,
+        findings,
+        auth,
+        profile: runtimeProfile.name,
+        identityCtrl,
+        log,
+      });
+      for (const x of cp) addFinding(x, null);
+      if (cp.length) log(`curl_probe: ${cp.length} achado(s)`, 'success');
+      else log('curl_probe: sem achados relevantes', 'info');
+    } catch (e) {
+      log(`curl_probe: ${e?.message || e}`, 'warn');
+    }
+    pipe('curl_probe', 'done');
+  } else {
+    pipe('curl_probe', 'skip');
   }
 
   pipe('verify', 'done');

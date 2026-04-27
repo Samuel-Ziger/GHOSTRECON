@@ -625,6 +625,7 @@
     <div class="toolbar">
       <button type="button" id="btnReload">Recarregar da base</button>
       <button type="button" class="btn-primary" id="btnAi" disabled>Gerar relatório IA (validados)</button>
+      <button type="button" id="btnToggleDorks" title="Mostrar/ocultar achados de dorks na checklist">Mostrar dorks</button>
       <button
         type="button"
         class="btn-primary"
@@ -738,6 +739,7 @@
     let serverItems = [];
     let aiUseOpenrouter = false;
     let packSubsetFilter = null;
+    let showDorksInList = false;
     let reporteLiveBc = null;
     let reporteLiveApplySeq = 0;
     const FP_URL_NORMALIZE_TYPES = new Set([
@@ -1079,6 +1081,18 @@
       if (Array.isArray(f.mitre)) out.mitre = f.mitre;
       if (/^[a-f0-9]{64}$/.test(fp)) out.fingerprint = fp;
       return out;
+    }
+
+    function isDorkFinding(f) {
+      if (!f || typeof f !== 'object') return false;
+      const typ = String(f.type || '')
+        .trim()
+        .toLowerCase();
+      if (typ === 'dork' || typ === 'dorks') return true;
+      const meta = String(f.meta || '')
+        .trim()
+        .toLowerCase();
+      return /\bdork\b|google\s*dork|ghdb|search\s*dork/i.test(meta);
     }
 
     function normalizeTaxonomyTags(list, idRe) {
@@ -1488,9 +1502,14 @@
       }
       let nVal = 0;
       let nVis = 0;
+      let nDorksHidden = 0;
       for (const f of findings) {
         const fp = String(f.fingerprint || '').toLowerCase();
         if (!/^[a-f0-9]{64}$/.test(fp)) continue;
+        if (!showDorksInList && isDorkFinding(f)) {
+          nDorksHidden++;
+          continue;
+        }
         nVis++;
         const on = validatedFp.has(fp);
         if (on) nVal++;
@@ -1608,7 +1627,12 @@
         findings.length +
         ' no pacote) · ' +
         validatedFp.size +
-        ' com validação na base (nesta vista)';
+        ' com validação na base (nesta vista)' +
+        (nDorksHidden ? ' · ' + nDorksHidden + ' dork(s) oculto(s)' : '');
+      const dorkBtn = document.getElementById('btnToggleDorks');
+      if (dorkBtn) {
+        dorkBtn.textContent = showDorksInList ? 'Ocultar dorks' : 'Mostrar dorks';
+      }
       updateAiButton();
     }
 
@@ -2021,6 +2045,10 @@
 
     document.getElementById('btnAnotacao').addEventListener('click', () => {
       void openAnotacaoFromReporte();
+    });
+    document.getElementById('btnToggleDorks')?.addEventListener('click', () => {
+      showDorksInList = !showDorksInList;
+      render();
     });
 
     (async function init() {
