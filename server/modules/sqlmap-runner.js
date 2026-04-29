@@ -3,8 +3,16 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { SQLI_PARAM_RE, responseLooksLikeSqlError, evidenceHash } from './verify.js';
+import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
 
 function runProc(cmd, args, timeoutMs) {
+  // Quando strict, qualquer spawn de tool externa passa por proxychains4.
+  if (isStrict()) {
+    const w = torStrictWrap(cmd, args);
+    if (w.refuse) return Promise.reject(new Error(`tor-strict: ${w.reason}`));
+    cmd = w.cmd;
+    args = w.args;
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const out = [];
@@ -102,7 +110,9 @@ function buildCurlArgs({ url, auth, profile = 'standard', proxy = null, headerFi
     '{"http_code":"%{http_code}","time_total":"%{time_total}","redirect_url":"%{redirect_url}","size_download":"%{size_download}","remote_ip":"%{remote_ip}","url_effective":"%{url_effective}"}',
   ];
   if (cfg.useHttp2) args.push('--http2');
-  if (proxy) args.push('--proxy', String(proxy));
+  // Em strict, não passamos --proxy ao curl: o proxychains4 já intercepta o
+  // connect e direciona para o Tor SOCKS — duplicar leva a SOCKS-over-SOCKS.
+  if (proxy && !isStrict()) args.push('--proxy', String(proxy));
   if (auth?.cookie) args.push('-H', `Cookie: ${String(auth.cookie)}`);
   if (auth?.headers && typeof auth.headers === 'object') {
     for (const [k, v] of Object.entries(auth.headers)) {
@@ -121,7 +131,10 @@ function resolveCurlProxy(identityCtrl = null) {
     .split(/[,;\n]/)
     .map((s) => s.trim())
     .filter(Boolean);
-  return envPool[0] || null;
+  if (envPool[0]) return envPool[0];
+  // Em strict, default explícito para Tor SOCKS5h.
+  if (isStrict()) return 'socks5h://127.0.0.1:9050';
+  return null;
 }
 
 async function curlGet(url, auth, { timeoutMs = 16000, profile = 'standard', identityCtrl = null } = {}) {

@@ -188,7 +188,13 @@ function runProc(cmd, args, timeoutMs, spawnOpts = {}, execOpts = {}) {
   });
 }
 
+// Quando GHOSTRECON_TOR_STRICT=1, delegamos a decisão de wrap para
+// `tor-strict.js` — único ponto da verdade. O modo legacy (GHOSTRECON_PROXYCHAINS=1
+// sem strict) continua a funcionar para retrocompatibilidade.
+import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
+
 function shouldUseProxychainsForCommand(cmd, execOpts = {}) {
+  if (isStrict()) return true; // strict → wrap todos os defaults
   const enabled = String(process.env.GHOSTRECON_PROXYCHAINS || '0') === '1' || Boolean(execOpts.useProxychains);
   if (!enabled) return false;
   const normalized = String(cmd || '').trim().toLowerCase();
@@ -203,6 +209,16 @@ function shouldUseProxychainsForCommand(cmd, execOpts = {}) {
 }
 
 function buildProxychainsCommand(cmd, args, execOpts = {}) {
+  // Caminho strict: tor-strict.wrapCommand decide e devolve { cmd, args, refuse?, reason? }
+  if (isStrict()) {
+    const r = torStrictWrap(cmd, args);
+    if (r.refuse) {
+      // Sinalizamos um pseudo-comando que forçará erro — o caller (runProc/spawn)
+      // deve capturar. Em prática queremos abortar antes de chegar aqui.
+      throw new Error(`tor-strict: comando ${cmd} recusado — ${r.reason}`);
+    }
+    return { cmd: r.cmd, args: r.args };
+  }
   if (!shouldUseProxychainsForCommand(cmd, execOpts)) return { cmd, args };
   const proxychainsBin = process.env.GHOSTRECON_PROXYCHAINS_BIN || 'proxychains4';
   const conf = String(process.env.GHOSTRECON_PROXYCHAINS_CONF || '').trim();

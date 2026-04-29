@@ -134,6 +134,7 @@ import { fingerprintLovable } from './modules/lovable-fingerprint.js';
 import { runCurlProbeModule } from './modules/curl-probe.mjs';
 import {
   loadNavegationPlaybook,
+  quickValidateTor,
   executeNavegationPlaybook,
   getNavegationTunnelStatus,
   validateNavegationTorPath,
@@ -146,6 +147,14 @@ import {
   reconBodyIsIntrusive,
   audit as auditAuth,
 } from './modules/auth.js';
+import { newnym as torNewnym, torHealth as torControlHealth } from './modules/tor-control.js';
+import {
+  isStrict as torIsStrict,
+  initTorStrict,
+  strictPrereqs as torStrictPrereqs,
+  refuseToRun as torRefuseToRun,
+  snapshotTelemetry as torSnapshotTelemetry,
+} from './modules/tor-strict.js';
 
 function firstIpv4FromDnsRecords(records) {
   for (const r of records || []) {
@@ -262,6 +271,16 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// ── Tor STRICT: inicializa primeiro para que o DNS lockdown e a config de
+//    proxychains estejam activos antes de qualquer chamada outbound do server.
+if (torIsStrict()) {
+  initTorStrict();
+  const p = torStrictPrereqs();
+  if (!p.ok) {
+    console.error('[tor-strict] prereqs em falta — runs intrusivos serão recusados:', p.missing);
+  }
+}
 
 // ── Auth (P0): inicializa antes de qualquer parser/route, plugamos requireAuth
 //    a seguir ao CORS para que rotas privilegiadas exijam Bearer/X-API-Key.
@@ -3160,8 +3179,98 @@ app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) 
     process.env.PATH = prependExtraPathToEnvPath(extraPathRaw, savedEnvPath);
   }
 
+  // ── Tor enforcement ────────────────────────────────────────────────────
+  // Body shape:
+  //   tor: {
+  //     required: true,            // aborta o run se o tunnel não validar
+  //     strict: true,              // exige tor-strict prereqs (proxychains, DNS lockdown…)
+  //     newnymBeforeRun: true,     // sinaliza NEWNYM antes do pipeline iniciar
+  //     perTargetCircuit: true,    // injeta isolation user/pass no SOCKS5 (IsolateSOCKSAuth)
+  //     dnsLeakHost: 'check.tor…' // host usado para o DNS leak test (opt)
+  //   }
+  // Default: se GHOSTRECON_TOR_REQUIRED=1 ou GHOSTRECON_TOR_STRICT=1, força.
+  const torOpts = req.body?.tor && typeof req.body.tor === 'object' ? req.body.tor : {};
+  const torStrictWanted =
+    torOpts.strict === true ||
+    String(process.env.GHOSTRECON_TOR_STRICT || '').trim() === '1';
+  const torRequired =
+    torOpts.required === true ||
+    torStrictWanted ||
+    String(process.env.GHOSTRECON_TOR_REQUIRED || '').trim() === '1';
+
+  // STRICT prereq check — se faltar algo (proxychains, DNS lockdown, SOCKS,
+  // ControlPort, conf), abortamos antes do pipeline para evitar leaks parciais.
+  if (torStrictWanted) {
+    const refusal = torRefuseToRun();
+    if (refusal) {
+      auditAuth(req, req.principal, 'deny', {
+        action: 'recon.stream.tor_strict_prereqs',
+        target: domain,
+        reason: 'strict_prereqs_failed',
+        missing: refusal.missing,
+      });
+      send({
+        type: 'error',
+        message: 'tor.strict: pré-requisitos em falta — ver `missing`',
+        missing: refusal.missing,
+        checks: refusal.checks,
+      });
+      res.end();
+      return;
+    }
+  }
+  let torValidation = null;
+  if (torRequired) {
+    send({ type: 'log', msg: '[tor] enforcement activo — a validar tunnel antes do recon', level: 'info' });
+    try {
+      torValidation = await quickValidateTor({ timeoutMs: 12_000 });
+    } catch (e) {
+      torValidation = { validated: false, error: e?.message || String(e) };
+    }
+    if (!torValidation.validated) {
+      auditAuth(req, req.principal, 'deny', {
+        action: 'recon.stream.tor_required',
+        target: domain,
+        reason: 'tor_validation_failed',
+        torValidation,
+      });
+      send({
+        type: 'error',
+        message: 'Tor enforcement: tunnel não validado — ver detalhes em torValidation',
+        torValidation,
+      });
+      res.end();
+      return;
+    }
+    send({
+      type: 'log',
+      msg: `[tor] OK — exitIp=${torValidation.tor?.ip} bootstrap=${torValidation.control?.bootstrap?.tag} (${torValidation.durationMs}ms)`,
+      level: 'info',
+    });
+    if (torOpts.newnymBeforeRun === true) {
+      try {
+        await torNewnym({ timeoutMs: 5_000 });
+        send({ type: 'log', msg: '[tor] NEWNYM sinalizado', level: 'info' });
+      } catch (e) {
+        send({ type: 'log', msg: `[tor] NEWNYM falhou: ${e?.message || e}`, level: 'warn' });
+      }
+    }
+  }
+
   const identityOpts = normalizeIdentityOptions(modules, req.body?.identity);
+  // ID temporário para telemetria do tor-strict (correlacionável com runId
+  // depois que saveRun emitir um). Emitimos no stream para o cliente saber.
+  const requestRunId = `req-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+  identityOpts.runId = requestRunId;
+  identityOpts.target = domain;
+  // Quando torRequired + perTargetCircuit, propagamos para identity-controller
+  // ativar IsolateSOCKSAuth com user/pass únicos (circuit dedicado por target).
+  if (torRequired && torOpts.perTargetCircuit !== false) {
+    identityOpts.isolate = true;
+    identityOpts.isolationKey = `${domain}-${Date.now().toString(36)}`;
+  }
   const identityCtrl = createIdentityController({ ...identityOpts, modules });
+  send({ type: 'meta', requestRunId, torStrict: torStrictWanted, torRequired });
 
   // Auditoria operacional do início do pipeline (após CSRF/rate-limit/escopo).
   auditAuth(req, req.principal, 'allow', {
@@ -3173,6 +3282,15 @@ app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) 
     profile,
     intrusive: reconBodyIsIntrusive(req.body),
     engagementId: engagementIdRaw || null,
+    tor: torRequired
+      ? {
+          required: true,
+          exitIp: torValidation?.tor?.ip || null,
+          bootstrap: torValidation?.control?.bootstrap?.tag || null,
+          perTargetCircuit: torOpts.perTargetCircuit !== false,
+          newnymBefore: Boolean(torOpts.newnymBeforeRun),
+        }
+      : { required: false },
   });
 
   try {
@@ -3253,6 +3371,44 @@ app.post('/api/tunnel/enable', requireRole('admin'), async (req, res) => {
     });
     const status = await getNavegationTunnelStatus(ROOT);
     res.json({ ok: run.ok, run, status });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get('/api/tunnel/health', requireScope('recon.read'), async (_req, res) => {
+  try {
+    const health = await torControlHealth();
+    res.json({ ok: true, ...health, strict: { active: torIsStrict() } });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get('/api/tunnel/strict-check', requireScope('recon.read'), async (_req, res) => {
+  try {
+    const p = torStrictPrereqs();
+    res.json({ ok: true, ...p });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get('/api/tunnel/telemetry/:runId', requireScope('recon.read'), (req, res) => {
+  const t = torSnapshotTelemetry(String(req.params.runId));
+  if (!t) return res.status(404).json({ ok: false, error: 'sem telemetria para esse runId' });
+  res.json({ ok: true, runId: req.params.runId, ...t });
+});
+
+app.post('/api/tunnel/newnym', requireScope('recon.run'), async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido/ausente' });
+    return;
+  }
+  try {
+    const r = await torNewnym({ timeoutMs: 5_000 });
+    auditAuth(req, req.principal, 'allow', { action: 'tunnel.newnym', ok: r.ok });
+    res.json({ ok: true, ...r });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }

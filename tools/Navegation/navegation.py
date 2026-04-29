@@ -20,10 +20,24 @@ TORRC = pathlib.Path("/etc/tor/torrc")
 OPENVPN_SERVER_CONF = pathlib.Path("/etc/openvpn/server.conf")
 
 TOR_REQUIRED_LINES = [
+    # SocksPort 9050 (default) com isolation por destino + auth: evita reuse
+    # de circuit entre alvos diferentes do mesmo run.
+    "SocksPort 127.0.0.1:9050 IsolateDestAddr IsolateClientAuth IsolateSOCKSAuth",
+    # TransPort 9040 (convenção; antes estava 9050 → conflito com SocksPort).
+    "TransPort 127.0.0.1:9040",
+    # DNSPort 5353 (não 53) evita conflito com systemd-resolved e porta privilegiada.
+    "DNSPort 127.0.0.1:5353",
     "VirtualAddrNetwork 10.192.0.0/10",
     "AutomapHostsOnResolve 1",
-    "TransPort 9050",
-    "DNSPort 53",
+    # ControlPort + cookie auth → tor-control.js (NEWNYM, GETINFO).
+    "ControlPort 127.0.0.1:9051",
+    "CookieAuthentication 1",
+    "CookieAuthFileGroupReadable 1",
+    "AvoidDiskWrites 1",
+    "ClientUseIPv4 1",
+    "ClientUseIPv6 0",
+    "SafeSocks 1",
+    "WarnUnsafeSocks 1",
 ]
 
 OPENVPN_TEMPLATE = """server 10.8.0.0 255.255.255.0

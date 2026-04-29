@@ -92,10 +92,38 @@ if [[ ! -f "$TORRC" ]]; then
 fi
 
 backup_file "$TORRC"
+# ── GHOSTRECON Tor profile ────────────────────────────────────────────────
+# SocksPort 9050 (default) com isolation por destino + auth → impede reuse
+# de circuit entre alvos diferentes do mesmo run.
+# TransPort 9040 (não 9050) — porta convencional para redirect transparente.
+# DNSPort 5353 (não 53) — evita choque com systemd-resolved/dnsmasq e não
+# exige porta privilegiada.
+# ControlPort 9051 + CookieAuthentication para o tor-control.js poder emitir
+# NEWNYM e ler bootstrap/circuits.
+# ──────────────────────────────────────────────────────────────────────────
 ensure_line "$TORRC" "VirtualAddrNetwork 10.192.0.0/10"
 ensure_line "$TORRC" "AutomapHostsOnResolve 1"
-ensure_line "$TORRC" "TransPort 9050"
-ensure_line "$TORRC" "DNSPort 53"
+ensure_line "$TORRC" "SocksPort 127.0.0.1:9050 IsolateDestAddr IsolateClientAuth IsolateSOCKSAuth"
+ensure_line "$TORRC" "TransPort 127.0.0.1:9040"
+ensure_line "$TORRC" "DNSPort 127.0.0.1:5353"
+ensure_line "$TORRC" "ControlPort 127.0.0.1:9051"
+ensure_line "$TORRC" "CookieAuthentication 1"
+ensure_line "$TORRC" "CookieAuthFileGroupReadable 1"
+ensure_line "$TORRC" "AvoidDiskWrites 1"
+ensure_line "$TORRC" "ClientUseIPv4 1"
+ensure_line "$TORRC" "ClientUseIPv6 0"
+ensure_line "$TORRC" "SafeSocks 1"
+ensure_line "$TORRC" "WarnUnsafeSocks 1"
+# Bridges opt-in (lista em /etc/tor/bridges.conf injectada via GHOSTRECON_TOR_BRIDGES)
+if [[ -n "${GHOSTRECON_TOR_BRIDGES:-}" ]]; then
+  log "bridges: aplicando GHOSTRECON_TOR_BRIDGES (obfs4)"
+  ensure_line "$TORRC" "UseBridges 1"
+  ensure_line "$TORRC" "ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"
+  while IFS= read -r br; do
+    [[ -z "$br" ]] && continue
+    ensure_line "$TORRC" "Bridge $br"
+  done <<<"$GHOSTRECON_TOR_BRIDGES"
+fi
 
 if [[ -f "$OVPN_CONF" ]]; then
   backup_file "$OVPN_CONF"

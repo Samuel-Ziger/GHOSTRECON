@@ -8,6 +8,13 @@
  */
 
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
+import {
+  isSocksUrl,
+  createSocksDispatcher,
+  isolatedSocksUser,
+  injectIsolationCredentials,
+} from './socks5-dispatcher.js';
+import { isStrict, sanitizeOutboundHeaders, telemetryFor } from './tor-strict.js';
 
 const ACCEPT_LANGS = [
   'pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -33,6 +40,14 @@ async function loadUndici() {
 function normalizeProxyEntry(raw) {
   const s = String(raw || '').trim();
   if (!s) return null;
+  // SOCKS — preservado exactamente, parseSocksUrl lida com auth/host:port
+  if (/^socks(5h?|4a?):\/\//i.test(s)) {
+    try {
+      return new URL(s).href;
+    } catch {
+      return null;
+    }
+  }
   // Already URL form: http(s)://user:pass@host:port
   if (/^https?:\/\//i.test(s)) {
     try {
@@ -209,6 +224,19 @@ export function createIdentityController(opts = {}) {
     return out;
   }
 
+  // Cache de dispatchers SOCKS5 — criar Agent por proxy é caro e o keep-alive
+  // serve para não rotear cada request por circuit novo (a não ser que o caller
+  // queira isolation explícita).
+  /** @type {Map<string, import('undici').Dispatcher>} */
+  const socksDispatchers = new Map();
+  function rememberSocksDispatcher(key, dispatcher) {
+    if (socksDispatchers.size >= 16) {
+      const oldest = socksDispatchers.keys().next().value;
+      if (oldest) socksDispatchers.delete(oldest);
+    }
+    socksDispatchers.set(key, dispatcher);
+  }
+
   async function currentDispatcher() {
     if (!proxies.length) return undefined;
     let href;
@@ -216,6 +244,34 @@ export function createIdentityController(opts = {}) {
       href = new URL(proxies[proxyIdx % proxies.length]).href;
     } catch {
       return undefined;
+    }
+    if (isSocksUrl(href)) {
+      // Stream isolation por target/run quando GHOSTRECON_TOR_ISOLATE=1 ou opts.isolate=true.
+      const isolateMode =
+        opts.isolate === true ||
+        String(process.env.GHOSTRECON_TOR_ISOLATE || '').trim() === '1';
+      const isolationKey = opts.isolationKey || opts.runId || opts.target || '';
+      let useHref = href;
+      if (isolateMode) {
+        const u = new URL(href);
+        if (!u.username) {
+          const user = isolatedSocksUser('gr', isolationKey || 'auto');
+          useHref = injectIsolationCredentials(href, user, isolationKey || 'x');
+        }
+      }
+      const cacheKey = useHref;
+      let dispatcher = socksDispatchers.get(cacheKey);
+      if (!dispatcher) {
+        try {
+          dispatcher = await createSocksDispatcher(useHref);
+          rememberSocksDispatcher(cacheKey, dispatcher);
+        } catch (e) {
+          // Não fazer fallback silencioso para directo — devolver undefined sinaliza erro upstream.
+          console.error('[identity] SOCKS dispatcher falhou:', e?.message || e);
+          return undefined;
+        }
+      }
+      return dispatcher;
     }
     const undici = await loadUndici();
     if (!undici || !undici.ProxyAgent) return undefined;
@@ -262,12 +318,15 @@ export function createIdentityController(opts = {}) {
    * @returns {Promise<Response>}
    */
   async function fetchWithPolicy(url, init, { maxAttempts = 3 } = {}) {
-    if (!enabled) {
+    if (!enabled && !isStrict()) {
       return fetch(url, init);
     }
     const attempts = behavior ? maxAttempts : 1;
     let lastRes = null;
     const baseHdr = headersToObject(init.headers);
+    // Em strict, queremos hostname para o sanitizer aplicar regras de cookie scope.
+    let targetHost = '';
+    try { targetHost = new URL(url).hostname; } catch { /* ignore */ }
     for (let a = 0; a < attempts; a++) {
       await beforeRequest();
       const dispatcher = await currentDispatcher();
@@ -289,9 +348,31 @@ export function createIdentityController(opts = {}) {
           headers['sec-ch-ua-platform'] = '"Windows"';
         }
       }
+      // Em strict, sobrepomos com headers Tor Browser-like e fazemos strip.
+      if (isStrict()) {
+        headers = sanitizeOutboundHeaders(headers, { targetHost });
+      }
       const nextInit = { ...init, headers };
       if (dispatcher) nextInit.dispatcher = dispatcher;
       else delete nextInit.dispatcher;
+      // STRICT: bloqueia se não conseguimos um dispatcher SOCKS (não cair em directo).
+      if (isStrict() && !dispatcher) {
+        throw new Error('tor-strict: dispatcher SOCKS não disponível — fetch directo bloqueado');
+      }
+      // Telemetria
+      if (opts.runId) {
+        const t = telemetryFor(String(opts.runId));
+        t.requests += 1;
+        const kind = (() => {
+          if (!proxies.length) return 'direct';
+          const cur = proxies[proxyIdx % proxies.length] || '';
+          if (/^socks/i.test(cur)) return 'socks';
+          if (/^https?:/i.test(cur)) return 'http';
+          return 'direct';
+        })();
+        t.proxyKindCounts[kind] = (t.proxyKindCounts[kind] || 0) + 1;
+        if (kind === 'socks') t.requestsViaTor += 1;
+      }
       const res = await fetch(url, nextInit);
       lastRes = res;
       const peekBuf = await res.clone().arrayBuffer();
@@ -337,6 +418,21 @@ export function createIdentityController(opts = {}) {
       if (!proxies.length) return null;
       return proxies[proxyIdx % proxies.length] || null;
     },
+    getCurrentProxyKind: () => {
+      const cur = proxies[proxyIdx % proxies.length] || '';
+      if (!cur) return 'direct';
+      if (/^socks(5h?|4a?):/i.test(cur)) return 'socks';
+      if (/^https?:/i.test(cur)) return 'http';
+      return 'unknown';
+    },
+    isCurrentProxyTor: () => {
+      const cur = proxies[proxyIdx % proxies.length] || '';
+      if (!cur) return false;
+      try {
+        const u = new URL(cur);
+        return /^socks(5h?|4a?):/i.test(cur) && (u.hostname === '127.0.0.1' || u.hostname === '::1' || u.port === '9050');
+      } catch { return false; }
+    },
     getProxyPool: () => [...proxies],
     /** Para probeHttp (redirect follow). */
     async fetchHtmlProbe(url, init) {
@@ -374,10 +470,15 @@ export function normalizeIdentityOptions(modules, identityBody) {
   const raw = identityBody && typeof identityBody === 'object' ? identityBody : {};
   const body = mergeIdentityBodyFromEnv(raw);
   const enabled = shouldEnableIdentity({ modules, identityBody: body });
+  const isolateEnv = String(process.env.GHOSTRECON_TOR_ISOLATE || '').trim() === '1';
   return {
     enabled,
     behavior: body.behavior !== false,
     proxyPool: parseProxyList(body.proxyPool || []),
     rotation: String(body.rotation || '').trim().toLowerCase() || undefined,
+    isolate: body.isolate === true || isolateEnv,
+    isolationKey: typeof body.isolationKey === 'string' ? body.isolationKey : null,
+    runId: typeof body.runId === 'string' || typeof body.runId === 'number' ? String(body.runId) : null,
+    target: typeof body.target === 'string' ? body.target : null,
   };
 }
