@@ -25,9 +25,11 @@ export function buildReconCoverageSnapshot({ domain, modules, kaliMode, findings
   const notes = [];
   if (!mods.includes('kali_nuclei')) notes.push('Nuclei (Kali): módulo UI desligado');
   if (!mods.includes('kali_ffuf')) notes.push('Ffuf (Kali): módulo UI desligado');
+  if (!mods.includes('kali_dirsearch')) notes.push('Dirsearch (Kali): módulo UI desligado');
+  if (!mods.includes('kali_proxychains')) notes.push('Proxychains (Kali): módulo UI desligado');
   if (!mods.includes('webshell_probe')) notes.push('Webshell heurístico (GET cmd=id): módulo UI desligado');
   if (!kaliMode) {
-    notes.push('Modo Kali: desligado (nmap/ffuf/nuclei/dalfox/xss_vibes/wpscan não executam no servidor)');
+    notes.push('Modo Kali: desligado (nmap/ffuf/dirsearch/nuclei/dalfox/xss_vibes/wpscan não executam no servidor)');
   } else if (kaliCap && !kaliCap.ok) {
     notes.push(`Kali: ambiente sem suporte (${kaliCap.message || 'cap desconhecido'})`);
   }

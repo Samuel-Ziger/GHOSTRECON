@@ -2366,10 +2366,33 @@
           </div>
           <div class="section-label" style="font-size:10px;margin-top:10px">Playbook (nome — pré-checklist)</div>
           <input id="playbookNameInput" class="domain-input" type="text" placeholder="ex.: quick-triage" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          <div class="toggle-row" style="margin-top:10px">
+            <span class="toggle-label" title="Quando o módulo Navegation estiver marcado, executa script automaticamente no host">Navegation auto-exec</span>
+            <label class="toggle">
+              <input type="checkbox" id="navegationExecToggle">
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label" title="Executa Navegation em modo seguro (--dry-run)">Navegation dry-run</span>
+            <label class="toggle">
+              <input type="checkbox" id="navegationDryRunToggle" checked>
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+          <div class="section-label" style="font-size:10px;margin-top:8px">Túnel (Tor/OpenVPN)</div>
+          <div id="tunnelStatusLine" class="gh-hint" style="font-size:10px;margin:6px 0 8px;line-height:1.45">
+            Estado: a consultar…
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+            <button type="button" class="find-btn" id="tunnelEnableBtn" onclick="setTunnelState('enable')">Tunnel ON</button>
+            <button type="button" class="find-btn" id="tunnelDisableBtn" onclick="setTunnelState('disable')">Tunnel OFF</button>
+            <button type="button" class="find-btn" id="tunnelRefreshBtn" onclick="refreshTunnelStatus()">Atualizar status</button>
+          </div>
           <hr style="border:0;border-top:1px solid var(--border);margin:14px 0 10px;opacity:.75">
           <div class="section-label" style="font-size:10px">Rotação de identidade</div>
           <p class="gh-hint" style="font-size:9px;margin:6px 0 8px;line-height:1.45">
-            Retentativas em 403, backoff em 429, heurística captcha/WAF; proxies <code>http(s)://</code> uma por linha (máx. 32). Podes também marcar o módulo <strong>identity_rotation</strong> na lista de módulos.
+            Retentativas em 403, backoff em 429, heurística captcha/WAF; proxies uma por linha (máx. 32). Formatos aceites: <code>http(s)://user:pass@host:port</code>, <code>user:pass@host:port</code> e <code>host:port:user:pass</code>. Podes também marcar o módulo <strong>identity_rotation</strong> na lista de módulos.
           </p>
           <div class="toggle-row">
             <span class="toggle-label" title="Envia identity.enabled no JSON (ou usa só o módulo / proxies)">Forçar no JSON (<code>identity.enabled</code>)</span>
@@ -2385,8 +2408,16 @@
               <div class="toggle-track"><div class="toggle-thumb"></div></div>
             </label>
           </div>
-          <div class="section-label" style="font-size:10px;margin-top:8px">Pool de proxies (uma URL por linha)</div>
-          <textarea id="identityProxyPoolInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:64px;margin-top:4px;font-size:10px" placeholder="http://127.0.0.1:8888"></textarea>
+          <div class="toggle-row" style="align-items:center;gap:10px;margin-top:8px">
+            <span class="toggle-label" title="Como alternar entre proxies durante o run">Rotação de proxy</span>
+            <select id="identityRotationSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
+              <option value="round_robin" selected>round_robin (sequencial)</option>
+              <option value="random">random (aleatório)</option>
+              <option value="fixed">fixed (proxy fixo)</option>
+            </select>
+          </div>
+          <div class="section-label" style="font-size:10px;margin-top:8px">Pool de proxies (uma entrada por linha)</div>
+          <textarea id="identityProxyPoolInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:64px;margin-top:4px;font-size:10px" placeholder="31.59.20.176:6754:user:pass"></textarea>
         </div>
       </details>
 
@@ -2432,6 +2463,34 @@
           style="min-height:76px;margin-top:4px;opacity:0.45"
           placeholder="staging.exemplo.com&#10;https://cdn.exemplo.com/path&#10;*.legacy.exemplo.com"
         ></textarea>
+      </div>
+
+      <div class="toggle-row" style="margin-top:2px">
+        <span class="toggle-label" title="Atalho para operação mais anônima (Tor/Proxychains)">Modo anônimo</span>
+        <label class="toggle">
+          <input type="checkbox" id="anonModeToggle">
+          <div class="toggle-track"><div class="toggle-thumb"></div></div>
+        </label>
+      </div>
+      <div id="anonModeWrap" style="display:none;margin-bottom:12px">
+        <div class="section-label" style="font-size:10px;opacity:.9">Opções anônimas</div>
+        <div class="toggle-row" style="margin-top:6px">
+          <span class="toggle-label" title="Ativa módulo Navegation + auto-exec para túnel Tor/OpenVPN">Tor tunnel (Navegation)</span>
+          <label class="toggle">
+            <input type="checkbox" id="anonTorToggle">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label" title="Ativa módulo Proxychains no Kali para encadear scanners">Proxychains (Kali)</span>
+          <label class="toggle">
+            <input type="checkbox" id="anonProxychainsToggle">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+          </label>
+        </div>
+        <p class="gh-hint" style="font-size:9px;margin:6px 0 0;line-height:1.45">
+          Em modo Tor, a recon pode ficar significativamente mais lenta por latência e rota de saída.
+        </p>
       </div>
 
       <div class="toggle-row">
@@ -2924,7 +2983,6 @@
           <span class="tag tag-high">ACT</span>
         </label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="stealth_requests"><div class="checkbox-box"></div><span class="checkbox-text">Stealth (jitter + UA rotativa)</span><span class="tag tag-low">NET</span></label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="identity_rotation"><div class="checkbox-box"></div><span class="checkbox-text">Rotação de identidade (probe + verify)</span><span class="tag tag-low">NET</span></label>
       </div>
 
       <div class="module-group">
@@ -2938,6 +2996,34 @@
           <span class="tag tag-high">KALI</span>
         </label>
         <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Fuzz de caminhos com wordlist (32 threads por defeito). Desmarcado por defeito — activa só quando precisares.</p>
+        <label class="checkbox-item" title="Só com Modo Kali + dirsearch no PATH. Varredura recursiva e pesada (pode demorar bastante), focada em descoberta ampla de diretórios/ficheiros.">
+          <input type="checkbox" class="mod" value="kali_dirsearch" id="modKaliDirsearch">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Dirsearch (Kali) — recursivo completo</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Ideal para busca "por tudo". Mais lento por desenho; achados entram no bucket <code>directories</code> junto dos paths do ffuf.</p>
+        <label class="checkbox-item" title="Só com Modo Kali + proxychains-ng (proxychains4) no PATH. Encadeia ferramentas Kali por proxychains, separado da rotação de identidade/proxy pool.">
+          <input type="checkbox" class="mod" value="kali_proxychains" id="modKaliProxychains">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Proxychains (Kali) — chain dedicado</span>
+          <span class="tag tag-med">KALI</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Opção independente da rotação de identidade. Quando ativa, scanners Kali executam via <code>proxychains4</code> neste run.</p>
+        <label class="checkbox-item" title="Rotação de identidade para probe/verify. Ao marcar, escolhes modo: sequencial, aleatório ou proxy fixo (sem alterar após iniciar o recon).">
+          <input type="checkbox" class="mod" value="identity_rotation" id="modIdentityRotation">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Rotação de identidade (probe + verify)</span>
+          <span class="tag tag-low">NET</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Ao marcar, abre um pop-up para definir modo de rotação (sequencial, aleatório ou fixo).</p>
+        <label class="checkbox-item" title="Carrega e mostra no pipeline os passos do playbook local tools/Navegation/navegation.sh|py (fallback: node_modules/Navegation).">
+          <input type="checkbox" class="mod" value="navegation" id="modNavegation">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Navegation playbook (Tor/OpenVPN)</span>
+          <span class="tag tag-med">OPS</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Mostra os comandos como checklist/intel no run para execução manual no host.</p>
         <label class="checkbox-item" title="Só corre com Modo Kali ligado e ferramenta nuclei no PATH. Pesado em RAM/CPU — desmarcado por defeito.">
           <input type="checkbox" class="mod" value="kali_nuclei" id="modKaliNuclei">
           <div class="checkbox-box"></div>
@@ -3664,7 +3750,13 @@ const ENG_OPSEC_LS = {
   playbook: 'ghostrecon_playbook_name',
   identityProxies: 'ghostrecon_identity_proxy_pool',
   identityBehavior: 'ghostrecon_identity_behavior',
+  identityRotation: 'ghostrecon_identity_rotation',
   identityBodyEnabled: 'ghostrecon_identity_body_enabled',
+  navegationExec: 'ghostrecon_navegation_exec',
+  navegationDryRun: 'ghostrecon_navegation_dry_run',
+  anonMode: 'ghostrecon_anon_mode',
+  anonTor: 'ghostrecon_anon_tor',
+  anonProxychains: 'ghostrecon_anon_proxychains',
   confirmActive: 'ghostrecon_confirm_active',
 };
 
@@ -3683,7 +3775,13 @@ function initEngagementOpsecUi() {
     const pb = localStorage.getItem(ENG_OPSEC_LS.playbook);
     const px = localStorage.getItem(ENG_OPSEC_LS.identityProxies);
     const ib = localStorage.getItem(ENG_OPSEC_LS.identityBehavior);
+    const ir = localStorage.getItem(ENG_OPSEC_LS.identityRotation);
     const ide = localStorage.getItem(ENG_OPSEC_LS.identityBodyEnabled);
+    const navExec = localStorage.getItem(ENG_OPSEC_LS.navegationExec);
+    const navDry = localStorage.getItem(ENG_OPSEC_LS.navegationDryRun);
+    const anonMode = localStorage.getItem(ENG_OPSEC_LS.anonMode);
+    const anonTor = localStorage.getItem(ENG_OPSEC_LS.anonTor);
+    const anonProxy = localStorage.getItem(ENG_OPSEC_LS.anonProxychains);
     const ca = localStorage.getItem(ENG_OPSEC_LS.confirmActive);
     const elE = document.getElementById('engagementIdInput');
     const elO = document.getElementById('engagementOperatorInput');
@@ -3691,7 +3789,13 @@ function initEngagementOpsecUi() {
     const elPb = document.getElementById('playbookNameInput');
     const elPx = document.getElementById('identityProxyPoolInput');
     const elBeh = document.getElementById('identityBehaviorToggle');
+    const elRot = document.getElementById('identityRotationSelect');
     const elIdEn = document.getElementById('identityBodyEnabledToggle');
+    const elNavExec = document.getElementById('navegationExecToggle');
+    const elNavDry = document.getElementById('navegationDryRunToggle');
+    const elAnonMode = document.getElementById('anonModeToggle');
+    const elAnonTor = document.getElementById('anonTorToggle');
+    const elAnonProxy = document.getElementById('anonProxychainsToggle');
     const elCa = document.getElementById('confirmActiveToggle');
     if (elE && eid) elE.value = eid;
     if (elO && op) elO.value = op;
@@ -3699,7 +3803,13 @@ function initEngagementOpsecUi() {
     if (elPb && pb) elPb.value = pb;
     if (elPx && px) elPx.value = px;
     if (elBeh && ib === '0') elBeh.checked = false;
+    if (elRot && ir && ['round_robin', 'random', 'fixed'].includes(ir)) elRot.value = ir;
     if (elIdEn && ide === '1') elIdEn.checked = true;
+    if (elNavExec && navExec === '1') elNavExec.checked = true;
+    if (elNavDry && navDry !== '0') elNavDry.checked = true;
+    if (elAnonMode && anonMode === '1') elAnonMode.checked = true;
+    if (elAnonTor && anonTor === '1') elAnonTor.checked = true;
+    if (elAnonProxy && anonProxy === '1') elAnonProxy.checked = true;
     if (elCa && ca === '1') elCa.checked = true;
   } catch {}
 
@@ -3728,7 +3838,13 @@ function initEngagementOpsecUi() {
   wireText('playbookNameInput', ENG_OPSEC_LS.playbook);
   wireText('identityProxyPoolInput', ENG_OPSEC_LS.identityProxies);
   wireCheckbox('identityBehaviorToggle', ENG_OPSEC_LS.identityBehavior, { alwaysZeroOne: true });
+  wireSelect('identityRotationSelect', ENG_OPSEC_LS.identityRotation);
   wireCheckbox('identityBodyEnabledToggle', ENG_OPSEC_LS.identityBodyEnabled);
+  wireCheckbox('navegationExecToggle', ENG_OPSEC_LS.navegationExec);
+  wireCheckbox('navegationDryRunToggle', ENG_OPSEC_LS.navegationDryRun);
+  wireCheckbox('anonModeToggle', ENG_OPSEC_LS.anonMode);
+  wireCheckbox('anonTorToggle', ENG_OPSEC_LS.anonTor);
+  wireCheckbox('anonProxychainsToggle', ENG_OPSEC_LS.anonProxychains);
   wireCheckbox('confirmActiveToggle', ENG_OPSEC_LS.confirmActive);
 }
 
@@ -4179,6 +4295,65 @@ async function refreshServerToolPath() {
   if (btn) {
     btn.textContent = prev;
     btn.disabled = false;
+  }
+}
+
+async function refreshTunnelStatus() {
+  const line = document.getElementById('tunnelStatusLine');
+  try {
+    const res = await fetch(apiUrl('/api/tunnel/status'));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const tor = String(data?.tor || 'unknown');
+    const ovpn = String(data?.openvpn || 'unknown');
+    const active = Boolean(data?.active);
+    if (line) {
+      line.textContent = `Estado: ${active ? 'ATIVO' : 'INATIVO'} • tor=${tor} • openvpn=${ovpn}`;
+      line.style.color = active ? 'var(--accent2)' : 'var(--text-dim)';
+    }
+  } catch (e) {
+    if (line) {
+      line.textContent = `Estado: erro ao consultar (${e?.message || e})`;
+      line.style.color = 'var(--danger)';
+    }
+  }
+}
+
+async function setTunnelState(action) {
+  const enableBtn = document.getElementById('tunnelEnableBtn');
+  const disableBtn = document.getElementById('tunnelDisableBtn');
+  const refreshBtn = document.getElementById('tunnelRefreshBtn');
+  const dryRun = document.getElementById('navegationDryRunToggle')?.checked !== false;
+  const isEnable = action === 'enable';
+  const endpoint = isEnable ? '/api/tunnel/enable' : '/api/tunnel/disable';
+  const label = isEnable ? 'ativação' : 'desativação';
+  if (enableBtn) enableBtn.disabled = true;
+  if (disableBtn) disableBtn.disabled = true;
+  if (refreshBtn) refreshBtn.disabled = true;
+  try {
+    const token = await ensureCsrfToken();
+    const res = await fetch(apiUrl(endpoint), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      body: JSON.stringify({ dryRun }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data?.ok === false) {
+      throw new Error(data?.error || `HTTP ${res.status}`);
+    }
+    addLog(`Tunnel ${label}: OK (dry-run=${dryRun ? 'on' : 'off'})`, 'success');
+    if (isEnable && !dryRun) {
+      const u = new URL('tor-validator.html', window.location.href);
+      const w = window.open(u.href, 'ghostrecon_tor_validator');
+      if (!w) addLog('Validador Tor: popup bloqueado — abre manualmente tor-validator.html', 'warn');
+    }
+  } catch (e) {
+    addLog(`Tunnel ${label}: ${e?.message || e}`, 'error');
+  } finally {
+    if (enableBtn) enableBtn.disabled = false;
+    if (disableBtn) disableBtn.disabled = false;
+    if (refreshBtn) refreshBtn.disabled = false;
+    await refreshTunnelStatus();
   }
 }
 
@@ -5267,6 +5442,9 @@ async function startRecon() {
       }
       const pbn = (document.getElementById('playbookNameInput')?.value || '').trim();
       if (pbn) streamBody.playbook = pbn;
+      const navExec = Boolean(document.getElementById('navegationExecToggle')?.checked);
+      const navDryRun = document.getElementById('navegationDryRunToggle')?.checked !== false;
+      streamBody.navegation = { exec: navExec, dryRun: navDryRun };
 
       const identityMod = selectedMods.includes('identity_rotation');
       const idBodyOn = Boolean(document.getElementById('identityBodyEnabledToggle')?.checked);
@@ -5276,11 +5454,22 @@ async function startRecon() {
         .filter(Boolean)
         .slice(0, 32);
       const behaviorOn = document.getElementById('identityBehaviorToggle')?.checked !== false;
+      const rotationVal = String(document.getElementById('identityRotationSelect')?.value || 'round_robin')
+        .trim()
+        .toLowerCase();
+      const rotation = ['round_robin', 'random', 'fixed'].includes(rotationVal) ? rotationVal : 'round_robin';
+      let effectiveProxyPool = proxyLines;
+      if (rotation === 'fixed') {
+        const fixedFromPopup = String(window.__ghostreconIdentityFixedProxy || '').trim();
+        const fixed = fixedFromPopup || proxyLines[0] || '';
+        effectiveProxyPool = fixed ? [fixed] : [];
+      }
       if (identityMod || idBodyOn || proxyLines.length) {
         streamBody.identity = {
           enabled: identityMod || idBodyOn || proxyLines.length > 0,
           behavior: behaviorOn,
-          proxyPool: proxyLines,
+          rotation,
+          proxyPool: effectiveProxyPool,
         };
       }
 
@@ -5686,6 +5875,41 @@ function syncOutOfScopeUi() {
 document.getElementById('modOutOfScope')?.addEventListener('change', syncOutOfScopeUi);
 syncOutOfScopeUi();
 
+function applyAnonymousModeOptions() {
+  const anonMode = Boolean(document.getElementById('anonModeToggle')?.checked);
+  const anonTor = Boolean(document.getElementById('anonTorToggle')?.checked);
+  const anonProxy = Boolean(document.getElementById('anonProxychainsToggle')?.checked);
+  const wrap = document.getElementById('anonModeWrap');
+  if (wrap) wrap.style.display = anonMode ? 'block' : 'none';
+  const modNavegation = document.getElementById('modNavegation');
+  const modProxy = document.getElementById('modKaliProxychains');
+  const navExec = document.getElementById('navegationExecToggle');
+  const kaliMode = document.getElementById('kaliModeToggle');
+  if (!anonMode) return;
+  if (modNavegation) modNavegation.checked = anonTor;
+  if (navExec) navExec.checked = anonTor;
+  if (modProxy) modProxy.checked = anonProxy;
+  if ((anonTor || anonProxy) && kaliMode && !kaliMode.checked && !kaliMode.disabled) kaliMode.checked = true;
+}
+
+function syncAnonymousModeUi() {
+  const wrap = document.getElementById('anonModeWrap');
+  const on = Boolean(document.getElementById('anonModeToggle')?.checked);
+  if (wrap) wrap.style.display = on ? 'block' : 'none';
+  applyAnonymousModeOptions();
+}
+
+document.getElementById('anonModeToggle')?.addEventListener('change', syncAnonymousModeUi);
+document.getElementById('anonProxychainsToggle')?.addEventListener('change', applyAnonymousModeOptions);
+document.getElementById('anonTorToggle')?.addEventListener('change', (ev) => {
+  const cb = ev?.target;
+  if (cb && cb.checked) {
+    window.alert('Aviso: ao ativar modo Tor, a recon pode ficar bem mais lenta por causa da latência da rede Tor.');
+  }
+  applyAnonymousModeOptions();
+});
+syncAnonymousModeUi();
+
 function syncAiModeUi() {
   const ai = document.getElementById('modAiReports');
   const lm = document.getElementById('modAiLmStudioOnly');
@@ -5781,6 +6005,71 @@ document.getElementById('modAiLmStudioOnly')?.addEventListener('change', () => {
 });
 syncAiModeUi();
 
+function openIdentityRotationModePopup() {
+  const rotEl = document.getElementById('identityRotationSelect');
+  const poolEl = document.getElementById('identityProxyPoolInput');
+  const pool = String(poolEl?.value || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 32);
+  const answer = window.prompt(
+    [
+      'Escolhe o modo de rotação de proxy para este recon:',
+      '1 = sequencial (round_robin)',
+      '2 = aleatório (random)',
+      '3 = proxy fixo (fixed)',
+      '',
+      'AVISO: após iniciar o recon, esta escolha não deve ser alterada.',
+      '',
+      'Digite 1, 2 ou 3:',
+    ].join('\n'),
+    '1',
+  );
+  if (answer == null) return { ok: false };
+  const v = String(answer).trim();
+  if (!['1', '2', '3'].includes(v)) {
+    window.alert('Opção inválida. Escolhe 1, 2 ou 3.');
+    return { ok: false };
+  }
+  if (v === '1') {
+    if (rotEl) rotEl.value = 'round_robin';
+    window.__ghostreconIdentityFixedProxy = '';
+    return { ok: true };
+  }
+  if (v === '2') {
+    if (rotEl) rotEl.value = 'random';
+    window.__ghostreconIdentityFixedProxy = '';
+    return { ok: true };
+  }
+  if (!pool.length) {
+    window.alert('Para "proxy fixo", adiciona pelo menos 1 proxy no pool antes de continuar.');
+    return { ok: false };
+  }
+  const pick = window.prompt(
+    `Proxy fixo: escolhe o índice (1-${pool.length})\n` + pool.map((p, i) => `${i + 1}: ${p}`).join('\n'),
+    '1',
+  );
+  if (pick == null) return { ok: false };
+  const idx = Number(pick);
+  if (!Number.isInteger(idx) || idx < 1 || idx > pool.length) {
+    window.alert('Índice inválido para proxy fixo.');
+    return { ok: false };
+  }
+  const chosen = pool[idx - 1];
+  if (rotEl) rotEl.value = 'fixed';
+  window.__ghostreconIdentityFixedProxy = chosen;
+  window.alert('Modo "proxy fixo" definido. Não altere esta escolha após iniciar o recon.');
+  return { ok: true };
+}
+
+document.getElementById('modIdentityRotation')?.addEventListener('change', (ev) => {
+  const cb = ev?.target;
+  if (!cb || !cb.checked) return;
+  const r = openIdentityRotationModePopup();
+  if (!r.ok) cb.checked = false;
+});
+
 document.getElementById('batchModeToggle')?.addEventListener('change', syncBatchWrapVisibility);
 syncBatchWrapVisibility();
 document.getElementById('domainInput')?.addEventListener('input', updateGhPreview);
@@ -5790,6 +6079,8 @@ const FULL_MODULES_EXCLUDE = new Set([
   'shannon_whitebox',
   'pentestgpt_validate',
   'kali_ffuf',
+  'kali_dirsearch',
+  'kali_proxychains',
   'kali_nmap_aggressive',
   'kali_nmap_udp',
   'webshell_probe',
@@ -6011,6 +6302,7 @@ async function fetchKaliCapabilities() {
     const parts = [
       `nmap:${t.nmap ? '✓' : '✗'}`,
       `ffuf:${t.ffuf ? '✓' : '✗'}`,
+      `dirsearch:${t.dirsearch ? '✓' : '✗'}`,
       `nuclei:${t.nuclei ? '✓' : '✗'}`,
       `searchsploit:${t.searchsploit ? '✓' : '✗'}`,
       `dalfox:${t.dalfox ? '✓' : '✗'}`,
@@ -6081,6 +6373,7 @@ loadRunsHistory();
 initProfileUi();
 initAuthUi();
 initEngagementOpsecUi();
+refreshTunnelStatus();
 (function syncGhostmapButtonForBrowser() {
   const btn = document.getElementById('mitreMapBtn');
   if (!btn || typeof BroadcastChannel !== 'undefined') return;

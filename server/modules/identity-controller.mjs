@@ -30,9 +30,60 @@ async function loadUndici() {
   return _undici;
 }
 
+function normalizeProxyEntry(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  // Already URL form: http(s)://user:pass@host:port
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      return new URL(s).href;
+    } catch {
+      return null;
+    }
+  }
+  // user:pass@host:port
+  const upHost = s.match(/^([^:\s]+):([^@\s]+)@([^:\s]+):(\d{2,5})$/);
+  if (upHost) {
+    const [, user, pass, host, port] = upHost;
+    try {
+      return new URL(`http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`).href;
+    } catch {
+      return null;
+    }
+  }
+  // host:port:user:pass (formato comum de listas comerciais)
+  const hpup = s.match(/^([^:\s]+):(\d{2,5}):([^:\s]+):(.+)$/);
+  if (hpup) {
+    const [, host, port, user, pass] = hpup;
+    try {
+      return new URL(`http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`).href;
+    } catch {
+      return null;
+    }
+  }
+  // host:port (sem auth)
+  const hp = s.match(/^([^:\s]+):(\d{2,5})$/);
+  if (hp) {
+    const [, host, port] = hp;
+    try {
+      return new URL(`http://${host}:${port}`).href;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function parseProxyList(list) {
   if (!Array.isArray(list)) return [];
-  return list.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 32);
+  const out = [];
+  for (const item of list) {
+    const n = normalizeProxyEntry(item);
+    if (!n) continue;
+    if (!out.includes(n)) out.push(n);
+    if (out.length >= 32) break;
+  }
+  return out;
 }
 
 function proxiesFromEnv() {
@@ -72,6 +123,14 @@ export function createIdentityController(opts = {}) {
   const proxies = parseProxyList(
     opts.proxyPool?.length ? opts.proxyPool : proxiesFromEnv(),
   );
+  const rotationStrategyRaw = String(
+    opts.rotation || process.env.GHOSTRECON_PROXY_ROTATION || 'round_robin',
+  )
+    .trim()
+    .toLowerCase();
+  const rotationStrategy = ['round_robin', 'random', 'fixed'].includes(rotationStrategyRaw)
+    ? rotationStrategyRaw
+    : 'round_robin';
   let proxyIdx = 0;
   /** @type {Map<string, { score: number, burnedUntil: number }>} */
   const health = new Map();
@@ -101,7 +160,21 @@ export function createIdentityController(opts = {}) {
   function rotateIdentity() {
     uaSlot += 1;
     if (proxies.length) {
-      proxyIdx += 1;
+      if (rotationStrategy === 'fixed') {
+        // Mantém o mesmo proxy durante todo o run.
+      } else if (rotationStrategy === 'random' && proxies.length > 1) {
+        let next = proxyIdx;
+        for (let i = 0; i < 4; i++) {
+          const cand = Math.floor(Math.random() * proxies.length);
+          if (cand !== proxyIdx) {
+            next = cand;
+            break;
+          }
+        }
+        proxyIdx = next;
+      } else {
+        proxyIdx += 1;
+      }
       let tries = 0;
       while (tries < proxies.length) {
         const p = proxies[proxyIdx % proxies.length];
@@ -255,6 +328,7 @@ export function createIdentityController(opts = {}) {
     getStats: () => ({
       backoffMul,
       proxyIdx,
+      rotationStrategy,
       uaSlot,
       proxies: proxies.length,
       health: Object.fromEntries([...health.entries()].slice(0, 16)),
@@ -304,5 +378,6 @@ export function normalizeIdentityOptions(modules, identityBody) {
     enabled,
     behavior: body.behavior !== false,
     proxyPool: parseProxyList(body.proxyPool || []),
+    rotation: String(body.rotation || '').trim().toLowerCase() || undefined,
   };
 }
