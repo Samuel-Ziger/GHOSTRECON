@@ -35,3 +35,37 @@ test('createIdentityController disabled uses plain fetch path stats', () => {
   const s = c.getStats();
   assert.ok('backoffMul' in s);
 });
+
+test('identity-controller: normaliza host:port:user:pass para URL com auth', () => {
+  const ctrl = createIdentityController({
+    enabled: true,
+    proxyPool: ['31.59.20.176:6754:alice:secret123'],
+    modules: [],
+  });
+  const pool = ctrl.getProxyPool();
+  assert.equal(pool.length, 1);
+  assert.match(pool[0], /^http:\/\/alice:secret123@31\.59\.20\.176:6754\/$/);
+});
+
+test('identity-controller: aceita user:pass@host:port e host:port', () => {
+  const ctrl = createIdentityController({
+    enabled: true,
+    proxyPool: ['bob:pw@198.23.239.134:6540', '127.0.0.1:8080'],
+    modules: [],
+  });
+  const pool = ctrl.getProxyPool();
+  assert.equal(pool.length, 2);
+  assert.match(pool[0], /^http:\/\/bob:pw@198\.23\.239\.134:6540\/$/);
+  assert.match(pool[1], /^http:\/\/127\.0\.0\.1:8080\/$/);
+});
+
+test('normalizeIdentityOptions: expõe rotação quando enviada no body', () => {
+  const out = normalizeIdentityOptions([], {
+    enabled: true,
+    rotation: 'random',
+    proxyPool: ['127.0.0.1:8080'],
+  });
+  assert.equal(out.enabled, true);
+  assert.equal(out.rotation, 'random');
+  assert.equal(out.proxyPool.length, 1);
+});

@@ -119,11 +119,15 @@ export async function getKaliCapabilities() {
     nmap: await pathWhich('nmap'),
     nuclei: await pathWhich('nuclei'),
     ffuf: await pathWhich('ffuf'),
+    dirsearch: await pathWhich('dirsearch'),
     searchsploit: await pathWhich('searchsploit'),
     wpscan: await pathWhich('wpscan'),
     whois: await pathWhich('whois'),
     dalfox: await pathWhichOrPaths('dalfox', dalfoxCandidatePaths()),
     sqlmap: await pathWhichOrPaths('sqlmap', sqlmapAbs),
+    smbclient: await pathWhich('smbclient'),
+    rpcclient: await pathWhich('rpcclient'),
+    proxychains: await pathWhichOrPaths('proxychains4', ['/usr/bin/proxychains4', '/usr/local/bin/proxychains4']),
     python3,
     python,
     xss_vibes: (python3 || python) && fs.existsSync(XSS_VIBES_MAIN) && fs.existsSync(XSS_VIBES_PAYLOADS),
@@ -147,9 +151,10 @@ export async function getKaliCapabilities() {
   };
 }
 
-function runProc(cmd, args, timeoutMs, spawnOpts = {}) {
+function runProc(cmd, args, timeoutMs, spawnOpts = {}, execOpts = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
+    const withProxy = buildProxychainsCommand(cmd, args, execOpts);
+    const child = spawn(withProxy.cmd, withProxy.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       ...spawnOpts,
     });
@@ -181,6 +186,32 @@ function runProc(cmd, args, timeoutMs, spawnOpts = {}) {
       });
     });
   });
+}
+
+function shouldUseProxychainsForCommand(cmd, execOpts = {}) {
+  const enabled = String(process.env.GHOSTRECON_PROXYCHAINS || '0') === '1' || Boolean(execOpts.useProxychains);
+  if (!enabled) return false;
+  const normalized = String(cmd || '').trim().toLowerCase();
+  if (!normalized) return false;
+  const skip = String(process.env.GHOSTRECON_PROXYCHAINS_SKIP || '')
+    .split(/[,\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (skip.includes(normalized)) return false;
+  const defaults = new Set(['nmap', 'ffuf', 'nuclei', 'dirsearch', 'dalfox', 'whois', 'sqlmap', 'wpscan']);
+  return defaults.has(normalized);
+}
+
+function buildProxychainsCommand(cmd, args, execOpts = {}) {
+  if (!shouldUseProxychainsForCommand(cmd, execOpts)) return { cmd, args };
+  const proxychainsBin = process.env.GHOSTRECON_PROXYCHAINS_BIN || 'proxychains4';
+  const conf = String(process.env.GHOSTRECON_PROXYCHAINS_CONF || '').trim();
+  const quiet = String(process.env.GHOSTRECON_PROXYCHAINS_QUIET || '1') === '1';
+  const wrappedArgs = [];
+  if (quiet) wrappedArgs.push('-q');
+  if (conf) wrappedArgs.push('-f', conf);
+  wrappedArgs.push(cmd, ...(Array.isArray(args) ? args : []));
+  return { cmd: proxychainsBin, args: wrappedArgs };
 }
 
 function getAttr(attrStr, key) {
@@ -259,7 +290,7 @@ async function runNmapOnHosts(hosts, log, opts = {}) {
     ? Math.max(300_000, Number(process.env.GHOSTRECON_NMAP_AGGRESSIVE_TIMEOUT_MS || 7_200_000))
     : 660_000;
   try {
-    const proc = await runProc('nmap', args, timeoutMs);
+    const proc = await runProc('nmap', args, timeoutMs, {}, opts.execOpts || {});
     if (proc.code !== 0) {
       log(`nmap terminou com código ${proc.code}`, 'warn');
     }
@@ -286,7 +317,7 @@ function sensitiveUdpPortsSpec() {
   ].join(',');
 }
 
-async function runNmapUdpOnHosts(hosts, log) {
+async function runNmapUdpOnHosts(hosts, log, opts = {}) {
   const portCsv = sensitiveUdpPortsSpec();
   if (!portCsv) {
     log('nmap UDP: lista de portas vazia — skip', 'warn');
@@ -302,7 +333,7 @@ async function runNmapUdpOnHosts(hosts, log) {
   log(`nmap ${args.slice(0, -hosts.length).join(' ')} [${hosts.length} hosts]`, 'info');
   const timeoutMs = Math.max(120_000, Number(process.env.GHOSTRECON_NMAP_UDP_TIMEOUT_MS || 2_700_000));
   try {
-    const proc = await runProc('nmap', args, timeoutMs);
+    const proc = await runProc('nmap', args, timeoutMs, {}, opts.execOpts || {});
     if (proc.code !== 0) {
       log(`nmap UDP terminou com código ${proc.code}`, 'warn');
     }
@@ -376,7 +407,7 @@ export function buildExploitVersionGoogleQuery(row) {
   return `exploit pra ${short} ${verNorm}`.replace(/\s+/g, ' ').trim();
 }
 
-async function runFfuf200(baseUrl, log) {
+async function runFfuf200(baseUrl, log, execOpts = {}) {
   const wl = WORDLISTS.find((p) => fs.existsSync(p));
   if (!wl) {
     log('ffuf: nenhuma wordlist em /usr/share/seclists ou dirb', 'warn');
@@ -406,7 +437,7 @@ async function runFfuf200(baseUrl, log) {
       out,
       '-s',
     ];
-    await runProc('ffuf', args, 135000);
+    await runProc('ffuf', args, 135000, {}, execOpts);
     const raw = await readFile(out, 'utf8');
     const j = JSON.parse(raw);
     return (j.results || []).map((r) => r.url).filter(Boolean);
@@ -418,7 +449,81 @@ async function runFfuf200(baseUrl, log) {
   }
 }
 
-async function runNucleiList(urls, log) {
+function parseDirsearchJsonResults(raw, cap = 400) {
+  try {
+    const j = JSON.parse(String(raw || '{}'));
+    const out = [];
+    const queue = [];
+    if (Array.isArray(j.results)) queue.push(...j.results);
+    if (j.results && typeof j.results === 'object') {
+      for (const v of Object.values(j.results)) {
+        if (Array.isArray(v)) queue.push(...v);
+      }
+    }
+    for (const r of queue) {
+      const url = String(r?.url || r?.path || '').trim();
+      if (!url || !/^https?:\/\//i.test(url)) continue;
+      out.push({
+        url,
+        status: Number(r?.status || r?.status_code || 0) || 0,
+        length: Number(r?.length || r?.content_length || 0) || 0,
+      });
+      if (out.length >= cap) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function runDirsearchAll(baseUrl, log, execOpts = {}) {
+  const wl = WORDLISTS.find((p) => fs.existsSync(p));
+  if (!wl) {
+    log('dirsearch: nenhuma wordlist em /usr/share/seclists ou dirb', 'warn');
+    return [];
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'ghds-'));
+  const out = join(dir, 'out.json');
+  const base = baseUrl.replace(/\/$/, '');
+  const threads = Math.min(64, Math.max(1, Number(process.env.GHOSTRECON_DIRSEARCH_THREADS || 25)));
+  const maxTimeSec = Math.min(7200, Math.max(120, Number(process.env.GHOSTRECON_DIRSEARCH_MAXTIME || 1800)));
+  const depth = Math.min(20, Math.max(1, Number(process.env.GHOSTRECON_DIRSEARCH_RECURSION_DEPTH || 8)));
+  try {
+    const args = [
+      '--url',
+      `${base}/`,
+      '--wordlists',
+      wl,
+      '--threads',
+      String(threads),
+      '--timeout',
+      '8',
+      '--max-time',
+      String(maxTimeSec),
+      '--recursive',
+      '--force-recursive',
+      '--recursion-depth',
+      String(depth),
+      '--exclude-status',
+      '404',
+      '--json-report',
+      out,
+      '--quiet-mode',
+      '-e',
+      '*',
+    ];
+    await runProc('dirsearch', args, (maxTimeSec + 60) * 1000, {}, execOpts);
+    const raw = await readFile(out, 'utf8').catch(() => '');
+    return parseDirsearchJsonResults(raw);
+  } catch (e) {
+    log(`dirsearch ${base}: ${e.message}`, 'warn');
+    return [];
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function runNucleiList(urls, log, execOpts = {}) {
   if (!urls.length) return [];
   const dir = await mkdtemp(join(tmpdir(), 'ghnu-'));
   const listFile = join(dir, 'targets.txt');
@@ -438,6 +543,8 @@ async function runNucleiList(urls, log) {
       'nuclei',
       ['-l', listFile, '-jsonl', '-o', outFile, '-silent', '-rate-limit', '35', '-timeout', '8', ...profileArgs],
       320000,
+      {},
+      execOpts,
     );
     let text = '';
     try {
@@ -465,7 +572,7 @@ async function runNucleiList(urls, log) {
   }
 }
 
-async function runNucleiTags(urls, tagsCsv, log) {
+async function runNucleiTags(urls, tagsCsv, log, execOpts = {}) {
   if (!urls.length) return [];
   const dir = await mkdtemp(join(tmpdir(), 'ghnu-'));
   const listFile = join(dir, 'targets.txt');
@@ -492,6 +599,8 @@ async function runNucleiTags(urls, tagsCsv, log) {
         ...sevArgs,
       ],
       360000,
+      {},
+      execOpts,
     );
     let text = '';
     try {
@@ -584,7 +693,7 @@ function extractDalfoxJsonHits(text, limit = 10) {
   return hits.slice(0, limit);
 }
 
-async function runDalfoxUrl(url, log, auth = null) {
+async function runDalfoxUrl(url, log, auth = null, execOpts = {}) {
   const timeoutMs = Number(process.env.GHOSTRECON_DALFOX_TIMEOUT_MS || 120000);
   const tail = ['--silence', '--skip-bav', '--skip-mining-all', '--worker', '40'];
   const authArgs = [];
@@ -593,9 +702,9 @@ async function runDalfoxUrl(url, log, auth = null) {
   if (ua) authArgs.push('--user-agent', String(ua));
 
   const dalfoxBin = resolveDalfoxExecutableForSpawn();
-  const runOnce = async (withJson) => {
+    const runOnce = async (withJson) => {
     const args = ['url', url, ...(withJson ? ['--format', 'json'] : []), ...tail, ...authArgs];
-    const proc = await runProc(dalfoxBin, args, timeoutMs);
+      const proc = await runProc(dalfoxBin, args, timeoutMs, {}, execOpts);
     const text = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
     return { proc, text };
   };
@@ -645,7 +754,7 @@ function parseXssVibesTextForHits(text, limit = 20) {
   return hits;
 }
 
-async function runXssVibesBatch({ urls, cap, log, auth = null }) {
+async function runXssVibesBatch({ urls, cap, log, auth = null, execOpts = {} }) {
   const uniq = [...new Set((urls || []).filter((u) => /^https?:\/\//i.test(String(u))))];
   if (!uniq.length) return { ok: true, hits: [], message: 'sem URLs válidas' };
   const maxUrls = Math.max(1, Number(process.env.GHOSTRECON_XSS_VIBES_MAX_URLS || 25));
@@ -673,7 +782,7 @@ async function runXssVibesBatch({ urls, cap, log, auth = null }) {
   }
 
   try {
-    const proc = await runProc(pyCmd, args, timeoutMs, { cwd: XSS_VIBES_DIR });
+    const proc = await runProc(pyCmd, args, timeoutMs, { cwd: XSS_VIBES_DIR }, execOpts);
     const mixed = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
     let hits = [];
     try {
@@ -723,6 +832,45 @@ function isFtpServiceRow(row) {
   const name = String(row.name || '').toLowerCase();
   const product = String(row.product || '').toLowerCase();
   return row.proto === 'tcp' && (String(row.port) === '21' || name.includes('ftp') || product.includes('ftp'));
+}
+
+function isSmbServiceRow(row) {
+  if (!row) return false;
+  const name = String(row.name || '').toLowerCase();
+  const product = String(row.product || '').toLowerCase();
+  const p = String(row.port || '');
+  return row.proto === 'tcp' && (p === '445' || p === '139' || name.includes('smb') || product.includes('samba'));
+}
+
+function isRpcServiceRow(row) {
+  if (!row) return false;
+  const name = String(row.name || '').toLowerCase();
+  const product = String(row.product || '').toLowerCase();
+  const p = String(row.port || '');
+  return row.proto === 'tcp' && (p === '135' || name.includes('msrpc') || product.includes('msrpc') || product.includes('rpc'));
+}
+
+async function trySmbAnonymousList({ host, timeoutMs = 20_000, execOpts = {} }) {
+  try {
+    const proc = await runProc('smbclient', ['-N', '-L', `//${host}`, '-g'], timeoutMs, {}, execOpts);
+    const mixed = `${proc.stdout || ''}\n${proc.stderr || ''}`;
+    const hasShares = /Disk\|[^\n]+|IPC\$/i.test(mixed);
+    const denied = /NT_STATUS_ACCESS_DENIED|denied|logon failure/i.test(mixed);
+    return { ok: proc.code === 0 && hasShares && !denied, code: proc.code, output: mixed.slice(0, 1200) };
+  } catch (e) {
+    return { ok: false, code: -1, output: String(e?.message || e) };
+  }
+}
+
+async function tryRpcNullSession({ host, timeoutMs = 20_000, execOpts = {} }) {
+  try {
+    const proc = await runProc('rpcclient', ['-N', '-U', '', host, '-c', 'srvinfo'], timeoutMs, {}, execOpts);
+    const mixed = `${proc.stdout || ''}\n${proc.stderr || ''}`;
+    const denied = /NT_STATUS_ACCESS_DENIED|denied|logon failure/i.test(mixed);
+    return { ok: proc.code === 0 && !denied, code: proc.code, output: mixed.slice(0, 1200) };
+  } catch (e) {
+    return { ok: false, code: -1, output: String(e?.message || e) };
+  }
 }
 
 async function tryFtpAnonymousLogin({
@@ -865,9 +1013,12 @@ async function ingestNmapScanRows(rows, ctx) {
     seenExploitGoogle,
     exploitGoogleMax,
     ftpChecked,
+    smbChecked,
+    rpcChecked,
     baseUrlsForFfuf,
     scanKind,
     domain: reconTarget,
+    execOpts = {},
   } = ctx;
   const label = scanKind === 'udp' ? 'nmap UDP' : 'nmap';
   log(`${label}: ${rows.length} serviço(s) em portas abertas`, 'success');
@@ -1011,6 +1162,60 @@ async function ingestNmapScanRows(rows, ctx) {
       }
     }
 
+    if (isSmbServiceRow(row) && cap.tools.smbclient) {
+      const k = `${row.host}:${row.port}`;
+      if (!smbChecked.has(k)) {
+        smbChecked.add(k);
+        log(`[SMB] Teste sessão anônima em ${k}`, 'info');
+        const smb = await trySmbAnonymousList({
+          host: row.host,
+          timeoutMs: Math.max(6000, Number(process.env.GHOSTRECON_SMB_ANON_TIMEOUT_MS || 20000)),
+          execOpts,
+        });
+        if (smb.ok) {
+          addFinding({
+            type: 'security',
+            prio: 'high',
+            score: 93,
+            value: `SMB anonymous session/share listing enabled @ ${k}`,
+            meta: `service=smb • severity=high • auth=null-session • evidence=smbclient -N -L • target=${reconTarget || row.host}`,
+            url: null,
+          });
+          if (typeof emit === 'function') emit({ type: 'intel', line: `⚠ SMB null session detectada em ${k}` });
+          log(`[SMB] ⚠ sessão nula permitida em ${k}`, 'warn');
+        } else {
+          log(`[SMB] ${k} sem sessão nula (ok)`, 'info');
+        }
+      }
+    }
+
+    if (isRpcServiceRow(row) && cap.tools.rpcclient) {
+      const k = `${row.host}:${row.port}`;
+      if (!rpcChecked.has(k)) {
+        rpcChecked.add(k);
+        log(`[RPC] Teste null-session em ${k}`, 'info');
+        const rpc = await tryRpcNullSession({
+          host: row.host,
+          timeoutMs: Math.max(6000, Number(process.env.GHOSTRECON_RPC_NULL_TIMEOUT_MS || 20000)),
+          execOpts,
+        });
+        if (rpc.ok) {
+          addFinding({
+            type: 'security',
+            prio: 'high',
+            score: 90,
+            value: `RPC null session enabled @ ${k}`,
+            meta: `service=rpc • severity=high • auth=null-session • evidence=rpcclient -N -U "" • target=${reconTarget || row.host}`,
+            url: null,
+          });
+          if (typeof emit === 'function') emit({ type: 'intel', line: `⚠ RPC null session detectada em ${k}` });
+          log(`[RPC] ⚠ null-session permitida em ${k}`, 'warn');
+        } else {
+          log(`[RPC] ${k} sem null-session (ok)`, 'info');
+        }
+      }
+    }
+
     if (cap.tools.searchsploit && row.searchBlob && seenQueries.size < 12) {
       const key = row.searchBlob.toLowerCase().slice(0, 60);
       if (seenQueries.has(key)) continue;
@@ -1075,10 +1280,10 @@ function parseWhoisText(domainOrHost, whoisText) {
   };
 }
 
-async function runWhoisJsonLike({ target, timeoutMs, log }) {
+async function runWhoisJsonLike({ target, timeoutMs, log, execOpts = {} }) {
   // quem usa whois no Kali geralmente tem o CLI "whois".
   // Não normalizamos em JSON: apenas parseamos texto com regexes.
-  const proc = await runProc('whois', [target], timeoutMs);
+  const proc = await runProc('whois', [target], timeoutMs, {}, execOpts);
   const text = [proc.stdout, proc.stderr].filter(Boolean).join('\n').slice(0, 220_000);
   if (typeof log === 'function' && text.includes('No match')) log(`whois: sem match para ${target}`, 'info');
   return { ok: proc.code === 0, text };
@@ -1112,6 +1317,8 @@ export async function runKaliAggressiveScan({
   runNuclei = false,
   /** Só corre ffuf se o módulo UI `kali_ffuf` estiver activo (e modo Kali no servidor). */
   runFfuf = false,
+  /** Só corre dirsearch se o módulo UI `kali_dirsearch` estiver activo (e modo Kali no servidor). */
+  runDirsearch = false,
   /**
    * Módulo UI `kali_nmap_aggressive`: nmap com `-A -sV -p-` (todas as portas) — muito lento;
    * substitui o perfil normal desta fase. Ver `GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS` e timeout.
@@ -1128,7 +1335,10 @@ export async function runKaliAggressiveScan({
   auth = null,
   /** NDJSON: eventos `dork` para fila de Google (pesquisas «exploit pra …» por versão nmap). */
   emit = null,
+  /** Módulo UI `kali_proxychains`: encadeia scanners Kali via proxychains-ng. */
+  useProxychains = false,
 }) {
+  const execOpts = { useProxychains: Boolean(useProxychains) };
   const pipeTool = (name, state) => {
     if (typeof emit !== 'function') return;
     emit({ type: 'pipe', name, state });
@@ -1166,12 +1376,14 @@ export async function runKaliAggressiveScan({
     Math.min(60, Number(process.env.GHOSTRECON_EXPLOIT_GOOGLE_MAX_QUERIES || 25)),
   );
   const ftpChecked = new Set();
+  const smbChecked = new Set();
+  const rpcChecked = new Set();
 
   if (cap.tools.nmap) {
     pipeTool('nmap', 'active');
     let tcpNmapRows = [];
     try {
-      tcpNmapRows = await runNmapOnHosts(hosts, log, { aggressive: runNmapAggressive });
+      tcpNmapRows = await runNmapOnHosts(hosts, log, { aggressive: runNmapAggressive, execOpts });
       const ingestCtx = {
         log,
         addFinding,
@@ -1181,8 +1393,11 @@ export async function runKaliAggressiveScan({
         seenExploitGoogle,
         exploitGoogleMax,
         ftpChecked,
+        smbChecked,
+        rpcChecked,
         baseUrlsForFfuf,
         domain,
+        execOpts,
       };
       await ingestNmapScanRows(tcpNmapRows, { ...ingestCtx, scanKind: 'tcp' });
       if (runMysql3306Intel && tcpNmapRows.length) {
@@ -1205,7 +1420,7 @@ export async function runKaliAggressiveScan({
           `nmap UDP (módulo kali_nmap_udp): -sU -A em portas sensíveis — ${hostsUdp.length} host(s) (máx. ${maxUdpHosts}). Portas: env GHOSTRECON_NMAP_UDP_PORTS ou lista por defeito.`,
           'info',
         );
-        const udpRows = await runNmapUdpOnHosts(hostsUdp, log);
+        const udpRows = await runNmapUdpOnHosts(hostsUdp, log, { execOpts });
         await ingestNmapScanRows(udpRows, {
           log,
           addFinding,
@@ -1248,7 +1463,7 @@ export async function runKaliAggressiveScan({
     // Ainda assim, seguimos a tua ideia e executamos numa amostra pequena.
     for (const t of whoisTargets) {
       try {
-        const { text } = await runWhoisJsonLike({ target: t, timeoutMs: limits.whoisTimeoutMs, log });
+        const { text } = await runWhoisJsonLike({ target: t, timeoutMs: limits.whoisTimeoutMs, log, execOpts });
         const parsed = parseWhoisText(t, text);
         if (!parsed.hasSomething) continue;
         const ns = parsed.nameServers?.slice(0, 6) || [];
@@ -1285,24 +1500,44 @@ export async function runKaliAggressiveScan({
     pipeTool('whois', 'skip');
   }
 
+  const addDirectoryFinding = (entry, source) => {
+    const status = Number(entry?.status || 0) || 0;
+    const len = Number(entry?.length || 0) || 0;
+    const value = String(entry?.url || '').trim();
+    if (!value) return;
+    addFinding(
+      {
+        type: 'directory',
+        prio: [200, 204, 301, 302, 307, 308].includes(status) ? 'high' : [401, 403].includes(status) ? 'med' : 'low',
+        score: [200, 204].includes(status) ? 78 : [301, 302, 307, 308].includes(status) ? 72 : [401, 403].includes(status) ? 64 : 50,
+        value,
+        meta: `${source} • status=${status || '-'} • length=${len || '-'}`,
+        url: value,
+      },
+      'directories',
+    );
+    // Mantemos endpoint para não perder cobertura dos módulos de verificação já existentes.
+    addFinding(
+      {
+        type: 'endpoint',
+        prio: [200, 204].includes(status) ? 'high' : 'med',
+        score: [200, 204].includes(status) ? 72 : 62,
+        value,
+        meta: `${source} • status=${status || '-'} • length=${len || '-'}`,
+        url: value,
+      },
+      'endpoints',
+    );
+  };
+
   if (runFfuf && cap.tools.ffuf) {
     pipeTool('ffuf', 'active');
     log('═══ ffuf (apenas HTTP 200) ═══', 'section');
     const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 5);
     for (const u of uniqBases) {
-      const paths = await runFfuf200(u, log);
+      const paths = await runFfuf200(u, log, execOpts);
       for (const p of paths) {
-        addFinding(
-          {
-            type: 'endpoint',
-            prio: 'high',
-            score: 72,
-            value: p,
-            meta: 'ffuf • código 200',
-            url: p,
-          },
-          'endpoints',
-        );
+        addDirectoryFinding({ url: p, status: 200 }, 'ffuf');
       }
       if (paths.length) log(`ffuf ${u} → ${paths.length} caminho(s) 200`, 'success');
     }
@@ -1314,12 +1549,29 @@ export async function runKaliAggressiveScan({
     }
   }
 
+  if (runDirsearch && cap.tools.dirsearch) {
+    pipeTool('dirsearch', 'active');
+    log('═══ dirsearch (recursivo, completo) ═══', 'section');
+    const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 5);
+    for (const u of uniqBases) {
+      const hits = await runDirsearchAll(u, log, execOpts);
+      for (const h of hits) addDirectoryFinding(h, 'dirsearch');
+      if (hits.length) log(`dirsearch ${u} → ${hits.length} caminho(s)`, 'success');
+    }
+    pipeTool('dirsearch', 'done');
+  } else {
+    pipeTool('dirsearch', 'skip');
+    if (!runDirsearch && cap.tools.dirsearch) {
+      log('dirsearch: omitido — activa o módulo «Dirsearch (Kali)» em Sensitive Data (só com Modo Kali).', 'info');
+    }
+  }
+
   if (runNuclei && cap.tools.nuclei) {
     pipeTool('nuclei', 'active');
     log('═══ nuclei ═══', 'section');
     const targets = [...new Set(baseUrlsForFfuf.map((b) => b.replace(/\/$/, '')))].slice(0, 15);
     try {
-      const findings = await runNucleiList(targets, log);
+      const findings = await runNucleiList(targets, log, execOpts);
       for (const f of findings) {
         const matched = f['matched-at'] || f.host || f.url || '';
         const tid = f['template-id'] || f.templateID || 'template';
@@ -1362,7 +1614,7 @@ export async function runKaliAggressiveScan({
       pipeTool('nuclei_xss', 'active');
       log(`═══ nuclei (xss) em URLs com parâmetros (${urls.length}) ═══`, 'section');
       try {
-        const xss = await runNucleiTags(urls, 'xss', log);
+        const xss = await runNucleiTags(urls, 'xss', log, execOpts);
         for (const f of xss) {
           const matched = f['matched-at'] || f.host || f.url || '';
           const tid = f['template-id'] || f.templateID || 'template';
@@ -1391,7 +1643,7 @@ export async function runKaliAggressiveScan({
       pipeTool('nuclei_sqli', 'active');
       log(`═══ nuclei (sqli) em URLs com parâmetros (${urls.length}) ═══`, 'section');
       try {
-        const sqli = await runNucleiTags(urls, 'sqli', log);
+        const sqli = await runNucleiTags(urls, 'sqli', log, execOpts);
         for (const f of sqli) {
           const matched = f['matched-at'] || f.host || f.url || '';
           const tid = f['template-id'] || f.templateID || 'template';
@@ -1488,7 +1740,7 @@ export async function runKaliAggressiveScan({
     log(`═══ dalfox (XSS) em URLs com parâmetros (${targets.length}) ═══`, 'section');
     try {
     for (const u of targets) {
-      const r = await runDalfoxUrl(u, log, auth);
+      const r = await runDalfoxUrl(u, log, auth, execOpts);
       if (!r.ok) {
         log(`dalfox ${u}: ${r.error}`, 'warn');
         continue;
@@ -1520,7 +1772,7 @@ export async function runKaliAggressiveScan({
     pipeTool('xss_vibes', 'active');
     log(`═══ xss_vibes (XSS) em URLs com parâmetros (${paramUrls.length}) ═══`, 'section');
     try {
-    const r = await runXssVibesBatch({ urls: paramUrls, cap, log, auth });
+    const r = await runXssVibesBatch({ urls: paramUrls, cap, log, auth, execOpts });
     if (!r.ok) {
       log(`[xss_vibes] erro: ${r.error || 'falha desconhecida'}`, 'warn');
     } else {

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GHOSTRECON · Tor Validator</title>
+  <style>
+    body { background:#0b0f1a; color:#d7e4ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin:0; }
+    .wrap { max-width:900px; margin:20px auto; padding:16px; }
+    .card { border:1px solid #2a3550; border-radius:10px; padding:14px; margin-bottom:12px; background:#111829; }
+    .ok { color:#59f2a5; }
+    .bad { color:#ff7f8a; }
+    .dim { color:#8ba0c9; }
+    button { background:#192746; color:#d7e4ff; border:1px solid #2a3550; border-radius:8px; padding:8px 12px; cursor:pointer; }
+    code { color:#9bd0ff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>Tor Validator</h2>
+    <p class="dim">Valida status de túnel e saída real via Tor.</p>
+    <div style="display:flex;gap:8px;margin:10px 0 16px">
+      <button onclick="runValidate()">Validar agora</button>
+      <button onclick="toggleAuto()" id="autoBtn">Auto: OFF</button>
+    </div>
+    <div class="card" id="summary">Aguardando validação…</div>
+    <div class="card">
+      <div><strong>Status serviços</strong></div>
+      <div id="svc" class="dim">—</div>
+    </div>
+    <div class="card">
+      <div><strong>IP direto</strong></div>
+      <div id="direct" class="dim">—</div>
+    </div>
+    <div class="card">
+      <div><strong>IP via Tor</strong></div>
+      <div id="tor" class="dim">—</div>
+    </div>
+  </div>
+  <script>
+    function apiUrl(path){ return path; }
+    let timer = null;
+    function setText(id, text, cls='dim'){ const el=document.getElementById(id); if(!el) return; el.className=cls; el.textContent=text; }
+    async function runValidate(){
+      try{
+        const res = await fetch(apiUrl('/api/tunnel/validate'));
+        const data = await res.json();
+        if(!res.ok || data.ok===false) throw new Error(data.error || ('HTTP '+res.status));
+        const s = data.status || {};
+        setText('svc', `active=${Boolean(s.active)} • tor=${s.tor||'unknown'} • openvpn=${s.openvpn||'unknown'}`, s.active?'ok':'bad');
+        const d = data.direct || {};
+        setText('direct', `ok=${Boolean(d.ok)} • ip=${d.ip||'n/a'} • code=${d.code}`, d.ok?'ok':'bad');
+        const t = data.tor || {};
+        setText('tor', `ok=${Boolean(t.ok)} • isTor=${Boolean(t.isTor)} • ip=${t.ip||'n/a'} • code=${t.code}`, t.isTor?'ok':'bad');
+        const val = Boolean(data.validated);
+        setText('summary', val ? 'VALIDADO: tráfego via Tor ativo.' : 'NÃO VALIDADO: túnel/Tor não confirmado.', val ? 'ok' : 'bad');
+      }catch(e){
+        setText('summary', 'Erro na validação: '+(e.message||e), 'bad');
+      }
+    }
+    function toggleAuto(){
+      const btn = document.getElementById('autoBtn');
+      if(timer){ clearInterval(timer); timer=null; btn.textContent='Auto: OFF'; return; }
+      timer = setInterval(runValidate, 12000);
+      btn.textContent='Auto: ON';
+      runValidate();
+    }
+    runValidate();
+  </script>
+</body>
+</html>
+

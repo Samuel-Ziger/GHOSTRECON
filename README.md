@@ -473,3 +473,28 @@ Novos testes em `server/tests/` (node --test):
 
 Rodar: `npm test` ou `npm run test:cli` (subset das novas features).
 
+## 28) Proxychains-ng + rotação de IP
+
+`proxychains-ng` agora é uma opção dedicada da UI via módulo
+`kali_proxychains` (separada da rotação de identidade/proxy pool).
+Quando marcado no run, os scanners do modo Kali rodam por
+`proxychains-ng` (chains SOCKS/HTTP/Tor).
+
+Exemplo de `.env`:
+
+```bash
+# (opcional para CLI/headless sem UI)
+GHOSTRECON_PROXYCHAINS_BIN=proxychains4
+GHOSTRECON_PROXYCHAINS_CONF=/etc/proxychains4.conf
+GHOSTRECON_PROXYCHAINS_QUIET=1
+```
+
+Com isso, ferramentas como `nmap`, `nuclei`, `ffuf`, `dirsearch`, `dalfox`,
+`whois`, `sqlmap` e `wpscan` passam a ser executadas via `proxychains4`.
+
+Para excluir uma ferramenta específica do chain:
+
+```bash
+GHOSTRECON_PROXYCHAINS_SKIP=nmap
+```
+

@@ -133,6 +133,12 @@ import { planSpray } from './modules/cred-spray.mjs';
 import { fingerprintLovable } from './modules/lovable-fingerprint.js';
 import { runCurlProbeModule } from './modules/curl-probe.mjs';
 import {
+  loadNavegationPlaybook,
+  executeNavegationPlaybook,
+  getNavegationTunnelStatus,
+  validateNavegationTorPath,
+} from './modules/navegation.js';
+import {
   initAuth,
   requireAuth,
   requireScope,
@@ -419,6 +425,7 @@ async function runPipeline(ctx) {
     engagementId: engagementIdRaw = null,
     engagementOperator: engagementOperatorRaw = null,
     identityCtrl = null,
+    navegation = null,
   } = ctx;
   const apexHostIsIp = targetIsIp(domain);
 
@@ -463,6 +470,7 @@ async function runPipeline(ctx) {
     'nmap_udp',
     'whois',
     'ffuf',
+    'dirsearch',
     'nuclei',
     'nuclei_xss',
     'nuclei_sqli',
@@ -2214,9 +2222,11 @@ async function runPipeline(ctx) {
 
       const runKaliNuclei = Boolean(modules.includes('kali_nuclei'));
       const runKaliFfuf = Boolean(modules.includes('kali_ffuf'));
+      const runKaliDirsearch = Boolean(modules.includes('kali_dirsearch'));
       const runKaliNmapAggressive = Boolean(modules.includes('kali_nmap_aggressive'));
       const runKaliNmapUdp = Boolean(modules.includes('kali_nmap_udp'));
       const runMysql3306Intel = Boolean(modules.includes('mysql_3306_intel'));
+      const runKaliProxychains = Boolean(modules.includes('kali_proxychains'));
 
       await runKaliAggressiveScan({
         domain,
@@ -2230,9 +2240,11 @@ async function runPipeline(ctx) {
         sqliSignals,
         runNuclei: runKaliNuclei,
         runFfuf: runKaliFfuf,
+        runDirsearch: runKaliDirsearch,
         runNmapAggressive: runKaliNmapAggressive,
         runNmapUdp: runKaliNmapUdp,
         runMysql3306Intel: runMysql3306Intel,
+        useProxychains: runKaliProxychains,
         auth,
         emit,
       });
@@ -2322,6 +2334,71 @@ async function runPipeline(ctx) {
       log(`Cloud bruteforce: ${e.message}`, 'warn');
     }
     pipe('cloud_bruteforce', 'done');
+  }
+
+  if (modules.includes('navegation')) {
+    pipe('navegation', 'active');
+    try {
+      const nav = await loadNavegationPlaybook(ROOT);
+      if (!nav.steps.length) {
+        log('Navegation: ficheiro encontrado, mas sem comandos úteis.', 'warn');
+      } else {
+        addFinding(
+          {
+            type: 'intel',
+            prio: 'med',
+            score: 58,
+            value: 'Navegation playbook carregado',
+            meta: `source=${nav.filePath} • steps=${nav.steps.length}`,
+          },
+          null,
+        );
+        for (const step of nav.steps.slice(0, 12)) {
+          emit({ type: 'intel', line: `NAVEGATION: ${step}` });
+        }
+        log(`Navegation: ${nav.steps.length} passo(s) carregado(s) do playbook local`, 'info');
+      }
+      const navExecEnabled =
+        (navegation && typeof navegation === 'object' && navegation.exec === true) ||
+        String(process.env.GHOSTRECON_NAVEGATION_EXEC || '0').trim() === '1';
+      if (navExecEnabled) {
+        const navDryRun =
+          navegation && typeof navegation === 'object' && typeof navegation.dryRun === 'boolean'
+            ? navegation.dryRun
+            : String(process.env.GHOSTRECON_NAVEGATION_DRY_RUN || '1').trim() !== '0';
+        log(`Navegation: execução automática ativada (dry-run=${navDryRun ? 'on' : 'off'})`, 'warn');
+        const execRes = await executeNavegationPlaybook(ROOT, {
+          dryRun: navDryRun,
+          timeoutMs: Number(process.env.GHOSTRECON_NAVEGATION_TIMEOUT_MS || 900000),
+        });
+        if (execRes.ok) {
+          addFinding(
+            {
+              type: 'intel',
+              prio: 'med',
+              score: 62,
+              value: 'Navegation executado automaticamente',
+              meta: `cmd=${execRes.command} • code=${execRes.code} • dry_run=${navDryRun ? '1' : '0'}`,
+            },
+            null,
+          );
+          log(`Navegation exec: sucesso (${execRes.command})`, 'success');
+        } else {
+          log(
+            `Navegation exec: falhou (${execRes.command}) code=${execRes.code} timeout=${execRes.timedOut ? '1' : '0'}`,
+            'warn',
+          );
+          if (execRes.stderr) emit({ type: 'intel', line: `NAVEGATION STDERR: ${String(execRes.stderr).slice(0, 400)}` });
+        }
+      } else {
+        log('Navegation: execução automática desligada (define GHOSTRECON_NAVEGATION_EXEC=1 para executar).', 'info');
+      }
+    } catch (e) {
+      log(`Navegation: ${e.message}`, 'warn');
+    }
+    pipe('navegation', 'done');
+  } else {
+    emit({ type: 'pipe', name: 'navegation', state: 'skip' });
   }
 
   // ── PRIORIZAÇÃO V2 + CVE hints + CORRELATION + INTEL ──
@@ -3128,6 +3205,7 @@ app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) 
       engagementId: engagementIdRaw || null,
       engagementOperator: operatorRaw || null,
       identityCtrl,
+      navegation: req.body?.navegation && typeof req.body.navegation === 'object' ? req.body.navegation : null,
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
@@ -3141,6 +3219,62 @@ app.get('/api/csrf-token', (req, res) => {
   const token = issueCsrfToken(req);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ token, expiresInMs: CSRF_TTL_MS });
+});
+
+app.get('/api/tunnel/status', async (_req, res) => {
+  try {
+    const status = await getNavegationTunnelStatus(ROOT);
+    res.json({ ok: true, ...status });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get('/api/tunnel/validate', async (_req, res) => {
+  try {
+    const report = await validateNavegationTorPath(ROOT);
+    res.json(report);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post('/api/tunnel/enable', requireRole('admin'), async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido/ausente' });
+    return;
+  }
+  try {
+    const dryRun = Boolean(req.body?.dryRun);
+    const run = await executeNavegationPlaybook(ROOT, {
+      action: 'up',
+      dryRun,
+      timeoutMs: Number(process.env.GHOSTRECON_NAVEGATION_TIMEOUT_MS || 900000),
+    });
+    const status = await getNavegationTunnelStatus(ROOT);
+    res.json({ ok: run.ok, run, status });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post('/api/tunnel/disable', requireRole('admin'), async (req, res) => {
+  if (!validateCsrfToken(req)) {
+    res.status(403).json({ ok: false, error: 'CSRF token inválido/ausente' });
+    return;
+  }
+  try {
+    const dryRun = Boolean(req.body?.dryRun);
+    const run = await executeNavegationPlaybook(ROOT, {
+      action: 'down',
+      dryRun,
+      timeoutMs: Number(process.env.GHOSTRECON_NAVEGATION_TIMEOUT_MS || 900000),
+    });
+    const status = await getNavegationTunnelStatus(ROOT);
+    res.json({ ok: run.ok, run, status });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 app.post('/api/tool-path-refresh', requireRole('admin'), (req, res) => {
