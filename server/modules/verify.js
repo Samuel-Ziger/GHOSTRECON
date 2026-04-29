@@ -10,7 +10,12 @@ export const SQLI_PARAM_RE =
 const LOGIN_PATH_RE = /(\/|^)(login|sign-in|signin|auth)(\/|$)/i;
 const AUTH_SQLI_PARAM_RE = /^(user(name)?|email|pass(word)?|login|pwd)$/i;
 const REDIRECT_PARAM_RE = /^(redirect|url|next|return|return_url|dest|target|goto|callback)$/i;
-const IDOR_PARAM_RE = /^(id|user_id|uid|account|order_id|profile_id|invoice_id)$/i;
+const IDOR_PARAM_RE =
+  /^(id|ids|user_id|uid|account|account_id|order_id|profile_id|invoice_id|tenant_id|org_id|organization_id|customer_id|owner_id|project_id|team_id|member_id|document_id|file_id|post_id|item_id|resource_id)$/i;
+const IDOR_DENY_RE =
+  /\b(forbidden|unauthorized|not\s+authorized|not\s+allowed|access\s+denied|permission\s+denied|insufficient\s+permission|missing\s+scope|role\s+required)\b/i;
+const IDOR_OWNER_HINT_RE =
+  /\b(user(id)?|account(id)?|owner(id)?|tenant(id)?|org(anization)?(id)?|email|username|profile(id)?)\b/i;
 const LFI_PARAM_RE =
   /^(file|path|page|template|include|inc|doc|document|folder|dir|download|view|cat|module|load|read|filepath|filename|lang|locate|show|nav|layout|render|snippet|f|fn|asset|theme|id|ids|nid|pid|cid|aid|noticia|noticias|artigo|artigos|news|post|posts|slug|item|items|tipo|secao|mensagem|chave|story|opcao|pagina|conteudo|arquivo|arq|ver|mod|ref|rel|opc|cont|body|texto|tpl|banner|opcao_menu|menu|sec|image|img|foto|thumb|text|txt|article|msg|load_file)$/i;
 /** Nomes típicos para LFI quando o endpoint é .php e não há query (ou nenhum parâmetro “LFI” na URL). */
@@ -307,6 +312,90 @@ function sampleSnippet(text, needle, radius = 90) {
   const st = Math.max(0, i - radius);
   const en = Math.min(s.length, i + String(needle).length + radius);
   return s.slice(st, en).replace(/\s+/g, ' ').trim();
+}
+
+function mutateUuidLike(v) {
+  const s = String(v || '').trim();
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(s)) return null;
+  const last = s[s.length - 1].toLowerCase();
+  const next = last === 'f' ? 'e' : 'f';
+  return `${s.slice(0, -1)}${next}`;
+}
+
+function mutateHexLike(v) {
+  const s = String(v || '').trim();
+  if (!/^[a-f0-9]{16,}$/i.test(s)) return null;
+  const last = s[s.length - 1].toLowerCase();
+  const next = last === 'f' ? 'e' : 'f';
+  return `${s.slice(0, -1)}${next}`;
+}
+
+function buildIdorProbeValues(rawVal) {
+  const seed = String(rawVal ?? '').trim();
+  const out = [];
+  const push = (v) => {
+    const sv = String(v ?? '').trim();
+    if (!sv) return;
+    if (!out.includes(sv)) out.push(sv);
+  };
+  if (/^\d+$/.test(seed)) {
+    const n = Number(seed);
+    if (Number.isFinite(n)) {
+      push(String(n));
+      push(String(Math.max(1, n + 1)));
+      push(String(Math.max(1, n + 2)));
+    }
+  } else if (seed) {
+    push(seed);
+    const mu = mutateUuidLike(seed);
+    if (mu) push(mu);
+    const mh = mutateHexLike(seed);
+    if (mh) push(mh);
+  }
+  push('1');
+  push('2');
+  push('3');
+  return out.slice(0, 4);
+}
+
+function extractIdorOwnershipHints(text) {
+  const s = String(text || '').slice(0, 12000);
+  const out = [];
+  const jsonPairRe = /"([^"]{2,40})"\s*:\s*("([^"\\]{1,120})"|(-?\d{1,18})|true|false|null)/g;
+  let m;
+  while ((m = jsonPairRe.exec(s))) {
+    const k = String(m[1] || '').toLowerCase();
+    if (!IDOR_OWNER_HINT_RE.test(k)) continue;
+    const v = String(m[3] ?? m[4] ?? m[2] ?? '').replace(/^"+|"+$/g, '').trim();
+    if (!v) continue;
+    out.push(`${k}=${v.slice(0, 60)}`);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+function classifyIdorSignal(baseResp, testResp) {
+  const sameStatus = baseResp.status === testResp.status;
+  const status2xx = baseResp.status >= 200 && baseResp.status < 300 && testResp.status >= 200 && testResp.status < 300;
+  const b = String(baseResp.text || '').slice(0, 6000);
+  const t = String(testResp.text || '').slice(0, 6000);
+  const bodyChanged = b !== t;
+  const denySignal = IDOR_DENY_RE.test(t);
+  const maybeUnauthorized = [401, 403].includes(testResp.status);
+  const lenBase = b.length || 1;
+  const lenDeltaRatio = Math.abs(t.length - b.length) / lenBase;
+  const ownerBase = extractIdorOwnershipHints(b);
+  const ownerTest = extractIdorOwnershipHints(t);
+  const ownerChanged =
+    ownerBase.length > 0 &&
+    ownerTest.length > 0 &&
+    ownerBase.join('|').slice(0, 400) !== ownerTest.join('|').slice(0, 400);
+
+  const strong = sameStatus && status2xx && bodyChanged && !maybeUnauthorized && !denySignal && (ownerChanged || lenDeltaRatio > 0.06);
+  const weak = sameStatus && bodyChanged && !maybeUnauthorized && !denySignal;
+  const classification = strong ? 'probable' : weak ? 'noisy' : 'noisy';
+  const score = strong ? (ownerChanged ? 78 : 70) : 28;
+  return { classification, score, bodyChanged, ownerBase, ownerTest, ownerChanged };
 }
 
 export function evidenceHash(evidence) {
@@ -725,37 +814,53 @@ export async function runEvidenceVerification({
       }
 
       if (IDOR_PARAM_RE.test(param)) {
+        const probes = buildIdorProbeValues(u.searchParams.get(p));
         const b = new URL(u.href);
         const t = new URL(u.href);
-        b.searchParams.set(p, '1');
-        t.searchParams.set(p, '2');
+        b.searchParams.set(p, probes[0] || '1');
+        t.searchParams.set(p, probes[1] || '2');
         try {
           const [rb, rt] = await Promise.all([
             fetchText(b.href, { auth, modules, identityCtrl }),
             fetchText(t.href, { auth, modules, identityCtrl }),
           ]);
-          const sameStatus = rb.status === rt.status;
-          const bodyChanged = rb.text.slice(0, 4000) !== rt.text.slice(0, 4000);
-          const maybeUnauthorized = [401, 403].includes(rt.status);
-          const classification = sameStatus && bodyChanged && !maybeUnauthorized ? 'probable' : 'noisy';
-          const score = classification === 'probable' ? 68 : 28;
+          let chosen = classifyIdorSignal(rb, rt);
+          let chosenResp = rt;
+          let chosenUrl = t.href;
+          let chosenReq = `${t.pathname}?${p}=${probes[1] || '2'}`;
+          if (chosen.classification !== 'probable' && probes[2]) {
+            const t2 = new URL(u.href);
+            t2.searchParams.set(p, probes[2]);
+            try {
+              const rt2 = await fetchText(t2.href, { auth, modules, identityCtrl });
+              const alt = classifyIdorSignal(rb, rt2);
+              if (alt.classification === 'probable') {
+                chosen = alt;
+                chosenResp = rt2;
+                chosenUrl = t2.href;
+                chosenReq = `${t2.pathname}?${p}=${probes[2]}`;
+              }
+            } catch {
+              /* ignore */
+            }
+          }
           pushVerificationFinding(
             out,
             'idor',
-            classification,
-            score,
-            `Verify IDOR ${classification.toUpperCase()} @ ${t.pathname} ?${p}=`,
-            `verify=idor • param=${p} • status_base=${rb.status} status_test=${rt.status} • body_changed=${bodyChanged ? 'yes' : 'no'} • confidence=${classification}`,
+            chosen.classification,
+            chosen.score,
+            `Verify IDOR ${chosen.classification.toUpperCase()} @ ${t.pathname} ?${p}=`,
+            `verify=idor • param=${p} • probes=${probes.slice(0, 3).join('→')} • status_base=${rb.status} status_test=${rt.status} • body_changed=${chosen.bodyChanged ? 'yes' : 'no'} • owner_hint_changed=${chosen.ownerChanged ? 'yes' : 'no'} • confidence=${chosen.classification}`,
             {
               source: 'verify-idor',
-              url: t.href,
+              url: chosenUrl,
               method: 'GET',
-              status: rt.status,
-              requestSnippet: `${t.pathname}?${p}=2`,
-              responseSnippet: sampleSnippet(rt.text, ''),
+              status: chosenResp.status,
+              requestSnippet: chosenReq,
+              responseSnippet: sampleSnippet(chosenResp.text, ''),
               timestamp: nowIso(),
             },
-            rt.text,
+            chosenResp.text,
           );
         } catch {
           /* ignore */

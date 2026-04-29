@@ -132,6 +132,14 @@ import { buildRacePlan } from './modules/race-harness.mjs';
 import { planSpray } from './modules/cred-spray.mjs';
 import { fingerprintLovable } from './modules/lovable-fingerprint.js';
 import { runCurlProbeModule } from './modules/curl-probe.mjs';
+import {
+  initAuth,
+  requireAuth,
+  requireScope,
+  requireRole,
+  reconBodyIsIntrusive,
+  audit as auditAuth,
+} from './modules/auth.js';
 
 function firstIpv4FromDnsRecords(records) {
   for (const r of records || []) {
@@ -163,6 +171,11 @@ const CSRF_TTL_MS = 2 * 60 * 60 * 1000;
 const PORT = Number(process.env.PORT) || 3847;
 const HOST = String(process.env.HOST || '127.0.0.1').trim();
 const allowedOrigins = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+
+function isLocalHostBind(host) {
+  const h = String(host || '').trim().toLowerCase();
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1';
+}
 
 function clientIp(req) {
   return String(
@@ -200,12 +213,16 @@ function validateCsrfToken(req) {
 function allowReconRequest(req) {
   const { max, windowMs } = reconRateLimitConfig();
   if (max <= 0) return true;
+  // Identidade efetiva: principal (sub) > engagement-id > ip
+  const sub = req.principal?.sub;
+  const engagement = String(req.headers['x-engagement-id'] || '').trim();
   const ip = clientIp(req);
+  const key = sub ? `sub:${sub}` : engagement ? `eng:${engagement}` : `ip:${ip}`;
   const now = Date.now();
-  const arr = (reconRlHits.get(ip) || []).filter((t) => now - t < windowMs);
+  const arr = (reconRlHits.get(key) || []).filter((t) => now - t < windowMs);
   if (arr.length >= max) return false;
   arr.push(now);
-  reconRlHits.set(ip, arr);
+  reconRlHits.set(key, arr);
   return true;
 }
 
@@ -239,6 +256,25 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// ── Auth (P0): inicializa antes de qualquer parser/route, plugamos requireAuth
+//    a seguir ao CORS para que rotas privilegiadas exijam Bearer/X-API-Key.
+//    Allowlist: rotas read-only sem segredo + estáticos + health + csrf-token
+//    (issuer do CSRF não exige auth — CSRF é defesa-em-profundidade contra
+//    cross-site, não substitui a autenticação que vem a seguir).
+initAuth();
+const AUTH_ALLOWLIST = [
+  /^\/api\/health$/,
+  /^\/api\/csrf-token$/,
+  // /api/inbound/* tem auth própria (HMAC + Bearer-secret por source)
+  /^\/api\/inbound\//,
+  /^\/$/,
+  /^\/index\.html$/,
+  /^\/(?:favicon\.ico|robots\.txt)$/,
+  /^\/(?:assets|public|static)\//,
+  /^\/[^\/]+\.(?:html|css|js|map|svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf)$/,
+];
+app.use(requireAuth({ allowlist: AUTH_ALLOWLIST }));
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -1883,13 +1919,37 @@ async function runPipeline(ctx) {
     pipe('authz_matrix', 'active');
     try {
       const endpointUrls = [...new Set(findings.filter((f) => f.type === 'endpoint' && /^https?:\/\//i.test(String(f.value || ''))).map((f) => f.value))].slice(0, 8);
-      const requests = endpointUrls.map((u) => {
+      const requests = [];
+      const reqSeen = new Set();
+      const pushReq = (r) => {
+        if (!r || !r.method || !r.path) return;
+        const k = `${r.method}:${r.path}`;
+        if (reqSeen.has(k)) return;
+        reqSeen.add(k);
+        requests.push(r);
+      };
+      for (const u of endpointUrls) {
         try {
-          return { method: 'GET', path: new URL(u).pathname || '/', perUser: /\/(me|profile|account|user)/i.test(u), adminOnly: /\/admin/i.test(u) };
+          const uu = new URL(u);
+          const pathOnly = uu.pathname || '/';
+          const perUser = /\/(me|profile|account|user)/i.test(u);
+          const adminOnly = /\/admin/i.test(u);
+          pushReq({ method: 'GET', path: pathOnly, perUser, adminOnly, url: u });
+          if (/\/(graphql|gql)(\/|$)/i.test(pathOnly)) {
+            pushReq({
+              method: 'POST',
+              path: pathOnly,
+              perUser: false,
+              adminOnly: false,
+              url: u,
+              body: { query: '{ __typename }' },
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
         } catch {
-          return null;
+          /* ignore */
         }
-      }).filter(Boolean);
+      }
       const personas = [
         { id: 'anon', expectedRole: 'guest', headers: {} },
         ...(auth?.cookie || (auth?.headers && Object.keys(auth.headers).length)
@@ -1903,13 +1963,34 @@ async function runPipeline(ctx) {
           personas,
           concurrency: 2,
           executor: async (reqShape, persona) => {
-            const picked = endpointUrls.find((u) => {
+            const picked = reqShape.url || endpointUrls.find((u) => {
               try { return new URL(u).pathname === reqShape.path; } catch { return false; }
             });
             if (!picked) return { status: 0, fingerprint: null, bodyLen: 0 };
-            const r = await fetch(picked, { method: reqShape.method || 'GET', headers: persona.headers || {}, signal: AbortSignal.timeout(12000) });
+            const mergedHeaders = { ...(persona.headers || {}), ...(reqShape.headers || {}) };
+            const reqBody =
+              reqShape.method === 'POST' || reqShape.method === 'PUT'
+                ? (typeof reqShape.body === 'string' ? reqShape.body : JSON.stringify(reqShape.body || {}))
+                : undefined;
+            const r = await fetch(picked, {
+              method: reqShape.method || 'GET',
+              headers: mergedHeaders,
+              body: reqBody,
+              signal: AbortSignal.timeout(12000),
+            });
             const body = await r.text();
-            return { status: r.status, fingerprint: fingerprintBody(body), bodyLen: body.length };
+            let ownerMarker = null;
+            try {
+              const parsed = JSON.parse(body);
+              const obj = parsed && typeof parsed === 'object' ? parsed : null;
+              if (obj) {
+                const owner = obj.user_id || obj.userId || obj.owner_id || obj.ownerId || obj.account_id || obj.accountId || obj.tenant_id || obj.tenantId || obj.email || obj.username || null;
+                if (owner != null) ownerMarker = String(owner).slice(0, 120);
+              }
+            } catch {
+              /* non-json */
+            }
+            return { status: r.status, fingerprint: fingerprintBody(body), bodyLen: body.length, ownerMarker };
           },
         });
         for (const f of matrix.findings || []) {
@@ -2849,7 +2930,7 @@ async function runPipeline(ctx) {
   }
 }
 
-app.post('/api/recon/stream', async (req, res) => {
+app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) => reconBodyIsIntrusive(req.body) }), async (req, res) => {
   res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('X-Accel-Buffering', 'no');
@@ -3005,6 +3086,18 @@ app.post('/api/recon/stream', async (req, res) => {
   const identityOpts = normalizeIdentityOptions(modules, req.body?.identity);
   const identityCtrl = createIdentityController({ ...identityOpts, modules });
 
+  // Auditoria operacional do início do pipeline (após CSRF/rate-limit/escopo).
+  auditAuth(req, req.principal, 'allow', {
+    action: 'recon.stream.start',
+    target: domain,
+    modules,
+    kaliMode,
+    opsecProfile,
+    profile,
+    intrusive: reconBodyIsIntrusive(req.body),
+    engagementId: engagementIdRaw || null,
+  });
+
   try {
     await runPipeline({
       domain,
@@ -3050,7 +3143,7 @@ app.get('/api/csrf-token', (req, res) => {
   res.json({ token, expiresInMs: CSRF_TTL_MS });
 });
 
-app.post('/api/tool-path-refresh', (req, res) => {
+app.post('/api/tool-path-refresh', requireRole('admin'), (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF' });
     return;
@@ -3122,7 +3215,7 @@ app.get('/api/capabilities', async (_req, res) => {
   }
 });
 
-app.post('/api/pentestgpt-ping', async (req, res) => {
+app.post('/api/pentestgpt-ping', requireScope('ai.run'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3171,7 +3264,7 @@ app.post('/api/pentestgpt-ping', async (req, res) => {
   }
 });
 
-app.post('/api/shannon/prep', async (req, res) => {
+app.post('/api/shannon/prep', requireScope('shannon.run'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3206,7 +3299,7 @@ app.post('/api/shannon/prep', async (req, res) => {
   }
 });
 
-app.post('/api/ai-reports', async (req, res) => {
+app.post('/api/ai-reports', requireScope('ai.run'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3401,7 +3494,7 @@ app.get('/api/brain/categories', async (_req, res) => {
   }
 });
 
-app.post('/api/brain/categories', async (req, res) => {
+app.post('/api/brain/categories', requireScope('brain.write'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3416,7 +3509,7 @@ app.post('/api/brain/categories', async (req, res) => {
   }
 });
 
-app.post('/api/brain/categories/:id/description', async (req, res) => {
+app.post('/api/brain/categories/:id/description', requireScope('brain.write'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3431,7 +3524,7 @@ app.post('/api/brain/categories/:id/description', async (req, res) => {
   }
 });
 
-app.post('/api/brain/link', async (req, res) => {
+app.post('/api/brain/link', requireScope('brain.write'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3495,7 +3588,7 @@ function pruneAnotacaoHandoffStore() {
   }
 }
 
-app.post('/api/anotacao-handoff', (req, res) => {
+app.post('/api/anotacao-handoff', requireScope('notes.write'), (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3548,7 +3641,7 @@ app.get('/api/manual-validations/:target', async (req, res) => {
 });
 
 /** Marca ou desmarca validação manual (persistência por fingerprint = mesmo achado em recons futuros). */
-app.post('/api/manual-validations', async (req, res) => {
+app.post('/api/manual-validations', requireScope('validation.write'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3582,7 +3675,7 @@ app.post('/api/manual-validations', async (req, res) => {
 });
 
 /** Gera relatório por IA só com achados já validados manualmente (subset do recon). */
-app.post('/api/manual-validations/ai-report', async (req, res) => {
+app.post('/api/manual-validations/ai-report', requireScope('ai.run'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3684,7 +3777,7 @@ const ANNOTATIONS_AI_SYSTEM_PT = [
 ].join(' ');
 
 /** Relatório Markdown só via OpenRouter a partir do texto das anotações do Reporte. */
-app.post('/api/manual-validations/annotations-ai', async (req, res) => {
+app.post('/api/manual-validations/annotations-ai', requireScope('ai.run'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
     return;
@@ -3745,6 +3838,11 @@ app.get('/', (_req, res) => {
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`GHOSTRECON → http://${HOST}:${PORT}`);
+  if (!isLocalHostBind(HOST)) {
+    console.warn(
+      `[auth] Aviso: HOST=${HOST} (bind não-local). O perfil recomendado do GHOSTRECON é localhost-first; reveja AUTH_MODE/AUTH_DISABLE antes de expor a API.`,
+    );
+  }
 });
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
