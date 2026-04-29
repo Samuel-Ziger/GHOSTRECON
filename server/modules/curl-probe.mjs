@@ -3,12 +3,19 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
 
 const METHODS = ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const CORS_ORIGINS = ['https://attacker.tld', 'null', 'https://evil.example'];
 const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization']);
 
 function runProc(cmd, args, timeoutMs) {
+  if (isStrict()) {
+    const w = torStrictWrap(cmd, args);
+    if (w.refuse) return Promise.reject(new Error(`tor-strict: ${w.reason}`));
+    cmd = w.cmd;
+    args = w.args;
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const out = [];
@@ -44,6 +51,9 @@ function resolveCurlProfile(profile = 'standard') {
 }
 
 function resolveCurlProxy(identityCtrl = null) {
+  // Em strict, proxychains lida com o tunneling — devolver null para evitar
+  // SOCKS-over-SOCKS via flag --proxy do curl.
+  if (isStrict()) return null;
   const fromCtrl = identityCtrl?.getCurrentProxy?.();
   if (fromCtrl) return fromCtrl;
   const envPool = String(process.env.GHOSTRECON_PROXY_POOL || '')
