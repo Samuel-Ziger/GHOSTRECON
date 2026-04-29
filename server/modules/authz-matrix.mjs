@@ -37,7 +37,7 @@ function stableId(req) {
 }
 
 /**
- * Caller injeta `executor(request, persona) => Promise<{status, headers, bodyHash, bodyLen, fingerprint}>`
+ * Caller injeta `executor(request, persona) => Promise<{status, headers, bodyHash, bodyLen, fingerprint, ownerMarker}>`
  * — assim o módulo nunca dispara HTTP por si só (usável em testes).
  *
  * fingerprint deve ser estável (hash do body normalizado, mas operador escolhe).
@@ -88,14 +88,16 @@ export function analyzeAuthzResults(results, { personas = [], requests = [] } = 
       status: a.response?.status ?? null,
       fingerprint: a.response?.fingerprint ?? null,
       bodyLen: a.response?.bodyLen ?? null,
+      ownerMarker: a.response?.ownerMarker ?? null,
       error: a.error || null,
     }));
     matrix.push({ reqId, request: req, cells });
 
-    // 1. LEAK: dois personas distintos com fingerprint identical e ambos 200
+    // 1. LEAK: dois personas distintos com fingerprint identical e ambos 200.
+    // Para reduzir FPs em respostas curtas/genéricas, exige corpo mínimo.
     const fps = new Map();
     for (const c of cells) {
-      if (c.status >= 200 && c.status < 300 && c.fingerprint) {
+      if (c.status >= 200 && c.status < 300 && c.fingerprint && Number(c.bodyLen || 0) >= 24) {
         const arr = fps.get(c.fingerprint) || [];
         arr.push(c);
         fps.set(c.fingerprint, arr);
@@ -103,10 +105,12 @@ export function analyzeAuthzResults(results, { personas = [], requests = [] } = 
     }
     for (const arr of fps.values()) {
       if (arr.length >= 2 && req.perUser) {
+        const owners = [...new Set(arr.map((c) => String(c.ownerMarker || '').trim()).filter(Boolean))];
+        const ownerEvidence = owners.length ? `ownerMarkers=${owners.join(',')}` : 'ownerMarkers=none';
         findings.push({
           severity: 'high', category: 'authz-bola',
           title: `BOLA: ${arr.length} personas recebem mesma resposta em ${req.method || 'GET'} ${req.path}`,
-          description: 'Endpoint marcado como per-user (perUser:true) retornou fingerprint idêntico para personas distintas — possível IDOR/BOLA.',
+          description: `Endpoint marcado como per-user (perUser:true) retornou fingerprint idêntico para personas distintas — possível IDOR/BOLA (${ownerEvidence}).`,
           evidence: { request: req, personas: arr.map((c) => c.persona) },
         });
       }

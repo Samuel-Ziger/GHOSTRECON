@@ -42,6 +42,7 @@ import {
   forceReleaseLock,
   listTrail,
 } from './team-concurrency.mjs';
+import { requireScope, requireRole } from './auth.js';
 
 export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
   const requireCsrf = (req, res) => {
@@ -83,7 +84,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     res.json({ ok: true, project: p });
   });
 
-  app.post('/api/projects', async (req, res) => {
+  app.post('/api/projects', requireScope('project.write'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const p = await upsertProject(req.body || {});
@@ -93,14 +94,14 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     }
   });
 
-  app.delete('/api/projects/:name', async (req, res) => {
+  app.delete('/api/projects/:name', requireRole('admin'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     const ok = await removeProject(req.params.name);
     res.json({ ok });
   });
 
   // ----- CVE enrichment -----------------------------------------------------
-  app.post('/api/cve/enrich', async (req, res) => {
+  app.post('/api/cve/enrich', requireScope('cve.enrich'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     const strings = Array.isArray(req.body?.techStrings) ? req.body.techStrings : [];
     if (!strings.length) return res.status(400).json({ ok: false, error: 'techStrings vazio' });
@@ -119,7 +120,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
   });
 
   // ----- Evidence capture (on-demand) --------------------------------------
-  app.post('/api/evidence/capture/:runId', async (req, res) => {
+  app.post('/api/evidence/capture/:runId', requireScope('evidence.capture'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       // Lazy require do db.js para evitar acoplar este ficheiro.
@@ -179,7 +180,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     }
   });
 
-  app.post('/api/engagements', async (req, res) => {
+  app.post('/api/engagements', requireScope('engagement.write'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const e = await upsertEngagement(req.body || {});
@@ -189,7 +190,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     }
   });
 
-  app.post('/api/engagements/:id/close', async (req, res) => {
+  app.post('/api/engagements/:id/close', requireScope('engagement.write'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const e = await closeEngagement(req.params.id, { reason: req.body?.reason });
@@ -200,7 +201,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     }
   });
 
-  app.post('/api/engagements/checklist', async (req, res) => {
+  app.post('/api/engagements/checklist', requireScope('engagement.write'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const id = String(req.body?.engagementId || '').trim();
@@ -217,7 +218,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
   });
 
   // ----- OPSEC gate (preview) -----------------------------------------------
-  app.post('/api/opsec/gate', async (req, res) => {
+  app.post('/api/opsec/gate', requireRole('admin'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const modules = Array.isArray(req.body?.modules) ? req.body.modules : [];
@@ -310,7 +311,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     }
   });
 
-  app.post('/api/team/lock', async (req, res) => {
+  app.post('/api/team/lock', requireScope('team.lock'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const target = String(req.body?.target || '').trim();
@@ -326,7 +327,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     }
   });
 
-  app.post('/api/team/unlock', async (req, res) => {
+  app.post('/api/team/unlock', requireScope('team.lock'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const target = String(req.body?.target || '').trim();
@@ -339,7 +340,7 @@ export function registerNewApiRoutes(app, { validateCsrfToken } = {}) {
     }
   });
 
-  app.post('/api/team/force-unlock', async (req, res) => {
+  app.post('/api/team/force-unlock', requireRole('admin'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
       const target = String(req.body?.target || '').trim();
