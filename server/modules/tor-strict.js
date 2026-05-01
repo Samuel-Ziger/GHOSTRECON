@@ -12,7 +12,7 @@
  *      dalfox, whois, wpscan, curl, dig, nslookup, host, masscan, gobuster…) com
  *      proxychains4 -q -f <conf>.
  *   5. Sanitiza headers HTTP de saída — UA Tor Browser-like, strip de
- *      Referer/Origin/X-Forwarded-*/Cookie a hosts não-target.
+ *      Referer/Origin/X-Forwarded-/Cookie a hosts não-target.
  *   6. Bloqueia `fetch()` directo: aborta se identity-controller não tiver
  *      dispatcher SOCKS configurado (sem fallback silencioso para directo).
  *   7. Refuse_to_run() devolve lista de prereqs em falta.
@@ -70,6 +70,9 @@ const STRIP_HEADERS = [
 
 const STATE = {
   active: false,
+  temporary: false,
+  scopeDepth: 0,
+  managedSnapshot: null,
   proxychainsConf: null,
   wrapAdditions: new Set(),
   wrapSkip: new Set(),
@@ -80,9 +83,46 @@ const STATE = {
   prereqsCache: null,
 };
 
+const MANAGED_ENV_KEYS = [
+  'GHOSTRECON_PROXYCHAINS',
+  'GHOSTRECON_PROXYCHAINS_CONF',
+  'GHOSTRECON_PROXYCHAINS_QUIET',
+  'GHOSTRECON_PROXY_POOL',
+  'GHOSTRECON_TOR_ISOLATE',
+  'GHOSTRECON_TOR_REQUIRED',
+];
+
 export function isStrict() {
   if (STATE.active) return true;
   return String(process.env.GHOSTRECON_TOR_STRICT || '').trim() === '1';
+}
+
+function snapshotProcessState() {
+  const env = {};
+  for (const k of MANAGED_ENV_KEYS) env[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+  let resultOrder = null;
+  try {
+    resultOrder = typeof dns.getDefaultResultOrder === 'function' ? dns.getDefaultResultOrder() : null;
+  } catch {
+    resultOrder = null;
+  }
+  return { env, dnsServers: dns.getServers(), resultOrder };
+}
+
+function restoreProcessState(snapshot) {
+  if (!snapshot) return;
+  for (const [k, v] of Object.entries(snapshot.env || {})) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    if (Array.isArray(snapshot.dnsServers) && snapshot.dnsServers.length) dns.setServers(snapshot.dnsServers);
+  } catch { /* best effort */ }
+  try {
+    if (snapshot.resultOrder && typeof dns.setDefaultResultOrder === 'function') {
+      dns.setDefaultResultOrder(snapshot.resultOrder);
+    }
+  } catch { /* best effort */ }
 }
 
 function which(bin) {
@@ -151,6 +191,10 @@ export function hardenNodeDns({ dnsHost = STATE.socksHost, dnsPort = STATE.dnsPo
  */
 export function initTorStrict(opts = {}) {
   if (STATE.active) return STATE;
+  if (opts.temporary === true && !STATE.managedSnapshot) {
+    STATE.managedSnapshot = snapshotProcessState();
+    STATE.temporary = true;
+  }
 
   STATE.socksHost = String(opts.socksHost || process.env.GHOSTRECON_TOR_SOCKS_HOST || '127.0.0.1');
   STATE.socksPort = Number(opts.socksPort || process.env.GHOSTRECON_TOR_SOCKS_PORT || 9050);
@@ -210,6 +254,33 @@ export function initTorStrict(opts = {}) {
     wrapSkip: [...STATE.wrapSkip],
   }));
   return STATE;
+}
+
+/**
+ * Activa o strict para um run iniciado pelo body `tor.strict=true`.
+ * Se o strict veio do `.env`, devolve cleanup no-op. Se foi temporário,
+ * restaura DNS/env quando o run terminar.
+ */
+export function beginTorStrictScope(opts = {}) {
+  const envForced = String(process.env.GHOSTRECON_TOR_STRICT || '').trim() === '1';
+  if (envForced) {
+    if (!STATE.active) initTorStrict(opts);
+    return () => {};
+  }
+  if (!STATE.active) initTorStrict({ ...opts, temporary: true });
+  STATE.scopeDepth += 1;
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
+    STATE.scopeDepth = Math.max(0, STATE.scopeDepth - 1);
+    if (STATE.scopeDepth > 0 || !STATE.temporary) return;
+    restoreProcessState(STATE.managedSnapshot);
+    STATE.active = false;
+    STATE.temporary = false;
+    STATE.managedSnapshot = null;
+    STATE.prereqsCache = null;
+  };
 }
 
 /**

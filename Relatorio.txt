@@ -1,0 +1,776 @@
+
+SUMÁRIO DOS TESTES
+
+Início                                                                                   Fim
+
+28/04/2026                                                                                          30/04/2026
+
+TOTAL DE VULNERABILIDADE: 5
+
+TOTAL DE VULNERABILIDADES DE SEVERIDADE CRÍTICA: 1
+
+TOTAL DE VULNERABILIDADES DE SEVERIDADE ALTA: 3
+
+TOTAL DE VULNERABILIDADE DE SEVERIDADE MÉDIA: 1
+
+TOTAL DE VULNERABILIDADES DE SEVERIDADE BAIXA: 0
+
+TOTAL DE VULNERABILIDADES INFORMACIONAIS: 0
+
+TOTAL DE VULNERABILIDADES CORRIGIDAS: 0
+
+TOTAL DE VULNERABILIDADES EM RETESTE: 0
+
+TOTAL DE VULNERABILIDADES NÃO CORRIGIDAS: 5
+
+ESCOPO DO PROJETO
+
+Aplicação web: https://foconopapiro.com.br — plataforma de estudos com sistema de ranking, metas, progresso e planos de assinatura (gratuito e premium).
+
+Backend: Supabase (projeto suwzslcvitjudebflstl.supabase.co) — banco de dados PostgreSQL gerenciado com API REST autogenerada, autenticação via GoTrue (/auth/v1/) e políticas de Row Level Security (RLS).
+
+Endpoints de autenticação: POST /auth/v1/token?grant_type=password — endpoint de login por e-mail e senha, sem limitação de tentativas.
+
+Endpoints de dados: /rest/v1/study_records (registros de sessões de estudo), /rest/v1/user_plans (planos e status de assinatura premium, campos Stripe).
+
+Contexto de lógica de negócio: sistema de assinatura integrado ao Stripe para controle de plano premium; dados de estudo utilizados diretamente para ranking, progresso e metas.
+
+VULNERABILIDADE
+
+1. [NÃO CORRIGIDO] Ausência de Rate Limiting e de Autenticação de Dois Fatores no Endpoint de Login
+
+SEVERIDADE
+
+MÉDIA
+
+DESCRIÇÃO
+
+Foi identificado que o endpoint de autenticação POST /auth/v1/token?grant_type=password, exposto pelo Supabase da aplicação foconopapiro.com.br, não implementa qualquer mecanismo de limitação de tentativas (rate limiting) nem exige autenticação de dois fatores (2FA/MFA).
+
+Isso significa que um atacante que conheça o endereço de e-mail de um usuário pode realizar um ataque de força bruta no campo password de forma irrestrita, iterando wordlists (ex.: rockyou) ou combinações comuns sem ser bloqueado, sem espera progressiva (backoff) e sem notificação ao usuário legítimo.
+
+Adicionalmente, a ausência de 2FA garante que, uma vez obtida a senha, o acesso à conta é imediato e completo, sem nenhuma camada adicional de verificação de identidade.
+
+
+
+CENÁRIO DE ATAQUE
+
+Um atacante que possua ou descubra o endereço de e-mail de um usuário da plataforma pode:
+
+Iterar automaticamente listas de senhas comuns contra o endpoint de login
+
+Obter acesso à conta sem qualquer bloqueio ou alerta
+
+Acessar dados de estudo, progresso, ranking e status de assinatura da vítima
+
+Dependendo do nível de privilégio da conta comprometida, potencialmente encadear com outras vulnerabilidades documentadas neste relatório
+
+
+
+RECOMENDAÇÃO
+
+Para mitigar essa vulnerabilidade, recomenda-se:
+
+Implementar rate limiting no endpoint de autenticação (ex.: máximo de 5 a 10 tentativas por IP/e-mail em janela de tempo com backoff progressivo)
+
+Habilitar e promover o uso de autenticação de dois fatores (TOTP/MFA) para todos os usuários, com obrigatoriedade para contas com privilégios elevados
+
+Implementar bloqueio temporário ou CAPTCHA após número definido de tentativas falhas
+
+Monitorar e alertar sobre tentativas consecutivas de login com falha (SIEM/logs)
+
+
+
+TAGS
+
+Web Application
+
+Broken Authentication
+
+Brute Force
+
+Missing Rate Limiting
+
+
+
+CVSS
+
+CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N
+
+CVSS Base Score: 6.5 (Média)
+
+
+
+ATIVOS AFETADOS
+
+https://suwzslcvitjudebflstl.supabase.co/auth/v1/token (endpoint de login da aplicação foconopapiro.com.br)
+
+
+
+PROOF OF CONCEPT
+
+1. Requisição HTTP ao endpoint de login sem bloqueio após múltiplas tentativas
+
+POST /auth/v1/token?grant_type=password HTTP/2
+Host: suwzslcvitjudebflstl.supabase.co
+Content-Length: 84
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1d3pzbGN2aXRqdWRlYmZsc3RsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5ODk2NDcsImV4cCI6MjA4NTU2NTY0N30.-w5F_5RdOcgPfsyC6qFaLFv6LLFzBiBaLiOm4B7JVVo
+Apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json;charset=UTF-8
+Origin: https://foconopapiro.com.br
+Referer: https://foconopapiro.com.br/
+
+{"email":"alvo@gmail.com","password":"senha_testada","gotrue_meta_security":{}}
+
+Resultado: A requisição retorna resposta diferenciada para credenciais válidas e inválidas sem qualquer bloqueio após N tentativas, permitindo automação de ataques de força bruta. Não há header de rate limit (X-RateLimit-*) na resposta, nem desafio CAPTCHA ou bloqueio progressivo.
+
+2. Ausência de 2FA confirmada
+
+A autenticação bem-sucedida retorna imediatamente um token JWT de sessão sem exigir segundo fator, confirmando que a conta fica totalmente comprometida com apenas a senha.
+
+OBSERVAÇÃO:
+
+Esta vulnerabilidade, isoladamente, representa risco médio. Contudo, em combinação com as demais falhas documentadas neste relatório (especialmente o bypass de premium), o comprometimento de qualquer conta de usuário pode resultar em impacto financeiro direto.
+
+
+
+[NÃO CORRIGIDO] Business Logic Flaw — Backend sem Validação de Input em Registros de Estudo (Injeção de Dados Falsos)
+
+SEVERIDADE
+
+ALTA
+
+DESCRIÇÃO
+
+Foi identificada uma falha de lógica de negócio no endpoint POST /rest/v1/study_records da aplicação foconopapiro.com.br. O backend aceita e persiste registros de estudo com valores completamente irreais sem qualquer validação de consistência ou plausibilidade.
+
+Durante os testes, foi possível inserir registros com:
+
+duration_seconds: 2147483647 (valor máximo de inteiro de 32 bits, equivalente a aproximadamente 596.523 horas ou 68 anos de estudo contínuo)
+
+questions_count: 100 e correct_count: 100 (100% de acerto com quantidade arbitrária)
+
+subject: qualquer valor arbitrário (ex.: "PoC_MAX")
+
+record_date: qualquer data (incluindo datas futuras ou retroativas)
+
+O sistema aceitou esses registros como válidos e os incorporou diretamente às métricas de ranking, progresso, metas e analytics da plataforma, sem qualquer mecanismo de detecção de fraude.
+
+
+
+CENÁRIO DE ATAQUE
+
+Um usuário autenticado mal-intencionado pode:
+
+Inserir registros de estudo com valores absurdos para dominar rankings artificialmente
+
+Falsificar progresso e metas da plataforma sem estudo real
+
+Manipular dados de analytics e dashboards utilizados pela organização
+
+Prejudicar usuários legítimos cujas posições de ranking são afetadas pela manipulação
+
+Explorar quaisquer benefícios ou recompensas vinculados ao desempenho na plataforma
+
+No cenário validado, a combinação de cegueira do backend + uso direto dos dados em funcionalidades críticas representa comprometimento total de integridade dos dados da plataforma.
+
+
+
+RECOMENDAÇÃO
+
+Para mitigar a vulnerabilidade, recomenda-se:
+
+Implementar validação server-side de todos os campos: limites máximos plausíveis para duration_seconds (ex.: máximo de 8-12 horas por sessão), questions_count, correct_count (não pode exceder questions_count), etc.
+
+Validar consistency entre campos: correct_count ≤ questions_count, duration_seconds > 0 e dentro de faixa razoável
+
+Implementar limite diário de horas registradas por usuário
+
+Nunca confiar nos dados enviados pelo cliente para cálculos críticos de ranking e métricas — recalcular no servidor com base em dados confiáveis
+
+Implementar monitoramento e alertas para valores estatisticamente anômalos
+
+Auditar e recalcular os rankings e dados históricos comprometidos
+
+
+
+TAGS
+
+Web Application
+
+Business Logic Flaw
+
+Insufficient Input Validation
+
+Data Integrity
+
+
+
+CVSS
+
+CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N
+
+CVSS Base Score: 6.5 (Alta)
+
+
+
+ATIVOS AFETADOS
+
+https://suwzslcvitjudebflstl.supabase.co/rest/v1/study_records
+
+
+
+PROOF OF CONCEPT
+
+1. Inserção de registro de estudo com valores irreais
+
+curl -X POST "https://suwzslcvitjudebflstl.supabase.co/rest/v1/study_records" \
+  -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Authorization: Bearer [JWT_AUTENTICADO]" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"user_id\":\"0b75d131-aa4e-437a-857f-5b7c3b391ae9\",
+    \"record_date\":\"2026-04-30\",
+    \"subject\":\"PoC_MAX\",
+    \"duration_seconds\":2147483647,
+    \"questions_count\":100,
+    \"correct_count\":100
+  }"
+
+Resultado observado:
+
+- ~596.523 horas de estudo registradas
+- 100% de acerto
+- Metas atingidas com valores absurdos
+- Sistema aceitou como válido sem qualquer rejeição ou validação
+
+2. Impacto nas métricas da plataforma
+
+Os dados inseridos foram incorporados diretamente ao ranking, progresso e metas, demonstrando que o backend confia cegamente nos valores enviados pelo cliente sem validação de plausibilidade ou consistência.
+
+OBSERVAÇÃO:
+
+Esta vulnerabilidade confirma 3 falhas sérias em camadas distintas: (1) ausência de validação de input, (2) falha de confiança client→server e (3) lógica de negócio quebrada que usa dados não validados em funcionalidades críticas (ranking, progresso, analytics).
+
+
+
+[NÃO CORRIGIDO] Broken Access Control — Exposição de Dados de Assinatura via API Supabase (user_plans)
+
+SEVERIDADE
+
+ALTA
+
+DESCRIÇÃO
+
+Foi identificado que a tabela user_plans do Supabase da aplicação foconopapiro.com.br está acessível via API REST por qualquer usuário autenticado, expondo dados sensíveis de assinatura, incluindo:
+
+plan_type (tipo de plano: free ou premium)
+
+premium_expires_at (data de expiração da assinatura)
+
+stripe_customer_id (identificador do cliente no Stripe)
+
+stripe_subscription_id (identificador da assinatura no Stripe)
+
+created_at e updated_at (timestamps de criação e modificação)
+
+user_id (identificador do usuário associado)
+
+A política de Row Level Security (RLS) do Supabase não está configurada de forma adequada para restringir o acesso de leitura exclusivamente aos dados do próprio usuário, permitindo que qualquer token autenticado consulte e enumere registros de planos.
+
+
+
+CENÁRIO DE ATAQUE
+
+Um usuário autenticado mal-intencionado pode:
+
+Enumerar e listar dados de assinatura de outros usuários da plataforma
+
+Obter identificadores Stripe (customer_id, subscription_id) de terceiros
+
+Mapear quais usuários possuem plano premium e suas datas de expiração
+
+Utilizar as informações coletadas para direcionar ataques adicionais (engenharia social, ataques ao Stripe, etc.)
+
+
+
+RECOMENDAÇÃO
+
+Implementar e revisar políticas de RLS no Supabase para a tabela user_plans, garantindo que cada usuário só possa acessar seu próprio registro:
+
+CREATE POLICY "Usuário acessa apenas seus dados"
+ON user_plans
+FOR SELECT
+USING (auth.uid() = user_id);
+
+Verificar e revisar todas as políticas RLS de todas as tabelas sensíveis
+
+Nunca expor identificadores de sistemas externos (Stripe IDs) desnecessariamente via API pública
+
+Realizar auditoria completa das permissões de todas as tabelas do projeto Supabase
+
+
+
+TAGS
+
+Web Application
+
+Broken Access Control
+
+IDOR
+
+Information Disclosure
+
+Misconfiguration
+
+
+
+CVSS
+
+CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+
+CVSS Base Score: 6.5 (Alta)
+
+
+
+ATIVOS AFETADOS
+
+https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans
+
+
+
+PROOF OF CONCEPT
+
+1. Listagem de dados de assinatura via API
+
+curl -X GET "https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans?select=*&limit=1" \
+-H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+-H "authorization: Bearer [JWT_AUTENTICADO]" \
+-H "Content-Type: application/json"
+
+Resultado observado:
+
+[{"id":"f2c5e1ef-6b95-4fe6-80c5-519654487034","user_id":"0b75d131-aa4e-437a-857f-5b7c3b391ae9","plan_type":"premium","premium_expires_at":"9999-12-31T23:59:59+00:00","stripe_customer_id":null,"stripe_subscription_id":null,"created_at":"2026-04-10T19:05:21.273934+00:00","updated_at":"2026-04-30T00:59:52.123018+00:00"}]
+
+A resposta retorna dados completos de assinatura, incluindo tipo de plano, data de expiração e identificadores do Stripe, confirmando a ausência de restrição adequada de acesso.
+
+OBSERVAÇÃO:
+
+A exposição de stripe_customer_id e stripe_subscription_id representa risco adicional além da simples divulgação, pois esses identificadores podem ser utilizados em ataques direcionados ao ecossistema de cobrança da organização.
+
+
+
+[NÃO CORRIGIDO] Estado Inconsistente de Assinatura — Manipulação Direta de Campos do Stripe via API
+
+SEVERIDADE
+
+ALTA
+
+DESCRIÇÃO
+
+Foi identificado que a aplicação permite que usuários autenticados modifiquem diretamente campos relacionados à assinatura na tabela user_plans via PATCH na API REST do Supabase, incluindo campos que deveriam ser exclusivamente gerenciados pelo backend após validação com o Stripe:
+
+plan_type — tipo de plano (free/premium)
+
+stripe_subscription_id — identificador da assinatura no Stripe
+
+stripe_customer_id — identificador do cliente no Stripe
+
+premium_expires_at — data de expiração do plano premium
+
+Durante os testes, foi possível:
+
+Definir manualmente valores inválidos para campos do Stripe (sub_fake_123, cus_fake_123)
+
+Forçar um estado inconsistente na conta entre o banco de dados local e o Stripe
+
+Remover manualmente esses valores (null)
+
+Restaurar o status premium sem validação de pagamento real
+
+Isso demonstra que o sistema depende de dados armazenados no banco sem sincronização ou validação consistente com o provedor de pagamento real.
+
+
+
+CENÁRIO DE ATAQUE
+
+Um atacante autenticado pode:
+
+Corromper o estado de assinatura de sua própria conta, causando inconsistência entre banco e Stripe
+
+Manipular campos de pagamento para criar estados inválidos que quebram lógica de verificação
+
+Contornar verificações esperadas de integridade da assinatura
+
+Utilizar essa falha como base para exploração adicional (ver vulnerabilidade 5 — Escalada de Privilégio de Pagamento)
+
+
+
+RECOMENDAÇÃO
+
+Remover permissão de UPDATE direto em campos sensíveis (plan_type, premium_expires_at, stripe_*) via API pública
+
+Implementar validação server-side obrigatória para quaisquer mudanças de plano
+
+Sincronizar estado de assinatura exclusivamente via webhook do Stripe (stripe-signature verificada no backend)
+
+Aplicar políticas RLS com WITH CHECK apropriado para impedir modificação de campos críticos:
+
+CREATE POLICY "Bloquear alteração de campos sensíveis"
+ON user_plans
+FOR UPDATE
+USING (auth.uid() = user_id)
+WITH CHECK (plan_type = OLD.plan_type AND premium_expires_at = OLD.premium_expires_at);
+
+Bloquear alterações diretas em todos os campos relacionados ao Stripe e ao status de pagamento
+
+
+
+TAGS
+
+Web Application
+
+Broken Access Control
+
+Business Logic Flaw
+
+Insecure Direct Object Reference
+
+Payment Security
+
+
+
+CVSS
+
+CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N
+
+CVSS Base Score: 6.5 (Alta)
+
+
+
+ATIVOS AFETADOS
+
+https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans (operação PATCH)
+
+
+
+PROOF OF CONCEPT
+
+1. Injeção de valores inválidos nos campos do Stripe
+
+curl -X PATCH "https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans?user_id=eq.[USER_ID]" \
+-H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+-H "authorization: Bearer [JWT_AUTENTICADO]" \
+-H "Content-Type: application/json" \
+-d '{"stripe_subscription_id": "sub_fake_123", "stripe_customer_id": "cus_fake_123"}'
+
+Resultado: Sistema aceita os valores sem validação com o Stripe real, gerando estado inconsistente.
+
+2. Restauração de status premium após corrupção
+
+Após gerar o estado inconsistente, foi possível restaurar os campos para null e em seguida ativar premium novamente, demonstrando que o controle de estado de assinatura reside exclusivamente no banco sem ancoragem no provedor de pagamento.
+
+OBSERVAÇÃO:
+
+Esta vulnerabilidade demonstra que o sistema assume que dados no banco refletem o estado real do pagamento, sem verificação independente com o Stripe. Em conjunto com a vulnerabilidade 5, representa comprometimento completo da integridade do sistema de cobrança.
+
+
+
+[NÃO CORRIGIDO] Escalada de Privilégio de Pagamento — Ativação de Plano Premium sem Pagamento via PATCH Direto na API
+
+SEVERIDADE
+
+CRÍTICA
+
+DESCRIÇÃO
+
+Foi identificada uma vulnerabilidade crítica de lógica de negócio na aplicação foconopapiro.com.br: qualquer usuário autenticado pode ativar o plano premium da plataforma sem realizar qualquer pagamento, simplesmente enviando uma requisição PATCH direta ao endpoint /rest/v1/user_plans do Supabase com os campos plan_type e premium_expires_at.
+
+Durante os testes, foi possível:
+
+Alterar plan_type de "free" para "premium" sem validação de pagamento
+
+Definir premium_expires_at para "9999-12-31T23:59:59Z" (expiração praticamente nula)
+
+Obter acesso imediato a todas as funcionalidades premium da plataforma sem cobrança
+
+Manter o status ativo indefinidamente sem nenhuma verificação posterior do Stripe
+
+A falha ocorre porque a política de Row Level Security (RLS) do Supabase não impede que o usuário autenticado modifique campos críticos de seu próprio registro na tabela user_plans, e o sistema não valida o estado de pagamento com o Stripe antes de conceder acesso premium.
+
+
+
+CENÁRIO DE ATAQUE
+
+Um atacante autenticado com uma conta gratuita pode:
+
+Enviar uma única requisição PATCH ao endpoint de assinatura
+
+Obter acesso premium imediato e permanente sem pagamento
+
+Contornar todo o sistema de cobrança e monetização da plataforma
+
+Compartilhar o método com outros usuários, comprometendo as receitas da organização
+
+Escalar o ataque para contas de outros usuários (em combinação com IDOR documentado)
+
+O impacto financeiro é direto e pode ser explorado por qualquer usuário cadastrado, sem necessidade de conhecimento técnico avançado.
+
+
+
+RECOMENDAÇÃO
+
+Implementar política RLS restritiva que bloqueie qualquer alteração direta aos campos de plano:
+
+CREATE POLICY "Bloquear alteração de plano pelo usuário"
+ON user_plans
+FOR UPDATE
+USING (auth.uid() = user_id)
+WITH CHECK (
+  plan_type = (SELECT plan_type FROM user_plans WHERE user_id = auth.uid())
+  AND premium_expires_at = (SELECT premium_expires_at FROM user_plans WHERE user_id = auth.uid())
+);
+
+Gerenciar mudanças de plano exclusivamente via função de servidor segura (Edge Function ou backend próprio) com validação de webhook do Stripe
+
+Nunca confiar em campos de assinatura enviados diretamente pelo cliente
+
+Implementar auditoria e alertas para mudanças na tabela user_plans
+
+Revisar e recalcular contas com premium_expires_at suspeito (ex.: datas distantes como 9999)
+
+Tratar como incidente: identificar e reverter contas que ativaram premium indevidamente
+
+
+
+TAGS
+
+Web Application
+
+Business Logic Flaw
+
+Broken Access Control
+
+Payment Bypass
+
+Privilege Escalation
+
+
+
+CVSS
+
+CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N
+
+CVSS v3.1 Base Score: 9.6 (Crítica)
+
+
+
+ATIVOS AFETADOS
+
+https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans (operação PATCH)
+
+Toda a lógica de monetização e cobrança de https://foconopapiro.com.br
+
+
+
+PROOF OF CONCEPT
+
+1. Ativação de plano premium sem pagamento
+
+curl -X PATCH "https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans?user_id=eq.0b75d131-aa4e-437a-857f-5b7c3b391ae9" \
+-H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+-H "authorization: Bearer [JWT_AUTENTICADO]" \
+-H "Content-Type: application/json" \
+-d '{"plan_type": "premium", "premium_expires_at":"9999-12-31T23:59:59Z"}'
+
+Resultado observado:
+
+Foi possível ativar o modo premium sem realizar pagamento e definir uma data de expiração praticamente nula (ano 9999), obtendo acesso completo a todas as funcionalidades premium da plataforma sem qualquer transação financeira.
+
+2. Confirmação do status via leitura da tabela
+
+Após o PATCH, a consulta ao endpoint GET /rest/v1/user_plans confirmou:
+
+{"plan_type":"premium","premium_expires_at":"9999-12-31T23:59:59+00:00",...}
+
+O sistema concedeu acesso premium imediato e permanente, confirmando o bypass completo do fluxo de pagamento.
+
+OBSERVAÇÃO:
+
+Esta vulnerabilidade deve ser tratada como incidente de máxima prioridade com impacto financeiro direto: além de corrigir as políticas RLS, é necessário auditar todos os registros da tabela user_plans em busca de ativações indevidas (premium_expires_at com datas absurdas, ausência de stripe_subscription_id válido) e reverter contas comprometidas. A organização deve assumir que o sistema de cobrança foi contornado por número indeterminado de usuários.
+
+
+
+CRÍTICA
+
+
+
+CONCLUSÃO
+
+No período de 28/04/2026 a 30/04/2026, a avaliação sobre o alvo https://foconopapiro.com.br no âmbito do projeto foconopapiro confirmou uma superfície de risco relevante, centrada no backend Supabase exposto publicamente e na ausência de controles adequados de validação e autorização.
+
+Os achados validados e documentados no corpo deste relatório incluem: (i) ausência de rate limiting e de autenticação de dois fatores no endpoint de login (/auth/v1/token), permitindo ataques de força bruta irrestrita; (ii) falha de lógica de negócio no endpoint de registros de estudo (/rest/v1/study_records), que aceita valores completamente irreais (ex.: 596.523 horas de estudo) sem qualquer validação server-side, comprometendo ranking, progresso e analytics; (iii) broken access control na tabela user_plans, com exposição de dados sensíveis de assinatura e identificadores do Stripe a qualquer usuário autenticado; (iv) manipulação direta de campos do Stripe (stripe_subscription_id, stripe_customer_id, plan_type, premium_expires_at) via PATCH sem validação com o provedor de pagamento, gerando estados inconsistentes; e (v) escalada de privilégio de pagamento crítica, que permite a qualquer usuário autenticado ativar o plano premium da plataforma sem pagamento, com expiração configurável para o ano 9999, através de uma única requisição PATCH ao endpoint de assinatura.
+
+Em conjunto, estes problemas permitem a qualquer usuário cadastrado na plataforma contornar completamente o sistema de cobrança e obter acesso premium sem custo, falsificar desempenho e rankings através de registros de estudo fraudulentos, e acessar dados de assinatura de outros usuários. O impacto financeiro e de integridade é imediato e pode ser explorado sem conhecimento técnico avançado.
+
+As medidas prioritárias são: implementar políticas RLS restritivas no Supabase para bloquear alterações diretas em campos de assinatura e plano; sincronizar estado de assinatura exclusivamente via webhooks validados do Stripe no backend; implementar validação server-side completa para todos os campos de study_records com limites plausíveis de valores; adicionar rate limiting no endpoint de autenticação com bloqueio progressivo após tentativas falhas; habilitar e promover uso de 2FA; tratar a vulnerabilidade de bypass de premium como incidente (auditoria de user_plans, reversão de ativações indevidas); e realizar revisão completa das políticas de RLS de todas as tabelas do projeto Supabase.
+
+
+
+APÊNDICE: OVERVIEW EXPLICADO
+
+Total de Vulnerabilidades Únicas Resumo das vulnerabilidades únicas que foram identificadas durante os testes em relação aos itens dentro do escopo. Uma vulnerabilidade única é uma falha que pode ter várias instâncias; ou seja, vários alvos ou ativos no escopo afetados pela mesma vulnerabilidade.
+
+Vulnerabilidade Zero-Day Zero-Day é uma vulnerabilidade desconhecida para o fornecedor, para o desenvolvedor e para a sua organização. Esta falha de segurança é frequentemente explorada por hackers antes que os responsáveis tomem conhecimento e se apressem para corrigi-la. Um ataque de Zero-Day pode incluir a infiltração de malware, spyware ou a permissão de acesso indesejado a informações sensíveis ou confidenciais.
+
+Vulnerabilidade Facilmente Explorável Vulnerabilidades facilmente exploráveis são pontos fracos geralmente fáceis de detectar, normalmente através do uso de ferramentas e scanners automatizados. Possuem exploits públicos disponíveis e/ou não necessitam de muito esforço ou conhecimento técnico para sua exploração.
+
+Vulnerabilidade de Prioridade Crítica As vulnerabilidades nesta categoria podem levar a um impacto significativo na confidencialidade, integridade e/ou disponibilidade de sistemas e dados organizacionais se não forem tratadas imediatamente.
+
+Vulnerabilidade de Alta Prioridade As vulnerabilidades nesta categoria requerem atenção imediata e um plano de ação robusto.
+
+Vulnerabilidade de Média Prioridade As vulnerabilidades nesta categoria são menos urgentes, mas, em algumas circunstâncias, ainda podem representar uma ameaça ou consequência séria.
+
+Vulnerabilidade de Baixa Prioridade As vulnerabilidades nesta categoria não são uma ameaça iminente, mas devem ser mitigadas para evitar problemas a longo prazo.
+
+
+
+
+
+APÊNDICE: DEFINIÇÃO DOS NÍVEIS DE SEVERIDADE
+
+SEVERIDADE
+
+CRÍTICA
+
+
+Níveis de Probabilidade de Exploração
+
+CRÍTICA: Alta probabilidade de exploração nos próximos 12 meses
+
+Espera-se que o evento ocorra na maioria das circunstâncias.
+
+Probabilidade definida.
+
+Já aconteceu no passado e nenhuma forma de mitigação foi implementada.
+
+Inevitável — o evento irá ocorrer.
+
+Sem proteções adicionais, espera-se que o incidente se repita na maioria das situações.
+
+ALTA: 50% de chance de exploração nos próximos 12 meses
+
+O evento provavelmente ocorrerá na maioria das circunstâncias.
+
+Mesmo com as proteções existentes, a ocorrência deste evento é provável.
+
+Eventos como este têm ocorrido regularmente na indústria.
+
+MÉDIA: 10% de chance de exploração nos próximos 12 meses
+
+O evento deve ocorrer em algumas circunstâncias específicas.
+
+O evento já foi registrado em diferentes setores do mercado.
+
+BAIXA: 1% de chance de exploração nos próximos 12 meses
+
+O evento pode ocorrer apenas em circunstâncias muito específicas.
+
+O evento não ocorreu na empresa até o momento, embora sua possibilidade teórica exista.
+
+
+
+APÊNDICE: MAPEAMENTO DOS ATIVOS AFETADOS PARA CADA VULNERABILIDADE
+
+1.Média — Ausência de Rate Limiting e 2FA no Endpoint de Login
+
+Ativo: https://suwzslcvitjudebflstl.supabase.co/auth/v1/token — Estado: NÃO CORRIGIDO.
+
+2.Alta — Business Logic Flaw em study_records (Falta de Validação de Input)
+
+Ativo: https://suwzslcvitjudebflstl.supabase.co/rest/v1/study_records — Estado: NÃO CORRIGIDO.
+
+3.Alta — Broken Access Control em user_plans (Exposição de Dados de Assinatura)
+
+Ativo: https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans — Estado: NÃO CORRIGIDO.
+
+4.Alta — Estado Inconsistente de Assinatura (Manipulação de Campos Stripe)
+
+Ativo: https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans (PATCH) — Estado: NÃO CORRIGIDO.
+
+5.Crítica — Escalada de Privilégio de Pagamento (Bypass de Premium sem Pagamento)
+
+Ativo: https://suwzslcvitjudebflstl.supabase.co/rest/v1/user_plans (PATCH) e todo o sistema de monetização de foconopapiro.com.br — Estado: NÃO CORRIGIDO.
+
+
+
+APÊNDICE: MAPEAMENTO DAS VULNERABILIDADES PARA CADA ATIVO AFETADO
+
+1. suwzslcvitjudebflstl.supabase.co — Endpoint de Autenticação (/auth/v1/token)
+
+Média — NÃO CORRIGIDO — ausência de rate limiting e 2FA, permitindo brute force irrestrito.
+
+2. suwzslcvitjudebflstl.supabase.co — Tabela study_records (/rest/v1/study_records)
+
+Alta — NÃO CORRIGIDO — backend aceita dados completamente irreais sem validação, comprometendo ranking, progresso, metas e analytics.
+
+3. suwzslcvitjudebflstl.supabase.co — Tabela user_plans (/rest/v1/user_plans)
+
+Alta — NÃO CORRIGIDO — exposição de dados sensíveis de assinatura (plan_type, premium_expires_at, stripe_customer_id, stripe_subscription_id) a qualquer usuário autenticado.
+
+Alta — NÃO CORRIGIDO — manipulação direta de campos do Stripe via PATCH, gerando estado inconsistente entre banco e provedor de pagamento.
+
+Crítica — NÃO CORRIGIDO — ativação de plano premium sem pagamento via PATCH direto com plan_type=premium e premium_expires_at=9999, bypass completo do sistema de cobrança.
+
+
+
+
+
+Severidade
+
+Vulnerabilidade
+
+Ação (Remediação)
+
+Impacto
+
+CRÍTICA
+
+Escalada de Privilégio de Pagamento (Premium Bypass)
+
+Implementar política RLS com WITH CHECK para bloquear alterações diretas em plan_type e premium_expires_at. Gerenciar mudanças de plano exclusivamente via webhook validado do Stripe. Auditar e reverter registros comprometidos.
+
+Permite que qualquer usuário autenticado obtenha acesso premium gratuito e permanente (expiração em 9999), contornando todo o sistema de cobrança e causando impacto financeiro direto à organização. CVSS: 9.6.
+
+ALTA
+
+Business Logic Flaw em study_records
+
+Implementar validação server-side com limites plausíveis para duration_seconds, questions_count, correct_count. Adicionar verificação de consistência e limite diário por usuário. Não confiar em dados do cliente para cálculos de ranking.
+
+Permite falsificação de horas de estudo, acertos e progresso, comprometendo a integridade de rankings, metas e analytics da plataforma. Prejudica usuários legítimos e compromete a confiabilidade da plataforma. CVSS: 6.5.
+
+ALTA
+
+Broken Access Control em user_plans
+
+Implementar RLS restritivo para SELECT na tabela user_plans, garantindo acesso apenas ao próprio registro. Ocultar campos stripe_* da resposta da API pública. Auditar todas as políticas de acesso do projeto.
+
+Expõe dados de assinatura de todos os usuários, incluindo status de plano, datas de expiração e identificadores do Stripe, facilitando ataques direcionados ao ecossistema de cobrança. CVSS: 6.5.
+
+ALTA
+
+Estado Inconsistente de Assinatura
+
+Bloquear alteração direta de campos do Stripe via política RLS com WITH CHECK. Sincronizar estado de assinatura exclusivamente via webhooks do Stripe com assinatura verificada no backend.
+
+Permite corrupção e manipulação do estado de assinatura, gerando inconsistência entre o banco de dados e o Stripe, com potencial de contornar verificações de integridade de cobrança. CVSS: 6.5.
+
+MÉDIA
+
+Ausência de Rate Limiting e 2FA no Login
+
+Implementar rate limiting com bloqueio progressivo após 5-10 tentativas. Habilitar e promover 2FA/TOTP para todos os usuários. Adicionar CAPTCHA para tentativas suspeitas. Monitorar tentativas via SIEM.
+
+Permite ataques de força bruta irrestrita contra qualquer conta cujo e-mail seja conhecido. Em combinação com as demais falhas, o comprometimento de uma conta amplifica significativamente o impacto total. CVSS: 6.5.
+

