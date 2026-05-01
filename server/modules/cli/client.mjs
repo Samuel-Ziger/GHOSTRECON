@@ -64,6 +64,13 @@ export class GhostClient {
     this.timeoutMs = timeoutMs;
     this._csrf = null;
     this._csrfExpiresAt = 0;
+    this._apiKey = process.env.GHOSTRECON_API_KEY || '';
+  }
+
+  _authHeaders() {
+    const h = {};
+    if (this._apiKey) h['X-API-Key'] = this._apiKey;
+    return h;
   }
 
   async isAlive() {
@@ -115,7 +122,7 @@ export class GhostClient {
   async getCsrfToken(force = false) {
     const now = Date.now();
     if (!force && this._csrf && this._csrfExpiresAt - now > 5000) return this._csrf;
-    const res = await this._fetch('/api/csrf-token', { timeoutMs: 8000 });
+    const res = await this._fetch('/api/csrf-token', { timeoutMs: 8000, auth: true });
     if (!res.ok) throw new Error(`CSRF fetch falhou: HTTP ${res.statusCode}`);
     const body = JSON.parse(res.body);
     this._csrf = String(body.token || '');
@@ -166,6 +173,7 @@ export class GhostClient {
             'content-length': String(payload.length),
             'x-csrf-token': csrf,
             origin: url.origin,
+            ...this._authHeaders(),
           },
         },
         (res) => {
@@ -198,7 +206,7 @@ export class GhostClient {
   }
 
   async postJson(pathname, body, { csrf = true, timeoutMs = 15_000 } = {}) {
-    const headers = { 'content-type': 'application/json; charset=utf-8' };
+    const headers = { 'content-type': 'application/json; charset=utf-8', ...this._authHeaders() };
     if (csrf) headers['x-csrf-token'] = await this.getCsrfToken();
     const res = await this._fetch(pathname, { method: 'POST', body, headers, timeoutMs });
     if (!res.ok) throw new Error(`POST ${pathname} HTTP ${res.statusCode}: ${res.body.slice(0, 400)}`);
@@ -209,12 +217,13 @@ export class GhostClient {
     }
   }
 
-  _fetch(pathname, { method = 'GET', body = null, headers = {}, timeoutMs = 10_000 } = {}) {
+  _fetch(pathname, { method = 'GET', body = null, headers = {}, timeoutMs = 10_000, auth = false } = {}) {
     const url = new URL(`${this.baseUrl}${pathname}`);
     const payload = body ? Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8') : null;
     const finalHeaders = { ...headers };
     if (payload && !finalHeaders['content-length']) finalHeaders['content-length'] = String(payload.length);
     if (payload && !finalHeaders['content-type']) finalHeaders['content-type'] = 'application/json; charset=utf-8';
+    if (auth) Object.assign(finalHeaders, this._authHeaders());
 
     return new Promise((resolve, reject) => {
       const req = http.request(

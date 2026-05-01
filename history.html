@@ -1,0 +1,1072 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GHOSTRECON — HTTP History</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:    #080c10;
+      --bg2:   #0c1218;
+      --bg3:   #101820;
+      --bg4:   #141e28;
+      --line:  rgba(100,160,180,0.18);
+      --line2: rgba(255,196,107,0.30);
+      --text:  #c4d4da;
+      --muted: #6a8490;
+      --dim:   #3a5060;
+      --bright:#eef8ff;
+      --cyan:  #00d4ff;
+      --green: #00e87a;
+      --amber: #ffbb44;
+      --orange:#ff7733;
+      --red:   #ff3355;
+      --blue:  #4499ff;
+      --purple:#aa66ff;
+      --mono:  'Share Tech Mono', monospace;
+      --disp:  'Orbitron', sans-serif;
+      --body:  'Rajdhani', sans-serif;
+      --row-h: 28px;
+      --hdr-h: 54px;
+      --tb-h:  50px;
+      --tab-h: 32px;
+    }
+    *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+    html,body { height:100%; overflow:hidden; }
+    body { background:var(--bg); color:var(--text); font-family:var(--body); font-size:13px; display:flex; flex-direction:column; }
+
+    /* ── HEADER ─────────────────────────────────────────────── */
+    header {
+      height:var(--hdr-h); min-height:var(--hdr-h);
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding:0 16px;
+      border-bottom:1px solid var(--line);
+      background:rgba(6,10,14,0.97);
+      z-index:10;
+    }
+    .logo { font:900 17px var(--disp); color:var(--bright); letter-spacing:.08em; white-space:nowrap; }
+    .logo span { color:var(--amber); }
+    .hdr-right { display:flex; align-items:center; gap:16px; }
+    .live-dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 10px rgba(0,232,122,.6); flex-shrink:0; }
+    .live-dot.dead { background:var(--red); box-shadow:0 0 8px rgba(255,51,85,.5); }
+    #statusText { font:11px var(--mono); color:var(--muted); white-space:nowrap; }
+    .hdr-btn {
+      padding:5px 12px; border:1px solid var(--line2); background:transparent;
+      color:var(--amber); font:11px var(--mono); cursor:pointer; border-radius:3px;
+      transition:border-color .15s, color .15s;
+    }
+    .hdr-btn:hover { border-color:var(--amber); color:var(--bright); }
+    .hdr-btn.danger { border-color:rgba(255,51,85,.4); color:var(--red); }
+    .hdr-btn.danger:hover { border-color:var(--red); }
+
+    /* ── TOOLBAR ─────────────────────────────────────────────── */
+    .toolbar {
+      height:var(--tb-h); min-height:var(--tb-h);
+      display:flex; align-items:center; gap:8px;
+      padding:0 12px;
+      border-bottom:1px solid var(--line);
+      background:var(--bg2);
+      overflow-x:auto;
+    }
+    .tb-search {
+      flex:1; min-width:160px; max-width:320px;
+      height:30px; padding:0 10px;
+      background:var(--bg); border:1px solid var(--line);
+      color:var(--bright); font:12px var(--mono);
+      border-radius:3px; outline:none;
+    }
+    .tb-search:focus { border-color:var(--cyan); }
+    .tb-sel {
+      height:30px; padding:0 8px;
+      background:var(--bg); border:1px solid var(--line);
+      color:var(--text); font:12px var(--mono);
+      border-radius:3px; outline:none; cursor:pointer; min-width:100px;
+    }
+    .tb-sel:focus { border-color:var(--cyan); }
+    .tb-label { font:11px var(--mono); color:var(--muted); white-space:nowrap; }
+    .tb-sep { width:1px; height:24px; background:var(--line); flex-shrink:0; margin:0 4px; }
+
+    /* ── MAIN LAYOUT ─────────────────────────────────────────── */
+    .workspace {
+      flex:1; display:flex; flex-direction:column;
+      overflow:hidden; min-height:0;
+    }
+    .table-wrap {
+      overflow:auto; flex-shrink:0;
+      background:var(--bg);
+      min-height:120px;
+    }
+    .drag-v {
+      height:6px; background:var(--bg3); border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+      cursor:row-resize; flex-shrink:0; position:relative;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .drag-v::after { content:''; width:32px; height:2px; background:var(--dim); border-radius:2px; }
+    .drag-v:hover { background:var(--bg4); }
+    .detail-wrap {
+      flex:1; display:flex; min-height:0; overflow:hidden;
+    }
+
+    /* ── REQUEST TABLE ───────────────────────────────────────── */
+    table { width:100%; border-collapse:collapse; table-layout:fixed; }
+    thead { position:sticky; top:0; z-index:5; }
+    thead th {
+      background:var(--bg3); border-bottom:1px solid var(--line);
+      padding:6px 8px; text-align:left;
+      font:11px var(--mono); color:var(--muted); letter-spacing:.03em;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      cursor:pointer; user-select:none;
+    }
+    thead th:hover { color:var(--cyan); }
+    thead th.sort-asc::after  { content:' ↑'; color:var(--amber); }
+    thead th.sort-desc::after { content:' ↓'; color:var(--amber); }
+    col.c-id   { width:44px; }
+    col.c-host { width:160px; }
+    col.c-meth { width:62px; }
+    col.c-url  { width:auto; }
+    col.c-par  { width:40px; }
+    col.c-sc   { width:58px; }
+    col.c-len  { width:68px; }
+    col.c-mime { width:62px; }
+    col.c-ext  { width:48px; }
+    col.c-ms   { width:64px; }
+    tbody tr {
+      border-bottom:1px solid rgba(100,160,180,.08);
+      cursor:pointer;
+    }
+    tbody tr:hover td { background:rgba(0,212,255,.05); }
+    tbody tr.selected td { background:rgba(0,212,255,.09); }
+    tbody tr.selected { box-shadow:inset 3px 0 0 var(--amber); }
+    td {
+      padding:3px 8px; height:var(--row-h);
+      font:12px var(--mono); color:var(--text);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+    td.td-id   { color:var(--muted); font-size:11px; }
+    td.td-host { color:var(--cyan); }
+    td.td-url  { color:var(--bright); }
+    td.td-par  { text-align:center; color:var(--green); font-size:13px; }
+    td.td-ms   { color:var(--muted); }
+    td.td-len  { color:var(--muted); }
+    td.td-mime { color:var(--purple); font-size:11px; }
+    td.td-ext  { color:var(--muted); font-size:11px; }
+
+    .method-badge {
+      display:inline-block; padding:2px 5px;
+      font:10px var(--mono); border:1px solid;
+      border-radius:2px; letter-spacing:.03em;
+    }
+    .m-get    { color:var(--cyan);   border-color:rgba(0,212,255,.35); }
+    .m-post   { color:var(--amber);  border-color:rgba(255,187,68,.35); }
+    .m-put    { color:var(--blue);   border-color:rgba(68,153,255,.35); }
+    .m-patch  { color:var(--purple); border-color:rgba(170,102,255,.35); }
+    .m-delete { color:var(--red);    border-color:rgba(255,51,85,.35); }
+    .m-head   { color:var(--muted);  border-color:rgba(100,160,180,.3); }
+    .m-other  { color:var(--text);   border-color:var(--line); }
+
+    .sc { font-weight:600; }
+    .sc-1 { color:var(--muted); }
+    .sc-2 { color:var(--green); }
+    .sc-3 { color:var(--blue); }
+    .sc-4 { color:var(--orange); }
+    .sc-5 { color:var(--red); }
+    .sc-e { color:var(--red); font-size:10px; letter-spacing:-.02em; }
+
+    /* ── DETAIL PANES ────────────────────────────────────────── */
+    .pane {
+      flex:1; display:flex; flex-direction:column; min-width:0;
+      border-right:1px solid var(--line);
+    }
+    .pane:last-child { border-right:0; }
+    .drag-h {
+      width:6px; background:var(--bg3);
+      border-left:1px solid var(--line); border-right:1px solid var(--line);
+      cursor:col-resize; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .drag-h::after { content:''; width:2px; height:32px; background:var(--dim); border-radius:2px; }
+    .drag-h:hover { background:var(--bg4); }
+
+    .pane-header {
+      height:var(--tab-h); min-height:var(--tab-h);
+      display:flex; align-items:stretch;
+      border-bottom:1px solid var(--line);
+      background:var(--bg2);
+    }
+    .pane-title {
+      padding:0 14px; display:flex; align-items:center;
+      font:10px var(--disp); color:var(--muted); letter-spacing:.08em; text-transform:uppercase;
+      border-right:1px solid var(--line); white-space:nowrap;
+    }
+    .tabs { display:flex; align-items:stretch; }
+    .tab-btn {
+      padding:0 14px; border:0; border-bottom:2px solid transparent;
+      background:transparent; color:var(--muted);
+      font:12px var(--mono); cursor:pointer; white-space:nowrap;
+      transition:color .12s, border-color .12s;
+    }
+    .tab-btn:hover { color:var(--text); }
+    .tab-btn.active { color:var(--bright); border-bottom-color:var(--cyan); }
+
+    .pane-body { flex:1; overflow:auto; min-height:0; }
+    .pane-empty { padding:24px 20px; font:12px var(--mono); color:var(--dim); }
+
+    /* ── CODE / PRE ──────────────────────────────────────────── */
+    pre.code {
+      margin:0; padding:12px 14px;
+      font:12px/1.55 var(--mono); color:var(--text);
+      white-space:pre-wrap; word-break:break-all; tab-size:2;
+    }
+    pre.code .hl-method  { color:var(--cyan); font-weight:600; }
+    pre.code .hl-url     { color:var(--bright); }
+    pre.code .hl-proto   { color:var(--muted); }
+    pre.code .hl-hname   { color:var(--amber); }
+    pre.code .hl-hred    { color:var(--dim); font-style:italic; }
+    pre.code .hl-status2 { color:var(--green); font-weight:600; }
+    pre.code .hl-status3 { color:var(--blue);  font-weight:600; }
+    pre.code .hl-status4 { color:var(--orange);font-weight:600; }
+    pre.code .hl-status5 { color:var(--red);   font-weight:600; }
+    pre.code .json-key   { color:var(--amber); }
+    pre.code .json-str   { color:var(--green); }
+    pre.code .json-num   { color:var(--blue); }
+    pre.code .json-bool  { color:var(--purple); }
+    pre.code .json-null  { color:var(--red); }
+
+    /* ── HEADERS TABLE VIEW ──────────────────────────────────── */
+    .hdr-table { width:100%; border-collapse:collapse; }
+    .hdr-table td {
+      padding:5px 10px; border-bottom:1px solid rgba(100,160,180,.07);
+      font:12px var(--mono); vertical-align:top; overflow-wrap:break-word; word-break:break-all;
+    }
+    .hdr-table td:first-child { color:var(--amber); width:220px; min-width:140px; }
+    .hdr-table tr:hover td { background:rgba(0,212,255,.04); }
+
+    /* ── PARAMS TABLE VIEW ───────────────────────────────────── */
+    .params-section { padding:10px 14px 0; }
+    .params-label { font:10px var(--disp); color:var(--amber); letter-spacing:.06em; text-transform:uppercase; margin-bottom:8px; }
+    .params-table { width:100%; border-collapse:collapse; margin-bottom:16px; }
+    .params-table th { padding:5px 8px; font:11px var(--mono); color:var(--muted); text-align:left; border-bottom:1px solid var(--line); }
+    .params-table td { padding:4px 8px; font:12px var(--mono); border-bottom:1px solid rgba(100,160,180,.06); word-break:break-all; }
+    .params-table td:first-child  { color:var(--cyan); width:40%; }
+    .params-table tr:hover td { background:rgba(0,212,255,.04); }
+
+    /* ── RENDER FRAME ────────────────────────────────────────── */
+    .render-frame { width:100%; height:100%; border:0; background:#fff; }
+
+    /* ── SCROLLBAR ───────────────────────────────────────────── */
+    ::-webkit-scrollbar { width:7px; height:7px; }
+    ::-webkit-scrollbar-track { background:var(--bg); }
+    ::-webkit-scrollbar-thumb { background:var(--dim); border-radius:4px; }
+    ::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+
+    /* ── EMPTY STATE ─────────────────────────────────────────── */
+    .empty-state { padding:40px 24px; text-align:center; font:12px var(--mono); color:var(--dim); line-height:1.7; }
+    .empty-state strong { color:var(--muted); display:block; margin-bottom:6px; font-size:13px; }
+
+    /* ── PROXY BAR ───────────────────────────────────────────── */
+    .proxy-bar {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding:0 12px; height:36px; min-height:36px;
+      background:rgba(8,12,16,.97);
+      border-bottom:1px solid rgba(0,232,122,.18);
+    }
+    .proxy-bar-left, .proxy-bar-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+    .proxy-dot { width:7px; height:7px; border-radius:50%; background:var(--dim); flex-shrink:0; }
+    .proxy-dot.running { background:var(--green); box-shadow:0 0 8px rgba(0,232,122,.6); animation:pulse .9s ease-in-out infinite alternate; }
+    @keyframes pulse { from { opacity:.7; } to { opacity:1; } }
+    .proxy-label { font:10px var(--disp); color:var(--muted); letter-spacing:.1em; }
+    .proxy-port { font:11px var(--mono); color:var(--cyan); }
+    .proxy-sep { color:var(--dim); font-size:11px; }
+    .proxy-count { font:11px var(--mono); color:var(--muted); }
+    .proxy-mitm-badge {
+      font:9px var(--mono); padding:2px 6px; border-radius:2px;
+      border:1px solid rgba(170,102,255,.4); color:var(--purple); letter-spacing:.04em;
+    }
+    .proxy-mitm-badge.on { border-color:rgba(0,232,122,.5); color:var(--green); }
+    .proxy-info { font:10px var(--mono); color:var(--dim); white-space:nowrap; }
+    .pb-btn {
+      padding:4px 10px; border:1px solid var(--line); background:transparent;
+      color:var(--muted); font:10px var(--mono); cursor:pointer; border-radius:2px;
+      text-decoration:none; white-space:nowrap;
+      transition:border-color .12s, color .12s;
+    }
+    .pb-btn:hover:not(:disabled) { border-color:var(--cyan); color:var(--bright); }
+    .pb-btn:disabled { opacity:.35; cursor:not-allowed; }
+    .pb-btn.pb-stop { border-color:rgba(255,51,85,.35); color:var(--red); }
+    .pb-btn.pb-stop:hover:not(:disabled) { border-color:var(--red); }
+    .pb-btn.pb-mitm { border-color:rgba(170,102,255,.35); color:var(--purple); }
+    .pb-btn.pb-mitm:hover { border-color:var(--purple); }
+
+    /* ── RESPONSIVE ──────────────────────────────────────────── */
+    @media (max-width:800px) {
+      .detail-wrap { flex-direction:column; }
+      .drag-h { display:none; }
+      .pane { flex:none; height:50%; }
+      .hide-sm { display:none !important; }
+      .proxy-bar { height:auto; flex-direction:column; align-items:flex-start; padding:6px 10px; gap:6px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">GHOST<span>RECON</span> <span style="font-size:12px;opacity:.45;font-family:var(--mono);letter-spacing:0">/ http history</span></div>
+  <div class="hdr-right">
+    <div class="live-dot" id="liveDot"></div>
+    <span id="statusText">conectando…</span>
+    <button class="hdr-btn" id="refreshBtn">Atualizar</button>
+    <button class="hdr-btn danger" id="clearBtn">Limpar</button>
+  </div>
+</header>
+
+<!-- PROXY BAR -->
+<div class="proxy-bar" id="proxyBar">
+  <div class="proxy-bar-left">
+    <div class="proxy-dot" id="proxyDot"></div>
+    <span class="proxy-label">PROXY</span>
+    <span class="proxy-port" id="proxyPort">:8081</span>
+    <span class="proxy-sep">|</span>
+    <span class="proxy-mitm-badge" id="mitmBadge">MITM OFF</span>
+    <span class="proxy-sep">|</span>
+    <span class="proxy-count" id="proxyCaptCount">0 capturados</span>
+  </div>
+  <div class="proxy-bar-right">
+    <button class="pb-btn" id="proxyStartBtn">▶ Start</button>
+    <button class="pb-btn pb-stop" id="proxyStopBtn" disabled>■ Stop</button>
+    <button class="pb-btn pb-mitm" id="mitmToggleBtn" title="Toggle HTTPS intercept">MITM</button>
+    <a class="pb-btn" id="caCertLink" href="/api/proxy/ca.crt" download="ghostrecon-ca.crt" title="Baixar CA cert para instalar no browser">CA cert</a>
+    <div class="proxy-sep">|</div>
+    <span class="proxy-info" id="proxySetupHint">Configure browser: HTTP proxy 127.0.0.1:<span id="proxyPortHint">8081</span></span>
+  </div>
+</div>
+
+<!-- TOOLBAR -->
+<div class="toolbar">
+  <span class="tb-label">Search</span>
+  <input class="tb-search" id="searchInput" placeholder="url, host, body…" autocomplete="off" spellcheck="false" />
+  <div class="tb-sep"></div>
+  <span class="tb-label">Method</span>
+  <select class="tb-sel" id="methodSel">
+    <option value="">All</option>
+    <option value="GET">GET</option>
+    <option value="POST">POST</option>
+    <option value="PUT">PUT</option>
+    <option value="PATCH">PATCH</option>
+    <option value="DELETE">DELETE</option>
+    <option value="HEAD">HEAD</option>
+    <option value="OPTIONS">OPTIONS</option>
+  </select>
+  <div class="tb-sep"></div>
+  <span class="tb-label">Status</span>
+  <select class="tb-sel" id="statusSel" style="min-width:80px">
+    <option value="">All</option>
+    <option value="2">2xx</option>
+    <option value="3">3xx</option>
+    <option value="4">4xx</option>
+    <option value="5">5xx</option>
+    <option value="e">Erro</option>
+  </select>
+  <div class="tb-sep"></div>
+  <span class="tb-label">MIME</span>
+  <select class="tb-sel" id="mimeSel" style="min-width:80px">
+    <option value="">All</option>
+    <option value="json">JSON</option>
+    <option value="html">HTML</option>
+    <option value="js">JS</option>
+    <option value="css">CSS</option>
+    <option value="xml">XML</option>
+    <option value="img">Image</option>
+    <option value="other">Other</option>
+  </select>
+  <div class="tb-sep"></div>
+  <span class="tb-label">Source</span>
+  <select class="tb-sel" id="sourceSel" style="min-width:90px">
+    <option value="">All</option>
+    <option value="fetch">Fetch</option>
+    <option value="browser">Browser</option>
+  </select>
+</div>
+
+<!-- WORKSPACE -->
+<div class="workspace" id="workspace">
+
+  <!-- TABLE -->
+  <div class="table-wrap" id="tableWrap">
+    <table id="reqTable">
+      <colgroup>
+        <col class="c-id">
+        <col class="c-host">
+        <col class="c-meth">
+        <col class="c-url">
+        <col class="c-par">
+        <col class="c-sc">
+        <col class="c-len">
+        <col class="c-mime">
+        <col class="c-ext">
+        <col class="c-ms">
+      </colgroup>
+      <thead>
+        <tr>
+          <th data-col="id">#</th>
+          <th data-col="host" class="hide-sm">Host</th>
+          <th data-col="method">Method</th>
+          <th data-col="url">URL</th>
+          <th data-col="params" class="hide-sm" title="Has parameters">?</th>
+          <th data-col="status">Status</th>
+          <th data-col="len" class="hide-sm">Length</th>
+          <th data-col="mime" class="hide-sm">MIME</th>
+          <th data-col="ext" class="hide-sm">Ext</th>
+          <th data-col="ms">ms</th>
+        </tr>
+      </thead>
+      <tbody id="reqBody"></tbody>
+    </table>
+  </div>
+
+  <!-- VERTICAL DRAG HANDLE -->
+  <div class="drag-v" id="dragV"></div>
+
+  <!-- DETAIL PANES -->
+  <div class="detail-wrap" id="detailWrap">
+
+    <!-- REQUEST PANE -->
+    <div class="pane" id="paneReq">
+      <div class="pane-header">
+        <div class="pane-title">Request</div>
+        <div class="tabs" id="tabsReq">
+          <button class="tab-btn active" data-tab="raw">Raw</button>
+          <button class="tab-btn" data-tab="headers">Headers</button>
+          <button class="tab-btn" data-tab="params">Params</button>
+        </div>
+      </div>
+      <div class="pane-body" id="bodyReq">
+        <div class="pane-empty">Seleciona uma request na tabela.</div>
+      </div>
+    </div>
+
+    <!-- HORIZONTAL DRAG HANDLE -->
+    <div class="drag-h" id="dragH"></div>
+
+    <!-- RESPONSE PANE -->
+    <div class="pane" id="paneRes">
+      <div class="pane-header">
+        <div class="pane-title">Response</div>
+        <div class="tabs" id="tabsRes">
+          <button class="tab-btn active" data-tab="raw">Raw</button>
+          <button class="tab-btn" data-tab="headers">Headers</button>
+          <button class="tab-btn" data-tab="pretty">Pretty</button>
+          <button class="tab-btn" data-tab="render">Render</button>
+        </div>
+      </div>
+      <div class="pane-body" id="bodyRes">
+        <div class="pane-empty">Seleciona uma request na tabela.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── STATE ──────────────────────────────────────────────────────────
+const rows = [];
+let selectedId = null;
+let lastSeenId = 0;
+let reqTab = 'raw';
+let resTab = 'raw';
+let sortCol = 'id';
+let sortDir = -1; // newest first
+const filters = { search:'', method:'', status:'', mime:'', source:'' };
+
+// ── API ────────────────────────────────────────────────────────────
+function apiBase() {
+  try {
+    const s = String(localStorage.getItem('ghostrecon_api_base')||'').trim();
+    if (s) return s.replace(/\/+$/, '');
+  } catch(_){}
+  return (location.protocol==='http:'||location.protocol==='https:') ? '' : 'http://127.0.0.1:3847';
+}
+function apiUrl(p) { const b = apiBase(); return b ? b+p : p; }
+function authHdrs() {
+  try {
+    const j = JSON.parse(localStorage.getItem('ghostrecon_auth_json')||'{}');
+    return j.ghostreconApiKey ? {'X-API-Key': String(j.ghostreconApiKey)} : {};
+  } catch(_){ return {}; }
+}
+
+// ── UTILS ──────────────────────────────────────────────────────────
+const esc = s => String(s??'').replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function shortTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '--:--:--';
+  return d.toLocaleTimeString('pt-PT', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+function hostOf(url) {
+  try { return new URL(url).host; } catch(_){ return url.split('/')[0]||url; }
+}
+function pathOf(url) {
+  try { const u = new URL(url); return u.pathname + (u.search||''); }
+  catch(_){ return url; }
+}
+function extOf(url) {
+  try {
+    const p = new URL(url).pathname;
+    const m = p.match(/\.([a-zA-Z0-9]{1,6})$/);
+    return m ? m[1].toLowerCase() : '';
+  } catch(_){ return ''; }
+}
+function hasParams(entry) {
+  try { if (new URL(entry.url).search.length > 1) return true; } catch(_){}
+  return !!(entry.requestBody && entry.requestBody.trim());
+}
+function fmtSize(n) {
+  if (n == null || isNaN(Number(n))) return '-';
+  n = Number(n);
+  if (n >= 1048576) return (n/1048576).toFixed(1)+'M';
+  if (n >= 1024)    return (n/1024).toFixed(1)+'K';
+  return n+'B';
+}
+function mimeLabel(mime) {
+  if (!mime) return '-';
+  if (/json/.test(mime))               return 'json';
+  if (/html/.test(mime))               return 'html';
+  if (/javascript|ecmascript/.test(mime)) return 'js';
+  if (/css/.test(mime))                return 'css';
+  if (/xml/.test(mime))                return 'xml';
+  if (/image\//.test(mime))            return 'img';
+  if (/text\/plain/.test(mime))        return 'txt';
+  if (/pdf/.test(mime))                return 'pdf';
+  if (/font/.test(mime))               return 'font';
+  if (/octet/.test(mime))              return 'bin';
+  const m = mime.split('/');
+  return (m[1]||m[0]).split('+')[0].slice(0,8);
+}
+function mimeCategory(entry) {
+  const m = entry.mimeType || '';
+  if (/json/.test(m))                  return 'json';
+  if (/html/.test(m))                  return 'html';
+  if (/javascript|ecmascript/.test(m)) return 'js';
+  if (/css/.test(m))                   return 'css';
+  if (/xml/.test(m))                   return 'xml';
+  if (/image\//.test(m))               return 'img';
+  return 'other';
+}
+function scClass(entry) {
+  if (entry.error) return 'sc-e';
+  const s = Number(entry.status);
+  if (!s)    return 'sc-e';
+  if (s<200) return 'sc-1';
+  if (s<300) return 'sc-2';
+  if (s<400) return 'sc-3';
+  if (s<500) return 'sc-4';
+  return 'sc-5';
+}
+function methodClass(m) {
+  const map = {GET:'m-get',POST:'m-post',PUT:'m-put',PATCH:'m-patch',DELETE:'m-delete',HEAD:'m-head'};
+  return map[String(m).toUpperCase()] || 'm-other';
+}
+
+// ── JSON SYNTAX HIGHLIGHT ──────────────────────────────────────────
+function jsonHL(str) {
+  const s = str.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  return s.replace(
+    /("(\\u[\dA-Fa-f]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    m => {
+      if (/^"/.test(m)) return /:$/.test(m)
+        ? `<span class="json-key">${m}</span>`
+        : `<span class="json-str">${m}</span>`;
+      if (/true|false/.test(m)) return `<span class="json-bool">${m}</span>`;
+      if (/null/.test(m))       return `<span class="json-null">${m}</span>`;
+      return `<span class="json-num">${m}</span>`;
+    }
+  );
+}
+
+// ── RAW HTTP FORMATS ───────────────────────────────────────────────
+function formatRawRequest(entry) {
+  const method = esc(entry.method||'GET');
+  const path   = esc(pathOf(entry.url));
+  const host   = esc(hostOf(entry.url));
+  const hdrs   = entry.requestHeaders || {};
+  let out = `<span class="hl-method">${method}</span> <span class="hl-url">${path}</span> <span class="hl-proto">HTTP/1.1</span>\n`;
+  if (!hdrs['host'] && !hdrs['Host'])
+    out += `<span class="hl-hname">Host</span>: ${host}\n`;
+  for (const [k,v] of Object.entries(hdrs)) {
+    const isRed = v === '[redacted]';
+    out += `<span class="hl-hname">${esc(k)}</span>: ${isRed ? `<span class="hl-hred">[redacted]</span>` : esc(String(v))}\n`;
+  }
+  if (entry.requestBody) out += `\n${esc(entry.requestBody)}`;
+  return out;
+}
+
+function formatRawResponse(entry) {
+  if (entry.error)
+    return `<span class="sc-5">ERRO: ${esc(entry.error)}</span>`;
+  if (entry.status == null)
+    return '<span class="sc-e">Sem resposta capturada — request falhou antes de receber resposta.</span>';
+  const sc  = Number(entry.status);
+  const cls = sc<200?'':sc<300?'hl-status2':sc<400?'hl-status3':sc<500?'hl-status4':'hl-status5';
+  let out = `<span class="hl-proto">HTTP/1.1</span> <span class="${cls}">${esc(String(sc))} ${esc(entry.statusText||'')}</span>\n`;
+  for (const [k,v] of Object.entries(entry.responseHeaders||{}))
+    out += `<span class="hl-hname">${esc(k)}</span>: ${esc(String(v))}\n`;
+  if (entry.responseBody)
+    out += `\n${esc(entry.responseBody)}`;
+  else if (entry.status)
+    out += `\n<span style="color:var(--dim)">(body ainda a ser capturado — aguarda 2s e recarrega)</span>`;
+  return out;
+}
+
+function buildHeadersTable(obj) {
+  const entries = Object.entries(obj||{});
+  if (!entries.length) return '<div class="pane-empty">Sem headers.</div>';
+  const rows = entries.map(([k,v]) => {
+    const val = v === '[redacted]'
+      ? `<span class="hl-hred">[redacted]</span>`
+      : esc(String(v));
+    return `<tr><td>${esc(k)}</td><td>${val}</td></tr>`;
+  }).join('');
+  return `<table class="hdr-table"><tbody>${rows}</tbody></table>`;
+}
+
+function buildParamsTable(entry) {
+  let html = '<div class="params-section">';
+  // Query params
+  try {
+    const u = new URL(entry.url);
+    if (u.search.length > 1) {
+      html += '<div class="params-label">Query String</div>';
+      html += '<table class="params-table"><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody>';
+      for (const [k,v] of u.searchParams)
+        html += `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`;
+      html += '</tbody></table>';
+    }
+  } catch(_){}
+  // Body params
+  if (entry.requestBody) {
+    html += '<div class="params-label">Body</div>';
+    const b = entry.requestBody.trim();
+    let parsed = false;
+    if (b.startsWith('{') || b.startsWith('[')) {
+      try {
+        const j = JSON.parse(b);
+        html += `<pre class="code" style="padding:10px 14px">${jsonHL(JSON.stringify(j,null,2))}</pre>`;
+        parsed = true;
+      } catch(_){}
+    }
+    if (!parsed && /^[a-zA-Z0-9_.~%!*'()-]+=/.test(b)) {
+      try {
+        const p = new URLSearchParams(b);
+        html += '<table class="params-table"><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody>';
+        for (const [k,v] of p)
+          html += `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`;
+        html += '</tbody></table>';
+        parsed = true;
+      } catch(_){}
+    }
+    if (!parsed) html += `<pre class="code">${esc(b)}</pre>`;
+  }
+  if (!entry.requestBody) {
+    try {
+      if (new URL(entry.url).search.length <= 1)
+        html += '<div class="pane-empty">Sem parâmetros.</div>';
+    } catch(_){ html += '<div class="pane-empty">Sem parâmetros.</div>'; }
+  }
+  html += '</div>';
+  return html;
+}
+
+function buildPrettyResponse(entry) {
+  if (!entry.responseBody)
+    return '<div class="pane-empty">Sem body de resposta capturado.</div>';
+  const cat = mimeCategory(entry);
+  if (cat === 'json') {
+    try {
+      const j = JSON.parse(entry.responseBody);
+      return `<pre class="code">${jsonHL(JSON.stringify(j, null, 2))}</pre>`;
+    } catch(_){}
+  }
+  return `<pre class="code">${esc(entry.responseBody)}</pre>`;
+}
+
+// ── DATA MANAGEMENT ────────────────────────────────────────────────
+function upsert(entry) {
+  if (!entry || !entry.id) return;
+  const i = rows.findIndex(x => x.id === entry.id);
+  if (i >= 0) Object.assign(rows[i], entry);
+  else rows.push(entry);
+  lastSeenId = Math.max(lastSeenId, Number(entry.id)||0);
+}
+
+function getFiltered() {
+  return rows.filter(r => {
+    const s = filters.search.toLowerCase();
+    if (s) {
+      const hay = (r.url||'') + ' ' + (r.requestBody||'') + ' ' + (r.responseBody||'');
+      if (!hay.toLowerCase().includes(s)) return false;
+    }
+    if (filters.method && String(r.method||'').toUpperCase() !== filters.method) return false;
+    if (filters.status) {
+      if (filters.status === 'e') { if (!r.error) return false; }
+      else if (String(r.status||'')[0] !== filters.status) return false;
+    }
+    if (filters.mime && mimeCategory(r) !== filters.mime) return false;
+    if (filters.source && String(r.source||'') !== filters.source) return false;
+    return true;
+  }).sort((a,b) => {
+    let va, vb;
+    if (sortCol === 'id')     { va = Number(a.id);             vb = Number(b.id); }
+    else if (sortCol === 'ms')     { va = Number(a.durationMs??-1); vb = Number(b.durationMs??-1); }
+    else if (sortCol === 'status') { va = Number(a.status??0);      vb = Number(b.status??0); }
+    else if (sortCol === 'len')    { va = Number(a.responseSize??-1);vb = Number(b.responseSize??-1); }
+    else if (sortCol === 'host')   { va = hostOf(a.url).toLowerCase();vb = hostOf(b.url).toLowerCase(); }
+    else if (sortCol === 'url')    { va = pathOf(a.url).toLowerCase();vb = pathOf(b.url).toLowerCase(); }
+    else if (sortCol === 'method') { va = String(a.method||'');       vb = String(b.method||''); }
+    else                           { va = a[sortCol]??'';             vb = b[sortCol]??''; }
+    if (va < vb) return -sortDir;
+    if (va > vb) return  sortDir;
+    return 0;
+  });
+}
+
+// ── RENDER TABLE ────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById('reqBody');
+  const data  = getFiltered();
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state">
+      <strong>Sem requests no histórico</strong>
+      Inicia um RUN RECON — as requests aparecem aqui ao vivo.
+    </div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = data.map(r => {
+    const sc   = r.error ? 'ERR' : (r.status == null ? '-' : String(r.status));
+    const meth = String(r.method||'GET').toUpperCase();
+    return `<tr data-id="${r.id}" class="${selectedId===r.id?'selected':''}">
+      <td class="td-id">${r.id}</td>
+      <td class="td-host hide-sm" title="${esc(hostOf(r.url))}">${esc(hostOf(r.url))}</td>
+      <td><span class="method-badge ${methodClass(meth)}">${esc(meth)}</span></td>
+      <td class="td-url" title="${esc(r.url)}">${esc(pathOf(r.url))}</td>
+      <td class="td-par hide-sm">${hasParams(r) ? '●' : ''}</td>
+      <td><span class="sc ${scClass(r)}">${esc(sc)}</span></td>
+      <td class="td-len hide-sm">${fmtSize(r.responseSize)}</td>
+      <td class="td-mime hide-sm">${esc(mimeLabel(r.mimeType))}</td>
+      <td class="td-ext hide-sm">${esc(extOf(r.url))}</td>
+      <td class="td-ms">${r.durationMs == null ? '-' : r.durationMs}</td>
+    </tr>`;
+  }).join('');
+  tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      selectedId = Number(tr.dataset.id);
+      renderTable();
+      renderDetail(rows.find(x => x.id === selectedId));
+      tr.scrollIntoView({block:'nearest'});
+    });
+  });
+}
+
+// ── RENDER DETAIL ───────────────────────────────────────────────────
+function renderDetail(entry) {
+  renderReqPanel(entry);
+  renderResPanel(entry);
+}
+
+function renderReqPanel(entry) {
+  const body = document.getElementById('bodyReq');
+  if (!entry) { body.innerHTML = '<div class="pane-empty">Seleciona uma request na tabela.</div>'; return; }
+  if (reqTab === 'raw')     body.innerHTML = `<pre class="code">${formatRawRequest(entry)}</pre>`;
+  else if (reqTab === 'headers') body.innerHTML = buildHeadersTable(entry.requestHeaders);
+  else if (reqTab === 'params')  body.innerHTML = buildParamsTable(entry);
+}
+
+function renderResPanel(entry) {
+  const body = document.getElementById('bodyRes');
+  if (!entry) { body.innerHTML = '<div class="pane-empty">Seleciona uma request na tabela.</div>'; return; }
+  if (resTab === 'raw')      body.innerHTML = `<pre class="code">${formatRawResponse(entry)}</pre>`;
+  else if (resTab === 'headers') body.innerHTML = buildHeadersTable(entry.responseHeaders);
+  else if (resTab === 'pretty')  body.innerHTML = buildPrettyResponse(entry);
+  else if (resTab === 'render') {
+    if (!entry.responseBody) { body.innerHTML = '<div class="pane-empty">Sem body para renderizar.</div>'; return; }
+    if (mimeCategory(entry) === 'html') {
+      const f = document.createElement('iframe');
+      f.className = 'render-frame';
+      f.sandbox = 'allow-same-origin';
+      f.srcdoc = entry.responseBody;
+      body.innerHTML = '';
+      body.appendChild(f);
+    } else {
+      body.innerHTML = '<div class="pane-empty">Render disponível apenas para respostas HTML.</div>';
+    }
+  }
+}
+
+// ── STATUS BAR ──────────────────────────────────────────────────────
+function setStatus(msg, alive=true) {
+  document.getElementById('statusText').textContent = msg;
+  document.getElementById('liveDot').className = 'live-dot' + (alive ? '' : ' dead');
+}
+
+// ── FETCH HISTORY ───────────────────────────────────────────────────
+async function loadHistory({incremental=false} = {}) {
+  const u = new URL(apiUrl('/api/history/recon'), location.href);
+  u.searchParams.set('limit', incremental ? '400' : '1000');
+  if (incremental && lastSeenId) u.searchParams.set('after', String(lastSeenId));
+  const res = await fetch(u.href, {headers: authHdrs()});
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  for (const item of data.items||[]) upsert(item);
+  const vis = getFiltered().length;
+  setStatus(`${vis} visíveis · ${rows.length} total · ${shortTime(new Date().toISOString())}`);
+  renderTable();
+  if (selectedId) {
+    const cur = rows.find(x => x.id === selectedId);
+    if (cur) renderDetail(cur);
+  }
+}
+
+// ── RESIZE VERTICAL ─────────────────────────────────────────────────
+function initResizeV() {
+  const handle = document.getElementById('dragV');
+  const tw     = document.getElementById('tableWrap');
+  let dragging = false, startY = 0, startH = 0;
+  handle.addEventListener('mousedown', e => {
+    dragging = true; startY = e.clientY; startH = tw.offsetHeight;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const h = Math.max(80, Math.min(window.innerHeight - 200, startH + (e.clientY - startY)));
+    tw.style.height = h + 'px';
+    tw.style.flex   = 'none';
+  });
+  document.addEventListener('mouseup', () => {
+    dragging = false;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  });
+}
+
+// ── RESIZE HORIZONTAL ───────────────────────────────────────────────
+function initResizeH() {
+  const handle = document.getElementById('dragH');
+  const pReq   = document.getElementById('paneReq');
+  const detail = document.getElementById('detailWrap');
+  let dragging = false, startX = 0, startW = 0;
+  handle.addEventListener('mousedown', e => {
+    dragging = true; startX = e.clientX; startW = pReq.offsetWidth;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const total = detail.offsetWidth;
+    const w = Math.max(200, Math.min(total - 200, startW + (e.clientX - startX)));
+    pReq.style.flex  = 'none';
+    pReq.style.width = w + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    dragging = false;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  });
+}
+
+// ── SORT ────────────────────────────────────────────────────────────
+function initSort() {
+  document.querySelectorAll('thead th[data-col]').forEach(th => {
+    th.addEventListener('click', () => {
+      const c = th.dataset.col;
+      if (sortCol === c) sortDir *= -1;
+      else { sortCol = c; sortDir = 1; }
+      document.querySelectorAll('thead th').forEach(t => {
+        t.classList.remove('sort-asc','sort-desc');
+        if (t.dataset.col === sortCol)
+          t.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
+      });
+      renderTable();
+    });
+  });
+  // default: sort by id desc (newest first)
+  document.querySelector('thead th[data-col="id"]')?.classList.add('sort-desc');
+}
+
+// ── TABS ────────────────────────────────────────────────────────────
+function initTabs() {
+  document.getElementById('tabsReq').addEventListener('click', e => {
+    const b = e.target.closest('.tab-btn'); if (!b) return;
+    document.querySelectorAll('#tabsReq .tab-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    reqTab = b.dataset.tab;
+    renderReqPanel(rows.find(x => x.id === selectedId));
+  });
+  document.getElementById('tabsRes').addEventListener('click', e => {
+    const b = e.target.closest('.tab-btn'); if (!b) return;
+    document.querySelectorAll('#tabsRes .tab-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    resTab = b.dataset.tab;
+    renderResPanel(rows.find(x => x.id === selectedId));
+  });
+}
+
+// ── FILTERS ─────────────────────────────────────────────────────────
+function initFilters() {
+  const apply = () => {
+    filters.search = document.getElementById('searchInput').value;
+    filters.method = document.getElementById('methodSel').value;
+    filters.status = document.getElementById('statusSel').value;
+    filters.mime   = document.getElementById('mimeSel').value;
+    filters.source = document.getElementById('sourceSel').value;
+    renderTable();
+    setStatus(`${getFiltered().length} visíveis · ${rows.length} total`);
+  };
+  document.getElementById('searchInput').addEventListener('input', apply);
+  ['methodSel','statusSel','mimeSel','sourceSel'].forEach(id =>
+    document.getElementById(id).addEventListener('change', apply));
+}
+
+// ── BROADCAST CHANNEL ───────────────────────────────────────────────
+function initBC() {
+  try {
+    const bc = new BroadcastChannel('ghostrecon-history');
+    bc.onmessage = ev => {
+      const msg = ev.data || {};
+      if (msg.type !== 'http_history') return;
+      upsert(msg.entry);
+      renderTable();
+      setStatus(`${getFiltered().length} visíveis · ${rows.length} total · ao vivo`);
+    };
+  } catch(_){}
+}
+
+// ── KEYBOARD NAV ────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  const vis = getFiltered();
+  if (!vis.length) return;
+  const idx = vis.findIndex(x => x.id === selectedId);
+  if (e.key === 'ArrowDown') {
+    const next = vis[Math.min(idx+1, vis.length-1)];
+    if (next) { selectedId = next.id; renderTable(); renderDetail(next); }
+    e.preventDefault();
+  }
+  if (e.key === 'ArrowUp') {
+    const prev = vis[Math.max(idx-1, 0)];
+    if (prev) { selectedId = prev.id; renderTable(); renderDetail(prev); }
+    e.preventDefault();
+  }
+});
+
+// ── CLEAR ───────────────────────────────────────────────────────────
+document.getElementById('clearBtn').addEventListener('click', () => {
+  if (!confirm('Limpar histórico local? (não apaga do servidor)')) return;
+  rows.length = 0; lastSeenId = 0; selectedId = null;
+  renderTable(); renderDetail(null);
+  setStatus('histórico limpo');
+});
+
+// ── REFRESH ─────────────────────────────────────────────────────────
+document.getElementById('refreshBtn').addEventListener('click', () =>
+  loadHistory().catch(e => setStatus('erro: '+e.message, false)));
+
+// ── PROXY CONTROL ───────────────────────────────────────────────────
+let proxyRunning = false;
+let proxyMitm = false;
+let proxyPort = 8081;
+let proxyCaptCount = 0;
+
+async function fetchProxyStatus() {
+  try {
+    const r = await fetch(apiUrl('/api/proxy/status'), { headers: authHdrs() });
+    if (!r.ok) return;
+    const d = await r.json();
+    proxyRunning = !!d.running;
+    proxyMitm = !!d.mitmEnabled;
+    proxyPort = d.port || 8081;
+    proxyCaptCount = d.capturedCount || 0;
+    renderProxyBar();
+  } catch(_) {}
+}
+
+function renderProxyBar() {
+  const dot    = document.getElementById('proxyDot');
+  const portEl = document.getElementById('proxyPort');
+  const hintEl = document.getElementById('proxyPortHint');
+  const badge  = document.getElementById('mitmBadge');
+  const count  = document.getElementById('proxyCaptCount');
+  const startB = document.getElementById('proxyStartBtn');
+  const stopB  = document.getElementById('proxyStopBtn');
+
+  if (dot) { dot.className = 'proxy-dot' + (proxyRunning ? ' running' : ''); }
+  if (portEl) portEl.textContent = ':' + proxyPort;
+  if (hintEl) hintEl.textContent = proxyPort;
+  if (badge) {
+    badge.textContent = proxyMitm ? 'MITM ON' : 'MITM OFF';
+    badge.className = 'proxy-mitm-badge' + (proxyMitm ? ' on' : '');
+  }
+  if (count) count.textContent = proxyCaptCount + ' capturados';
+  if (startB) startB.disabled = proxyRunning;
+  if (stopB)  stopB.disabled  = !proxyRunning;
+}
+
+async function getCsrfForProxy() {
+  const r = await fetch(apiUrl('/api/csrf-token'), { headers: authHdrs() });
+  const d = await r.json();
+  return String(d.token || '');
+}
+
+async function proxyAction(action) {
+  try {
+    const token = await getCsrfForProxy();
+    const r = await fetch(apiUrl('/api/proxy/' + action), {
+      method: 'POST',
+      headers: { ...authHdrs(), 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      body: JSON.stringify({ enabled: action === 'mitm' ? !proxyMitm : undefined }),
+    });
+    const d = await r.json();
+    if (!d.ok) { alert('Proxy: ' + (d.error || 'erro')); return; }
+    proxyRunning    = !!d.running;
+    proxyMitm       = !!d.mitmEnabled;
+    proxyPort       = d.port || proxyPort;
+    proxyCaptCount  = d.capturedCount || proxyCaptCount;
+    renderProxyBar();
+  } catch(e) { alert('Proxy erro: ' + e.message); }
+}
+
+function initProxy() {
+  document.getElementById('proxyStartBtn')?.addEventListener('click', () => proxyAction('start'));
+  document.getElementById('proxyStopBtn')?.addEventListener('click',  () => proxyAction('stop'));
+  document.getElementById('mitmToggleBtn')?.addEventListener('click', () => proxyAction('mitm'));
+  fetchProxyStatus();
+  setInterval(fetchProxyStatus, 4000);
+}
+
+// ── INIT ────────────────────────────────────────────────────────────
+function init() {
+  const qs = new URLSearchParams(location.search);
+  const t  = qs.get('target');
+  if (t) { filters.search = t; document.getElementById('searchInput').value = t; }
+
+  initSort();
+  initTabs();
+  initFilters();
+  initResizeV();
+  initResizeH();
+  initBC();
+  initProxy();
+
+  loadHistory().catch(e => setStatus('erro ao conectar: '+e.message, false));
+  // Poll every 2s — picks up async response bodies captured after the initial record
+  setInterval(() => loadHistory({incremental:true}).catch(()=>{}), 2000);
+}
+
+init();
+</script>
+</body>
+</html>

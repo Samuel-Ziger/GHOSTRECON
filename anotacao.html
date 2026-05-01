@@ -3,1205 +3,1466 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GHOSTRECON — Anotações</title>
+  <title>GHOSTRECON — Relatório</title>
   <style>
     :root {
-      --bg: #0a0e14;
-      --bg2: #121a24;
-      --border: #2a3848;
-      --text: #c8d0dc;
-      --dim: #7a8a9e;
+      --bg: #07090d;
+      --bg2: #0d1420;
+      --bg3: #111820;
+      --border: #1e2e40;
+      --border2: rgba(0,212,255,.22);
+      --text: #c8d8e4;
+      --dim: #6a8090;
+      --muted: #8899aa;
+      --bright: #eef8ff;
       --accent: #00d4ff;
-      --ok: #00ff88;
-      --err: #ff6688;
-      --mono: ui-monospace, 'Cascadia Code', monospace;
-      --sans: system-ui, sans-serif;
+      --green: #00e87a;
+      --amber: #ffbb44;
+      --red: #ff3355;
+      --orange: #ff7733;
+      --purple: #aa66ff;
+      --crit: #ff3355;
+      --high: #ff7733;
+      --med: #ffbb44;
+      --low: #44aaff;
+      --info: #8899aa;
+      --mono: 'Share Tech Mono', ui-monospace, monospace;
+      --sans: system-ui, -apple-system, sans-serif;
     }
-    * { box-sizing: border-box; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
     body {
-      margin: 0;
-      min-height: 100vh;
       background: var(--bg);
       color: var(--text);
       font-family: var(--sans);
       font-size: 13px;
-      line-height: 1.45;
+      line-height: 1.5;
+      display: flex;
+      flex-direction: column;
     }
-    header.reporte-hd {
-      position: relative;
-      padding: 16px 20px;
+
+    /* ── HEADER ── */
+    header {
+      padding: 14px 20px;
       border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .logo { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--bright); letter-spacing: .06em; }
+    .logo span { color: var(--accent); }
+    .hdr-target { font-family: var(--mono); font-size: 11px; color: var(--amber); }
+    .hdr-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn {
+      padding: 6px 13px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font: 10px var(--mono);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-radius: 2px;
+      transition: border-color .12s, color .12s;
+      white-space: nowrap;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--bright); }
+    .btn:disabled { opacity: .38; cursor: not-allowed; }
+    .btn-prim { border-color: var(--border2); color: var(--accent); }
+    .btn-green { border-color: rgba(0,232,122,.4); color: var(--green); }
+    .btn-amber { border-color: rgba(255,187,68,.4); color: var(--amber); }
+    .btn-red   { border-color: rgba(255,51,85,.4);  color: var(--red); }
+
+    /* ── LAYOUT ── */
+    .workspace { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+
+    /* LEFT PANEL — findings list */
+    .panel-left {
+      width: 280px; min-width: 180px; max-width: 360px;
+      display: flex; flex-direction: column;
+      border-right: 1px solid var(--border);
       background: var(--bg2);
       overflow: hidden;
     }
-    .reporte-ghost-bg {
-      position: absolute;
-      right: 4%;
-      top: 50%;
-      transform: translateY(-50%);
-      width: min(160px, 32vw);
-      max-height: 100px;
-      opacity: 0.1;
-      z-index: 0;
-      pointer-events: none;
-    }
-    .reporte-ghost-bg svg {
-      display: block;
-      width: 100%;
-      height: auto;
-      filter: drop-shadow(0 0 20px rgba(0, 212, 255, 0.35));
-    }
-    .reporte-hd-inner { position: relative; z-index: 1; }
-    @media (prefers-reduced-motion: reduce) {
-      .reporte-ghost-bg .ghost-anim-reporte,
-      .reporte-ghost-bg .ghost-eye-reporte { animation: none !important; }
-    }
-    .reporte-ghost-bg .ghost-anim-reporte {
-      transform-origin: 24px 26px;
-      animation: reporte-ghost-sway 3s ease-in-out infinite;
-    }
-    .reporte-ghost-bg .ghost-eye-reporte {
-      transform-origin: center;
-      transform-box: fill-box;
-      animation: reporte-ghost-blink 5s ease-in-out infinite;
-    }
-    .reporte-ghost-bg .ghost-eye-reporte-r { animation-delay: 0.06s; }
-    @keyframes reporte-ghost-sway {
-      0%, 100% { transform: rotate(-3deg); }
-      50% { transform: rotate(3deg); }
-    }
-    @keyframes reporte-ghost-blink {
-      0%, 47%, 53%, 100% { transform: scaleY(1); }
-      50% { transform: scaleY(0.12); }
-    }
-    h1 {
-      margin: 0 0 6px;
-      font-size: 11px;
-      letter-spacing: 0.22em;
-      text-transform: uppercase;
-      color: var(--accent);
-    }
-    .sub {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--dim);
-    }
-    main {
-      padding: 16px 20px 100px;
-      max-width: min(960px, 100%);
-      margin: 0 auto;
-    }
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      margin-bottom: 14px;
-    }
-    button {
-      font-family: var(--mono);
-      font-size: 10px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+    .panel-title {
       padding: 10px 14px;
-      border: 1px solid var(--border);
-      background: var(--bg2);
-      color: var(--text);
-      cursor: pointer;
-    }
-    button:hover:not(:disabled) {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .btn-primary {
-      border-color: rgba(0, 212, 255, 0.55);
-      color: var(--accent);
-    }
-    .intro {
-      margin: 0 0 16px;
-      line-height: 1.55;
-      color: var(--text);
-      font-size: 12px;
-    }
-    .ann-sec { margin-bottom: 16px; }
-    .ann-sec label {
-      display: block;
-      font-size: 9px;
-      letter-spacing: 0.14em;
+      font: 10px var(--mono);
+      color: var(--muted);
+      letter-spacing: .1em;
       text-transform: uppercase;
-      color: var(--accent);
-      margin-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
     }
-    .ann-sec textarea {
+    .finding-list { flex: 1; overflow-y: auto; }
+    .finding-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(30,46,64,.7);
+      cursor: pointer;
+      transition: background .1s;
+    }
+    .finding-item:hover { background: rgba(0,212,255,.04); }
+    .finding-item.confirmed { border-left: 3px solid var(--green); }
+    .finding-item.in-report { background: rgba(0,232,122,.04); }
+    .fi-sev {
+      display: inline-block;
+      font: 9px var(--mono);
+      padding: 2px 5px;
+      border-radius: 2px;
+      letter-spacing: .04em;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .sev-critical { background: rgba(255,51,85,.18);  color: var(--crit); border: 1px solid rgba(255,51,85,.3); }
+    .sev-high     { background: rgba(255,119,51,.18); color: var(--high); border: 1px solid rgba(255,119,51,.3); }
+    .sev-medium   { background: rgba(255,187,68,.15); color: var(--med);  border: 1px solid rgba(255,187,68,.3); }
+    .sev-low      { background: rgba(68,170,255,.14); color: var(--low);  border: 1px solid rgba(68,170,255,.3); }
+    .sev-info     { background: rgba(136,153,170,.12);color: var(--info); border: 1px solid rgba(136,153,170,.2); }
+    .fi-text { flex: 1; min-width: 0; }
+    .fi-type { font: 9px var(--mono); color: var(--dim); text-transform: uppercase; margin-bottom: 2px; }
+    .fi-val  { font-size: 11px; color: var(--text); line-height: 1.3; word-break: break-word; }
+    .fi-check { font-size: 14px; flex-shrink: 0; }
+
+    /* RIGHT PANEL — report editor */
+    .panel-right {
+      flex: 1; display: flex; flex-direction: column;
+      min-width: 0; overflow: hidden;
+    }
+
+    /* TAB BAR */
+    .tab-bar {
+      display: flex;
+      align-items: stretch;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      padding: 0 16px;
+      height: 38px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font: 11px var(--mono);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color .12s, border-color .12s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--bright); border-bottom-color: var(--accent); }
+
+    /* TAB CONTENT */
+    .tab-content { flex: 1; overflow-y: auto; min-height: 0; }
+    .tab-panel { display: none; padding: 20px; }
+    .tab-panel.active { display: block; }
+
+    /* REPORT SECTIONS */
+    .rep-sec {
+      margin-bottom: 22px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .rep-sec-hd {
+      padding: 8px 14px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .rep-sec-title {
+      font: 10px var(--mono);
+      color: var(--accent);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .rep-sec-body { padding: 12px 14px; background: var(--bg3); }
+    .rep-field { margin-bottom: 12px; }
+    .rep-field:last-child { margin-bottom: 0; }
+    .rep-field label {
+      display: block;
+      font: 9px var(--mono);
+      color: var(--dim);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .rep-ta {
       width: 100%;
-      min-height: 76px;
+      min-height: 68px;
       resize: vertical;
       padding: 8px 10px;
-      font-family: var(--mono);
-      font-size: 10px;
-      line-height: 1.45;
-      border: 1px solid var(--border);
+      font: 11px/1.5 var(--mono);
       background: var(--bg);
+      border: 1px solid var(--border);
       color: var(--text);
+      border-radius: 2px;
+      outline: none;
     }
-    .ann-sec textarea.ann-tall { min-height: 120px; }
-    .ann-ai-wrap {
-      margin-top: 12px;
-      border: 1px solid rgba(0, 212, 255, 0.22);
-      background: rgba(10, 16, 24, 0.55);
-      padding: 8px 10px 10px;
+    .rep-ta:focus { border-color: var(--accent); }
+    .rep-ta.tall { min-height: 110px; }
+    .rep-ta.short { min-height: 36px; }
+    .rep-input {
+      width: 100%;
+      padding: 6px 10px;
+      font: 11px var(--mono);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 2px;
+      outline: none;
     }
-    .ann-ai-bar {
+    .rep-input:focus { border-color: var(--accent); }
+
+    /* SUMMARY GRID */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .sum-card {
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: var(--bg);
+      text-align: center;
+    }
+    .sum-card .sum-num {
+      font: 700 24px var(--mono);
+      color: var(--bright);
+      display: block;
+      margin-bottom: 2px;
+    }
+    .sum-card .sum-label { font: 9px var(--mono); color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+    .sum-card.c-crit .sum-num { color: var(--crit); }
+    .sum-card.c-high .sum-num { color: var(--high); }
+    .sum-card.c-med  .sum-num { color: var(--med); }
+    .sum-card.c-low  .sum-num { color: var(--low); }
+
+    /* VULN CARD */
+    .vuln-card {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+    .vuln-card-hd {
+      padding: 10px 14px;
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-      font-family: var(--mono);
-      font-size: 9px;
+      gap: 10px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
     }
-    .ann-ai-bar-label {
-      flex: 1;
-      min-width: 160px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--accent);
+    .vuln-num  { font: 700 12px var(--mono); color: var(--muted); flex-shrink: 0; }
+    .vuln-title { flex: 1; font: 12px var(--mono); color: var(--bright); word-break: break-word; }
+    .vuln-status-sel {
+      padding: 3px 7px;
+      font: 9px var(--mono);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 2px;
+      cursor: pointer;
+      flex-shrink: 0;
     }
-    .ann-ai-bar button { font-size: 9px; padding: 6px 10px; letter-spacing: 0.04em; }
-    .ann-ai-bar button:disabled { opacity: 0.4; }
-    .ann-ai-out {
-      padding: 10px 12px;
-      border: 1px solid rgba(0, 212, 255, 0.2);
-      background: rgba(10, 16, 24, 0.85);
-      min-height: 48px;
-      max-height: 320px;
-      overflow: auto;
-      font-family: var(--mono);
-      font-size: 10px;
+    .vuln-collapse-btn { font: 11px var(--mono); color: var(--dim); flex-shrink: 0; background: none; border: none; cursor: pointer; padding: 0 4px; }
+    .vuln-body { padding: 14px; background: var(--bg3); }
+    .vuln-body.collapsed { display: none; }
+    .vuln-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+    @media (max-width: 700px) { .vuln-fields { grid-template-columns: 1fr; } }
+    .vuln-row { grid-column: span 2; }
+
+    /* PROOF OF CONCEPT */
+    .poc-area { background: var(--bg); border: 1px solid rgba(0,212,255,.2); border-radius: 3px; padding: 10px 12px; }
+    .poc-area pre { font: 11px/1.5 var(--mono); color: var(--text); white-space: pre-wrap; word-break: break-all; margin: 0; }
+    .poc-label { font: 9px var(--mono); color: var(--accent); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 6px; }
+
+    /* AI RESULT */
+    .ai-wrap {
+      border: 1px solid var(--border2);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 18px;
+    }
+    .ai-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+    }
+    .ai-bar-title { flex: 1; font: 10px var(--mono); color: var(--accent); letter-spacing: .08em; text-transform: uppercase; }
+    .ai-result {
+      padding: 12px 14px;
+      font: 11px/1.6 var(--mono);
       white-space: pre-wrap;
       color: var(--text);
+      min-height: 48px;
+      max-height: 400px;
+      overflow-y: auto;
+      background: var(--bg);
     }
-    .ann-ai-out:empty::before {
-      content: '(Ainda sem relatório — usa o botão IA.)';
+    .ai-result:empty::before { content: '(Sem relatório — usa o botão IA.)'; color: var(--dim); font-style: italic; }
+
+    /* STATUS MSG */
+    .status-bar {
+      padding: 6px 14px;
+      font: 10px var(--mono);
       color: var(--dim);
-      font-style: italic;
-    }
-    .ann-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 14px;
-    }
-    .log {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--dim);
-      margin-top: 10px;
-      white-space: pre-wrap;
-    }
-    .log.err { color: var(--err); }
-    .log.ok { color: var(--ok); }
-    footer {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      padding: 12px 20px;
+      background: var(--bg2);
       border-top: 1px solid var(--border);
-      background: rgba(10, 14, 20, 0.96);
+      flex-shrink: 0;
+      min-height: 28px;
     }
-    footer .sub { font-size: 10px; color: var(--dim); line-height: 1.5; }
+    .status-bar.ok  { color: var(--green); }
+    .status-bar.err { color: var(--red); }
+
+    /* DRAG HANDLE */
+    .drag-h {
+      width: 5px; background: var(--bg); border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+      cursor: col-resize; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    }
+    .drag-h::after { content: ''; width: 2px; height: 28px; background: var(--border); border-radius: 2px; }
+    .drag-h:hover { background: var(--bg3); }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: #1e3040; border-radius: 3px; }
   </style>
 </head>
 <body>
-  <header class="reporte-hd">
-    <div class="reporte-ghost-bg" aria-hidden="true">
-      <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" width="100" height="108" focusable="false">
-        <defs>
-          <linearGradient id="anBgGhostGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#e8fbff" />
-            <stop offset="45%" stop-color="#5ee0ff" />
-            <stop offset="100%" stop-color="#00a8d4" />
-          </linearGradient>
-        </defs>
-        <g class="ghost-anim-reporte">
-          <path
-            fill="url(#anBgGhostGrad)"
-            stroke="rgba(0,212,255,0.45)"
-            stroke-width="0.55"
-            d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
-          />
-          <ellipse class="ghost-eye-reporte" cx="17" cy="22" rx="3.2" ry="4.2" fill="#050709" />
-          <ellipse class="ghost-eye-reporte ghost-eye-reporte-r" cx="31" cy="22" rx="3.2" ry="4.2" fill="#050709" />
-        </g>
-      </svg>
+
+<header>
+  <div>
+    <div class="logo">GHOST<span>RECON</span> <span style="font:11px var(--mono);opacity:.4">/&nbsp;relatório</span></div>
+    <div class="hdr-target" id="hdrTarget">sem alvo</div>
+  </div>
+  <div class="hdr-actions">
+    <button class="btn" id="btnSync">↻ Sincronizar</button>
+    <button class="btn btn-amber" id="btnAutoFill">⚡ Auto-preencher</button>
+    <button class="btn" id="btnSave">Guardar rascunho</button>
+    <button class="btn" id="btnExportTxt">Exportar .txt</button>
+    <button class="btn" id="btnExportMd">Exportar .md</button>
+    <button class="btn btn-prim" id="btnAi">IA ▸</button>
+  </div>
+</header>
+
+<div class="workspace">
+  <!-- LEFT: findings list -->
+  <div class="panel-left" id="panelLeft">
+    <div class="panel-title">
+      <span>Achados do recon</span>
+      <span id="findingCount" style="color:var(--accent)">0</span>
     </div>
-    <div class="reporte-hd-inner">
-      <h1>Anotações — modelo Reporte</h1>
-      <div class="sub" id="headLine">A carregar…</div>
-    </div>
-  </header>
-  <main>
-    <div class="toolbar">
-      <button type="button" id="btnReload">Sincronizar validações</button>
-      <button type="button" id="btnOpenReporte">Abrir checklist Reporte</button>
-      <button type="button" id="annBtnSave">Guardar rascunho</button>
-      <button type="button" id="annBtnSync">Atualizar a partir das validações</button>
-      <button type="button" id="annBtnSkeleton" title="Insere linhas-guia nas secções vazias">Guias (só vazios)</button>
-      <button type="button" id="annBtnMd">Descarregar .md</button>
-      <button type="button" class="btn-primary" id="annBtnAi">IA</button>
-    </div>
-    <p class="intro" id="introP">
-      Usa o mesmo URL que o hub (<strong>http://127.0.0.1:PORT</strong>). O botão <strong>ANOTAÇÃO</strong> envia o
-      pacote ao servidor e abre esta página com <code>?handoff=…</code> (fiável entre abas). Secções 2–5: achados
-      <strong>já validados</strong>; <strong>Sincronizar validações</strong> relê a API SQLite. O botão
-      <strong>IA</strong> envia o Markdown à <strong>OpenRouter</strong>.
-    </p>
-    <div class="ann-sec">
-      <label for="annS1">1. Identificação do alvo</label>
-      <textarea id="annS1" class="ann-tall" spellcheck="false" autocomplete="off" placeholder="Alvo: …&#10;Data/Hora: …&#10;Fase: …"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS2">2. Portas e serviços</label>
-      <textarea id="annS2" class="ann-tall" spellcheck="false" autocomplete="off" placeholder="Portas abertas:&#10;- …"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS3">3. Enumeração web</label>
-      <textarea id="annS3" class="ann-tall" spellcheck="false" autocomplete="off"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS4">4. Possíveis vetores de ataque</label>
-      <textarea id="annS4" class="ann-tall" spellcheck="false" autocomplete="off"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS5">5. Testes realizados (validação manual)</label>
-      <textarea id="annS5" class="ann-tall" spellcheck="false" autocomplete="off" placeholder="Vetor / payload / resultado…"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS6">6. Exploração</label>
-      <textarea id="annS6" spellcheck="false" autocomplete="off"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS7">7. Pós-exploração (privesc)</label>
-      <textarea id="annS7" spellcheck="false" autocomplete="off"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS8">8. Impacto</label>
-      <textarea id="annS8" spellcheck="false" autocomplete="off"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS9">9. Referência (OWASP / MITRE)</label>
-      <textarea id="annS9" spellcheck="false" autocomplete="off"></textarea>
-    </div>
-    <div class="ann-sec">
-      <label for="annS10">10. Status final</label>
-      <textarea id="annS10" spellcheck="false" autocomplete="off" placeholder="[ ] Confirmado / falso positivo / parcial"></textarea>
-    </div>
-    <div class="ann-ai-wrap" id="annAiWrap">
-      <div class="ann-ai-bar">
-        <span class="ann-ai-bar-label">Relatório IA (OpenRouter)</span>
-        <button type="button" id="annBtnAiCopy" disabled>Copiar</button>
-        <button type="button" id="annBtnAiMdDl" disabled>Descarregar IA (.md)</button>
-        <button type="button" id="annBtnAiClear" disabled>Limpar</button>
+    <div class="finding-list" id="findingList">
+      <div style="padding:16px 12px; font:11px var(--mono); color:var(--dim)">
+        Abre a checklist Reporte e valida findings — eles aparecem aqui.
       </div>
-      <div class="ann-ai-out" id="annAiResult" aria-live="polite"></div>
     </div>
-    <div class="log" id="msg"></div>
-  </main>
-  <footer>
-    <span class="sub">Abre esta página pelo botão <strong>ANOTAÇÃO</strong> na barra do <strong>Reporte</strong> (<code>reporte.html</code>). O checklist manual fica nessa aba.</span>
-  </footer>
-  <script>
-    const ANOTACAO_PAYLOAD_KEY = 'ghostrecon_anotacao_payload';
-    const REPORTE_PAYLOAD_KEY = 'ghostrecon_reporte_payload';
-    const REPORTE_PAYLOAD_SHARED_KEY = 'ghostrecon_reporte_payload_shared';
-    /** O mesmo fisico que em reporte.html — nova aba não partilha sessionStorage com o Reporte. */
-    const ANOTACAO_HANDOFF_LS_KEY = 'ghostrecon_anotacao_handoff_v1';
-    const REPORT_IMPORT_MAX = 6000;
+  </div>
 
-    function getApiBase() {
-      try {
-        const proto = window.location.protocol;
-        if (proto === 'file:' || proto === 'blob:') {
-          const saved = localStorage.getItem('ghostrecon_api_base');
-          return (saved || 'http://127.0.0.1:3847').replace(/\/+$/, '');
-        }
-      } catch (_) {}
-      return '';
+  <div class="drag-h" id="dragH"></div>
+
+  <!-- RIGHT: report editor -->
+  <div class="panel-right">
+    <div class="tab-bar" id="tabBar">
+      <button class="tab-btn active" data-tab="sumario">Sumário</button>
+      <button class="tab-btn" data-tab="escopo">Escopo</button>
+      <button class="tab-btn" data-tab="vulns">Vulnerabilidades</button>
+      <button class="tab-btn" data-tab="conclusao">Conclusão</button>
+      <button class="tab-btn" data-tab="raw">Texto bruto</button>
+    </div>
+
+    <div class="tab-content" id="tabContent">
+
+      <!-- SUMÁRIO -->
+      <div class="tab-panel active" id="tab-sumario">
+        <div class="summary-grid" id="summaryGrid">
+          <div class="sum-card"><span class="sum-num" id="sumTotal">0</span><span class="sum-label">Total</span></div>
+          <div class="sum-card c-crit"><span class="sum-num" id="sumCrit">0</span><span class="sum-label">Crítica</span></div>
+          <div class="sum-card c-high"><span class="sum-num" id="sumHigh">0</span><span class="sum-label">Alta</span></div>
+          <div class="sum-card c-med"><span class="sum-num" id="sumMed">0</span><span class="sum-label">Média</span></div>
+          <div class="sum-card c-low"><span class="sum-num" id="sumLow">0</span><span class="sum-label">Baixa</span></div>
+          <div class="sum-card"><span class="sum-num" id="sumFixed">0</span><span class="sum-label">Corrigidas</span></div>
+          <div class="sum-card"><span class="sum-num" id="sumNotFixed">0</span><span class="sum-label">Não Corrigidas</span></div>
+        </div>
+
+        <div class="rep-sec">
+          <div class="rep-sec-hd"><span class="rep-sec-title">Período e Identificação</span></div>
+          <div class="rep-sec-body">
+            <div class="vuln-fields">
+              <div class="rep-field">
+                <label>Início do teste</label>
+                <input type="date" class="rep-input" id="dateStart" />
+              </div>
+              <div class="rep-field">
+                <label>Fim do teste</label>
+                <input type="date" class="rep-input" id="dateEnd" />
+              </div>
+              <div class="rep-field">
+                <label>Nome do projeto / cliente</label>
+                <input type="text" class="rep-input" id="projectName" placeholder="foconopapiro / Cliente X" />
+              </div>
+              <div class="rep-field">
+                <label>Analista</label>
+                <input type="text" class="rep-input" id="analystName" placeholder="Nome do analista" />
+              </div>
+            </div>
+            <div class="rep-field">
+              <label>Metodologia (auto-preenche)</label>
+              <textarea class="rep-ta" id="methodology" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ESCOPO -->
+      <div class="tab-panel" id="tab-escopo">
+        <div class="rep-sec">
+          <div class="rep-sec-hd"><span class="rep-sec-title">Escopo do Projeto</span></div>
+          <div class="rep-sec-body">
+            <div class="rep-field">
+              <label>Aplicação web</label>
+              <input type="text" class="rep-input" id="scopeWebApp" placeholder="https://alvo.com.br — descrição da plataforma" />
+            </div>
+            <div class="rep-field">
+              <label>Backend / Infraestrutura</label>
+              <input type="text" class="rep-input" id="scopeBackend" placeholder="Supabase, AWS, VPS…" />
+            </div>
+            <div class="rep-field">
+              <label>Endpoints de autenticação</label>
+              <textarea class="rep-ta short" id="scopeAuthEps" spellcheck="false" placeholder="/auth/v1/token, /api/login…"></textarea>
+            </div>
+            <div class="rep-field">
+              <label>Endpoints de dados</label>
+              <textarea class="rep-ta short" id="scopeDataEps" spellcheck="false" placeholder="/rest/v1/users, /api/plans…"></textarea>
+            </div>
+            <div class="rep-field">
+              <label>Contexto de lógica de negócio</label>
+              <textarea class="rep-ta" id="scopeContext" spellcheck="false" placeholder="Descreve o sistema: ranking, pagamentos, subscrições…"></textarea>
+            </div>
+            <div class="rep-field">
+              <label>Tecnologias detectadas (auto)</label>
+              <textarea class="rep-ta short" id="scopeTechs" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- VULNERABILIDADES -->
+      <div class="tab-panel" id="tab-vulns">
+        <div id="vulnCards">
+          <div style="padding:20px;font:11px var(--mono);color:var(--dim)">
+            Valida findings na checklist Reporte e clica "⚡ Auto-preencher" — ou adiciona manualmente abaixo.
+          </div>
+        </div>
+        <div style="text-align:center;padding:10px 0 20px">
+          <button class="btn btn-amber" id="btnAddVuln">+ Adicionar vulnerabilidade manual</button>
+        </div>
+      </div>
+
+      <!-- CONCLUSÃO -->
+      <div class="tab-panel" id="tab-conclusao">
+        <div class="rep-sec">
+          <div class="rep-sec-hd">
+            <span class="rep-sec-title">Conclusão</span>
+            <button class="btn" id="btnGenConclusion" style="padding:4px 10px;font-size:9px">Gerar automático</button>
+          </div>
+          <div class="rep-sec-body">
+            <div class="rep-field">
+              <textarea class="rep-ta tall" id="conclusionText" spellcheck="false"
+                placeholder="No período de [DATA] a [DATA], a avaliação sobre o alvo [ALVO]..."></textarea>
+            </div>
+          </div>
+        </div>
+        <div class="rep-sec">
+          <div class="rep-sec-hd"><span class="rep-sec-title">Medidas Prioritárias</span></div>
+          <div class="rep-sec-body">
+            <div class="rep-field">
+              <textarea class="rep-ta tall" id="prioritiesText" spellcheck="false"
+                placeholder="1. Implementar políticas RLS...&#10;2. Adicionar rate limiting..."></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div class="ai-wrap">
+          <div class="ai-bar">
+            <span class="ai-bar-title">Relatório IA (OpenRouter)</span>
+            <button class="btn" id="annBtnAiCopy" disabled>Copiar</button>
+            <button class="btn" id="annBtnAiMdDl" disabled>Baixar .md</button>
+            <button class="btn btn-red" id="annBtnAiClear" disabled>Limpar</button>
+          </div>
+          <div class="ai-result" id="annAiResult" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <!-- TEXTO BRUTO -->
+      <div class="tab-panel" id="tab-raw">
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+          <button class="btn btn-prim" id="btnGenRaw">Gerar texto completo</button>
+          <button class="btn" id="btnCopyRaw">Copiar</button>
+          <button class="btn" id="btnDlTxt">Baixar .txt</button>
+        </div>
+        <textarea class="rep-ta" id="rawOutput" style="min-height:500px;font-size:10px"
+          spellcheck="false" readonly placeholder="Clica 'Gerar texto completo' para montar o relatório completo no formato do Relatorio.txt"></textarea>
+      </div>
+
+    </div>
+    <!-- status bar -->
+    <div class="status-bar" id="statusBar">pronto</div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════════
+// GHOSTRECON Anotação — relatório seguindo o padrão Relatorio.txt
+// ══════════════════════════════════════════════════════════════════════════════
+
+const ANOTACAO_PAYLOAD_KEY = 'ghostrecon_anotacao_payload';
+const REPORTE_PAYLOAD_KEY  = 'ghostrecon_reporte_payload';
+const REPORTE_PAYLOAD_SHARED_KEY = 'ghostrecon_reporte_payload_shared';
+const ANOTACAO_HANDOFF_LS_KEY = 'ghostrecon_anotacao_handoff_v1';
+const REPORT_IMPORT_MAX = 6000;
+
+// ── API HELPERS ───────────────────────────────────────────────────────────────
+
+function getApiBase() {
+  try {
+    const proto = window.location.protocol;
+    if (proto === 'file:' || proto === 'blob:') {
+      return (localStorage.getItem('ghostrecon_api_base') || 'http://127.0.0.1:3847').replace(/\/+$/, '');
     }
-    function apiUrl(p) {
-      const path = p.startsWith('/') ? p : '/' + p;
-      const base = getApiBase();
-      return base ? base + path : path;
+  } catch (_) {}
+  return '';
+}
+function apiUrl(p) { const b = getApiBase(); return b ? b + (p.startsWith('/') ? p : '/' + p) : p; }
+function authHdrs() {
+  try {
+    const j = JSON.parse(localStorage.getItem('ghostrecon_auth_json') || '{}');
+    return j.ghostreconApiKey ? { 'X-API-Key': String(j.ghostreconApiKey) } : {};
+  } catch(_) { return {}; }
+}
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+
+let csrf = '';
+let target = '';
+let findings = [];
+let serverItems = [];
+let payloadManualSnapshot = [];
+const validatedFp = new Set();
+let aiUseOpenrouter = false;
+
+/** Vulnerabilidades adicionadas ao relatório {fp, sevLabel, title, desc, scenario, rec, tags, cvss, cvssScore, assets, poc, obs, status, owasp, mitre} */
+let reportVulns = [];
+
+/** Dados do sumário/escopo/conclusão */
+const reportMeta = {
+  dateStart: '', dateEnd: '', projectName: '', analystName: '',
+  methodology: '', scopeWebApp: '', scopeBackend: '', scopeAuthEps: '',
+  scopeDataEps: '', scopeContext: '', scopeTechs: '',
+  conclusionText: '', prioritiesText: '',
+};
+
+// ── STORAGE KEY ───────────────────────────────────────────────────────────────
+
+function annKey() {
+  const t = normalizeTarget(target);
+  return 'ghostrecon_relatorio_v2:' + (t || '_sem_alvo');
+}
+
+function saveAll() {
+  readMetaFromDom();
+  readVulnsFromDom();
+  try {
+    localStorage.setItem(annKey(), JSON.stringify({ reportMeta, reportVulns, savedAt: new Date().toISOString() }));
+  } catch(_) {}
+}
+
+function loadSaved() {
+  try {
+    const raw = localStorage.getItem(annKey());
+    if (!raw) return;
+    const d = JSON.parse(raw);
+    if (d.reportMeta) Object.assign(reportMeta, d.reportMeta);
+    if (Array.isArray(d.reportVulns)) reportVulns = d.reportVulns;
+  } catch(_) {}
+}
+
+// ── SEVERITY UTILS ────────────────────────────────────────────────────────────
+
+function prioToSev(prio) {
+  const p = String(prio || '').toLowerCase();
+  if (p === 'critical') return 'CRÍTICA';
+  if (p === 'high')     return 'ALTA';
+  if (p === 'medium')   return 'MÉDIA';
+  if (p === 'low')      return 'BAIXA';
+  return 'INFORMACIONAL';
+}
+
+function sevClass(sev) {
+  const s = String(sev || '').toLowerCase();
+  if (s.includes('crít') || s === 'critical') return 'sev-critical';
+  if (s.includes('alta') || s === 'high')     return 'sev-high';
+  if (s.includes('médi') || s === 'medium')   return 'sev-medium';
+  if (s.includes('baix') || s === 'low')      return 'sev-low';
+  return 'sev-info';
+}
+
+function findingToSevLabel(f) { return prioToSev(f.prio || f.priority); }
+
+// ── NORMALIZE ─────────────────────────────────────────────────────────────────
+
+function normalizeTarget(raw) {
+  let s = String(raw || '').trim().toLowerCase();
+  if (!s) return '';
+  s = s.replace(/^\*\./, '');
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(s)) {
+    try { s = new URL(s).hostname.toLowerCase(); } catch(_) {}
+  } else if (/[/?#]/.test(s)) {
+    s = s.split(/[/?#]/, 1)[0];
+  }
+  return s.replace(/:\d+$/, '').replace(/\.$/, '');
+}
+
+function targetUsable(t) {
+  const s = normalizeTarget(t);
+  return s && /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s);
+}
+
+const FP_URL_NORMALIZE_TYPES = new Set(['endpoint','param','js','security','tls','nuclei','xss','sqli','dalfox','wpscan','intel']);
+
+function normUrlForFp(u) {
+  if (!u) return '';
+  try {
+    const x = new URL(String(u));
+    x.hash = '';
+    const keys = [...new Set([...x.searchParams.keys()])].sort();
+    const sp = new URLSearchParams();
+    for (const k of keys) for (const v of x.searchParams.getAll(k)) sp.append(k, v);
+    x.search = sp.toString() ? '?' + sp.toString() : '';
+    return x.href.toLowerCase();
+  } catch(_) { return String(u || '').trim().toLowerCase().replace(/\s+/g,' '); }
+}
+
+async function sha256Hex(text) {
+  const data = new TextEncoder().encode(String(text || ''));
+  const dig = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(dig)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function ensureFp(f) {
+  const fo = { ...(f || {}) };
+  if (/^[a-f0-9]{64}$/.test(String(fo.fingerprint || ''))) return fo;
+  const typeNorm = String(fo.type || '').trim().toLowerCase();
+  const urlPart = FP_URL_NORMALIZE_TYPES.has(typeNorm) ? normUrlForFp(fo.url) : String(fo.url||'').trim().toLowerCase().replace(/\s+/g,' ');
+  const raw = String(target||'').trim().toLowerCase() + '|' + typeNorm + '|' + String(fo.value||'').trim().toLowerCase().replace(/\s+/g,' ') + '|' + urlPart;
+  try { fo.fingerprint = await sha256Hex(raw); } catch(_) { fo.fingerprint = ''; }
+  return fo;
+}
+
+// ── CSRF ──────────────────────────────────────────────────────────────────────
+
+async function fetchCsrf() {
+  const r = await fetch(apiUrl('/api/csrf-token'));
+  const d = await r.json();
+  csrf = String(d.token || '');
+  if (!csrf) throw new Error('CSRF vazio');
+}
+
+// ── LOAD SERVER STATE ─────────────────────────────────────────────────────────
+
+function mergePayloadManualValidations() {
+  const list = Array.isArray(payloadManualSnapshot) ? payloadManualSnapshot : [];
+  if (!list.length) return;
+  const byFp = new Map();
+  for (const it of serverItems) { if (it?.fingerprint) byFp.set(it.fingerprint, { ...it }); }
+  for (const row of list) {
+    if (!row?.fingerprint) continue;
+    validatedFp.add(row.fingerprint);
+    if (!byFp.has(row.fingerprint)) byFp.set(row.fingerprint, { ...row });
+    else {
+      const cur = byFp.get(row.fingerprint);
+      const pn = String(row.notes ?? '').trim();
+      if (pn.length >= String(cur.notes ?? '').trim().length) cur.notes = row.notes != null ? String(row.notes) : cur.notes;
     }
+  }
+  serverItems = [...byFp.values()];
+}
 
-    let csrf = '';
-    let target = '';
-    let findings = [];
-    const validatedFp = new Set();
-    let serverItems = [];
-    /** Validades enviadas no pacote pelo Reporte — não podem ser apagadas por um GET vazio da API. */
-    let payloadManualSnapshot = [];
-    let aiUseOpenrouter = false;
+async function loadServerState() {
+  if (!targetUsable(target)) { serverItems = []; validatedFp.clear(); mergePayloadManualValidations(); return; }
+  const r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(normalizeTarget(target))));
+  if (!r.ok) throw new Error('GET validações: ' + r.status);
+  const d = await r.json();
+  serverItems = Array.isArray(d.items) ? d.items : [];
+  validatedFp.clear();
+  for (const it of serverItems) if (it.fingerprint) validatedFp.add(String(it.fingerprint).toLowerCase());
+  mergePayloadManualValidations();
+}
 
-    const FP_URL_NORMALIZE_TYPES = new Set([
-      'endpoint', 'param', 'js', 'security', 'tls', 'nuclei', 'xss', 'sqli', 'dalfox', 'wpscan', 'intel',
-    ]);
+async function loadAiState() {
+  try {
+    const r = await fetch(apiUrl('/api/capabilities'));
+    if (!r.ok) return;
+    const d = await r.json().catch(() => ({}));
+    aiUseOpenrouter = Boolean(d?.ai?.openrouter);
+  } catch(_) {}
+}
 
-    function normalizeTarget(raw) {
-      let s = String(raw || '')
-        .trim()
-        .toLowerCase();
-      if (!s) return '';
-      s = s.replace(/^\*\./, '');
-      if (/^[a-z][a-z0-9+.-]*:\/\//.test(s)) {
-        try {
-          s = String(new URL(s).hostname || '').toLowerCase();
-        } catch (_) {}
-      } else if (/[/?#]/.test(s)) {
-        s = s.split(/[/?#]/, 1)[0];
-      }
-      s = s.replace(/:\d+$/, '').replace(/\.$/, '');
-      return s;
-    }
+// ── FINDINGS LIST (LEFT PANEL) ────────────────────────────────────────────────
 
-    function targetUsableForApi(t) {
-      const s = normalizeTarget(t);
-      return s && /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s);
-    }
-
-    function normSpace(s) {
-      return String(s == null ? '')
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, ' ');
-    }
-
-    function normUrlForFingerprintBrowser(u) {
-      if (!u) return '';
-      try {
-        const x = new URL(String(u));
-        x.hash = '';
-        const keys = [...new Set([...x.searchParams.keys()])].sort();
-        const sp = new URLSearchParams();
-        for (const k of keys) {
-          for (const v of x.searchParams.getAll(k)) sp.append(k, v);
-        }
-        const q = sp.toString();
-        x.search = q ? '?' + q : '';
-        return x.href.toLowerCase();
-      } catch (_) {
-        return normSpace(u);
-      }
-    }
-
-    async function sha256Hex(text) {
-      if (!globalThis.crypto || !globalThis.crypto.subtle || typeof TextEncoder === 'undefined') {
-        throw new Error('SHA-256 indisponível neste browser');
-      }
-      const data = new TextEncoder().encode(String(text || ''));
-      const dig = await crypto.subtle.digest('SHA-256', data);
-      return Array.from(new Uint8Array(dig)).map((b) => b.toString(16).padStart(2, '0')).join('');
-    }
-
-    async function ensureFindingFingerprint(targetRaw, finding) {
-      const f = finding && typeof finding === 'object' ? { ...finding } : {};
-      const fpIn = String(f.fingerprint || '').trim().toLowerCase();
-      if (/^[a-f0-9]{64}$/.test(fpIn)) {
-        f.fingerprint = fpIn;
-        return f;
-      }
-      const typeNorm = normSpace(f.type);
-      const urlPart = FP_URL_NORMALIZE_TYPES.has(typeNorm)
-        ? normUrlForFingerprintBrowser(f.url)
-        : normSpace(f.url);
-      const raw = normSpace(targetRaw) + '|' + typeNorm + '|' + normSpace(f.value) + '|' + urlPart;
-      try {
-        f.fingerprint = await sha256Hex(raw);
-      } catch (_) {
-        f.fingerprint = '';
-      }
-      return f;
-    }
-
-    async function hydrateFindingsFingerprints(rows, targetRaw) {
-      const out = [];
-      for (const row of rows || []) {
-        if (!row || typeof row !== 'object') continue;
-        out.push(await ensureFindingFingerprint(targetRaw, row));
-      }
-      return out;
-    }
-
-    async function fetchCsrf() {
-      const r = await fetch(apiUrl('/api/csrf-token'));
-      const d = await r.json();
-      csrf = String(d.token || '');
-      if (!csrf) throw new Error('CSRF vazio');
-    }
-
-    function mergePayloadManualValidationsIntoState() {
-      const list = Array.isArray(payloadManualSnapshot) ? payloadManualSnapshot : [];
-      if (!list.length) return;
-      const byFp = new Map();
-      for (const it of serverItems || []) {
-        if (!it || typeof it !== 'object') continue;
-        const fp = String(it.fingerprint || '').trim().toLowerCase();
-        if (!/^[a-f0-9]{64}$/.test(fp)) continue;
-        byFp.set(fp, { ...it, fingerprint: fp });
-      }
-      for (const row of list) {
-        if (!row || typeof row !== 'object') continue;
-        const fp = String(row.fingerprint || '').trim().toLowerCase();
-        if (!/^[a-f0-9]{64}$/.test(fp)) continue;
-        validatedFp.add(fp);
-        const cur = byFp.get(fp);
-        if (!cur) {
-          byFp.set(fp, { ...row, fingerprint: fp });
-        } else {
-          const payNotes = String(row.notes != null ? row.notes : '').trim();
-          const curNotes = String(cur.notes != null ? cur.notes : '').trim();
-          if (payNotes.length >= curNotes.length) cur.notes = row.notes != null ? String(row.notes) : cur.notes;
-          if (row.snapshot && typeof row.snapshot === 'object' && !cur.snapshot) cur.snapshot = row.snapshot;
-          if (row.validated_at && String(row.validated_at) > String(cur.validated_at || '')) cur.validated_at = row.validated_at;
-        }
-      }
-      serverItems = [...byFp.values()];
-    }
-
-    async function loadServerState() {
-      if (!targetUsableForApi(target)) {
-        serverItems = [];
-        validatedFp.clear();
-        mergePayloadManualValidationsIntoState();
+function renderFindingList() {
+  const el = document.getElementById('findingList');
+  document.getElementById('findingCount').textContent = findings.length;
+  if (!findings.length) {
+    el.innerHTML = '<div style="padding:16px 12px;font:11px var(--mono);color:var(--dim)">Nenhum achado no pacote. Corre recon e usa «ANOTAÇÃO» na checklist.</div>';
+    return;
+  }
+  el.innerHTML = findings.map((f, i) => {
+    const fp = String(f.fingerprint || '').toLowerCase();
+    const isValidated = validatedFp.has(fp);
+    const inReport = reportVulns.some(v => v.fp === fp);
+    const sev = findingToSevLabel(f);
+    return `<div class="finding-item ${isValidated?'confirmed':''} ${inReport?'in-report':''}" data-idx="${i}" data-fp="${fp}">
+      <span class="fi-sev ${sevClass(sev)}">${sev.slice(0,4)}</span>
+      <div class="fi-text">
+        <div class="fi-type">${esc(String(f.type||''))}</div>
+        <div class="fi-val">${esc(String(f.value||'').slice(0,80))}</div>
+      </div>
+      <span class="fi-check">${inReport ? '✓' : isValidated ? '●' : ''}</span>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.finding-item').forEach(row => {
+    row.addEventListener('click', () => {
+      const idx = Number(row.dataset.idx);
+      const f = findings[idx];
+      if (!f) return;
+      const fp = String(f.fingerprint || '').toLowerCase();
+      const already = reportVulns.findIndex(v => v.fp === fp);
+      if (already >= 0) {
+        // scroll to card
+        document.querySelector(`[data-fp-card="${fp}"]`)?.scrollIntoView({ behavior: 'smooth' });
+        switchTab('vulns');
         return;
       }
-      let r;
-      try {
-        r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)));
-      } catch (_) {
-        const err = new Error('REPORTE_OFFLINE');
-        err.reporteOffline = true;
-        throw err;
+      if (validatedFp.has(fp)) addVulnFromFinding(f, fp);
+      else {
+        if (!confirm(`"${String(f.value||'').slice(0,60)}" ainda não foi validado no Reporte. Adicionar ao relatório mesmo assim?`)) return;
+        addVulnFromFinding(f, fp);
       }
-      if (!r.ok) throw new Error('GET validações: ' + r.status);
-      const d = await r.json();
-      serverItems = Array.isArray(d.items) ? d.items : [];
-      validatedFp.clear();
-      for (const it of serverItems) {
-        if (it.fingerprint) validatedFp.add(String(it.fingerprint).toLowerCase());
-      }
-      mergePayloadManualValidationsIntoState();
+    });
+  });
+}
+
+// ── VULN CARD GENERATION ──────────────────────────────────────────────────────
+
+const SEV_TEMPLATES = {
+  'supabase_payment_bypass': {
+    title: 'Escalada de Privilégio de Pagamento — Ativação de Plano Premium sem Pagamento via PATCH Direto na API',
+    desc: 'Foi identificada uma vulnerabilidade crítica de lógica de negócio: qualquer usuário autenticado pode ativar o plano premium da plataforma sem realizar qualquer pagamento, simplesmente enviando uma requisição PATCH direta ao endpoint /rest/v1/user_plans com os campos plan_type e premium_expires_at.',
+    scenario: 'Um atacante autenticado com uma conta gratuita pode:\n- Enviar uma única requisição PATCH ao endpoint de assinatura\n- Obter acesso premium imediato e permanente sem pagamento\n- Contornar todo o sistema de cobrança e monetização da plataforma\n- Compartilhar o método com outros usuários, comprometendo as receitas da organização',
+    rec: 'Implementar política RLS restritiva com WITH CHECK que bloqueie alteração direta de plan_type e premium_expires_at.\nGerenciar mudanças de plano exclusivamente via função de servidor segura (Edge Function) com validação de webhook do Stripe.\nNunca confiar em campos de assinatura enviados diretamente pelo cliente.\nImplementar auditoria e alertas para mudanças na tabela user_plans.',
+    tags: 'Web Application, Business Logic Flaw, Broken Access Control, Payment Bypass, Privilege Escalation',
+    cvss: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N',
+  },
+  'supabase_business_logic_study_records': {
+    title: 'Business Logic Flaw — Backend sem Validação de Input em Registros de Estudo (Injeção de Dados Falsos)',
+    desc: 'Foi identificada uma falha de lógica de negócio no endpoint POST /rest/v1/study_records. O backend aceita e persiste registros de estudo com valores completamente irreais sem qualquer validação de consistência ou plausibilidade.',
+    scenario: 'Um usuário autenticado mal-intencionado pode:\n- Inserir registros de estudo com valores absurdos para dominar rankings artificialmente\n- Falsificar progresso e metas da plataforma sem estudo real\n- Manipular dados de analytics e dashboards\n- Prejudicar usuários legítimos cujas posições de ranking são afetadas',
+    rec: 'Implementar validação server-side de todos os campos:\n- Limites máximos plausíveis para duration_seconds (máx. 43200s = 12h)\n- correct_count ≤ questions_count\n- record_date ≤ data atual\nImplementar limite diário de horas registradas por usuário.\nNunca confiar nos dados do cliente para cálculos de ranking.',
+    tags: 'Web Application, Business Logic Flaw, Insufficient Input Validation, Data Integrity',
+    cvss: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N',
+  },
+  'supabase_idor_user_plans_anon': {
+    title: 'Broken Access Control — Exposição de Dados de Assinatura via API Supabase (user_plans)',
+    desc: 'Foi identificado que a tabela user_plans do Supabase está acessível via API REST por qualquer usuário autenticado, expondo dados sensíveis de assinatura incluindo plan_type, premium_expires_at, stripe_customer_id e stripe_subscription_id.',
+    scenario: 'Um usuário autenticado mal-intencionado pode:\n- Enumerar e listar dados de assinatura de outros usuários da plataforma\n- Obter identificadores Stripe (customer_id, subscription_id) de terceiros\n- Mapear quais usuários possuem plano premium\n- Utilizar as informações para ataques adicionais (engenharia social, ataques ao Stripe)',
+    rec: 'Implementar política RLS restritiva no Supabase para a tabela user_plans:\nCREATE POLICY "user sees own plans" ON user_plans FOR SELECT USING (auth.uid() = user_id);\nNunca expor identificadores de sistemas externos (Stripe IDs) desnecessariamente.\nRealizar auditoria completa das permissões de todas as tabelas.',
+    tags: 'Web Application, Broken Access Control, IDOR, Information Disclosure, Misconfiguration',
+    cvss: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N',
+  },
+  'supabase_stripe_field_manipulation': {
+    title: 'Estado Inconsistente de Assinatura — Manipulação Direta de Campos do Stripe via API',
+    desc: 'Foi identificado que usuários autenticados podem modificar diretamente campos relacionados à assinatura (stripe_subscription_id, stripe_customer_id, plan_type, premium_expires_at) via PATCH na API REST do Supabase, sem qualquer validação com o Stripe.',
+    scenario: 'Um atacante autenticado pode:\n- Corromper o estado de assinatura de sua própria conta\n- Manipular campos de pagamento para criar estados inválidos\n- Contornar verificações de integridade da assinatura\n- Usar como base para exploração adicional (Payment Bypass)',
+    rec: 'Remover permissão de UPDATE direto em campos sensíveis (plan_type, premium_expires_at, stripe_*) via API pública.\nImplementar validação server-side obrigatória para quaisquer mudanças de plano.\nSincronizar estado de assinatura exclusivamente via webhook do Stripe.',
+    tags: 'Web Application, Broken Access Control, Business Logic Flaw, Payment Security',
+    cvss: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N',
+  },
+  'supabase_missing_rate_limit': {
+    title: 'Ausência de Rate Limiting e de Autenticação de Dois Fatores no Endpoint de Login',
+    desc: 'Foi identificado que o endpoint de autenticação POST /auth/v1/token?grant_type=password não implementa qualquer mecanismo de limitação de tentativas (rate limiting) nem exige autenticação de dois fatores (2FA/MFA).',
+    scenario: 'Um atacante que possua o endereço de e-mail de um usuário pode:\n- Iterar automaticamente listas de senhas comuns contra o endpoint de login\n- Obter acesso à conta sem qualquer bloqueio ou alerta\n- Acessar dados de estudo, progresso, ranking e status de assinatura da vítima',
+    rec: 'Implementar rate limiting (máx. 5-10 tentativas por IP/e-mail com backoff progressivo).\nHabilitar autenticação de dois fatores (TOTP/MFA) para todos os usuários.\nImplementar bloqueio temporário ou CAPTCHA após número definido de falhas.\nMonitorar tentativas consecutivas de login falhas.',
+    tags: 'Web Application, Broken Authentication, Brute Force, Missing Rate Limiting',
+    cvss: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N',
+  },
+};
+
+function cvssToScore(vector) {
+  // Simplified CVSS score lookup from known vectors
+  const known = {
+    'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N': '9.6 (Crítica)',
+    'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N': '8.8 (Alta)',
+    'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N': '6.5 (Alta)',
+    'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N': '6.5 (Alta)',
+    'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N': '6.5 (Média)',
+  };
+  return known[String(vector || '')] || '';
+}
+
+function newVulnEntry(f, fp) {
+  const type = String(f.type || '');
+  const tpl = SEV_TEMPLATES[type] || {};
+  const sev = findingToSevLabel(f);
+  const cvss = f.cvss || tpl.cvss || '';
+  return {
+    fp: fp || '',
+    status: 'NÃO CORRIGIDO',
+    sev: sev,
+    title: tpl.title || String(f.value || '').trim(),
+    desc: tpl.desc || String(f.meta || ''),
+    scenario: tpl.scenario || '',
+    rec: tpl.rec || '',
+    tags: tpl.tags || [f.owasp, f.mitre].filter(Boolean).join(', '),
+    cvss: cvss,
+    cvssScore: cvssToScore(cvss),
+    assets: String(f.url || ''),
+    poc: '',
+    obs: '',
+    owasp: String(f.owasp || ''),
+    mitre: String(f.mitre || ''),
+    collapsed: false,
+  };
+}
+
+function addVulnFromFinding(f, fp) {
+  const v = newVulnEntry(f, fp);
+  reportVulns.push(v);
+  renderVulnCards();
+  updateSummary();
+  renderFindingList();
+  switchTab('vulns');
+  saveAll();
+  setStatus(`Vulnerabilidade adicionada ao relatório (${v.sev})`, 'ok');
+}
+
+function renderVulnCards() {
+  const container = document.getElementById('vulnCards');
+  if (!reportVulns.length) {
+    container.innerHTML = '<div style="padding:20px;font:11px var(--mono);color:var(--dim)">Nenhuma vulnerabilidade adicionada ainda.</div>';
+    return;
+  }
+  const SEV_ORDER = { 'CRÍTICA': 0, 'ALTA': 1, 'MÉDIA': 2, 'BAIXA': 3, 'INFORMACIONAL': 4 };
+  const sorted = [...reportVulns].sort((a, b) => (SEV_ORDER[a.sev] ?? 9) - (SEV_ORDER[b.sev] ?? 9));
+  container.innerHTML = sorted.map((v, i) => {
+    const n = i + 1;
+    const collapsed = v.collapsed;
+    return `<div class="vuln-card" data-fp-card="${v.fp}">
+      <div class="vuln-card-hd" onclick="toggleVulnCard('${v.fp}')">
+        <span class="vuln-num">#${n}</span>
+        <span class="fi-sev ${sevClass(v.sev)}">${esc(v.sev)}</span>
+        <span class="vuln-title">${esc(v.title || '(sem título)')}</span>
+        <select class="vuln-status-sel" onchange="setVulnStatus('${v.fp}', this.value)" onclick="event.stopPropagation()">
+          <option ${v.status==='NÃO CORRIGIDO'?'selected':''}>NÃO CORRIGIDO</option>
+          <option ${v.status==='EM RETESTE'?'selected':''}>EM RETESTE</option>
+          <option ${v.status==='CORRIGIDO'?'selected':''}>CORRIGIDO</option>
+        </select>
+        <button class="vuln-collapse-btn">${collapsed ? '▶' : '▼'}</button>
+        <button class="vuln-collapse-btn" onclick="removeVuln('${v.fp}'); event.stopPropagation()" title="Remover">✕</button>
+      </div>
+      <div class="vuln-body ${collapsed ? 'collapsed' : ''}" id="vbody-${v.fp}">
+        <div class="vuln-fields">
+          <div class="rep-field vuln-row">
+            <label>Título da vulnerabilidade</label>
+            <input class="rep-input" value="${esc(v.title)}" onchange="setVulnField('${v.fp}','title',this.value)" />
+          </div>
+          <div class="rep-field vuln-row">
+            <label>Descrição</label>
+            <textarea class="rep-ta tall" onchange="setVulnField('${v.fp}','desc',this.value)">${esc(v.desc)}</textarea>
+          </div>
+          <div class="rep-field vuln-row">
+            <label>Cenário de Ataque</label>
+            <textarea class="rep-ta" onchange="setVulnField('${v.fp}','scenario',this.value)">${esc(v.scenario)}</textarea>
+          </div>
+          <div class="rep-field vuln-row">
+            <label>Recomendação</label>
+            <textarea class="rep-ta" onchange="setVulnField('${v.fp}','rec',this.value)">${esc(v.rec)}</textarea>
+          </div>
+          <div class="rep-field">
+            <label>Tags (vírgula separado)</label>
+            <input class="rep-input" value="${esc(v.tags)}" onchange="setVulnField('${v.fp}','tags',this.value)" />
+          </div>
+          <div class="rep-field">
+            <label>CVSS Vector</label>
+            <input class="rep-input" value="${esc(v.cvss)}" onchange="setVulnField('${v.fp}','cvss',this.value)" />
+          </div>
+          <div class="rep-field">
+            <label>CVSS Score</label>
+            <input class="rep-input" value="${esc(v.cvssScore)}" onchange="setVulnField('${v.fp}','cvssScore',this.value)" />
+          </div>
+          <div class="rep-field">
+            <label>OWASP / MITRE</label>
+            <input class="rep-input" value="${esc([v.owasp, v.mitre].filter(Boolean).join(' / '))}" onchange="setVulnField('${v.fp}','owasp',this.value)" />
+          </div>
+          <div class="rep-field vuln-row">
+            <label>Ativos afetados</label>
+            <textarea class="rep-ta short" onchange="setVulnField('${v.fp}','assets',this.value)">${esc(v.assets)}</textarea>
+          </div>
+          <div class="rep-field vuln-row">
+            <div class="poc-label">Proof of Concept</div>
+            <div class="poc-area">
+              <textarea class="rep-ta" style="background:transparent;border:none;padding:0" placeholder="curl -X PATCH ... ou passos reproduzíveis" onchange="setVulnField('${v.fp}','poc',this.value)">${esc(v.poc)}</textarea>
+            </div>
+          </div>
+          <div class="rep-field vuln-row">
+            <label>Observação</label>
+            <textarea class="rep-ta short" onchange="setVulnField('${v.fp}','obs',this.value)">${esc(v.obs)}</textarea>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleVulnCard(fp) {
+  const v = reportVulns.find(x => x.fp === fp);
+  if (!v) return;
+  v.collapsed = !v.collapsed;
+  const body = document.getElementById(`vbody-${fp}`);
+  if (body) body.className = 'vuln-body' + (v.collapsed ? ' collapsed' : '');
+  const btns = document.querySelector(`[data-fp-card="${fp}"] .vuln-collapse-btn`);
+  if (btns) btns.textContent = v.collapsed ? '▶' : '▼';
+}
+
+function setVulnStatus(fp, val) {
+  const v = reportVulns.find(x => x.fp === fp);
+  if (v) { v.status = val; updateSummary(); saveAll(); }
+}
+
+function setVulnField(fp, field, val) {
+  const v = reportVulns.find(x => x.fp === fp);
+  if (v) { v[field] = val; saveAll(); }
+}
+
+function removeVuln(fp) {
+  if (!confirm('Remover esta vulnerabilidade do relatório?')) return;
+  reportVulns = reportVulns.filter(x => x.fp !== fp);
+  renderVulnCards();
+  updateSummary();
+  renderFindingList();
+  saveAll();
+}
+
+// ── SUMMARY UPDATE ────────────────────────────────────────────────────────────
+
+function updateSummary() {
+  const sevMap = { 'CRÍTICA': 0, 'ALTA': 0, 'MÉDIA': 0, 'BAIXA': 0 };
+  let fixed = 0, notFixed = 0;
+  for (const v of reportVulns) {
+    const s = String(v.sev || '').toUpperCase();
+    if (s in sevMap) sevMap[s]++;
+    if (v.status === 'CORRIGIDO') fixed++;
+    else notFixed++;
+  }
+  document.getElementById('sumTotal').textContent    = reportVulns.length;
+  document.getElementById('sumCrit').textContent     = sevMap['CRÍTICA'];
+  document.getElementById('sumHigh').textContent     = sevMap['ALTA'];
+  document.getElementById('sumMed').textContent      = sevMap['MÉDIA'];
+  document.getElementById('sumLow').textContent      = sevMap['BAIXA'];
+  document.getElementById('sumFixed').textContent    = fixed;
+  document.getElementById('sumNotFixed').textContent = notFixed;
+}
+
+// ── META FIELDS ───────────────────────────────────────────────────────────────
+
+const META_IDS = ['dateStart','dateEnd','projectName','analystName','methodology','scopeWebApp',
+  'scopeBackend','scopeAuthEps','scopeDataEps','scopeContext','scopeTechs','conclusionText','prioritiesText'];
+
+function applyMetaToDom() {
+  for (const id of META_IDS) {
+    const el = document.getElementById(id);
+    if (el) el.value = reportMeta[id] || '';
+  }
+}
+
+function readMetaFromDom() {
+  for (const id of META_IDS) {
+    const el = document.getElementById(id);
+    if (el) reportMeta[id] = el.value || '';
+  }
+}
+
+function readVulnsFromDom() {
+  // values already set via onchange handlers — nothing to do
+}
+
+// ── AUTO-FILL ─────────────────────────────────────────────────────────────────
+
+function autoFill() {
+  readMetaFromDom();
+  const now = new Date();
+  const t = normalizeTarget(target) || '(alvo)';
+
+  if (!reportMeta.dateEnd)   reportMeta.dateEnd   = now.toISOString().slice(0, 10);
+  if (!reportMeta.dateStart) reportMeta.dateStart = new Date(now - 2 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  if (!reportMeta.projectName) reportMeta.projectName = t;
+
+  // Methodology template
+  if (!reportMeta.methodology.trim()) {
+    reportMeta.methodology =
+      `A avaliação de segurança foi conduzida sobre o alvo ${t} no período de ` +
+      `${reportMeta.dateStart} a ${reportMeta.dateEnd}. ` +
+      `A metodologia adotada combina técnicas de OSINT, reconhecimento ativo, ` +
+      `análise de surface de ataque, testes de lógica de negócio e verificação de ` +
+      `controles de acesso, seguindo o framework OWASP Testing Guide (OTG) v4 e ` +
+      `PTES (Penetration Testing Execution Standard).`;
+  }
+
+  // Scope auto-fill from findings
+  if (!reportMeta.scopeWebApp.trim()) {
+    reportMeta.scopeWebApp = `https://${t} — aplicação web`;
+  }
+
+  // Technologies from tech findings
+  const techFindings = findings.filter(f => /tech|wappalyzer|fingerprint/i.test(String(f.type||'')));
+  if (techFindings.length && !reportMeta.scopeTechs.trim()) {
+    reportMeta.scopeTechs = techFindings.map(f => String(f.value||'').trim()).filter(Boolean).slice(0, 10).join('\n');
+  }
+
+  // Supabase backend detection
+  const supFinding = findings.find(f => /supabase/i.test(String(f.value||'') + String(f.type||'')));
+  if (supFinding && !reportMeta.scopeBackend.trim()) {
+    const match = String(supFinding.value||'').match(/https?:\/\/[a-z0-9]+\.supabase\.co/i);
+    reportMeta.scopeBackend = match
+      ? `Supabase (${match[0]}) — banco de dados PostgreSQL gerenciado com API REST autogenerada, autenticação via GoTrue (/auth/v1/) e políticas de Row Level Security (RLS).`
+      : 'Supabase — banco de dados PostgreSQL com API REST autogenerada';
+  }
+
+  applyMetaToDom();
+  saveAll();
+  setStatus('Auto-preenchimento concluído.', 'ok');
+}
+
+// ── GENERATE CONCLUSION ───────────────────────────────────────────────────────
+
+function generateConclusion() {
+  readMetaFromDom();
+  const t = normalizeTarget(target) || reportMeta.projectName || '(alvo)';
+  const ds = reportMeta.dateStart || '?';
+  const de = reportMeta.dateEnd   || new Date().toISOString().slice(0, 10);
+  const total = reportVulns.length;
+  if (!total) { setStatus('Adiciona vulnerabilidades primeiro.', ''); return; }
+
+  const sevMap = { 'CRÍTICA': [], 'ALTA': [], 'MÉDIA': [], 'BAIXA': [] };
+  for (const v of reportVulns) { const s = v.sev; if (s in sevMap) sevMap[s].push(v.title); }
+
+  let txt = `No período de ${ds} a ${de}, a avaliação sobre o alvo https://${t} ` +
+    `no âmbito do projeto ${reportMeta.projectName || t} confirmou uma superfície de risco relevante, ` +
+    `centrada nas seguintes vulnerabilidades:\n\n`;
+
+  const SEV_ORDER = ['CRÍTICA', 'ALTA', 'MÉDIA', 'BAIXA'];
+  let n = 1;
+  for (const sev of SEV_ORDER) {
+    for (const title of sevMap[sev]) {
+      txt += `(${String.fromCharCode(0x2170 - 1 + n)}) ${title} — ${sev};\n`;
+      n++;
     }
+  }
 
-    async function loadAiState() {
-      try {
-        const r = await fetch(apiUrl('/api/capabilities'));
-        if (!r.ok) return;
-        const d = await r.json().catch(() => ({}));
-        aiUseOpenrouter = Boolean(d && d.ai && d.ai.openrouter);
-      } catch (_) {}
-    }
+  txt += `\nEm conjunto, estes problemas representam risco direto à ` +
+    `confidencialidade, integridade e disponibilidade do sistema. ` +
+    `O impacto pode ser explorado com baixo nível de conhecimento técnico.\n\n` +
+    `As vulnerabilidades não corrigidas totalizam ${reportVulns.filter(v => v.status !== 'CORRIGIDO').length} de ${total} identificadas.`;
 
-    function setMsg(t, cls) {
-      const el = document.getElementById('msg');
-      el.textContent = t || '';
-      el.className = 'log' + (cls ? ' ' + cls : '');
-    }
+  document.getElementById('conclusionText').value = txt;
+  reportMeta.conclusionText = txt;
 
-    function normalizeImportedFinding(f) {
-      if (!f || typeof f !== 'object') return null;
-      const fp = String(f.fingerprint || '').trim().toLowerCase();
-      const prio = f.prio != null ? f.prio : f.priority != null ? f.priority : '';
-      const out = {
-        type: f.type != null ? String(f.type) : '',
-        prio: prio !== '' && prio != null ? String(prio) : '',
-        value: f.value != null ? String(f.value) : '',
-        url: f.url != null ? String(f.url) : '',
-        meta: f.meta != null ? String(f.meta) : '',
-      };
-      if (f.score != null) out.score = f.score;
-      if (Array.isArray(f.owasp)) out.owasp = f.owasp;
-      if (Array.isArray(f.mitre)) out.mitre = f.mitre;
-      if (/^[a-f0-9]{64}$/.test(fp)) out.fingerprint = fp;
-      return out;
-    }
+  // Generate priorities
+  const crits = reportVulns.filter(v => v.sev === 'CRÍTICA' || v.sev === 'ALTA');
+  if (crits.length && !reportMeta.prioritiesText.trim()) {
+    const prio = crits.map((v, i) => `${i + 1}. ${v.rec?.split('\n')[0] || v.title}`).join('\n');
+    document.getElementById('prioritiesText').value = prio;
+    reportMeta.prioritiesText = prio;
+  }
 
-    function normalizeImportedManualValidation(row) {
-      if (!row || typeof row !== 'object') return null;
-      const fp = String(row.fingerprint || '').trim().toLowerCase();
-      if (!/^[a-f0-9]{64}$/.test(fp)) return null;
-      return {
-        fingerprint: fp,
-        notes: row.notes != null ? String(row.notes) : '',
-        snapshot: row.snapshot && typeof row.snapshot === 'object' ? row.snapshot : null,
-        validated_at: row.validated_at != null ? String(row.validated_at) : '',
-      };
-    }
+  saveAll();
+  setStatus('Conclusão gerada automaticamente.', 'ok');
+}
 
-    function normalizeTaxonomyTags(list, idRe) {
-      const out = [];
-      for (const t of list || []) {
-        const id = typeof t === 'string' ? t : t && t.id != null ? String(t.id) : '';
-        const clean = String(id || '').trim().toUpperCase();
-        if (!idRe.test(clean)) continue;
-        if (!out.some((x) => x.id === clean)) {
-          out.push({
-            id: clean,
-            title: t && t.title != null ? String(t.title) : undefined,
-            label: t && t.label != null ? String(t.label) : undefined,
-            url: t && t.url != null ? String(t.url) : undefined,
-          });
-        }
-      }
-      return out.slice(0, 12);
-    }
+// ── GENERATE FULL TEXT (Relatorio.txt format) ─────────────────────────────────
 
-    function taxonomyIds(list, idRe) {
-      return normalizeTaxonomyTags(list, idRe).map((x) => x.id);
-    }
+function generateFullText() {
+  readMetaFromDom();
+  const t = normalizeTarget(target) || reportMeta.projectName || 'alvo';
+  const ds = reportMeta.dateStart;
+  const de = reportMeta.dateEnd || new Date().toISOString().slice(0, 10);
 
-    function extractFindingsFromImportRoot(obj) {
-      if (Array.isArray(obj)) return obj;
-      if (obj && Array.isArray(obj.findings)) return obj.findings;
-      if (obj && Array.isArray(obj.items)) return obj.items;
-      return [];
-    }
+  const sevMap = { 'CRÍTICA': 0, 'ALTA': 0, 'MÉDIA': 0, 'BAIXA': 0 };
+  let fixed = 0, notFixed = 0, retest = 0;
+  for (const v of reportVulns) {
+    if (v.sev in sevMap) sevMap[v.sev]++;
+    if (v.status === 'CORRIGIDO') fixed++;
+    else if (v.status === 'EM RETESTE') retest++;
+    else notFixed++;
+  }
 
-    function syncPayloadToSession() {
-      const payload = {
-        target,
-        updatedAt: new Date().toISOString(),
-        findings: findings.map((x) => ({ ...x })),
-      };
-      const raw = JSON.stringify(payload);
-      if (raw.length > 4_500_000) throw new Error('Pacote demasiado grande para sessionStorage.');
-      sessionStorage.setItem(REPORTE_PAYLOAD_KEY, raw);
-      try {
-        localStorage.setItem(REPORTE_PAYLOAD_SHARED_KEY, raw);
-      } catch (_) {}
-    }
+  let out = '';
+  const sep = '\n\n';
+  const line = '─'.repeat(60);
 
-    function readAnotacaoPayloadRaw() {
-      try {
-        const a = sessionStorage.getItem(ANOTACAO_PAYLOAD_KEY);
-        if (a) {
-          sessionStorage.removeItem(ANOTACAO_PAYLOAD_KEY);
-          return a;
-        }
-      } catch (_) {}
-      try {
-        const h = localStorage.getItem(ANOTACAO_HANDOFF_LS_KEY) || '';
-        if (h) {
-          localStorage.removeItem(ANOTACAO_HANDOFF_LS_KEY);
-          return h;
-        }
-      } catch (_) {}
-      try {
-        const r = sessionStorage.getItem(REPORTE_PAYLOAD_KEY);
-        if (r) {
-          sessionStorage.removeItem(REPORTE_PAYLOAD_KEY);
-          return r;
-        }
-      } catch (_) {}
-      try {
-        /** Não apagar: o Reporte e o hub também usam esta chave; só leitura para fallback. */
-        return localStorage.getItem(REPORTE_PAYLOAD_SHARED_KEY) || '';
-      } catch (_) {
-        return '';
-      }
-    }
+  // HEADER
+  out += `RELATÓRIO DE TESTE DE PENETRAÇÃO\n${line}\n`;
+  out += `Projeto: ${reportMeta.projectName || t}\n`;
+  out += `Alvo: https://${t}\n`;
+  out += `Período: ${ds || '?'} — ${de}\n`;
+  out += `Analista: ${reportMeta.analystName || '?'}\n`;
+  out += sep;
 
-    function updateHeadLineFromState() {
-      const el = document.getElementById('headLine');
-      if (!el) return;
-      el.textContent = targetUsableForApi(target)
-        ? 'Alvo: ' +
-            target +
-            ' · ' +
-            findings.length +
-            ' achados na lista · ' +
-            validatedFp.size +
-            ' validados na base'
-        : 'Sem alvo válido no pacote — indica Target ($) no GHOSTRECON antes de gravar validações.';
-    }
+  // SUMÁRIO
+  out += `SUMÁRIO DOS TESTES\n${line}\n`;
+  out += `Início: ${ds || '?'}     Fim: ${de}\n\n`;
+  out += `TOTAL DE VULNERABILIDADES: ${reportVulns.length}\n\n`;
+  out += `TOTAL DE VULNERABILIDADES DE SEVERIDADE CRÍTICA: ${sevMap['CRÍTICA']}\n`;
+  out += `TOTAL DE VULNERABILIDADES DE SEVERIDADE ALTA: ${sevMap['ALTA']}\n`;
+  out += `TOTAL DE VULNERABILIDADES DE SEVERIDADE MÉDIA: ${sevMap['MÉDIA']}\n`;
+  out += `TOTAL DE VULNERABILIDADES DE SEVERIDADE BAIXA: ${sevMap['BAIXA']}\n\n`;
+  out += `TOTAL DE VULNERABILIDADES CORRIGIDAS: ${fixed}\n`;
+  out += `TOTAL DE VULNERABILIDADES EM RETESTE: ${retest}\n`;
+  out += `TOTAL DE VULNERABILIDADES NÃO CORRIGIDAS: ${notFixed}\n`;
+  out += sep;
 
-    async function loadLatestRunIntoChecklist(preferredTargetRaw) {
-      const preferredTarget = normalizeTarget(preferredTargetRaw || target);
-      const rList = await fetch(apiUrl('/api/runs?limit=50'));
-      if (!rList.ok) throw new Error('Não foi possível listar recons (' + rList.status + ').');
-      const dList = await rList.json().catch(() => ({}));
-      const runs = Array.isArray(dList.runs) ? dList.runs : [];
-      if (!runs.length) throw new Error('Ainda não há recons gravados na base.');
-      let chosen = null;
-      if (preferredTarget) {
-        chosen = runs.find((x) => normalizeTarget(x && x.target) === preferredTarget) || null;
-      }
-      if (!chosen) chosen = runs[0];
-      if (!chosen || !Number.isFinite(Number(chosen.id))) throw new Error('Recon inválido.');
-      const runId = Number(chosen.id);
-      const rRun = await fetch(apiUrl('/api/runs/' + runId));
-      if (!rRun.ok) throw new Error('Run #' + runId + ' (' + rRun.status + ').');
-      const run = await rRun.json().catch(() => ({}));
-      const rows0 = extractFindingsFromImportRoot(run)
-        .map(normalizeImportedFinding)
-        .filter(Boolean)
-        .slice(0, REPORT_IMPORT_MAX);
-      if (!rows0.length) throw new Error('Run sem achados utilizáveis.');
-      target = normalizeTarget((run && run.target) || preferredTarget || target);
-      findings = await hydrateFindingsFingerprints(rows0, target);
-      syncPayloadToSession();
-      updateHeadLineFromState();
-      return { runId, rows: findings };
-    }
+  // ESCOPO
+  out += `ESCOPO DO PROJETO\n${line}\n`;
+  if (reportMeta.scopeWebApp)    out += `Aplicação web: ${reportMeta.scopeWebApp}\n\n`;
+  if (reportMeta.scopeBackend)   out += `Backend: ${reportMeta.scopeBackend}\n\n`;
+  if (reportMeta.scopeAuthEps)   out += `Endpoints de autenticação: ${reportMeta.scopeAuthEps}\n\n`;
+  if (reportMeta.scopeDataEps)   out += `Endpoints de dados: ${reportMeta.scopeDataEps}\n\n`;
+  if (reportMeta.scopeContext)   out += `Contexto de lógica de negócio: ${reportMeta.scopeContext}\n`;
+  out += sep;
 
-    const ANN_KEYS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10'];
-    const ANN_TITLES = [
-      '1. Identificação do Alvo',
-      '2. Portas e Serviços',
-      '3. Enumeração Web',
-      '4. Possíveis Vetores de Ataque',
-      '5. Testes Realizados (VALIDAÇÃO MANUAL)',
-      '6. Exploração',
-      '7. Pós-Exploração (Privesc)',
-      '8. Impacto',
-      '9. Referência (OWASP / MITRE)',
-      '10. Status Final',
-    ];
+  // METODOLOGIA
+  if (reportMeta.methodology) {
+    out += `METODOLOGIA\n${line}\n${reportMeta.methodology}\n${sep}`;
+  }
 
-    function annStorageKey() {
-      const t = normalizeTarget(target);
-      return 'ghostrecon_reporte_ann_v1:' + (t && targetUsableForApi(t) ? t : '_sem_alvo');
-    }
+  // VULNERABILIDADES
+  const SEV_ORDER = ['CRÍTICA', 'ALTA', 'MÉDIA', 'BAIXA', 'INFORMACIONAL'];
+  const sorted = [...reportVulns].sort((a, b) => SEV_ORDER.indexOf(a.sev) - SEV_ORDER.indexOf(b.sev));
 
-    function emptyAnnMap() {
-      const o = {};
-      for (const k of ANN_KEYS) o[k] = '';
-      return o;
-    }
+  sorted.forEach((v, i) => {
+    out += `VULNERABILIDADE ${i + 1}\n${line}\n`;
+    out += `[${v.status}] ${v.title}\n\n`;
+    out += `SEVERIDADE\n${v.sev}\n\n`;
+    if (v.desc)     { out += `DESCRIÇÃO\n${v.desc}\n\n`; }
+    if (v.scenario) { out += `CENÁRIO DE ATAQUE\n${v.scenario}\n\n`; }
+    if (v.rec)      { out += `RECOMENDAÇÃO\n${v.rec}\n\n`; }
+    if (v.tags)     { out += `TAGS\n${v.tags.split(',').map(t => t.trim()).join('\n')}\n\n`; }
+    if (v.cvss)     { out += `CVSS\n${v.cvss}\nCVSS Base Score: ${v.cvssScore || '?'}\n\n`; }
+    if (v.assets)   { out += `ATIVOS AFETADOS\n${v.assets}\n\n`; }
+    if (v.poc)      { out += `PROOF OF CONCEPT\n${v.poc}\n\n`; }
+    if (v.obs)      { out += `OBSERVAÇÃO\n${v.obs}\n\n`; }
+    out += sep;
+  });
 
-    function readAnnMap() {
-      try {
-        const raw = localStorage.getItem(annStorageKey());
-        if (!raw) return null;
-        const o = JSON.parse(raw);
-        if (!o || typeof o !== 'object') return null;
-        const out = emptyAnnMap();
-        for (const k of ANN_KEYS) {
-          if (typeof o[k] === 'string') out[k] = o[k];
-        }
-        return out;
-      } catch (_) {
-        return null;
-      }
-    }
+  // CONCLUSÃO
+  if (reportMeta.conclusionText) {
+    out += `CONCLUSÃO\n${line}\n${reportMeta.conclusionText}\n${sep}`;
+  }
+  if (reportMeta.prioritiesText) {
+    out += `MEDIDAS PRIORITÁRIAS\n${line}\n${reportMeta.prioritiesText}\n`;
+  }
 
-    function writeAnnMap(map) {
-      const payload = { ...emptyAnnMap(), ...map, savedAt: new Date().toISOString() };
-      try {
-        localStorage.setItem(annStorageKey(), JSON.stringify(payload));
-      } catch (_) {}
-    }
+  return out.trim();
+}
 
-    function annFpMarker(fp) {
-      return '\n# --- ' + String(fp).toLowerCase() + ' ---\n';
-    }
+// ── EXPORT ────────────────────────────────────────────────────────────────────
 
-    function upsertFpSection(text, fp, body) {
-      const fpL = String(fp).toLowerCase();
-      const head = annFpMarker(fpL);
-      const re = new RegExp('\\n# --- ' + fpL + ' ---\\n[\\s\\S]*?(?=\\n# --- [a-f0-9]{64} ---|$)');
-      const base = String(text || '').replace(re, '');
-      return (base + head + String(body || '').trim() + '\n').trim();
-    }
+function dlBlob(content, filename, mime = 'text/plain;charset=utf-8') {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2500);
+}
 
-    function appendDedupeLine(sectionText, line) {
-      const ln = String(line || '').trim();
-      if (!ln) return String(sectionText || '');
-      const cur = String(sectionText || '');
-      const lines = cur.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-      const key = ln.toLowerCase();
-      for (const x of lines) {
-        if (x.toLowerCase() === key) return cur;
-      }
-      return cur ? cur + '\n' + ln : ln;
-    }
+function safeFilename(suffix) {
+  const t = normalizeTarget(target) || reportMeta.projectName || 'alvo';
+  const safe = t.replace(/[^\w.-]+/g, '_').slice(0, 40);
+  const date = new Date().toISOString().slice(0, 10);
+  return `relatorio_${safe}_${date}${suffix}`;
+}
 
-    function defaultAnnSection1() {
-      const t = normalizeTarget(target);
-      const ts = new Date().toISOString();
-      return (
-        'Alvo: ' +
-        (targetUsableForApi(t) ? t : '(indica alvo no pacote)') +
-        '\nData/Hora: ' +
-        ts +
-        '\nFase: Recon — checklist Reporte (validação manual)'
-      );
-    }
+// ── TABS ──────────────────────────────────────────────────────────────────────
 
-    function mergeFindingIntoAnnMap(map, f, fp, notes, opts) {
-      const full = !opts || opts.full !== false;
-      const fpL = String(fp).toLowerCase();
-      if (!/^[a-f0-9]{64}$/.test(fpL)) return map || emptyAnnMap();
-      const m = map || emptyAnnMap();
-      const typ = String(f.type || '').trim().toLowerCase();
-      const val = String(f.value || '').trim();
-      const url = String(f.url || '').trim();
-      const ow = taxonomyIds(f && f.owasp, /^A\d{2}$/i);
-      const mit = taxonomyIds(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
+}
 
-      if (full && !String(m.s1 || '').trim()) m.s1 = defaultAnnSection1();
+// ── DRAG RESIZE ───────────────────────────────────────────────────────────────
 
-      if (full) {
-        if (typ === 'nmap' || /\d+\/(tcp|udp)/i.test(val)) {
-          m.s2 = appendDedupeLine(m.s2, '- ' + (val || '(serviço sem descrição)'));
-        } else if (typ === 'security' || typ === 'nuclei') {
-          m.s2 = appendDedupeLine(m.s2, '- [' + typ + '] ' + (val || '—'));
-        }
-        if (typ === 'tech' || typ === 'wappalyzer' || typ === 'fingerprint' || typ === 'cms') {
-          m.s3 = appendDedupeLine(m.s3, '- [tech] ' + (val || typ));
-        } else if (typ === 'endpoint' || typ === 'url' || typ === 'path') {
-          const u = url || val;
-          m.s3 = appendDedupeLine(m.s3, '- [endpoint] ' + (u || val));
-        } else if (typ === 'param' || typ === 'parameter') {
-          m.s3 = appendDedupeLine(m.s3, '- [parâmetro] ' + val + (url ? ' @ ' + url : ''));
-        } else if (
-          typ === 'js' ||
-          typ === 'security' ||
-          typ === 'header' ||
-          typ === 'nuclei' ||
-          typ === 'tls' ||
-          typ === 'intel' ||
-          typ === 'dalfox' ||
-          typ === 'wpscan' ||
-          typ === 'xss' ||
-          typ === 'sqli'
-        ) {
-          m.s3 = appendDedupeLine(m.s3, '- [' + typ + '] ' + val + (url ? ' — ' + url : ''));
-        }
-        const prio = String(f.prio || '').toLowerCase();
-        const hi = prio === 'high' || prio === 'critical';
-        const vecLine =
-          '[ ] ' +
-          (hi ? '(prioridade alta) ' : '') +
-          typ +
-          ': ' +
-          (val || '(sem valor)') +
-          (url ? ' — ' + url : '');
-        m.s4 = appendDedupeLine(m.s4, vecLine);
-        for (const id of ow) m.s9 = appendDedupeLine(m.s9, '- OWASP: ' + id);
-        for (const id of mit) m.s9 = appendDedupeLine(m.s9, '- MITRE ATT&CK: ' + id);
-      }
-      const noteBlock =
-        'Tipo: ' +
-        typ +
-        '\nValor / contexto: ' +
-        (val || '—') +
-        (url ? '\nURL: ' + url : '') +
-        (String(notes || '').trim() ? '\nNotas (manual): ' + String(notes).trim() : '') +
-        '\nEstado: validado no checklist Reporte.';
-      m.s5 = upsertFpSection(m.s5, fpL, noteBlock);
-      return m;
-    }
+function initDragH() {
+  const handle = document.getElementById('dragH');
+  const left = document.getElementById('panelLeft');
+  let dragging = false, startX = 0, startW = 0;
+  handle.addEventListener('mousedown', e => {
+    dragging = true; startX = e.clientX; startW = left.offsetWidth;
+    document.body.style.userSelect = 'none'; document.body.style.cursor = 'col-resize';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.max(140, Math.min(500, startW + (e.clientX - startX)));
+    left.style.width = w + 'px'; left.style.minWidth = w + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    dragging = false;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  });
+}
 
-    function findingFromValidationSnapshot(fp, row) {
-      const fpL = String(fp).toLowerCase();
-      const snap = row && row.snapshot && typeof row.snapshot === 'object' ? row.snapshot : null;
-      if (!snap) return null;
-      return {
-        type: snap.type != null ? String(snap.type) : '',
-        prio: snap.prio != null ? String(snap.prio) : '',
-        value: snap.value != null ? String(snap.value) : '',
-        url: snap.url != null ? String(snap.url) : '',
-        meta: snap.meta != null ? String(snap.meta) : '',
-        owasp: snap.owasp,
-        mitre: snap.mitre,
-        fingerprint: fpL,
-      };
-    }
+// ── STATUS ────────────────────────────────────────────────────────────────────
 
-    function resolveFindingForValidatedFp(fp) {
-      const fpL = String(fp).toLowerCase();
-      if (!/^[a-f0-9]{64}$/.test(fpL)) return null;
-      const fromList = findings.find((x) => String(x.fingerprint || '').toLowerCase() === fpL);
-      if (fromList) return fromList;
-      const row = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fpL);
-      return findingFromValidationSnapshot(fpL, row);
-    }
+function setStatus(msg, cls = '') {
+  const el = document.getElementById('statusBar');
+  el.textContent = msg;
+  el.className = 'status-bar' + (cls ? ' ' + cls : '');
+}
 
-    function resyncAllValidatedAnnotations() {
-      let map = readAnnMap() || emptyAnnMap();
-      if (!String(map.s1 || '').trim()) map.s1 = defaultAnnSection1();
-      for (const fp0 of validatedFp) {
-        const fp = String(fp0).toLowerCase();
-        if (!/^[a-f0-9]{64}$/.test(fp)) continue;
-        const f = resolveFindingForValidatedFp(fp);
-        if (!f) continue;
-        const prev = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fp);
-        const notes = prev && prev.notes != null ? String(prev.notes) : '';
-        map = mergeFindingIntoAnnMap(map, f, fp, notes);
-      }
-      writeAnnMap(map);
-      return map;
-    }
+// ── ESC ───────────────────────────────────────────────────────────────────────
 
-    function applyAnnMapToDom(map) {
-      const m = map || emptyAnnMap();
-      for (let i = 0; i < ANN_KEYS.length; i++) {
-        const el = document.getElementById('annS' + (i + 1));
-        if (el) el.value = m[ANN_KEYS[i]] || '';
-      }
-    }
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 
-    function readAnnMapFromDom() {
-      const o = emptyAnnMap();
-      for (let i = 0; i < ANN_KEYS.length; i++) {
-        const el = document.getElementById('annS' + (i + 1));
-        o[ANN_KEYS[i]] = el ? String(el.value || '') : '';
-      }
-      return o;
-    }
+// ── PAYLOAD LOADING (compat with reporte.html handoff) ───────────────────────
 
-    function buildAnnotationMarkdownDoc() {
-      const m = readAnnMapFromDom();
-      const t = normalizeTarget(target);
-      const head =
-        '# MODELO DE ANOTAÇÃO — GHOSTRECON Reporte\n\n' +
-        '_Alvo: ' +
-        (targetUsableForApi(t) ? t : 'n/d') +
-        '_\n\n';
-      let md = head;
-      for (let i = 0; i < ANN_KEYS.length; i++) {
-        md += '## ' + ANN_TITLES[i] + '\n\n' + (m[ANN_KEYS[i]] || '').trim() + '\n\n';
-      }
-      return md.trim() + '\n';
-    }
+function readPayloadRaw() {
+  try { const a = sessionStorage.getItem(ANOTACAO_PAYLOAD_KEY); if (a) { sessionStorage.removeItem(ANOTACAO_PAYLOAD_KEY); return a; } } catch(_) {}
+  try { const h = localStorage.getItem(ANOTACAO_HANDOFF_LS_KEY) || ''; if (h) { localStorage.removeItem(ANOTACAO_HANDOFF_LS_KEY); return h; } } catch(_) {}
+  try { const r = sessionStorage.getItem(REPORTE_PAYLOAD_KEY); if (r) { sessionStorage.removeItem(REPORTE_PAYLOAD_KEY); return r; } } catch(_) {}
+  try { return localStorage.getItem(REPORTE_PAYLOAD_SHARED_KEY) || ''; } catch(_) { return ''; }
+}
 
-    function downloadAnnotationMd() {
-      const md = buildAnnotationMarkdownDoc();
-      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
-      const t = normalizeTarget(target);
-      const safe = (targetUsableForApi(t) ? t : 'alvo').replace(/[^\w.-]+/g, '_');
-      const name = 'anotacao_' + safe + '_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.md';
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        URL.revokeObjectURL(a.href);
-        a.remove();
-      }, 2500);
-      setMsg('Ficheiro Markdown descarregado: ' + name, 'ok');
-    }
+function normalizeImportedFinding(f) {
+  if (!f || typeof f !== 'object') return null;
+  const fp = String(f.fingerprint || '').trim().toLowerCase();
+  const out = { type: String(f.type ?? ''), prio: String(f.prio ?? f.priority ?? ''), value: String(f.value ?? ''), url: String(f.url ?? ''), meta: String(f.meta ?? '') };
+  if (f.score != null) out.score = f.score;
+  if (f.owasp) out.owasp = f.owasp;
+  if (f.mitre) out.mitre = f.mitre;
+  if (f.cvss)  out.cvss  = f.cvss;
+  if (/^[a-f0-9]{64}$/.test(fp)) out.fingerprint = fp;
+  return out;
+}
 
-    const ANN_SKELETON = {
-      s1: 'Alvo:\nData/Hora:\nFase: Recon / Enumeração / Exploração / Pós-exploração\n',
-      s2: 'Portas abertas:\n-\n\nObservações:\n-\n',
-      s3:
-        'Tecnologias identificadas:\n-\n\nEndpoints encontrados:\n-\n\nParâmetros identificados:\n-\n\nObservações:\n-\n',
-      s4: 'Possíveis vetores:\n[ ] …\n\nPrioridade:\n- Alta:\n- Média:\n- Baixa:\n',
-      s5: 'Vetor:\nParâmetro:\nPayload:\nResultado:\n\nEvidência:\n-\n\nStatus:\n',
-      s6: 'Acesso inicial obtido via:\n-\n\nAções realizadas:\n-\n\nResultado:\n-\n',
-      s7: 'Acesso atual:\n\nEnumeração local:\n-\n\nExploração:\n-\n\nResultado:\n-\n',
-      s8: 'Impacto:\n-\n-\n-\n',
-      s9: '- OWASP:\n- MITRE:\n',
-      s10: '[ ] Confirmado\n[ ] Falso positivo\n[ ] Parcial\n',
-    };
+function extractFindings(obj) {
+  if (Array.isArray(obj)) return obj;
+  if (obj?.findings && Array.isArray(obj.findings)) return obj.findings;
+  if (obj?.items && Array.isArray(obj.items)) return obj.items;
+  return [];
+}
 
-    function updateAnnAiToolbarState() {
-      const out = document.getElementById('annAiResult');
-      const has = Boolean(out && String(out.textContent || '').trim());
-      for (const id of ['annBtnAiCopy', 'annBtnAiMdDl', 'annBtnAiClear']) {
-        const b = document.getElementById(id);
-        if (b) b.disabled = !has;
-      }
-    }
+// ── AI ────────────────────────────────────────────────────────────────────────
 
-    function downloadAiReportMarkdown() {
-      const out = document.getElementById('annAiResult');
-      const md = String(out?.textContent || '').trim();
-      if (!md) return;
-      const blob = new Blob(['# Relatório IA (OpenRouter — GHOSTRECON)\n\n', md, '\n'], {
-        type: 'text/markdown;charset=utf-8',
+function updateAiToolbar() {
+  const has = Boolean(String(document.getElementById('annAiResult')?.textContent || '').trim());
+  ['annBtnAiCopy','annBtnAiMdDl','annBtnAiClear'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = !has;
+  });
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+
+(async function init() {
+  document.querySelectorAll('.tab-btn[data-tab]').forEach(b => {
+    b.addEventListener('click', () => switchTab(b.dataset.tab));
+  });
+  initDragH();
+
+  // Auto-save on field change
+  META_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    el?.addEventListener('change', () => saveAll());
+  });
+
+  // Button handlers
+  document.getElementById('btnSync').addEventListener('click', async () => {
+    setStatus('Sincronizando…');
+    try {
+      await loadServerState();
+      renderFindingList();
+      updateSummary();
+      setStatus('Sincronizado.', 'ok');
+    } catch(e) { setStatus('Erro: ' + e.message, 'err'); }
+  });
+
+  document.getElementById('btnAutoFill').addEventListener('click', autoFill);
+
+  document.getElementById('btnSave').addEventListener('click', () => {
+    saveAll();
+    setStatus('Rascunho guardado.', 'ok');
+  });
+
+  document.getElementById('btnExportTxt').addEventListener('click', () => {
+    const txt = generateFullText();
+    dlBlob(txt, safeFilename('.txt'));
+    setStatus('Exportado como .txt', 'ok');
+  });
+
+  document.getElementById('btnExportMd').addEventListener('click', () => {
+    const txt = generateFullText();
+    // convert to rough markdown
+    const md = '# ' + (reportMeta.projectName || normalizeTarget(target) || 'Relatório') + '\n\n' + txt;
+    dlBlob(md, safeFilename('.md'), 'text/markdown;charset=utf-8');
+    setStatus('Exportado como .md', 'ok');
+  });
+
+  document.getElementById('btnGenConclusion').addEventListener('click', generateConclusion);
+
+  document.getElementById('btnAddVuln').addEventListener('click', () => {
+    const v = { fp: 'manual_' + Date.now(), status: 'NÃO CORRIGIDO', sev: 'MÉDIA', title: '', desc: '', scenario: '', rec: '', tags: '', cvss: '', cvssScore: '', assets: '', poc: '', obs: '', owasp: '', mitre: '', collapsed: false };
+    reportVulns.push(v);
+    renderVulnCards();
+    updateSummary();
+    saveAll();
+    switchTab('vulns');
+  });
+
+  document.getElementById('btnGenRaw').addEventListener('click', () => {
+    document.getElementById('rawOutput').value = generateFullText();
+    setStatus('Texto gerado.', 'ok');
+  });
+
+  document.getElementById('btnCopyRaw').addEventListener('click', async () => {
+    const txt = document.getElementById('rawOutput').value;
+    if (!txt) { document.getElementById('btnGenRaw').click(); return; }
+    try { await navigator.clipboard.writeText(txt); setStatus('Copiado.', 'ok'); } catch(e) { setStatus('Erro ao copiar: ' + e.message, 'err'); }
+  });
+
+  document.getElementById('btnDlTxt').addEventListener('click', () => {
+    const txt = document.getElementById('rawOutput').value || generateFullText();
+    dlBlob(txt, safeFilename('.txt'));
+    setStatus('Baixado.', 'ok');
+  });
+
+  document.getElementById('annBtnAiCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(document.getElementById('annAiResult').textContent); setStatus('IA copiado.', 'ok'); } catch(e) { setStatus(e.message, 'err'); }
+  });
+  document.getElementById('annBtnAiMdDl').addEventListener('click', () => {
+    dlBlob(document.getElementById('annAiResult').textContent, safeFilename('_ia.md'), 'text/markdown;charset=utf-8');
+  });
+  document.getElementById('annBtnAiClear').addEventListener('click', () => {
+    document.getElementById('annAiResult').textContent = '';
+    updateAiToolbar();
+  });
+
+  document.getElementById('btnAi').addEventListener('click', async () => {
+    const md = generateFullText();
+    const out = document.getElementById('annAiResult');
+    if (out) out.textContent = '';
+    const btn = document.getElementById('btnAi');
+    btn.disabled = true;
+    setStatus('Pedindo relatório à IA…');
+    switchTab('conclusao');
+    try {
+      await fetchCsrf();
+      const r = await fetch(apiUrl('/api/manual-validations/annotations-ai'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ markdown: md, target: normalizeTarget(target) }),
       });
-      const t = normalizeTarget(target);
-      const safe = (targetUsableForApi(t) ? t : 'alvo').replace(/[^\w.-]+/g, '_');
-      const name =
-        'relatorio_ia_' + safe + '_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.md';
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        URL.revokeObjectURL(a.href);
-        a.remove();
-      }, 2500);
-      setMsg('Markdown do relatório IA descarregado: ' + name, 'ok');
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || String(r.status));
+      if (out) out.textContent = String(d.markdown || '').trim() || '(resposta vazia)';
+      updateAiToolbar();
+      setStatus('Relatório IA recebido.', 'ok');
+    } catch(e) {
+      setStatus(e.message, 'err');
     }
+    btn.disabled = false;
+  });
 
-    async function copyAnnAiResult() {
-      const out = document.getElementById('annAiResult');
-      const t = String(out?.textContent || '').trim();
-      if (!t) return;
-      try {
-        await navigator.clipboard.writeText(t);
-        setMsg('Relatório IA copiado.', 'ok');
-      } catch (e) {
-        setMsg('Não foi possível copiar. ' + (e.message || ''), 'err');
-      }
+  // ── Load payload ──
+  let pack = null;
+
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const handoffId = String(params.get('handoff') || '').trim().toLowerCase().replace(/[^a-f0-9]/g, '');
+    if (handoffId && /^[a-f0-9]{32}$/.test(handoffId)) {
+      setStatus('Carregando pacote do servidor…');
+      const r = await fetch(apiUrl('/api/anotacao-handoff/' + encodeURIComponent(handoffId)));
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'GET handoff: ' + r.status);
+      pack = d;
+      try { const u = new URL(window.location.href); u.searchParams.delete('handoff'); history.replaceState({}, '', u.pathname + u.search + u.hash); } catch(_) {}
     }
+  } catch(e) { setStatus(e.message, 'err'); pack = null; }
 
-    function fillAnnotationSkeletonGuides() {
-      for (let i = 0; i < ANN_KEYS.length; i++) {
-        const k = ANN_KEYS[i];
-        const el = document.getElementById('annS' + (i + 1));
-        if (!el || String(el.value || '').trim()) continue;
-        if (k === 's1' && targetUsableForApi(normalizeTarget(target))) el.value = defaultAnnSection1();
-        else if (ANN_SKELETON[k]) el.value = ANN_SKELETON[k];
-      }
-      writeAnnMap(readAnnMapFromDom());
-      setMsg('Guias inseridas só onde as caixas estavam vazias.', 'ok');
-    }
+  if (!pack) {
+    const raw = readPayloadRaw();
+    if (raw) try { pack = JSON.parse(raw); } catch(_) { setStatus('JSON inválido no payload.', 'err'); }
+  }
 
-    function applyInitialAnnDom() {
-      const map = readAnnMap() || emptyAnnMap();
-      if (!String(map.s1 || '').trim() && targetUsableForApi(normalizeTarget(target))) map.s1 = defaultAnnSection1();
-      applyAnnMapToDom(map);
-      const aiEl = document.getElementById('annAiResult');
-      if (aiEl) aiEl.textContent = '';
-      updateAnnAiToolbarState();
-    }
+  if (pack) {
+    target = normalizeTarget(pack.target || '');
+    const rawFindings = extractFindings(pack).map(normalizeImportedFinding).filter(Boolean).slice(0, REPORT_IMPORT_MAX);
+    // Hydrate fingerprints
+    findings = await Promise.all(rawFindings.map(f => ensureFp(f)));
+    payloadManualSnapshot = (Array.isArray(pack.manualValidations) ? pack.manualValidations : [])
+      .filter(x => x?.fingerprint);
+  }
 
-    document.getElementById('btnReload').addEventListener('click', async () => {
-      setMsg('A sincronizar…', '');
-      try {
-        if (!findings.length) {
-          const loaded = await loadLatestRunIntoChecklist(target);
-          setMsg('Lista carregada do run #' + loaded.runId + '.', 'ok');
-        }
-        await loadServerState();
-        try {
-          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
-        } catch (_) {}
-        applyAnnMapToDom(readAnnMap() || emptyAnnMap());
-        updateHeadLineFromState();
-        setMsg('Sincronizado com a base.', 'ok');
-      } catch (e) {
-        mergePayloadManualValidationsIntoState();
-        try {
-          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
-        } catch (_) {}
-        applyAnnMapToDom(readAnnMap() || emptyAnnMap());
-        if (e && e.reporteOffline) {
-          setMsg('Servidor inacessível ao sincronizar. Mantidas validações do pacote Reporte.', 'err');
-        } else {
-          setMsg(String(e.message || e), 'err');
-        }
-      }
-    });
+  document.getElementById('hdrTarget').textContent = normalizeTarget(target) || 'sem alvo';
 
-    document.getElementById('btnOpenReporte').addEventListener('click', () => {
-      try {
-        syncPayloadToSession();
-      } catch (e) {
-        setMsg(String(e.message || e), 'err');
-        return;
-      }
-      const u = new URL('reporte.html', window.location.href);
-      const w = window.open(u.href, '_blank', 'noopener,noreferrer');
-      if (!w) setMsg('Popup bloqueado — permite popups para abrir o Reporte.', 'err');
-    });
+  // Load saved state for this target
+  loadSaved();
+  applyMetaToDom();
+  updateSummary();
+  renderVulnCards();
 
-    document.getElementById('annBtnSave').addEventListener('click', () => {
-      writeAnnMap(readAnnMapFromDom());
-      setMsg('Rascunho guardado (localStorage).', 'ok');
-    });
-    document.getElementById('annBtnSync').addEventListener('click', () => {
-      void (async () => {
-        setMsg('A sincronizar validações…', '');
-        try {
-          await loadServerState();
-        } catch (_) {
-          mergePayloadManualValidationsIntoState();
-        }
-        try {
-          const map = resyncAllValidatedAnnotations();
-          applyAnnMapToDom(map);
-          updateHeadLineFromState();
-          setMsg('Secções automáticas actualizadas a partir dos validados.', 'ok');
-        } catch (e) {
-          setMsg(String(e.message || e), 'err');
-        }
-      })();
-    });
-    document.getElementById('annBtnSkeleton').addEventListener('click', () => {
-      fillAnnotationSkeletonGuides();
-    });
-    document.getElementById('annBtnMd').addEventListener('click', () => {
-      downloadAnnotationMd();
-    });
-    document.getElementById('annBtnAiCopy').addEventListener('click', () => {
-      void copyAnnAiResult();
-    });
-    document.getElementById('annBtnAiMdDl').addEventListener('click', () => {
-      downloadAiReportMarkdown();
-    });
-    document.getElementById('annBtnAiClear').addEventListener('click', () => {
-      const out = document.getElementById('annAiResult');
-      if (out) out.textContent = '';
-      updateAnnAiToolbarState();
-    });
-    document.getElementById('annBtnAi').addEventListener('click', async () => {
-      writeAnnMap(readAnnMapFromDom());
-      const md = buildAnnotationMarkdownDoc();
-      const out = document.getElementById('annAiResult');
-      if (out) out.textContent = '';
-      const btn = document.getElementById('annBtnAi');
-      btn.disabled = true;
-      setMsg('A pedir relatório à OpenRouter…', '');
-      try {
-        await fetchCsrf();
-        const r = await fetch(apiUrl('/api/manual-validations/annotations-ai'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-          body: JSON.stringify({
-            markdown: md,
-            target: targetUsableForApi(normalizeTarget(target)) ? normalizeTarget(target) : '',
-          }),
-        });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d.error || String(r.status));
-        if (out) out.textContent = String(d.markdown || '').trim() || '(resposta vazia)';
-        updateAnnAiToolbarState();
-        setMsg('Relatório IA recebido.', 'ok');
-      } catch (e) {
-        setMsg(String(e.message || e), 'err');
-        if (out) out.textContent = '';
-        updateAnnAiToolbarState();
-      }
-      btn.disabled = false;
-    });
+  try {
+    await loadAiState();
+    await loadServerState();
+  } catch(_) { mergePayloadManualValidations(); }
 
-    (async function init() {
-      let pack = null;
-      try {
-        const params = new URLSearchParams(window.location.search || '');
-        const handoffId = String(params.get('handoff') || '')
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-f0-9]/g, '');
-        if (handoffId && /^[a-f0-9]{32}$/.test(handoffId)) {
-          setMsg('A carregar pacote do servidor (handoff)…', '');
-          const r = await fetch(apiUrl('/api/anotacao-handoff/' + encodeURIComponent(handoffId)));
-          const d = await r.json().catch(() => ({}));
-          if (!r.ok) throw new Error(d.error || 'GET handoff: ' + r.status);
-          if (!d || typeof d !== 'object' || Array.isArray(d) || !('findings' in d)) {
-            throw new Error('Resposta de handoff inválida.');
-          }
-          pack = d;
-          try {
-            const u = new URL(window.location.href);
-            u.searchParams.delete('handoff');
-            history.replaceState({}, '', u.pathname + u.search + u.hash);
-          } catch (_) {}
-        }
-      } catch (e) {
-        setMsg(String(e.message || e), 'err');
-        pack = null;
-      }
+  renderFindingList();
 
-      if (!pack) {
-        const raw = readAnotacaoPayloadRaw();
-        if (!raw) {
-          document.getElementById('headLine').textContent =
-            'Sem pacote — no Reporte clica «ANOTAÇÃO» (abre com ?handoff=…).';
-          findings = [];
-          target = '';
-          setMsg(
-            'Sem dados. Abre o Reporte no mesmo host, valida itens na checklist e usa «ANOTAÇÃO» na barra (não abras só anotacao.html sem isso).',
-            'err',
-          );
-          return;
-        }
-        try {
-          pack = JSON.parse(raw);
-        } catch {
-          setMsg('Pacote JSON inválido (parse). Volta ao Reporte e reenvia com «ANOTAÇÃO».', 'err');
-          return;
-        }
-      }
-      target = normalizeTarget(pack.target || '');
-      findings = await hydrateFindingsFingerprints(
-        (Array.isArray(pack.findings) ? pack.findings : [])
-          .map(normalizeImportedFinding)
-          .filter(Boolean),
-        target,
-      );
-      payloadManualSnapshot = (Array.isArray(pack.manualValidations) ? pack.manualValidations : [])
-        .map(normalizeImportedManualValidation)
-        .filter(Boolean);
-      updateHeadLineFromState();
-      if (!findings.length) {
-        setMsg(
-          'Pacote sem achados na lista. No GHOSTRECON corre o recon ou exporta JSON com findings antes de abrir Anotações.',
-          'err',
-        );
-      }
-      try {
-        await loadAiState();
-        await loadServerState();
-        try {
-          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
-        } catch (_) {}
-        applyInitialAnnDom();
-        if (findings.length) {
-          setMsg(
-            targetUsableForApi(target)
-              ? 'Pacote carregado. Secções automáticas = só validados no Reporte; o resto é manual. IA / .md abaixo.'
-              : 'Sem domínio válido: validações SQLite podem não sincronizar até indicares o alvo no hub.',
-            targetUsableForApi(target) ? 'ok' : '',
-          );
-        }
-      } catch (e) {
-        mergePayloadManualValidationsIntoState();
-        try {
-          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
-        } catch (_) {}
-        applyInitialAnnDom();
-        if (e && e.reporteOffline) {
-          setMsg(
-            'Servidor ou API inacessível (`npm start`, rede ou CORS). A usar validações enviadas pelo Reporte no pacote.',
-            'err',
-          );
-        } else {
-          setMsg('Erro ao falar com a base: ' + (e.message || e), 'err');
-        }
-      }
+  if (!findings.length) {
+    setStatus('Sem achados no pacote — abre Reporte, valida itens e usa "ANOTAÇÃO".', '');
+  } else {
+    setStatus(`Pronto — ${findings.length} achados, ${validatedFp.size} validados, ${reportVulns.length} no relatório.`, 'ok');
+  }
 
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState !== 'visible') return;
-        void (async () => {
-          try {
-            await loadServerState();
-            if (validatedFp.size > 0) {
-              const map = resyncAllValidatedAnnotations();
-              applyAnnMapToDom(map);
-            }
-          } catch (_) {
-            mergePayloadManualValidationsIntoState();
-            if (validatedFp.size > 0) {
-              const map = resyncAllValidatedAnnotations();
-              applyAnnMapToDom(map);
-            }
-          }
-        })();
-      });
-    })();
-  </script>
+  // Auto-save on visibility change
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    saveAll();
+    loadServerState().catch(() => mergePayloadManualValidations())
+      .then(() => renderFindingList());
+  });
+})();
+</script>
 </body>
 </html>

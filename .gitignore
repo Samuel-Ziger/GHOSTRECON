@@ -13,6 +13,10 @@ data/ai_reports/
 escopo/
 clone/
 
+# PoCs/evidências locais geradas pelo recon
+pocs/
+.ghostrecon-evidence/
+
 # Clones locais em IAs/ (instruções em IAs/README.md)
 IAs/shannon/
 IAs/PentestGPT/

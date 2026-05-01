@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { fetchCrtShSubdomains } from './modules/subdomains.js';
 import { resolves } from './modules/dns.js';
 import { probeHttp, mapPool } from './modules/probe.js';
@@ -54,6 +55,7 @@ import { discoverParamsActive } from './modules/param-discovery.js';
 import { resolveCnameChain, matchProviderByCname, matchProviderBody } from './modules/takeover.js';
 import { crawlWithKatana } from './modules/js-crawler.js';
 import { validateSecretFindings } from './modules/secret-validation.js';
+import { captureTokenFinding } from './modules/token-capture.js';
 import { limits, reconRateLimitConfig } from './config.js';
 import {
   saveRun,
@@ -114,6 +116,7 @@ import { registerNewApiRoutes } from './modules/api-extensions.js';
 import { getEngagement, preRunChecklist, attachRunToEngagement } from './modules/engagement.mjs';
 import { gateModules, applyWatermarkHeaders } from './modules/opsec.mjs';
 import { createIdentityController, normalizeIdentityOptions } from './modules/identity-controller.mjs';
+import { createSocksDispatcher } from './modules/socks5-dispatcher.js';
 import { recordAction } from './modules/team-concurrency.mjs';
 import { buildAuthzPlan, runAuthzMatrix, fingerprintBody } from './modules/authz-matrix.mjs';
 import { summarizeValue, prioritize as prioritizeBounty } from './modules/bounty-estimator.mjs';
@@ -131,6 +134,8 @@ import { mutatePayload } from './modules/payload-mutator.mjs';
 import { buildRacePlan } from './modules/race-harness.mjs';
 import { planSpray } from './modules/cred-spray.mjs';
 import { fingerprintLovable } from './modules/lovable-fingerprint.js';
+import { runSupabaseAudit } from './modules/supabase-audit.mjs';
+import { createProxyCapture, PROXY_DEFAULT_PORT, PROXY_CA_CERT_PATH } from './modules/proxy-capture.mjs';
 import { runCurlProbeModule } from './modules/curl-probe.mjs';
 import {
   loadNavegationPlaybook,
@@ -151,6 +156,7 @@ import { newnym as torNewnym, torHealth as torControlHealth } from './modules/to
 import {
   isStrict as torIsStrict,
   initTorStrict,
+  beginTorStrictScope,
   strictPrereqs as torStrictPrereqs,
   refuseToRun as torRefuseToRun,
   snapshotTelemetry as torSnapshotTelemetry,
@@ -182,10 +188,33 @@ const sevToScore = (sev) => {
 const reconRlHits = new Map();
 const csrfTokens = new Map();
 const CSRF_TTL_MS = 2 * 60 * 60 * 1000;
+const reconHttpHistory = [];
+const reconHttpContext = new AsyncLocalStorage();
+let reconHttpSeq = 0;
+const RECON_HTTP_HISTORY_MAX = Number(process.env.GHOSTRECON_HTTP_HISTORY_MAX || 1200);
+const RECON_HTTP_RESPONSE_PREVIEW_MAX = Number(process.env.GHOSTRECON_HTTP_HISTORY_RESPONSE_MAX || 120000);
 
 const PORT = Number(process.env.PORT) || 3847;
 const HOST = String(process.env.HOST || '127.0.0.1').trim();
 const allowedOrigins = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+
+const PROXY_PORT = Number(process.env.GHOSTRECON_PROXY_CAPTURE_PORT || PROXY_DEFAULT_PORT);
+const ghostProxy = createProxyCapture({
+  port: PROXY_PORT,
+  mitmEnabled: String(process.env.GHOSTRECON_PROXY_MITM || '1').trim() !== '0',
+  onCapture: (entry) => {
+    const row = {
+      ...entry,
+      id: ++reconHttpSeq,
+      ts: entry.ts || new Date().toISOString(),
+      requestRunId: null,
+      target: null,
+      ok: entry.status ? entry.status < 400 : null,
+    };
+    reconHttpHistory.push(row);
+    while (reconHttpHistory.length > RECON_HTTP_HISTORY_MAX) reconHttpHistory.shift();
+  },
+});
 
 function isLocalHostBind(host) {
   const h = String(host || '').trim().toLowerCase();
@@ -223,6 +252,202 @@ function validateCsrfToken(req) {
     return false;
   }
   return true;
+}
+
+function redactHttpHeader(name, value) {
+  const n = String(name || '').toLowerCase();
+  if (/authorization|cookie|x-api-key|token|secret|password|key/.test(n)) return '[redacted]';
+  return String(value ?? '').slice(0, 800);
+}
+
+function normalizeHeadersForHistory(headers) {
+  const out = {};
+  try {
+    if (!headers) return out;
+    if (typeof headers.forEach === 'function') {
+      headers.forEach((v, k) => {
+        out[String(k).toLowerCase()] = redactHttpHeader(k, v);
+      });
+      return out;
+    }
+    for (const [k, v] of Object.entries(headers)) out[String(k).toLowerCase()] = redactHttpHeader(k, v);
+  } catch {
+    /* best effort */
+  }
+  return out;
+}
+
+function bodyPreviewForHistory(body) {
+  if (body == null) return '';
+  if (typeof body === 'string') return body.slice(0, 8000);
+  if (body instanceof URLSearchParams) return body.toString().slice(0, 8000);
+  if (Buffer.isBuffer(body)) return body.toString('utf8', 0, Math.min(body.length, 8000));
+  if (body instanceof ArrayBuffer) return Buffer.from(body).toString('utf8', 0, 8000);
+  if (ArrayBuffer.isView(body)) {
+    const b = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+    return b.toString('utf8', 0, Math.min(b.length, 8000));
+  }
+  return `[${Object.prototype.toString.call(body).replace(/^\[object |\]$/g, '')}]`;
+}
+
+function safeJsonBodyForHistory(obj) {
+  const seen = new WeakSet();
+  const scrub = (v, key = '') => {
+    if (/authorization|cookie|token|secret|password|api.?key/i.test(key)) return '[redacted]';
+    if (v == null || typeof v !== 'object') return v;
+    if (seen.has(v)) return '[circular]';
+    seen.add(v);
+    if (Array.isArray(v)) return v.map((x) => scrub(x));
+    const out = {};
+    for (const [k, val] of Object.entries(v)) out[k] = scrub(val, k);
+    return out;
+  };
+  try {
+    return JSON.stringify(scrub(obj), null, 2).slice(0, 8000);
+  } catch {
+    return '';
+  }
+}
+
+function recordReconHttpHistory(entry) {
+  const row = {
+    id: ++reconHttpSeq,
+    ts: new Date().toISOString(),
+    requestRunId: entry.requestRunId || null,
+    target: entry.target || null,
+    source: entry.source || 'fetch',
+    method: String(entry.method || 'GET').toUpperCase(),
+    url: String(entry.url || '').slice(0, 2000),
+    requestHeaders: entry.requestHeaders || {},
+    requestBody: entry.requestBody || '',
+    status: entry.status ?? null,
+    statusText: entry.statusText || '',
+    ok: entry.ok ?? null,
+    durationMs: entry.durationMs ?? null,
+    error: entry.error || '',
+    responseHeaders: entry.responseHeaders || {},
+    responseBody: entry.responseBody || '',
+    mimeType: entry.mimeType || '',
+    responseSize: entry.responseSize ?? null,
+  };
+  reconHttpHistory.push(row);
+  while (reconHttpHistory.length > RECON_HTTP_HISTORY_MAX) reconHttpHistory.shift();
+  try {
+    if (typeof entry.emit === 'function') entry.emit({ type: 'http_history', entry: row });
+  } catch {
+    /* ignore stream write races */
+  }
+  return row;
+}
+
+const originalFetch = globalThis.fetch ? globalThis.fetch.bind(globalThis) : null;
+const strictFetchDispatchers = new Map();
+
+function firstProxyPoolEntry() {
+  return String(process.env.GHOSTRECON_PROXY_POOL || '')
+    .split(/[,;\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean)[0] || 'socks5h://127.0.0.1:9050';
+}
+
+function isLoopbackFetchTarget(input) {
+  try {
+    const raw = typeof input === 'string' ? input : String(input?.url || input || '');
+    const u = new URL(raw);
+    return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+async function strictFetchInit(input, init = {}) {
+  if (!torIsStrict() || init?.dispatcher || isLoopbackFetchTarget(input)) return init || {};
+  const proxyHref = firstProxyPoolEntry();
+  if (!/^socks(5h?|4a?):\/\//i.test(proxyHref)) {
+    throw new Error('tor-strict: GHOSTRECON_PROXY_POOL sem SOCKS — fetch direto bloqueado');
+  }
+  let dispatcher = strictFetchDispatchers.get(proxyHref);
+  if (!dispatcher) {
+    dispatcher = await createSocksDispatcher(proxyHref);
+    strictFetchDispatchers.set(proxyHref, dispatcher);
+  }
+  return { ...(init || {}), dispatcher };
+}
+
+if (originalFetch && !globalThis.__ghostreconFetchHistoryWrapped) {
+  globalThis.__ghostreconFetchHistoryWrapped = true;
+  globalThis.fetch = async (input, init = {}) => {
+    const ctx = reconHttpContext.getStore();
+    if (!ctx) return originalFetch(input, await strictFetchInit(input, init));
+
+    const started = Date.now();
+    let method = String(init?.method || '').toUpperCase();
+    let url = '';
+    let reqHeaders = {};
+    let reqBody = bodyPreviewForHistory(init?.body);
+    try {
+      if (typeof Request !== 'undefined' && input instanceof Request) {
+        url = input.url;
+        method = method || String(input.method || 'GET').toUpperCase();
+        reqHeaders = normalizeHeadersForHistory(input.headers);
+        if (!reqBody && method !== 'GET' && method !== 'HEAD') {
+          try {
+            reqBody = await input.clone().text();
+            reqBody = reqBody.slice(0, 8000);
+          } catch {
+            reqBody = '';
+          }
+        }
+      } else {
+        url = typeof input === 'string' ? input : String(input?.url || input || '');
+        method = method || 'GET';
+      }
+      reqHeaders = { ...reqHeaders, ...normalizeHeadersForHistory(init?.headers) };
+    } catch {
+      url = String(input || '');
+      method = method || 'GET';
+    }
+
+    try {
+      const effectiveInit = await strictFetchInit(input, init);
+      const response = await originalFetch(input, effectiveInit);
+      const respHeaders = normalizeHeadersForHistory(response.headers);
+      const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim();
+      const contentLengthHdr = response.headers.get('content-length');
+      const row = recordReconHttpHistory({
+        ...ctx,
+        source: 'fetch',
+        method,
+        url,
+        requestHeaders: reqHeaders,
+        requestBody: reqBody,
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        durationMs: Date.now() - started,
+        responseHeaders: respHeaders,
+        mimeType,
+        responseSize: contentLengthHdr ? Number(contentLengthHdr) : null,
+      });
+      response.clone().text().then((body) => {
+        row.responseBody = body.slice(0, RECON_HTTP_RESPONSE_PREVIEW_MAX);
+        if (row.responseSize == null) row.responseSize = body.length;
+      }).catch(() => {});
+      return response;
+    } catch (e) {
+      recordReconHttpHistory({
+        ...ctx,
+        source: 'fetch',
+        method,
+        url,
+        requestHeaders: reqHeaders,
+        requestBody: reqBody,
+        durationMs: Date.now() - started,
+        error: e?.message || String(e),
+      });
+      throw e;
+    }
+  };
 }
 
 function allowReconRequest(req) {
@@ -291,6 +516,8 @@ initAuth();
 const AUTH_ALLOWLIST = [
   /^\/api\/health$/,
   /^\/api\/csrf-token$/,
+  /^\/api\/capabilities$/,  // público para UI buscar capacidades
+  /^\/api\/setup\/auto-auth$/, // loopback-only: UI busca chave automaticamente no 1º acesso
   // /api/inbound/* tem auth própria (HMAC + Bearer-secret por source)
   /^\/api\/inbound\//,
   /^\/$/,
@@ -302,6 +529,25 @@ const AUTH_ALLOWLIST = [
 app.use(requireAuth({ allowlist: AUTH_ALLOWLIST }));
 
 app.use(express.json({ limit: '5mb' }));
+
+// ── Auto-auth (loopback-only): devolve a primeira API key configurada para que a
+//    UI possa salvar no localStorage sem intervenção manual na 1ª visita.
+app.get('/api/setup/auto-auth', (req, res) => {
+  const ip = String(
+    req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '',
+  );
+  const loopback = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  if (!loopback) return res.status(403).json({ error: 'apenas loopback' });
+
+  const raw = process.env.AUTH_API_KEYS || '';
+  const first = raw.split(/[|\n]/).map((s) => s.trim()).filter(Boolean)[0];
+  if (!first) return res.status(404).json({ error: 'AUTH_API_KEYS não configuradas' });
+
+  const key = first.split(':')[0];
+  if (!key || key.length < 24) return res.status(404).json({ error: 'chave inválida' });
+
+  res.json({ apiKey: key });
+});
 
 function aiAutoReportsServerAllowed() {
   const v = String(process.env.GHOSTRECON_AI_AUTO ?? '1').trim().toLowerCase();
@@ -479,6 +725,10 @@ async function runPipeline(ctx) {
       owaspHints: inferOwaspTags(f),
     });
     emit({ type: 'stats', stats: { ...stats } });
+    // Captura automática de tokens: baixa a página fonte e grava em tokens/<domain>/
+    if (f.type === 'secret' && f.url) {
+      captureTokenFinding(f, domain, emit).catch(() => {});
+    }
   };
 
   const log = (msg, level = 'info') => emit({ type: 'log', msg, level });
@@ -536,14 +786,25 @@ async function runPipeline(ctx) {
   pipe('input', 'done');
 
   // ── LOVABLE FINGERPRINT ───────────────────────
+  let lovableContext = null;
   if (!apexHostIsIp && modules.includes('lovable_fingerprint')) {
     pipe('lovable_fingerprint', 'active');
     try {
       const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
       log(`Lovable fingerprint: analisando ${targetUrl}`, 'info');
-      const lov = await fingerprintLovable(targetUrl);
+      const lov = await fingerprintLovable(targetUrl, {
+        pocDir: path.join(ROOT, 'pocs', 'supabase'),
+        storeRawSecrets: String(process.env.GHOSTRECON_POC_STORE_SECRETS || '').trim() === '1',
+      });
+      lovableContext = lov?.context || null;
       const lovFindings = Array.isArray(lov?.findings) ? lov.findings : [];
       for (const f of lovFindings) addFinding(withProvenance(f, 'lovable_fingerprint'));
+      if (lov?.context?.pocPath) {
+        const rel = path.relative(ROOT, lov.context.pocPath);
+        log(`Lovable fingerprint: PoC Supabase salva em ${rel}`, 'success');
+      } else if (lov?.context?.pocError) {
+        log(`Lovable fingerprint: falha ao salvar PoC Supabase (${lov.context.pocError})`, 'warn');
+      }
       if (lovFindings.length) {
         log(`Lovable fingerprint: ${lovFindings.length} achado(s)`, 'success');
       } else {
@@ -553,6 +814,47 @@ async function runPipeline(ctx) {
       log(`Lovable fingerprint: ${e?.message || e}`, 'warn');
     }
     pipe('lovable_fingerprint', 'done');
+  }
+
+  // ── SUPABASE AUDIT ────────────────────────────
+  if (!apexHostIsIp && modules.includes('supabase_audit')) {
+    pipe('supabase_audit', 'active');
+    try {
+      const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
+
+      // Reutiliza contexto do lovable_fingerprint se disponível, caso contrário extrai agora
+      let auditCtx = lovableContext;
+      if (!auditCtx?.supabaseUrl || !auditCtx?.anonKey) {
+        log('Supabase audit: executando fingerprint para obter Supabase URL/key', 'info');
+        const lov = await fingerprintLovable(targetUrl, { probeRls: false, probeMisconfig: false });
+        auditCtx = lov?.context || null;
+      }
+
+      if (auditCtx?.supabaseUrl && auditCtx?.anonKey) {
+        const authToken = String(process.env.GHOSTRECON_SUPABASE_AUTH_TOKEN || '').trim() || null;
+        const { findings: auditFindings, summary } = await runSupabaseAudit(auditCtx, {
+          authToken,
+          targetUrl,
+          log,
+        });
+        for (const f of auditFindings) addFinding(withProvenance(f, 'supabase_audit'));
+        const crit = summary?.critical || 0;
+        const high = summary?.high || 0;
+        if (auditFindings.length) {
+          log(`Supabase audit: ${auditFindings.length} achado(s) — ${crit} crítico(s) / ${high} alto(s)`, crit > 0 ? 'warn' : 'success');
+        } else {
+          log('Supabase audit: nenhuma vulnerabilidade detectada', 'info');
+        }
+        if (!authToken) {
+          log('Supabase audit: probes de escrita (business logic, payment bypass) desabilitados — defina GHOSTRECON_SUPABASE_AUTH_TOKEN para habilitar', 'info');
+        }
+      } else {
+        log('Supabase audit: Supabase URL/key não encontrados — alvo pode não usar Supabase', 'info');
+      }
+    } catch (e) {
+      log(`Supabase audit: ${e?.message || e}`, 'warn');
+    }
+    pipe('supabase_audit', 'done');
   }
 
   // ── SUBDOMAINS ──────────────────────────────
@@ -1766,19 +2068,53 @@ async function runPipeline(ctx) {
   if (modules.includes('pastebin')) {
     log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
   }
-  // Validação live/dead de achados de secret (fase 3)
+  // Validação activa de tokens/secrets (fase 3)
   try {
     const sv = await validateSecretFindings(findings, log);
     for (const row of sv) {
+      const isLive     = row.status === 'live';
+      const isProbable = row.status === 'probable';
+      const tokenLabel = row.tokenType && row.tokenType !== 'unknown'
+        ? ` [${row.tokenType}]` : '';
+      const statusLabel =
+        row.tokenStatus === 'valid'    ? 'VALID'    :
+        row.tokenStatus === 'expired'  ? 'EXPIRED'  :
+        row.tokenStatus === 'invalid'  ? 'INVALID'  :
+        row.tokenStatus === 'revoked'  ? 'REVOKED'  :
+        row.tokenStatus === 'probable' ? 'PROBABLE' :
+        row.status.toUpperCase();
       addFinding({
-        type: 'secret_validation',
-        prio: row.status === 'live' ? 'high' : row.status === 'probable' ? 'med' : 'low',
-        score: row.status === 'live' ? 86 : row.status === 'probable' ? 62 : 24,
-        value: `Secret ${row.status.toUpperCase()} • ${row.ref}`,
-        meta: `reason=${row.reason}`,
+        type:  'secret_validation',
+        prio:  isLive ? 'high' : isProbable ? 'med' : 'low',
+        score: isLive ? 86     : isProbable ? 62    : 24,
+        value: `Token ${statusLabel}${tokenLabel} • ${row.ref}`,
+        meta:  [
+          `tokenStatus=${row.tokenStatus ?? row.status}`,
+          `tokenType=${row.tokenType ?? 'unknown'}`,
+          row.offlineExpired            ? `offlineExpired=true`           : null,
+          row.expiredAt                 ? `expiredAt=${row.expiredAt}`    : null,
+          row.expiresAt                 ? `expiresAt=${row.expiresAt}`    : null,
+          row.noExpiration              ? `noExpiration=true`             : null,
+          row.jwtClaims?.iss            ? `iss=${row.jwtClaims.iss}`      : null,
+          row.jwtClaims?.role           ? `role=${row.jwtClaims.role}`    : null,
+          `reason=${row.reason}`,
+        ].filter(Boolean).join('|'),
+        tokenValidation: {
+          status:         row.tokenStatus ?? row.status,
+          tokenType:      row.tokenType,
+          offlineExpired: row.offlineExpired,
+          expiredAt:      row.expiredAt    ?? null,
+          expiresAt:      row.expiresAt    ?? null,
+          noExpiration:   row.noExpiration ?? false,
+          jwtClaims:      row.jwtClaims    ?? null,
+          evidence:       row.reason,
+          probes:         row.probes       ?? [],
+        },
       });
     }
-    if (sv.length) log(`Secret validation: ${sv.length} item(ns)`, 'info');
+    const live    = sv.filter((r) => r.status === 'live').length;
+    const expired = sv.filter((r) => r.tokenStatus === 'expired').length;
+    if (sv.length) log(`Token validation: ${sv.length} token(s) — ${live} válido(s), ${expired} expirado(s)`, 'info');
   } catch (e) {
     log(`Secret validation: ${e.message}`, 'warn');
   }
@@ -3197,12 +3533,15 @@ app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) 
     torOpts.required === true ||
     torStrictWanted ||
     String(process.env.GHOSTRECON_TOR_REQUIRED || '').trim() === '1';
+  let cleanupTorStrictScope = null;
 
   // STRICT prereq check — se faltar algo (proxychains, DNS lockdown, SOCKS,
   // ControlPort, conf), abortamos antes do pipeline para evitar leaks parciais.
   if (torStrictWanted) {
+    cleanupTorStrictScope = beginTorStrictScope();
     const refusal = torRefuseToRun();
     if (refusal) {
+      if (cleanupTorStrictScope) cleanupTorStrictScope();
       auditAuth(req, req.principal, 'deny', {
         action: 'recon.stream.tor_strict_prereqs',
         target: domain,
@@ -3228,6 +3567,7 @@ app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) 
       torValidation = { validated: false, error: e?.message || String(e) };
     }
     if (!torValidation.validated) {
+      if (cleanupTorStrictScope) cleanupTorStrictScope();
       auditAuth(req, req.principal, 'deny', {
         action: 'recon.stream.tor_required',
         target: domain,
@@ -3271,6 +3611,20 @@ app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) 
   }
   const identityCtrl = createIdentityController({ ...identityOpts, modules });
   send({ type: 'meta', requestRunId, torStrict: torStrictWanted, torRequired });
+  recordReconHttpHistory({
+    requestRunId,
+    target: domain,
+    source: 'browser',
+    method: 'POST',
+    url: '/api/recon/stream',
+    requestHeaders: normalizeHeadersForHistory(req.headers),
+    requestBody: safeJsonBodyForHistory(req.body),
+    status: 200,
+    statusText: 'stream',
+    ok: true,
+    durationMs: 0,
+    emit: send,
+  });
 
   // Auditoria operacional do início do pipeline (após CSRF/rate-limit/escopo).
   auditAuth(req, req.principal, 'allow', {
@@ -3294,41 +3648,44 @@ app.post('/api/recon/stream', requireScope('recon.run', { intrusiveCheck: (req) 
   });
 
   try {
-    await runPipeline({
-      domain,
-      exactMatch,
-      modules,
-      emit: send,
-      kaliMode,
-      auth: authForPipeline,
-      profile,
-      outOfScope: req.body?.outOfScope,
-      projectName: req.body?.projectName,
-      autoAiReports: Boolean(req.body?.autoAiReports),
-      aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
-      aiUseOpenrouter: req.body?.aiUseOpenrouter !== false,
-      aiOpenrouterOnly: normalizeOpenrouterOnlyFlag(req.body?.aiOpenrouterOnly),
-      aiPrimaryCloud:
-        typeof req.body?.aiPrimaryCloud === 'string'
-          ? req.body.aiPrimaryCloud
-          : typeof req.body?.aiPrimaryReport === 'string'
-            ? req.body.aiPrimaryReport
-            : null,
-      shannonPrecheck,
-      shannonSkipDepsVerify,
-      shannonGithubRepos: req.body?.shannonGithubRepos,
-      pentestgptUrl: req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl) : null,
-      bountyContext:
-        req.body?.bountyContext && typeof req.body.bountyContext === 'object' ? req.body.bountyContext : null,
-      engagementId: engagementIdRaw || null,
-      engagementOperator: operatorRaw || null,
-      identityCtrl,
-      navegation: req.body?.navegation && typeof req.body.navegation === 'object' ? req.body.navegation : null,
+    await reconHttpContext.run({ requestRunId, target: domain, emit: send }, async () => {
+      await runPipeline({
+        domain,
+        exactMatch,
+        modules,
+        emit: send,
+        kaliMode,
+        auth: authForPipeline,
+        profile,
+        outOfScope: req.body?.outOfScope,
+        projectName: req.body?.projectName,
+        autoAiReports: Boolean(req.body?.autoAiReports),
+        aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
+        aiUseOpenrouter: req.body?.aiUseOpenrouter !== false,
+        aiOpenrouterOnly: normalizeOpenrouterOnlyFlag(req.body?.aiOpenrouterOnly),
+        aiPrimaryCloud:
+          typeof req.body?.aiPrimaryCloud === 'string'
+            ? req.body.aiPrimaryCloud
+            : typeof req.body?.aiPrimaryReport === 'string'
+              ? req.body.aiPrimaryReport
+              : null,
+        shannonPrecheck,
+        shannonSkipDepsVerify,
+        shannonGithubRepos: req.body?.shannonGithubRepos,
+        pentestgptUrl: req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl) : null,
+        bountyContext:
+          req.body?.bountyContext && typeof req.body.bountyContext === 'object' ? req.body.bountyContext : null,
+        engagementId: engagementIdRaw || null,
+        engagementOperator: operatorRaw || null,
+        identityCtrl,
+        navegation: req.body?.navegation && typeof req.body.navegation === 'object' ? req.body.navegation : null,
+      });
     });
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
   } finally {
     if (savedEnvPath !== null) process.env.PATH = savedEnvPath;
+    if (cleanupTorStrictScope) cleanupTorStrictScope();
   }
   res.end();
 });
@@ -3337,6 +3694,59 @@ app.get('/api/csrf-token', (req, res) => {
   const token = issueCsrfToken(req);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ token, expiresInMs: CSRF_TTL_MS });
+});
+
+app.get('/api/history/recon', requireScope('recon.read'), (req, res) => {
+  const limitRaw = Number(req.query.limit || 500);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.floor(limitRaw))) : 500;
+  const target = String(req.query.target || '').trim().toLowerCase();
+  const afterRaw = Number(req.query.after || 0);
+  const after = Number.isFinite(afterRaw) ? Math.max(0, Math.floor(afterRaw)) : 0;
+  let rows = reconHttpHistory;
+  if (target) rows = rows.filter((x) => String(x.target || '').toLowerCase() === target);
+  if (after > 0) rows = rows.filter((x) => Number(x.id) > after);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, count: rows.length, items: rows.slice(-limit) });
+});
+
+// ── PROXY CAPTURE API ──────────────────────────────────────────────────────
+app.get('/api/proxy/status', requireScope('recon.read'), (_req, res) => {
+  res.json({ ok: true, ...ghostProxy.status() });
+});
+
+app.post('/api/proxy/start', requireScope('recon.run'), async (req, res) => {
+  if (!validateCsrfToken(req)) { res.status(403).json({ ok: false, error: 'CSRF inválido' }); return; }
+  try {
+    const result = await ghostProxy.start();
+    res.json({ ok: true, ...result, ...ghostProxy.status() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post('/api/proxy/stop', requireScope('recon.run'), async (req, res) => {
+  if (!validateCsrfToken(req)) { res.status(403).json({ ok: false, error: 'CSRF inválido' }); return; }
+  try {
+    await ghostProxy.stop();
+    res.json({ ok: true, ...ghostProxy.status() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post('/api/proxy/mitm', requireScope('recon.run'), (req, res) => {
+  if (!validateCsrfToken(req)) { res.status(403).json({ ok: false, error: 'CSRF inválido' }); return; }
+  const enabled = Boolean(req.body?.enabled !== false);
+  ghostProxy.setMitm(enabled);
+  res.json({ ok: true, mitmEnabled: enabled, ...ghostProxy.status() });
+});
+
+app.get('/api/proxy/ca.crt', (_req, res) => {
+  const cert = ghostProxy.caCert;
+  if (!cert) { res.status(404).json({ ok: false, error: 'CA não gerada — OpenSSL disponível?' }); return; }
+  res.setHeader('Content-Type', 'application/x-x509-ca-cert');
+  res.setHeader('Content-Disposition', 'attachment; filename="ghostrecon-ca.crt"');
+  res.send(cert);
 });
 
 app.get('/api/tunnel/status', async (_req, res) => {
@@ -3448,6 +3858,23 @@ app.post('/api/tool-path-refresh', requireRole('admin'), (req, res) => {
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'ghostrecon' });
+});
+
+app.get('/api/searchsploit', async (req, res) => {
+  const query = String(req.query.q || '').trim().replace(/[;&|`$(){}[\]<>\\]/g, '');
+  if (!query || query.length < 2) return res.status(400).json({ error: 'query too short' });
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  const execFileAsync = promisify(execFile);
+  try {
+    const args = ['--json', ...query.split(/\s+/).filter(Boolean)];
+    const { stdout } = await execFileAsync('searchsploit', args, { timeout: 12000, maxBuffer: 1024 * 512 });
+    res.setHeader('Content-Type', 'application/json');
+    res.send(stdout);
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(503).json({ error: 'searchsploit not found — install exploitdb' });
+    res.status(500).json({ error: String(err.message || err) });
+  }
 });
 
 /** Segredos com o mesmo value_fp em mais de um alvo (requer nome de projeto na UI e achados com value_fp no meta). */
