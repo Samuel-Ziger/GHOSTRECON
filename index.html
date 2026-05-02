@@ -1033,76 +1033,321 @@
     }
   }
 
-  /* ===== MODULES SECTION ===== */
+  /* ===== MODULES SECTION (TRIAGEM) ===== */
   .modules-section {
-    padding: 16px 20px;
+    padding: 18px 20px 22px;
     border-bottom: 1px solid var(--border);
+    background:
+      radial-gradient(1200px 220px at 50% -40px, rgba(0,212,255,0.05), transparent 60%),
+      linear-gradient(180deg, rgba(8,11,18,0.4), transparent 40%);
+    position: relative;
   }
 
-  .module-group { margin-bottom: 16px; }
+  .modules-section::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 20px; right: 20px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.4;
+  }
+
+  .module-group {
+    margin-bottom: 14px;
+    padding: 12px 12px 10px 14px;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--border-bright);
+    border-radius: 6px;
+    background: linear-gradient(180deg, rgba(13,18,32,0.55), rgba(8,11,18,0.3));
+    position: relative;
+    transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.25s ease;
+  }
+
+  .module-group:hover {
+    border-left-color: var(--accent);
+    box-shadow: inset 0 0 0 1px rgba(0,212,255,0.05), 0 4px 16px rgba(0,0,0,0.25);
+  }
+
+  .module-group::after {
+    content: '';
+    position: absolute;
+    top: 10px; right: 10px;
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: var(--accent2);
+    box-shadow: 0 0 6px var(--accent2);
+    opacity: 0.35;
+  }
 
   .module-group-title {
     font-family: var(--mono);
-    font-size: 9px;
-    color: var(--text-dim);
-    letter-spacing: 2px;
+    font-size: 10px;
+    color: var(--accent);
+    letter-spacing: 2.5px;
     text-transform: uppercase;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px dashed rgba(0,212,255,0.18);
+    text-shadow: 0 0 8px rgba(0,212,255,0.3);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .module-group-title::before {
+    content: '▍';
+    color: var(--accent2);
+    text-shadow: 0 0 6px var(--accent2);
+    font-size: 11px;
+    line-height: 1;
   }
 
   .checkbox-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 0;
+    gap: 10px;
+    padding: 6px 8px 6px 10px;
     cursor: pointer;
-    transition: color 0.15s;
+    border-radius: 4px;
+    position: relative;
+    transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
   }
 
-  .checkbox-item:hover { color: var(--text-bright); }
+  .checkbox-item::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 8px; bottom: 8px;
+    width: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+    transform: scaleY(0);
+    transform-origin: center;
+    transition: transform 0.2s ease, background 0.2s ease;
+  }
+
+  .checkbox-item:hover {
+    color: var(--text-bright);
+    background: rgba(0,212,255,0.04);
+    transform: translateX(2px);
+  }
+
+  .checkbox-item:hover::before { transform: scaleY(1); }
+
+  .checkbox-item:has(input:checked) {
+    background: rgba(0,255,136,0.04);
+  }
+
+  .checkbox-item:has(input:checked)::before {
+    transform: scaleY(1);
+    background: var(--accent2);
+    box-shadow: 0 0 8px var(--accent2);
+  }
 
   .checkbox-item input { display: none; }
 
   .checkbox-box {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     border: 1px solid var(--border-bright);
+    border-radius: 3px;
     display: grid;
     place-items: center;
     flex-shrink: 0;
-    transition: all 0.15s;
+    background: rgba(8,11,18,0.6);
+    transition: all 0.2s cubic-bezier(.2,.8,.2,1);
+    position: relative;
+  }
+
+  .checkbox-item:hover .checkbox-box {
+    border-color: var(--accent);
+    box-shadow: 0 0 8px rgba(0,212,255,0.4);
   }
 
   .checkbox-item input:checked ~ .checkbox-box {
     border-color: var(--accent2);
-    background: rgba(0,255,136,0.1);
+    background: rgba(0,255,136,0.18);
+    box-shadow: 0 0 10px rgba(0,255,136,0.45), inset 0 0 6px rgba(0,255,136,0.2);
   }
 
   .checkbox-item input:checked ~ .checkbox-box::after {
     content: '';
-    width: 6px;
-    height: 6px;
-    background: var(--accent2);
+    width: 4px;
+    height: 8px;
+    border: solid var(--accent2);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg) translate(-1px, -1px);
+    background: transparent;
+    filter: drop-shadow(0 0 3px var(--accent2));
+    animation: checkPop 0.25s cubic-bezier(.2,.9,.3,1.4);
+  }
+
+  @keyframes checkPop {
+    0% { transform: rotate(45deg) scale(0); opacity: 0; }
+    60% { transform: rotate(45deg) scale(1.25); opacity: 1; }
+    100% { transform: rotate(45deg) translate(-1px, -1px) scale(1); opacity: 1; }
   }
 
   .checkbox-text {
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--text);
     font-family: var(--body);
-    font-weight: 300;
+    font-weight: 400;
+    line-height: 1.35;
+  }
+
+  .checkbox-item input:checked ~ .checkbox-text {
+    color: var(--text-bright);
   }
 
   .tag {
     margin-left: auto;
     font-family: var(--mono);
     font-size: 9px;
-    padding: 1px 5px;
-    letter-spacing: 1px;
+    font-weight: 600;
+    padding: 2px 7px;
+    letter-spacing: 1.2px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transition: transform 0.15s ease, box-shadow 0.2s ease;
   }
 
-  .tag-high { background: rgba(255,34,68,0.15); color: var(--red); border: 1px solid rgba(255,34,68,0.3); }
-  .tag-med { background: rgba(255,136,0,0.15); color: var(--orange); border: 1px solid rgba(255,136,0,0.3); }
-  .tag-low { background: rgba(0,232,122,0.1); color: var(--green); border: 1px solid rgba(0,232,122,0.3); }
+  .checkbox-item:hover .tag { transform: translateY(-1px); }
+
+  .tag-high {
+    background: linear-gradient(180deg, rgba(255,34,68,0.22), rgba(255,34,68,0.12));
+    color: #ff8095;
+    border: 1px solid rgba(255,34,68,0.45);
+    box-shadow: 0 0 8px rgba(255,34,68,0.18), inset 0 0 4px rgba(255,34,68,0.1);
+  }
+  .tag-med {
+    background: linear-gradient(180deg, rgba(255,136,0,0.22), rgba(255,136,0,0.1));
+    color: #ffb866;
+    border: 1px solid rgba(255,136,0,0.4);
+    box-shadow: 0 0 8px rgba(255,136,0,0.15);
+  }
+  .tag-low {
+    background: linear-gradient(180deg, rgba(0,232,122,0.18), rgba(0,232,122,0.08));
+    color: #6affb0;
+    border: 1px solid rgba(0,232,122,0.4);
+    box-shadow: 0 0 8px rgba(0,232,122,0.15);
+  }
+
+  /* Variantes adicionais por texto (CRIT/ACT/API/CLI/KALI/NET/OPS/WHOIS+) */
+  .tag[class*="tag-high"][title],
+  .tag-high:where([class]) { /* placeholder for future overrides */ }
+
+  /* Pulse sutil em tags de criticidade máxima (CRIT/ACT) — detectado pelo conteúdo */
+  .checkbox-item input:checked ~ .tag-high {
+    animation: tagPulse 2.6s ease-in-out infinite;
+  }
+
+  @keyframes tagPulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(255,34,68,0.18), inset 0 0 4px rgba(255,34,68,0.1); }
+    50% { box-shadow: 0 0 14px rgba(255,34,68,0.45), inset 0 0 6px rgba(255,34,68,0.2); }
+  }
+
+  .module-detail-panel {
+    display: none;
+    position: sticky;
+    top: 8px;
+    background: linear-gradient(180deg, rgba(10,14,26,0.96), rgba(5,10,18,0.96));
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 0 24px rgba(0,212,255,0.18), 0 8px 30px rgba(0,0,0,0.5);
+    z-index: 1;
+    backdrop-filter: blur(6px);
+  }
+
+  .module-detail-panel::before {
+    content: '';
+    position: absolute;
+    top: -1px; left: 12px; right: 12px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent2), transparent);
+  }
+
+  .module-detail-panel.module-detail-panel-visible {
+    display: block;
+    animation: detailIn 0.25s ease-out;
+  }
+
+  @keyframes detailIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .module-detail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed rgba(0,212,255,0.2);
+  }
+
+  .module-detail-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    text-shadow: 0 0 8px rgba(0,212,255,0.4);
+  }
+
+  .module-detail-close {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px 8px;
+    border-radius: 4px;
+    transition: all 0.18s ease;
+  }
+
+  .module-detail-close:hover {
+    color: var(--accent3);
+    border-color: rgba(255,51,102,0.4);
+    background: rgba(255,51,102,0.08);
+  }
+
+  .module-detail-body {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.55;
+    min-height: 48px;
+  }
+
+  .module-detail-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+  }
+
+  .module-detail-action-btn {
+    border: 1px solid var(--accent);
+    background: linear-gradient(180deg, rgba(0,212,255,0.14), rgba(0,212,255,0.06));
+    color: var(--text-bright);
+    padding: 7px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    transition: all 0.18s ease;
+  }
+
+  .module-detail-action-btn:hover {
+    background: linear-gradient(180deg, rgba(0,212,255,0.25), rgba(0,212,255,0.12));
+    box-shadow: 0 0 14px rgba(0,212,255,0.4);
+    transform: translateY(-1px);
+  }
 
   /* ===== GOOGLE HACKING MANUAL ===== */
   .gh-hint {
@@ -2883,6 +3128,19 @@
     <div class="modules-section">
       <div class="section-label">
         <span>Modules</span>
+      </div>
+
+      <div id="moduleDetailPanel" class="module-detail-panel" aria-live="polite" hidden>
+        <div class="module-detail-header">
+          <div id="moduleDetailTitle" class="module-detail-title">Selecione um módulo</div>
+          <button type="button" class="module-detail-close" onclick="closeModuleDetailPanel()" aria-label="Fechar detalhes">×</button>
+        </div>
+        <div id="moduleDetailBody" class="module-detail-body">
+          <p style="margin:0">Ao marcar um módulo, aqui aparecem a descrição e as opções principais, sem ter de descer na página.</p>
+        </div>
+        <div class="module-detail-actions">
+          <button type="button" id="moduleDetailActionBtn" class="module-detail-action-btn" onclick="scrollToModule()">Ir para o módulo</button>
+        </div>
       </div>
 
       <div class="module-group">
@@ -6329,6 +6587,60 @@ document.getElementById('batchModeToggle')?.addEventListener('change', syncBatch
 syncBatchWrapVisibility();
 document.getElementById('domainInput')?.addEventListener('input', updateGhPreview);
 document.getElementById('exactMatch')?.addEventListener('change', updateGhPreview);
+
+document.querySelectorAll('input.mod[type="checkbox"]').forEach((checkbox) => {
+  checkbox.addEventListener('change', () => showModuleDetailForCheckbox(checkbox));
+  checkbox.addEventListener('focus', () => showModuleDetailForCheckbox(checkbox));
+});
+
+function getModuleLabelElement(value) {
+  return document.querySelector(`input.mod[value="${CSS.escape(value)}"]`)?.closest('.checkbox-item');
+}
+
+function scrollToModule(value) {
+  const moduleId = value || window.__ghostreconSelectedModule;
+  if (!moduleId) return;
+  const el = getModuleLabelElement(moduleId);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function closeModuleDetailPanel() {
+  const panel = document.getElementById('moduleDetailPanel');
+  if (!panel) return;
+  panel.classList.remove('module-detail-panel-visible');
+  panel.hidden = true;
+}
+
+function showModuleDetailForCheckbox(input) {
+  if (!input) return;
+  const labelEl = input.closest('.checkbox-item');
+  if (!labelEl) return;
+  const title = labelEl.querySelector('.checkbox-text')?.textContent?.trim() || input.value;
+  const description = labelEl.getAttribute('title') ||
+    'Visão geral do módulo selecionado. As opções principais aparecem aqui quando o módulo é marcado.';
+  const panel = document.getElementById('moduleDetailPanel');
+  const titleEl = document.getElementById('moduleDetailTitle');
+  const bodyEl = document.getElementById('moduleDetailBody');
+  const actionBtn = document.getElementById('moduleDetailActionBtn');
+  if (!panel || !titleEl || !bodyEl || !actionBtn) return;
+  titleEl.textContent = `${title} · ${input.checked ? 'Ativo' : 'Inativo'}`;
+  bodyEl.innerHTML = '';
+  const desc = document.createElement('p');
+  desc.textContent = description;
+  desc.style.margin = '0 0 8px';
+  bodyEl.appendChild(desc);
+  const hint = document.createElement('p');
+  hint.textContent = 'Use o botão para ir ao módulo e ver a configuração completa sem ter de procurar na página.';
+  hint.style.margin = '0';
+  hint.style.fontSize = '12px';
+  hint.style.color = 'var(--text-dim)';
+  bodyEl.appendChild(hint);
+  actionBtn.onclick = () => scrollToModule(input.value);
+  panel.classList.add('module-detail-panel-visible');
+  panel.hidden = false;
+  window.__ghostreconSelectedModule = input.value;
+}
 
 const FULL_MODULES_EXCLUDE = new Set([
   'shannon_whitebox',
