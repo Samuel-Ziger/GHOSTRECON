@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Um comando na VPS: dependências sistema + npm + opcional cron + lista de alvos
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${ROOT}"
+
+WITH_CRON=0
+for arg in "$@"; do
+  [[ "$arg" == "--cron" ]] && WITH_CRON=1
+done
+
+need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Erro: necessário \"$1\""; exit 1; }; }
+
+echo "[install] Pacote em: ${ROOT}"
+
+if command -v apt-get >/dev/null 2>&1; then
+  echo "[install] apt: tools de compilação (better-sqlite3, etc.)"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl ca-certificates build-essential python3 make g++ sqlite3 openssl ca-certificates
+fi
+
+echo "[install] Node.js (mínimo 20 recomendado)"
+if command -v node >/dev/null 2>&1; then
+  major="$(node -e "console.log(process.versions.node.split('.')[0])")"
+  if [[ "${major}" -lt 20 ]]; then
+    echo "[install] Aviso: Node ${major} pode falhar — use Node 20 LTS ou 22."
+  fi
+else
+  if command -v apt-get >/dev/null 2>&1; then
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+  else
+    echo "Instale Node 20+ manualmente e volte a correr este script.";
+    exit 1
+  fi
+fi
+
+need_cmd node
+need_cmd npm
+
+echo "[install] npm install"
+npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+
+if [[ ! -f "${ROOT}/.env" ]]; then
+  if [[ -f "${ROOT}/.env.example" ]]; then
+    cp "${ROOT}/.env.example" "${ROOT}/.env"
+    echo "[install] Copiado .env.example → .env (edite ou substitua pelo .env do GHOSTRECON)"
+  elif [[ -f "${ROOT}/../.env" ]]; then
+    ln -snf "${ROOT}/../.env" "${ROOT}/.env"
+    echo "[install] Ligado symlink .env ao diretório pai (GHOSTRECON)"
+  fi
+fi
+
+PARENT_SD="${ROOT}/../subdomains.txt"
+if [[ -f "${PARENT_SD}" ]]; then
+  echo "[install] Lista de alvos: ${PARENT_SD} — ficheiro partilhado com o mono-repo por defeito (WORKFLOW_DOMAINS_FILE=../subdomains.txt)."
+elif [[ ! -f "${ROOT}/subdomains.txt" ]]; then
+  if [[ -f "${ROOT}/subdomains.txt.example" ]]; then
+    cp "${ROOT}/subdomains.txt.example" "${ROOT}/subdomains.txt"
+    echo "[install] Criado ${ROOT}/subdomains.txt inicial (VPC isolada; em mono-repo usa ../subdomains.txt)."
+  elif [[ -f "${ROOT}/domains.txt.example" ]]; then
+    cp "${ROOT}/domains.txt.example" "${ROOT}/subdomains.txt"
+    echo "[install] Criado ${ROOT}/subdomains.txt a partir de domains.txt.example."
+  fi
+fi
+
+chmod +x "${ROOT}/cron-install.sh" "${ROOT}/setup-cron.sh" "${ROOT}/scripts/cron-run.sh" 2>/dev/null || true
+
+if [[ "${WITH_CRON}" -eq 1 ]]; then
+  bash "${ROOT}/cron-install.sh"
+else
+  echo ""
+  echo "[install] Cron NÃO configurado. Para instalar no crontab (cada 6 h):"
+  echo "         bash ${ROOT}/cron-install.sh"
+  echo "         ou: bash ${ROOT}/setup-cron.sh"
+  echo "         ou: bash ${ROOT}/install.sh --cron"
+fi
+
+echo ""
+echo "[install] Teste rápido (opcional):"
+echo "         cd \"${ROOT}\" && node scripts/sync-domains.mjs && node scripts/run-pipeline.mjs"
+echo ""
+echo "[install] Pronto."

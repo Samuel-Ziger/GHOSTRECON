@@ -1,0 +1,28 @@
+{
+  "name": "ghostrecon-vps-workflow",
+  "version": "1.0.0",
+  "description": "Modo VPS: Supabase → ../subdomains.txt (raiz mono-repo) → motor GHOSTRECON (engine/) → SQLite → IA → webhook opcional",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "sync": "node scripts/sync-domains.mjs",
+    "run:cycle": "node scripts/run-cycle.mjs",
+    "run:pipeline": "node scripts/run-pipeline.mjs",
+    "start:server": "node engine/server/index.js",
+    "cron": "bash cron-install.sh",
+    "cron:install": "bash cron-install.sh"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "2.103.0",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "playwright": "^1.59.1",
+    "postgres": "^3.4.8",
+    "tldts": "^6.1.21",
+    "undici": "^7.5.0"
+  }
+}
