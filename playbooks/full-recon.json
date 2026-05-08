@@ -1,0 +1,96 @@
+{
+  "name": "full-recon",
+  "description": "Maximalista: TODOS os módulos passivos + ativos (modo Kali). Apex → enumera subs → recon completo no apex → recon completo em cada sub. Sem UI, sem manual; só dispara módulos que dispensam intervenção. Use com WORKFLOW_KALI_MODE=1, WORKFLOW_OPSEC_PROFILE=aggressive, WORKFLOW_CONFIRM_ACTIVE=1 e ferramentas Kali instaladas (nmap, subfinder, amass, ffuf, nuclei, wpscan, dalfox, masscan, etc.).",
+  "profile": "aggressive",
+  "tags": [
+    "full",
+    "max",
+    "active",
+    "passive",
+    "recon",
+    "osint",
+    "vps"
+  ],
+  "targetHint": "qualquer apex/sub; in-scope confirmado",
+  "modules": [
+    "subdomains",
+    "subfinder",
+    "amass",
+    "ct_monitor",
+    "virustotal",
+    "shodan",
+    "rdap",
+    "dns_enrichment",
+    "origin_discovery",
+
+    "http",
+    "tls",
+    "security_headers",
+    "header_intel",
+    "robots_sitemap",
+    "wellknown_security_txt",
+    "wellknown_openid",
+    "html_surface",
+    "asset_discovery",
+    "takeover",
+
+    "openapi_specs",
+    "openapi_harvest",
+    "graphql_probe",
+    "graphql_recon",
+
+    "js_intel",
+    "js_analyze",
+    "js_crawler",
+
+    "wayback",
+    "common_crawl",
+    "gau",
+    "waybackurls",
+    "github",
+    "github_clone",
+    "google_cse",
+    "pastebin",
+    "dorks",
+
+    "secrets",
+    "secret_validation",
+    "encoding_sniff",
+    "lovable_fingerprint",
+    "supabase_audit",
+
+    "param_discovery",
+    "curl_probe",
+    "micro_exploit",
+    "webshell_probe",
+    "sqlmap",
+    "authz_matrix",
+    "jwt_lab",
+    "dom_xss_verify",
+    "payload_mutator",
+    "race_harness",
+    "oob_collaborator",
+    "cred_spray",
+    "cloud_bruteforce",
+    "chaining",
+
+    "kali_subdomains",
+    "kali_nuclei",
+    "kali_ffuf",
+    "kali_dirsearch",
+    "kali_nmap_aggressive",
+    "kali_nmap_udp",
+    "kali_proxychains",
+    "wpscan",
+
+    "shannon_whitebox",
+    "navegation",
+    "pentestgpt_validate",
+
+    "bounty_scope",
+    "bounty_estimator"
+  ],
+  "limits": {
+    "notes": "Módulos que dependem de credenciais/configs externas (cred_spray, oob_collaborator, race_harness, sqlmap, pentestgpt_validate, shannon_whitebox) auto-pulam se faltarem variáveis. Para sqlmap completo, configure GHOSTRECON_SQLMAP_*; para OOB, GHOSTRECON_OOB_*; para shannon, GHOSTRECON_SHANNON_GITHUB_REPOS. Tempo por apex: 5-30 min (com nmap), depende de quantos subs forem encontrados."
+  }
+}

@@ -41,13 +41,28 @@ fi
 need_cmd node
 need_cmd npm
 
-echo "[install] npm install"
-if ! npm ci --omit=dev 2>/dev/null; then
-  if ! npm install --omit=dev; then
-    echo "[install] npm install falhou — tentando --legacy-peer-deps"
-    npm install --omit=dev --legacy-peer-deps
-  fi
+npm_install_in() {
+  local dir="$1"
+  echo "[install] npm install em ${dir}"
+  (
+    cd "${dir}"
+    if ! npm ci --omit=dev 2>/dev/null; then
+      if ! npm install --omit=dev; then
+        echo "[install] npm install falhou em ${dir} — tentando --legacy-peer-deps"
+        npm install --omit=dev --legacy-peer-deps
+      fi
+    fi
+  )
+}
+
+PARENT_ROOT="$(cd "${ROOT}/.." && pwd)"
+
+if [[ -f "${PARENT_ROOT}/package.json" ]] && [[ "${PARENT_ROOT}" != "${ROOT}" ]]; then
+  echo "[install] Detectado mono-repo GHOSTRECON em ${PARENT_ROOT} — instalando deps do motor (server/, playbooks/)"
+  npm_install_in "${PARENT_ROOT}"
 fi
+
+npm_install_in "${ROOT}"
 
 if [[ ! -f "${ROOT}/.env" ]]; then
   if [[ -f "${ROOT}/.env.example" ]]; then
