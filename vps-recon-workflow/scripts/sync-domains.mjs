@@ -15,6 +15,7 @@ function supabaseKeys() {
   const key =
     String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim() ||
     String(process.env.SUPABASE_ANON_KEY || '').trim() ||
+    String(process.env.SUPABASE_PUBLISHABLE_KEY || '').trim() ||
     String(process.env.SUPABASE_KEY || '').trim();
   return { url, key };
 }
@@ -88,7 +89,12 @@ async function domainsFromTable(sb) {
 async function main() {
   const { url, key } = supabaseKeys();
   if (!url || !key) {
-    console.error('[sync-domains] Defina SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY (ou ANON)');
+    console.error(
+      '[sync-domains] Defina SUPABASE_URL e uma chave (SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY ou SUPABASE_PUBLISHABLE_KEY).',
+    );
+    console.error(
+      `[sync-domains] .env carregado: ${process.env._WORKFLOW_ENV_SOURCE || '<nenhum>'}`,
+    );
     process.exit(2);
   }
 

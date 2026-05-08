@@ -42,7 +42,12 @@ need_cmd node
 need_cmd npm
 
 echo "[install] npm install"
-npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+if ! npm ci --omit=dev 2>/dev/null; then
+  if ! npm install --omit=dev; then
+    echo "[install] npm install falhou — tentando --legacy-peer-deps"
+    npm install --omit=dev --legacy-peer-deps
+  fi
+fi
 
 if [[ ! -f "${ROOT}/.env" ]]; then
   if [[ -f "${ROOT}/.env.example" ]]; then

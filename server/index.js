@@ -4553,21 +4553,29 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(ROOT, 'index.html'));
 });
 
-const server = app.listen(PORT, HOST, () => {
-  console.log(`GHOSTRECON → http://${HOST}:${PORT}`);
-  if (!isLocalHostBind(HOST)) {
-    console.warn(
-      `[auth] Aviso: HOST=${HOST} (bind não-local). O perfil recomendado do GHOSTRECON é localhost-first; reveja AUTH_MODE/AUTH_DISABLE antes de expor a API.`,
-    );
-  }
-});
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(
-      `[GHOSTRECON] Porta ${PORT} em uso. Encerre a instância anterior (ex.: netstat -ano | findstr :${PORT}) ou defina PORT=3850 antes de npm start.`,
-    );
-  } else {
-    console.error('[GHOSTRECON]', err.message);
-  }
-  process.exit(1);
-});
+const NO_HTTP_LISTEN =
+  String(process.env.GHOSTRECON_NO_HTTP_LISTEN || '').trim() === '1' ||
+  /^true$/i.test(String(process.env.GHOSTRECON_NO_HTTP_LISTEN || ''));
+
+if (!NO_HTTP_LISTEN) {
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`GHOSTRECON → http://${HOST}:${PORT}`);
+    if (!isLocalHostBind(HOST)) {
+      console.warn(
+        `[auth] Aviso: HOST=${HOST} (bind não-local). O perfil recomendado do GHOSTRECON é localhost-first; reveja AUTH_MODE/AUTH_DISABLE antes de expor a API.`,
+      );
+    }
+  });
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `[GHOSTRECON] Porta ${PORT} em uso. Encerre a instância anterior (ex.: netstat -ano | findstr :${PORT}) ou defina PORT=3850 antes de npm start.`,
+      );
+    } else {
+      console.error('[GHOSTRECON]', err.message);
+    }
+    process.exit(1);
+  });
+}
+
+export { runPipeline, reconHttpContext, app };
