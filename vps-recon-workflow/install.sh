@@ -2,11 +2,14 @@
 # Um comando na VPS: dependências sistema + npm + opcional cron + lista de alvos.
 #
 # Flags:
-#   --cron        configurar crontab (cada 6 h) ao final
-#   --kali        instalar ferramentas Kali (nmap, subfinder, amass, ffuf, nuclei,
-#                 wpscan, sqlmap, dalfox, katana, etc.) + Playwright Chromium +
-#                 Python deps (xss_vibes). Auto-ativado se /etc/os-release indicar Kali.
-#   --no-kali     desativa explicitamente a fase Kali (sobrescreve auto-detect)
+#   --cron               configurar crontab (cada 6 h) ao final
+#   --hours N            (com --cron) intervalo periódico em horas
+#   --at "HH:MM,HH:MM"   (com --cron) horários fixos diários (ex: "06:00,18:00")
+#   --kali               instalar ferramentas Kali (nmap, subfinder, amass, ffuf,
+#                        nuclei, wpscan, sqlmap, dalfox, katana, etc.) + Playwright
+#                        Chromium + Python deps (xss_vibes). Auto-ativado se
+#                        /etc/os-release indicar Kali.
+#   --no-kali            desativa explicitamente a fase Kali (sobrescreve auto-detect)
 
 set -euo pipefail
 
@@ -15,11 +18,16 @@ cd "${ROOT}"
 
 WITH_CRON=0
 WITH_KALI=auto
-for arg in "$@"; do
-  case "$arg" in
-    --cron) WITH_CRON=1 ;;
-    --kali) WITH_KALI=1 ;;
-    --no-kali) WITH_KALI=0 ;;
+CRON_HOURS=""
+CRON_AT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cron) WITH_CRON=1; shift ;;
+    --kali) WITH_KALI=1; shift ;;
+    --no-kali) WITH_KALI=0; shift ;;
+    --hours) CRON_HOURS="${2:?}"; shift 2 ;;
+    --at) CRON_AT="${2:?}"; shift 2 ;;
+    *) shift ;;
   esac
 done
 
@@ -188,7 +196,13 @@ fi
 chmod +x "${ROOT}/cron-install.sh" "${ROOT}/setup-cron.sh" "${ROOT}/scripts/cron-run.sh" 2>/dev/null || true
 
 if [[ "${WITH_CRON}" -eq 1 ]]; then
-  bash "${ROOT}/cron-install.sh"
+  CRON_ARGS=()
+  if [[ -n "${CRON_AT}" ]]; then
+    CRON_ARGS+=(--at "${CRON_AT}")
+  elif [[ -n "${CRON_HOURS}" ]]; then
+    CRON_ARGS+=(--hours "${CRON_HOURS}")
+  fi
+  bash "${ROOT}/cron-install.sh" "${CRON_ARGS[@]}"
 else
   echo ""
   echo "[install] Cron NÃO configurado. Para instalar no crontab (cada 6 h):"
