@@ -170,13 +170,23 @@ if [[ "${WITH_KALI}" == "1" ]]; then
   echo ""
 fi
 
-if [[ ! -f "${ROOT}/.env" ]]; then
-  if [[ -f "${ROOT}/.env.example" ]]; then
+if [[ ! -e "${ROOT}/.env" ]]; then
+  # Preferir SYMLINK ao .env do mono-repo (evita templates de placeholder
+  # com precedência sobre o .env real da raiz, vide env-bootstrap.mjs).
+  if [[ -f "${ROOT}/../.env" ]]; then
+    ln -snf "../.env" "${ROOT}/.env"
+    echo "[install] Symlink ${ROOT}/.env → ../.env (mono-repo GHOSTRECON)"
+  elif [[ -f "${ROOT}/.env.example" ]]; then
     cp "${ROOT}/.env.example" "${ROOT}/.env"
-    echo "[install] Copiado .env.example → .env (edite ou substitua pelo .env do GHOSTRECON)"
-  elif [[ -f "${ROOT}/../.env" ]]; then
-    ln -snf "${ROOT}/../.env" "${ROOT}/.env"
-    echo "[install] Ligado symlink .env ao diretório pai (GHOSTRECON)"
+    echo "[install] Copiado .env.example → .env (EDITE para preencher credenciais reais)"
+  fi
+elif [[ -f "${ROOT}/.env" ]] && [[ -f "${ROOT}/../.env" ]] && [[ ! -L "${ROOT}/.env" ]]; then
+  # Existe um .env regular E um .env no pai → avisar conflito (env-bootstrap usa o do workflow primeiro)
+  if grep -q '^SUPABASE_URL=https://xxxx' "${ROOT}/.env" 2>/dev/null; then
+    echo "[install] AVISO: ${ROOT}/.env contém placeholders e existe um .env real em ${ROOT}/../.env"
+    echo "[install]        Substituindo por symlink → ../.env"
+    rm -f "${ROOT}/.env"
+    ln -snf "../.env" "${ROOT}/.env"
   fi
 fi
 
