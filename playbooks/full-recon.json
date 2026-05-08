@@ -82,6 +82,7 @@
     "kali_nmap_udp",
     "kali_proxychains",
     "wpscan",
+    "xss_vibes",
 
     "shannon_whitebox",
     "navegation",

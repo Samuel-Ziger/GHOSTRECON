@@ -8,6 +8,13 @@ import fs from 'node:fs';
 
 process.env.GHOSTRECON_NO_HTTP_LISTEN ??= '1';
 
+import { ghostreconRootPath } from '../lib/ghostrecon-root.mjs';
+try {
+  process.chdir(ghostreconRootPath());
+} catch (e) {
+  console.error(`[pipeline] aviso: não consegui chdir para ${ghostreconRootPath()}: ${e.message || e}`);
+}
+
 import { orderDomainsFQDN, apexForHost } from '../lib/domain-order.mjs';
 import { executeReconDirect } from '../engine/direct-pipeline.mjs';
 import { openStateDb, filterInsertNew, insertCycle, finalizeCycle } from '../lib/sqlite-state.mjs';
