@@ -528,7 +528,7 @@ const AUTH_ALLOWLIST = [
   /^\/(?:assets|public|static)\//,
   /^\/[^\/]+\.(?:html|css|js|map|svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf)$/,
   /^\/anotacao(?:\/|$)/, // GhostTrace (UI de anotações via proxy)
-  /^\/ghostmap(?:\/|$)/, // GhostMap (MITRE + grafo via proxy)
+  /^\/ghostmap(?:\/|$)/, // GhostMap (HTTP History + grafo via proxy)
 ];
 app.use(requireAuth({ allowlist: AUTH_ALLOWLIST }));
 

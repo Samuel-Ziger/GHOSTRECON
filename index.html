@@ -5321,7 +5321,7 @@ function openCortexPage(ev) {
 }
 
 function openHistoryPage() {
-  const u = new URL('history.html', window.location.href);
+  const u = new URL('/ghostmap/history', window.location.origin);
   const t = ghostreconReportTargetKey();
   if (t) u.searchParams.set('target', t);
   const w = window.open(u.href, 'ghostrecon_history', 'noopener,noreferrer');

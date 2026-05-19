@@ -1,9 +1,10 @@
 /**
  * Proxy HTTP para a UI GhostMap (Next.js) em /ghostmap.
+ * Ative com GHOSTMAP_PROXY=1 e suba o frontend na porta GHOSTMAP_PORT (3020).
  */
 import http from 'http';
 
-const DEFAULT_PORT = 3012;
+const DEFAULT_PORT = 3020;
 const PREFIX = '/ghostmap';
 
 export function ghostmapProxyMiddleware(opts = {}) {
@@ -49,7 +50,7 @@ export function ghostmapProxyMiddleware(opts = {}) {
     proxyReq.on('error', () => {
       if (!res.headersSent) {
         res.status(503).type('html').send(
-          `<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8"><title>GHOSTRECON · GhostMap</title></head><body style="font-family:system-ui;background:#050709;color:#c8d8e4;padding:2rem"><h1>GhostMap offline</h1><p>Inicia a UI: <code>npm run start:ghostmap</code> (porta ${port}).</p></body></html>`
+          `<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8"><title>GHOSTRECON · GhostMap</title></head><body style="font-family:system-ui;background:#080c10;color:#c4d4da;padding:2rem"><h1>GhostMap offline</h1><p>Inicia a UI: <code>npm run start:ghostmap</code> (porta ${port}).</p></body></html>`
         );
       }
     });

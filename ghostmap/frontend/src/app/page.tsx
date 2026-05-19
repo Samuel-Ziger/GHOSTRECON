@@ -6,23 +6,45 @@ export default function HomePage() {
         Mapeamento visual de aplicações web para bug bounty e pentest ofensivo.
       </p>
       <div className="grid grid-cols-2 gap-4">
-        <a href="/ghostrecon" className="block rounded-xl border border-accent/30 bg-panel p-5 hover:border-accent/50 transition col-span-2">
+        <a
+          href="/history"
+          className="block rounded-xl border border-accent/30 bg-panel p-5 hover:border-accent/50 transition col-span-2"
+        >
           <div className="text-sm text-mute mb-1">GHOSTRECON</div>
-          <div className="font-medium">Hub MITRE + grafo de achados (ao vivo)</div>
+          <div className="font-medium">HTTP History + grafo (inspector unificado)</div>
         </a>
-        <a href="/projects" className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition">
+        <a
+          href="/ghostrecon"
+          className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition"
+        >
+          <div className="text-sm text-mute mb-1">MITRE</div>
+          <div className="font-medium">Mapa de técnicas ao vivo</div>
+        </a>
+        <a
+          href="/projects"
+          className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition"
+        >
           <div className="text-sm text-mute mb-1">Comece aqui</div>
           <div className="font-medium">Criar / abrir projeto</div>
         </a>
-        <a href="/proxy" className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition">
+        <a
+          href="/proxy"
+          className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition"
+        >
           <div className="text-sm text-mute mb-1">Live capture</div>
-          <div className="font-medium">Proxy & requests</div>
+          <div className="font-medium">Proxy & requests (Neo4j)</div>
         </a>
-        <a href="/graph" className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition">
+        <a
+          href="/graph"
+          className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition"
+        >
           <div className="text-sm text-mute mb-1">Topologia</div>
           <div className="font-medium">Grafo da aplicação</div>
         </a>
-        <a href="/roles" className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition">
+        <a
+          href="/roles"
+          className="block rounded-xl border border-border bg-panel p-5 hover:border-accent/40 transition"
+        >
           <div className="text-sm text-mute mb-1">Diferencial</div>
           <div className="font-medium">Role differential</div>
         </a>

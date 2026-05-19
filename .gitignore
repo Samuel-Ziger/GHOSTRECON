@@ -1,5 +1,13 @@
 node_modules/
 
+# GhostMap (HTTP History + grafo)
+ghostmap/frontend/node_modules/
+ghostmap/frontend/.next/
+ghostmap/frontend/out/
+ghostmap/frontend/tsconfig.tsbuildinfo
+ghostmap/**/*.pem
+ghostmap/mitmproxy-ca-cert.pem
+
 # GhostTrace (UI de anotações)
 GhostTrace/node_modules/
 GhostTrace/.next/
@@ -9,12 +17,6 @@ GhostTrace/backend/.venv/
 GhostTrace/backend/ghosttrace.db
 GhostTrace/backend/**/__pycache__/
 GhostTrace/.env.local
-
-# GhostMap (UI MITRE + grafo)
-ghostmap/frontend/node_modules/
-ghostmap/frontend/.next/
-ghostmap/frontend/out/
-ghostmap/frontend/.env.local
 
 logs/
 
