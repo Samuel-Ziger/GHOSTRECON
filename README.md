@@ -22,26 +22,27 @@ Framework local de **OSINT, recon, validação e priorização** para bug bounty
 12. [Roteamento Tor (anti-leak)](#roteamento-tor-anti-leak)
 13. [Proxy capture / MITM](#proxy-capture--mitm)
 14. [Ghost local (FastAPI)](#ghost-local-fastapi)
-15. [Persistência](#persistência)
-16. [IA em cascata e fallback](#ia-em-cascata-e-fallback)
-17. [CLI headless (`ghostrecon`)](#cli-headless-ghostrecon)
-18. [Scheduler, diff e alertas new-only](#scheduler-diff-e-alertas-new-only)
-19. [Playbooks](#playbooks)
-20. [Engagements, OPSEC e Purple Team](#engagements-opsec-e-purple-team)
-21. [Multi-operador (team locks + audit trail)](#multi-operador-team-locks--audit-trail)
-22. [Evidências ricas com Playwright](#evidências-ricas-com-playwright)
-23. [CVE enrichment (versão → exploit)](#cve-enrichment-versão--exploit)
-24. [Inbound webhooks (hub)](#inbound-webhooks-hub)
-25. [Projects (multi-alvo)](#projects-multi-alvo)
-26. [Workflow export (Linear/Jira/GitHub/Markdown)](#workflow-export-linearjiragithubmarkdown)
-27. [Instalação por perfil](#instalação-por-perfil)
-28. [Scripts NPM](#scripts-npm)
-29. [Testes automatizados](#testes-automatizados)
-30. [Docker](#docker)
-31. [Variáveis de ambiente](#variáveis-de-ambiente)
-32. [Proxychains-ng + rotação de IP](#proxychains-ng--rotação-de-ip)
-33. [Troubleshooting rápido](#troubleshooting-rápido)
-34. [Limites e uso responsável](#limites-e-uso-responsável)
+15. [GhostTrace — anotações e relatório](#ghosttrace--anotações-e-relatório)
+16. [Persistência](#persistência)
+17. [IA em cascata e fallback](#ia-em-cascata-e-fallback)
+18. [CLI headless (`ghostrecon`)](#cli-headless-ghostrecon)
+19. [Scheduler, diff e alertas new-only](#scheduler-diff-e-alertas-new-only)
+20. [Playbooks](#playbooks)
+21. [Engagements, OPSEC e Purple Team](#engagements-opsec-e-purple-team)
+22. [Multi-operador (team locks + audit trail)](#multi-operador-team-locks--audit-trail)
+23. [Evidências ricas com Playwright](#evidências-ricas-com-playwright)
+24. [CVE enrichment (versão → exploit)](#cve-enrichment-versão--exploit)
+25. [Inbound webhooks (hub)](#inbound-webhooks-hub)
+26. [Projects (multi-alvo)](#projects-multi-alvo)
+27. [Workflow export (Linear/Jira/GitHub/Markdown)](#workflow-export-linearjiragithubmarkdown)
+28. [Instalação por perfil](#instalação-por-perfil)
+29. [Scripts NPM](#scripts-npm)
+30. [Testes automatizados](#testes-automatizados)
+31. [Docker](#docker)
+32. [Variáveis de ambiente](#variáveis-de-ambiente)
+33. [Proxychains-ng + rotação de IP](#proxychains-ng--rotação-de-ip)
+34. [Troubleshooting rápido](#troubleshooting-rápido)
+35. [Limites e uso responsável](#limites-e-uso-responsável)
 
 ---
 
@@ -80,8 +81,12 @@ Painel visual de risco/tática: mostra o que foi encontrado com leitura orientad
 ### 4) `Reporter`
 Área de validação manual. Aqui o analista marca o que realmente confirmou, reduz ruído e gera material de reporte com foco no que importa.
 
-### 5) `Anotação`
-Editor de anotações técnicas com apoio de IA para acelerar a redação e consolidar aprendizado operacional do run.
+### 5) `GhostTrace` (área de **Anotações**)
+Plataforma operacional de documentação ofensiva integrada ao GHOSTRECON (Next.js + FastAPI opcional). Substitui o fluxo monolítico de `anotacao.html`: recebe o pacote do **Reporter** (findings + validações manuais), importa para um projeto, e permite documentar vulnerabilidades com editor TipTap, timeline, attack chain, evidências e export **DOCX**.
+
+- UI: `/anotacao` (proxy da API Node → Next.js na porta `3010`)
+- Handoff: `POST /api/anotacao-handoff` + `sessionStorage` (mesmo contrato do Reporte)
+- Código: `GhostTrace/` · docs em `GhostTrace/README.md` e `GhostTrace/docs/ARCHITECTURE.md`
 
 ### 6) `Ghost Intelligence` (`ghost-local-v5`)
 Camada de IA local (FastAPI + Ollama + ChromaDB + SQLite) para chat, memória, ingestão de runs e análise guiada. Expõe um endpoint **OpenAI-compatible** local em `/v1/chat/completions`.
@@ -95,47 +100,73 @@ Painéis auxiliares para inspecionar tráfego (proxy MITM), planejar pós-explor
 
 ```bash
 npm install
-cp .env.example .env       # ajuste pelo menos AUTH_API_KEYS e (se quiser) DATABASE_URL
-npm start
+cd GhostTrace && npm install && cd ..
+cp .env.example .env       # ajuste AUTH_API_KEYS (ou AUTH_DISABLE=1 em dev)
+npm start                  # Ghost local (:8000) + API Node (:3847)
+```
+
+**Anotações (GhostTrace)** — terminal separado:
+
+```bash
+npm run start:anotacao     # Next.js em :3010 com basePath /anotacao
+```
+
+Ou API FastAPI do GhostTrace (sync de projetos na UI):
+
+```bash
+cd GhostTrace/backend
+pip install -r requirements.txt
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
 ```
 
 Depois:
 
-- UI principal: <http://127.0.0.1:3847/>
-- Ghost local (GUI): <http://127.0.0.1:8000/gui/>
-- Endpoint OpenAI-compatible local: <http://127.0.0.1:8000/v1/chat/completions>
+| URL | O quê |
+|-----|--------|
+| <http://127.0.0.1:3847/> | Cockpit recon (UI principal) |
+| <http://127.0.0.1:3847/reporte.html> | Reporter — validação manual |
+| <http://127.0.0.1:3847/anotacao/ghostrecon/import> | **GhostTrace** — importar pacote do Reporte |
+| <http://127.0.0.1:8000/gui/> | Ghost Intelligence (chat/IA local) |
+| <http://127.0.0.1:8787/health> | GhostTrace API (opcional, sync SQLite) |
 
-Sem `AUTH_API_KEYS` configurado a API responde 401 nas rotas privilegiadas. Em `127.0.0.1` é possível usar `AUTH_DISABLE=1` para bypass de loopback (apenas dev). Veja [Auth + RBAC](#auth--rbac-p0).
+Fluxo típico: recon → **Reporte** (validar achados) → botão **ANOTAÇÃO** → importar projeto no GhostTrace → documentar vulns / relatório DOCX.
+
+Sem `AUTH_API_KEYS` a API responde 401 nas rotas privilegiadas. Em dev local: `AUTH_DISABLE=1` no `.env` (só loopback). Veja [Auth + RBAC](#auth--rbac-p0).
+
+Variáveis úteis para anotações:
+
+```bash
+GHOSTTRACE_PROXY=1          # proxy /anotacao → :3010 (default ligado)
+GHOSTTRACE_PORT=3010
+AUTH_DISABLE=1              # dev apenas
+```
 
 ---
 
 ## Arquitetura
 
 ```text
-┌──────────────────────────┐                ┌──────────────────────────┐
-│ UI principal (index.html)│                │ Ghost Intelligence       │
-│ + GhostMap / Cortex /    │                │ (ghost-local-v5)         │
-│ Reporter / Anotação /    │                │ FastAPI + Ollama + Chroma│
-│ HTTP-History / Tor       │                │ /chat /memory /v1/...    │
-└──────────┬───────────────┘                └──────────────┬───────────┘
-           │ POST /api/recon/stream (NDJSON)               │ /v1/chat/completions
-           ▼                                               ▼
+┌──────────────────────────┐     handoff      ┌──────────────────────────┐
+│ Painéis HTML (:3847)     │ ───────────────► │ GhostTrace (:3010)       │
+│ index · GhostMap · Cortex│   /anotacao      │ Next.js · vulns · DOCX   │
+│ reporte · history · tor  │   (proxy)        │ sync opcional → :8787    │
+└──────────┬───────────────┘                  └──────────────────────────┘
+           │ POST /api/recon/stream (NDJSON)
+           ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│                  API Node / Express  (server/index.js)               │
-│  ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌─────────────────┐   │
-│  │ AUTH+RBAC  │ │ CSRF / RL   │ │ Tor strict │ │ Proxy capture   │   │
-│  └────────────┘ └─────────────┘ └────────────┘ └─────────────────┘   │
-│  ┌─────────────────────── runPipeline() ──────────────────────────┐  │
-│  │ recon → enrich → validate → kali (opt) → correlate → priorize  │  │
-│  │      → diff vs baseline → IA cascade → webhook → KB sync       │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-└────────┬─────────────────┬─────────────────┬────────────────┬────────┘
+│ API Node / Express (server/index.js) — default :3847               │
+│ AUTH+RBAC · CSRF · Tor strict · proxy MITM · ghosttrace-proxy.mjs  │
+│ runPipeline(): recon → validate → kali → correlate → IA → webhook  │
+└────────┬─────────────────┬─────────────────┬────────────────┬──────┘
          ▼                 ▼                 ▼                ▼
-   SQLite/Postgres    Webhooks/Inbound   IA cloud      Ferramentas
-   /Supabase          (HMAC)             Gemini /      externas (Kali)
-                                         OpenRouter /  nmap, nuclei,
-                                         Claude /      ffuf, sqlmap,
-                                         LM Studio     wpscan, dalfox…
+   SQLite/Postgres    Webhooks/Inbound   IA cloud         Ferramentas Kali
+   /Supabase          (HMAC)             Gemini/OpenRouter  nmap, nuclei…
+
+┌──────────────────────────┐                ┌──────────────────────────┐
+│ Ghost Intelligence       │                │ GhostTrace API (opc.)    │
+│ ghost-local-v5 :8000     │                │ FastAPI :8787 · SQLite   │
+│ Ollama · Chroma · /v1/…  │                │ PUT /projects/{id}/sync  │
+└──────────────────────────┘                └──────────────────────────┘
 ```
 
 ---
@@ -149,12 +180,21 @@ GHOSTRECON/
 │  ├─ config.js                         # rate-limits, limites por módulo
 │  ├─ load-env.js                       # bootstrap dotenv
 │  ├─ modules/                          # 120+ módulos (recon, IA, db, correlação, RT)
+│  │  ├─ ghosttrace-proxy.mjs           # proxy /anotacao → GhostTrace Next.js
 │  │  ├─ cli/                           # parser + commands da CLI headless
 │  │  └─ playbooks/                     # loader de playbooks JSON/YAML
 │  ├─ scripts/                          # MITRE bundle, PentestGPT bridge, smoke IA
 │  └─ tests/                            # 60+ testes (node --test)
 ├─ bin/ghostrecon.mjs                   # binário da CLI (npx ghostrecon)
-├─ scripts/start-stack.sh               # sobe Ghost local + API Node
+├─ scripts/
+│  ├─ start-stack.sh                    # Ghost local + API Node
+│  ├─ start-anotacao.sh                 # GhostTrace Next.js (:3010, basePath /anotacao)
+│  └─ start-stack-with-anotacao.sh      # stack completa + anotações
+├─ GhostTrace/                          # área de anotações (Next.js + FastAPI opcional)
+│  ├─ src/                              # App Router, features, lib/ghostrecon/
+│  ├─ backend/                          # FastAPI sync (:8787)
+│  ├─ docs/                             # ARCHITECTURE.md, REPORT_TEMPLATE.md
+│  └─ scripts/windows|kali/             # instaladores GhostTrace
 ├─ ghost-local-v5/
 │  ├─ start
 │  └─ ghost-local/
@@ -170,8 +210,8 @@ GHOSTRECON/
 ├─ index.html                           # cockpit operacional principal
 ├─ mitre-map.html                       # GhostMap (MITRE/OWASP)
 ├─ cortex.html                          # Cortex (KB validada)
-├─ reporte.html                         # Reporter (validação manual)
-├─ anotacao.html                        # Anotações com IA
+├─ reporte.html                         # Reporter (validação manual → handoff)
+├─ anotacao.html                        # redirect → /anotacao/ghostrecon/import
 ├─ history.html                         # HTTP History (inspector)
 ├─ post-exploitation.html               # Pós-exploração
 ├─ tor-validator.html                   # Tor Validator
@@ -259,7 +299,8 @@ GHOSTRECON/
 | `mitre-map.html` | **GhostMap** | Visualização MITRE/OWASP com feed ao vivo |
 | `cortex.html` | **Cortex** | Base de conhecimento de findings validados |
 | `reporte.html` | **Reporter** | Checklist manual + consolidação de validações |
-| `anotacao.html` | Anotações | Notas técnicas estruturadas + geração com IA |
+| `anotacao.html` | Anotações (redirect) | Redireciona para **GhostTrace** em `/anotacao` |
+| `/anotacao/*` | **GhostTrace** | Documentação de vulns, timeline, attack chain, relatório DOCX |
 | `history.html` | HTTP History | Inspector dos requests interceptados pelo proxy MITM |
 | `post-exploitation.html` | Pós-exploração | Planejamento de pós-exploração |
 | `tor-validator.html` | Tor Validator | Valida saída pela rede Tor antes do run |
@@ -426,6 +467,36 @@ Controle via `POST /api/proxy/start | /api/proxy/stop | /api/proxy/mitm`.
 - `GET  /hexstrike/{status,health}`, `POST /hexstrike/relay` — bridge para HexStrike AI
 - `POST /sessions/save`, `GET /sessions[/{id}]`
 - `GET  /gui/` — Ghost Intelligence (frontend)
+
+---
+
+## GhostTrace — anotações e relatório
+
+O **GhostTrace** vive em `GhostTrace/` e é servido pelo GHOSTRECON em **`/anotacao`** (proxy reverso para Next.js na porta `3010`). Documentação detalhada: [`GhostTrace/README.md`](GhostTrace/README.md).
+
+### Fluxo Reporte → GhostTrace
+
+1. No **Reporter** (`reporte.html`), valide achados e clique **ANOTAÇÃO**.
+2. O cliente envia `POST /api/anotacao-handoff` com `{ target, findings, manualValidations }` (e fallback `sessionStorage`).
+3. Abre `/anotacao/ghostrecon/import` — wizard de importação.
+4. Cria um **projeto** com vulns para achados já validados; os restantes ficam na bandeja **GHOSTRECON** na lista de vulnerabilidades.
+5. Edite com TipTap, timeline, attack chain, evidências; exporte **DOCX** ou JSON (`ReportShape`).
+
+### Três processos (dev local)
+
+| Processo | Comando | Porta |
+|----------|---------|-------|
+| API GHOSTRECON | `npm run start:api` ou `npm start` | `3847` |
+| GhostTrace UI | `npm run start:anotacao` | `3010` (URL pública: `/anotacao` na API) |
+| GhostTrace API | `cd GhostTrace/backend && uvicorn app.main:app --port 8787` | `8787` |
+
+A UI funciona **sem** a API `:8787` (dados em `localStorage` via Zustand). Com a API, projetos sincronizam para `backend/ghosttrace.db` (SQLite).
+
+### Integração no código GHOSTRECON
+
+- `server/modules/ghosttrace-proxy.mjs` — proxy HTTP `/anotacao` → Next.js
+- `GhostTrace/src/lib/ghostrecon/` — handoff, import de findings, templates Supabase, cliente da API GHOSTRECON
+- Allowlist auth: rotas `/anotacao/*` públicas para carregar a UI no browser
 
 ---
 
@@ -733,6 +804,8 @@ IAs externas opcionais (`Shannon` em `IAs/shannon/`, `PentestGPT` em `IAs/Pentes
 | `npm start` | Sobe Ghost local + API Node |
 | `npm run start:api` | Só API Node |
 | `npm run start:ghost` | Só Ghost local FastAPI |
+| `npm run start:anotacao` | GhostTrace Next.js (`:3010`, proxy em `/anotacao`) |
+| `npm run start:stack+anotacao` | Stack completa + GhostTrace (Linux/WSL) |
 | `npm run dev` | API com `node --watch` |
 | `npm test` | Roda todos os testes (`server/tests/*.test.js`) |
 | `npm run test:cli` | Subset de testes da CLI |
@@ -778,6 +851,7 @@ Imagem mínima da API (sem painéis auxiliares e ferramentas Kali externas — p
 Veja `.env.example` para a lista completa **comentada**. Categorias principais:
 
 - **Básico**: `PORT`, `HOST`, `GHOSTRECON_DB`
+- **GhostTrace**: `GHOSTTRACE_PROXY`, `GHOSTTRACE_PORT`, `GHOSTTRACE_HOST`, `GHOSTTRACE_STRIP_PREFIX`
 - **DB**: `DATABASE_URL` ou `SUPABASE_URL` + chaves
 - **Auth**: `AUTH_MODE`, `AUTH_API_KEYS`, `AUTH_API_KEYS_FILE`, `AUTH_JWT_*`, `AUTH_DISABLE`, `AUTH_AUDIT_DIR`
 - **CSRF / RL**: `GHOSTRECON_RL_MAX`, `GHOSTRECON_RL_WINDOW_MS`
@@ -821,6 +895,9 @@ Com isso, ferramentas como `nmap`, `nuclei`, `ffuf`, `dirsearch`, `dalfox`, `who
 | Modo Kali com módulos faltando | Verifique `GET /api/capabilities` e `npm run start:api` com `PATH` correto |
 | IA falhando | `npm run test:ai` e cheque cota/Retry-After do provider |
 | Ghost local offline | Veja `ghost-local-v5/ghost-local/ghost.log`; `start.sh` standalone |
+| Anotações 503 / offline | `npm run start:anotacao` + API Node com `GHOSTTRACE_PROXY=1` |
+| GhostTrace API offline | `cd GhostTrace/backend && pip install -r requirements.txt && uvicorn app.main:app --port 8787` |
+| Status «API offline» na UI GhostTrace | Confirme `NEXT_PUBLIC_API_URL=http://127.0.0.1:8787` em `GhostTrace/.env.local` |
 | Tor não valida | `GET /api/tunnel/strict-check` e `tor-validator.html` no browser |
 | DB falhando | Valide `DATABASE_URL` (URL-encode da senha) ou troque para SQLite |
 | Audit log não aparece | `AUTH_AUDIT_DIR` e permissão de escrita; `AUTH_AUDIT_DISABLE=1` desliga ficheiro |
