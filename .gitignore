@@ -1,5 +1,17 @@
 node_modules/
 
+# GhostTrace (UI de anotações)
+GhostTrace/node_modules/
+GhostTrace/.next/
+GhostTrace/out/
+GhostTrace/.ghosttrace/
+GhostTrace/backend/.venv/
+GhostTrace/backend/ghosttrace.db
+GhostTrace/backend/**/__pycache__/
+GhostTrace/.env.local
+
+logs/
+
 # Clone local MITRE CTI (pesado); o mapa fixo está em mitre-attack/recon-bundle.json
 mitre-attack/cti/
 

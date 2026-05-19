@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
+import { ghosttraceProxyMiddleware } from './modules/ghosttrace-proxy.mjs';
 import { AsyncLocalStorage } from 'async_hooks';
 import { fetchCrtShSubdomains } from './modules/subdomains.js';
 import { resolves } from './modules/dns.js';
@@ -525,6 +526,7 @@ const AUTH_ALLOWLIST = [
   /^\/(?:favicon\.ico|robots\.txt)$/,
   /^\/(?:assets|public|static)\//,
   /^\/[^\/]+\.(?:html|css|js|map|svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf)$/,
+  /^\/anotacao(?:\/|$)/, // GhostTrace (UI de anotações via proxy)
 ];
 app.use(requireAuth({ allowlist: AUTH_ALLOWLIST }));
 
@@ -4547,6 +4549,8 @@ app.post('/api/manual-validations/annotations-ai', requireScope('ai.run'), async
 registerInboundWebhooks(app);
 // Rotas auxiliares (playbooks list, cve enrich on-demand, projects CRUD, evidence trigger)
 registerNewApiRoutes(app, { validateCsrfToken });
+
+app.use(ghosttraceProxyMiddleware());
 
 app.use(express.static(ROOT, { index: false }));
 app.get('/', (_req, res) => {

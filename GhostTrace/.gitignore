@@ -1,0 +1,16 @@
+node_modules
+.ghosttrace
+backend/.venv
+backend/ghosttrace.db
+.next
+out
+build
+dist
+.env*
+!.env.example
+.DS_Store
+*.log
+.vscode
+.idea
+coverage
+*.tsbuildinfo

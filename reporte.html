@@ -1941,7 +1941,7 @@
         return;
       }
 
-      const u = new URL('anotacao.html', window.location.href);
+      const u = new URL('/anotacao/ghostrecon/import', window.location.origin);
       try {
         await fetchCsrf();
         const r = await fetch(apiUrl('/api/anotacao-handoff'), {

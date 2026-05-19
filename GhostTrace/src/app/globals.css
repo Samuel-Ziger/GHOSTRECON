@@ -1,0 +1,169 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* surfaces */
+    --bg: 222 14% 6%;
+    --surface: 222 14% 9%;
+    --surface-2: 222 14% 12%;
+    --surface-3: 222 14% 16%;
+    --border: 222 12% 18%;
+    --border-strong: 222 12% 26%;
+
+    /* foreground */
+    --fg: 220 14% 96%;
+    --fg-muted: 220 8% 62%;
+    --fg-dim: 220 8% 42%;
+
+    /* brand accent — operational neon green */
+    --accent: 152 95% 50%;
+
+    /* severities — matches LocBook report semantics */
+    --sev-critical: #ff3366;
+    --sev-high: #ff8a3d;
+    --sev-medium: #ffcc33;
+    --sev-low: #3dd6a8;
+    --sev-info: #5b9bff;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html,
+  body {
+    background-color: hsl(var(--bg));
+    color: hsl(var(--fg));
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-image:
+      radial-gradient(hsl(var(--border) / 0.5) 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-position: 0 0;
+  }
+
+  ::selection {
+    background: hsl(var(--accent) / 0.35);
+    color: hsl(var(--fg));
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--surface-3));
+    border: 2px solid hsl(var(--bg));
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--border-strong));
+  }
+
+  /* TipTap */
+  .tiptap {
+    min-height: 140px;
+    outline: none;
+  }
+  .tiptap p {
+    margin: 0 0 0.5rem 0;
+  }
+  .tiptap p:last-child {
+    margin-bottom: 0;
+  }
+  .tiptap code {
+    background: hsl(var(--surface-3));
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-family: var(--font-mono);
+  }
+  .tiptap pre {
+    background: hsl(var(--bg));
+    border: 1px solid hsl(var(--border));
+    padding: 12px 14px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .tiptap pre code {
+    background: transparent;
+    padding: 0;
+    font-size: inherit;
+  }
+  .tiptap ul,
+  .tiptap ol {
+    padding-left: 1.4rem;
+    margin: 0 0 0.5rem 0;
+  }
+  .tiptap ul li {
+    list-style: disc;
+  }
+  .tiptap ol li {
+    list-style: decimal;
+  }
+  .tiptap blockquote {
+    border-left: 2px solid hsl(var(--accent));
+    padding-left: 0.8rem;
+    color: hsl(var(--fg-muted));
+    margin: 0.5rem 0;
+  }
+  .tiptap.is-empty::before {
+    content: attr(data-placeholder);
+    color: hsl(var(--fg-dim));
+    pointer-events: none;
+    height: 0;
+    float: left;
+  }
+}
+
+@layer components {
+  .grid-bg {
+    background-image: radial-gradient(hsl(var(--border) / 0.7) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .scanline::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent, hsl(var(--accent) / 0.05), transparent);
+    animation: scan 4s linear infinite;
+  }
+
+  .severity-bar {
+    position: relative;
+  }
+  .severity-bar::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--bar-color, hsl(var(--accent)));
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .mask-fade-b {
+    mask-image: linear-gradient(180deg, black 65%, transparent);
+  }
+}
