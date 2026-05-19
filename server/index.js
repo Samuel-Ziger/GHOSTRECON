@@ -5,6 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
 import { ghosttraceProxyMiddleware } from './modules/ghosttrace-proxy.mjs';
+import { ghostmapProxyMiddleware } from './modules/ghostmap-proxy.mjs';
 import { AsyncLocalStorage } from 'async_hooks';
 import { fetchCrtShSubdomains } from './modules/subdomains.js';
 import { resolves } from './modules/dns.js';
@@ -527,6 +528,7 @@ const AUTH_ALLOWLIST = [
   /^\/(?:assets|public|static)\//,
   /^\/[^\/]+\.(?:html|css|js|map|svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf)$/,
   /^\/anotacao(?:\/|$)/, // GhostTrace (UI de anotações via proxy)
+  /^\/ghostmap(?:\/|$)/, // GhostMap (MITRE + grafo via proxy)
 ];
 app.use(requireAuth({ allowlist: AUTH_ALLOWLIST }));
 
@@ -4551,6 +4553,7 @@ registerInboundWebhooks(app);
 registerNewApiRoutes(app, { validateCsrfToken });
 
 app.use(ghosttraceProxyMiddleware());
+app.use(ghostmapProxyMiddleware());
 
 app.use(express.static(ROOT, { index: false }));
 app.get('/', (_req, res) => {

@@ -5381,7 +5381,7 @@ function openMitreMapPage(targetWindowName) {
     addLog('Ghostmap: sessão inválida — recarrega a página e tenta de novo.', 'warn');
     return;
   }
-  const u = new URL('mitre-map.html', window.location.href);
+  const u = new URL('/ghostmap/ghostrecon', window.location.origin);
   u.hash = id;
   const winName =
     typeof targetWindowName === 'string' && targetWindowName.trim() ? targetWindowName.trim() : '_blank';
@@ -5393,13 +5393,13 @@ function openMitreMapPage(targetWindowName) {
 function openGhostmapAndReporteOnReconStartSync() {
   const winOpts = 'noopener,noreferrer';
   if (typeof BroadcastChannel === 'undefined') {
-    addLog('Ghostmap: BroadcastChannel indisponível — abre mitre-map.html manualmente.', 'warn');
+    addLog('Ghostmap: BroadcastChannel indisponível — abre /ghostmap/ghostrecon manualmente.', 'warn');
   } else if (!ensureGhostmapLiveChannel()) {
     addLog('Ghostmap: não foi possível criar a ligação ao vivo.', 'warn');
   } else {
     const id = window.__mitreLiveSessionId;
     if (id) {
-      const ug = new URL('mitre-map.html', window.location.href);
+      const ug = new URL('/ghostmap/ghostrecon', window.location.origin);
       ug.hash = id;
       if (!window.open(ug.href, 'ghostrecon_ghostmap', winOpts)) {
         addLog('Ghostmap: popup bloqueado — permite janelas em pop-up para ver o mapa ao vivo.', 'warn');

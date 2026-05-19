@@ -1,0 +1,11 @@
+agent: heatmap_classifier
+prefer:
+  - ollama:qwen3:8b
+  - ollama:llama3.1:8b
+fallback:
+  - openrouter:meta-llama/llama-3.1-70b-instruct
+  - gemini:gemini-2.5-flash
+require_json: true
+max_tokens: 400
+temperature: 0.0
+redact: false

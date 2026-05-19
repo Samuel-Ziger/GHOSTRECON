@@ -88,6 +88,13 @@ Plataforma operacional de documentação ofensiva integrada ao GHOSTRECON (Next.
 - Handoff: `POST /api/anotacao-handoff` + `sessionStorage` (mesmo contrato do Reporte)
 - Código: `GhostTrace/` · docs em `GhostTrace/README.md` e `GhostTrace/docs/ARCHITECTURE.md`
 
+### 5b) `GhostMap` (MITRE/OWASP + grafo de achados)
+Hub unificado: mantém o **mapa MITRE/OWASP ao vivo** (`mitre-live.html`, mesmo visual do `mitre-map.html` legado) e acrescenta o **grafo ReactFlow** dos achados do recon (BroadcastChannel + `sessionStorage`, sem exigir a stack Docker Neo4j).
+
+- UI: `/ghostmap/ghostrecon` (proxy da API Node → Next.js na porta `3012`)
+- Abas: **Mapa MITRE / OWASP** · **Grafo (achados)**
+- Código: `ghostmap/frontend/` (stack Docker completa em `ghostmap/` continua opcional para proxy HTTP real em `/graph`)
+
 ### 6) `Ghost Intelligence` (`ghost-local-v5`)
 Camada de IA local (FastAPI + Ollama + ChromaDB + SQLite) para chat, memória, ingestão de runs e análise guiada. Expõe um endpoint **OpenAI-compatible** local em `/v1/chat/completions`.
 
@@ -111,6 +118,13 @@ npm start                  # Ghost local (:8000) + API Node (:3847)
 npm run start:anotacao     # Next.js em :3010 com basePath /anotacao
 ```
 
+**GhostMap (MITRE + grafo)** — terminal separado:
+
+```bash
+cd ghostmap/frontend && npm install && cd ../..
+npm run start:ghostmap     # Next.js em :3012 com basePath /ghostmap
+```
+
 Ou API FastAPI do GhostTrace (sync de projetos na UI):
 
 ```bash
@@ -126,6 +140,7 @@ Depois:
 | <http://127.0.0.1:3847/> | Cockpit recon (UI principal) |
 | <http://127.0.0.1:3847/reporte.html> | Reporter — validação manual |
 | <http://127.0.0.1:3847/anotacao/ghostrecon/import> | **GhostTrace** — importar pacote do Reporte |
+| <http://127.0.0.1:3847/ghostmap/ghostrecon> | **GhostMap** — MITRE/OWASP ao vivo + grafo de achados |
 | <http://127.0.0.1:8000/gui/> | Ghost Intelligence (chat/IA local) |
 | <http://127.0.0.1:8787/health> | GhostTrace API (opcional, sync SQLite) |
 
@@ -138,6 +153,8 @@ Variáveis úteis para anotações:
 ```bash
 GHOSTTRACE_PROXY=1          # proxy /anotacao → :3010 (default ligado)
 GHOSTTRACE_PORT=3010
+GHOSTMAP_PROXY=1            # proxy /ghostmap → :3012 (default ligado)
+GHOSTMAP_PORT=3012
 AUTH_DISABLE=1              # dev apenas
 ```
 
@@ -296,7 +313,7 @@ GHOSTRECON/
 | Arquivo | Painel | Função |
 |---------|--------|--------|
 | `index.html` | Cockpit | Configuração de run, stream ao vivo, filtros, export |
-| `mitre-map.html` | **GhostMap** | Visualização MITRE/OWASP com feed ao vivo |
+| `mitre-map.html` | **GhostMap** (redirect) | Redireciona para `/ghostmap/ghostrecon` (mapa + grafo) |
 | `cortex.html` | **Cortex** | Base de conhecimento de findings validados |
 | `reporte.html` | **Reporter** | Checklist manual + consolidação de validações |
 | `anotacao.html` | Anotações (redirect) | Redireciona para **GhostTrace** em `/anotacao` |

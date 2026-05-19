@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+html, body { height: 100%; background: #070811; color: #e6e8ef; }
+body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+/* scrollbars discretos */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #1a1e2e; border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: #2a2f44; }
+
+/* ReactFlow custom theme overrides */
+.react-flow__edge-path { stroke: #2a2f44; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: #7c5cff; }
+.react-flow__handle { background: #1a1e2e; border-color: #2a2f44; }
+.react-flow__minimap { background: #0c0f1a !important; border: 1px solid #1a1e2e; }
+.react-flow__controls button {
+  background: #0c0f1a; border-bottom: 1px solid #1a1e2e; color: #e6e8ef;
+}

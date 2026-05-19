@@ -10,6 +10,12 @@ GhostTrace/backend/ghosttrace.db
 GhostTrace/backend/**/__pycache__/
 GhostTrace/.env.local
 
+# GhostMap (UI MITRE + grafo)
+ghostmap/frontend/node_modules/
+ghostmap/frontend/.next/
+ghostmap/frontend/out/
+ghostmap/frontend/.env.local
+
 logs/
 
 # Clone local MITRE CTI (pesado); o mapa fixo está em mitre-attack/recon-bundle.json

@@ -3,7 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GHOSTRECON · MITRE + OWASP</title>
+  <title>GHOSTRECON · GhostMap</title>
+  <meta http-equiv="refresh" content="0;url=/ghostmap/ghostrecon" />
+  <script>
+    (function () {
+      var dest = '/ghostmap/ghostrecon';
+      try {
+        var h = window.location.hash || '';
+        if (h) dest += h;
+        var q = window.location.search || '';
+        if (q) dest += q;
+      } catch (_) {}
+      try { window.location.replace(dest); } catch (_) { window.location.href = dest; }
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />

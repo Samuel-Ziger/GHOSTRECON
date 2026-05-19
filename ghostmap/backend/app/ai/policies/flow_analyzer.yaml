@@ -1,0 +1,11 @@
+agent: flow_analyzer
+prefer:
+  - anthropic:claude-sonnet-4-6
+  - openrouter:anthropic/claude-3.5-sonnet
+fallback:
+  - gemini:gemini-2.5-pro
+  - ollama:qwen3:32b
+require_json: true
+max_tokens: 1500
+temperature: 0.1
+redact: true
