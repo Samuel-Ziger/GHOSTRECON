@@ -1,0 +1,28 @@
+{
+  "name": "firebase-client-auth-hunt",
+  "description": "Apps SPA com Firebase ou auth só no frontend: rules abertas (RTDB/Firestore/Storage), credenciais hardcoded, bypass sessionStorage, painéis admin no bundle.",
+  "profile": "standard",
+  "tags": ["firebase", "spa", "auth", "lowcode", "passive", "active"],
+  "targetHint": "qualquer site SPA (Vue/React) com Firebase ou painel admin embutido",
+  "modules": [
+    "http",
+    "security_headers",
+    "header_intel",
+    "cors_audit",
+    "html_surface",
+    "js_analyze",
+    "js_intel",
+    "js_crawler",
+    "secrets",
+    "lovable_fingerprint",
+    "firebase_audit",
+    "client_auth_audit",
+    "client_surface_audit",
+    "curl_probe",
+    "wayback",
+    "github"
+  ],
+  "limits": {
+    "notes": "firebase_audit faz probes de escrita com cleanup automático. Desabilitar escrita: GHOSTRECON_FIREBASE_WRITE_PROBES=0. client_auth_audit é estático (sem rede extra)."
+  }
+}

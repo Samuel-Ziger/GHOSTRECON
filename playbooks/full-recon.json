@@ -27,6 +27,8 @@
     "tls",
     "security_headers",
     "header_intel",
+    "cors_audit",
+    "curl_probe",
     "robots_sitemap",
     "wellknown_security_txt",
     "wellknown_openid",
@@ -58,6 +60,9 @@
     "encoding_sniff",
     "lovable_fingerprint",
     "supabase_audit",
+    "firebase_audit",
+    "client_auth_audit",
+    "client_surface_audit",
 
     "param_discovery",
     "curl_probe",

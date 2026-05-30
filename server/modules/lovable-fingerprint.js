@@ -520,6 +520,7 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
   context.supabaseUrl = supabaseUrl;
   context.anonKey = anonKey;
   context.anonKeyClaims = anonClaims;
+  context.bundleText = joined.slice(0, 800_000);
 
   if (supabaseUrl) {
     findings.push(makeFinding({

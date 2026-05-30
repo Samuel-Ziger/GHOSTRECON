@@ -134,9 +134,11 @@ export function analyzeSuspiciousResponseHeaders(pairs, ctx) {
 
     if (nameLower === 'x-powered-by' && val) {
       push('med', 46, `Stack leak: ${name} @ ${pageHost}`, `Valor: ${valSample}`);
-    } else if (nameLower === 'server' && /apache|nginx|iis|lighttpd|caddy|openresty|microsoft-iis/i.test(val)) {
-      if (/\d+\.\d+|\/[\d.]+/i.test(val)) {
-        push('low', 34, `Server com versão: ${val.slice(0, 80)} @ ${pageHost}`, `Cabeçalho Server`);
+    } else if (nameLower === 'server' && /apache|nginx|iis|lighttpd|caddy|openresty|microsoft-iis|netlify|vercel|cloudflare/i.test(val)) {
+      if (/\d+\.\d+|\/[\d.]+|\([^)]+\)/i.test(val)) {
+        push('med', 52, `Versão do servidor exposta: ${val.slice(0, 100)} @ ${pageHost}`, 'Facilita fingerprinting e CVEs — ocultar via server_tokens off ou headers do CDN');
+      } else if (val.length > 2) {
+        push('low', 34, `Banner Server exposto: ${val.slice(0, 80)} @ ${pageHost}`, 'Recon de plataforma');
       }
     } else if (nameLower === 'x-aspnet-version' || nameLower === 'x-aspnetmvc-version') {
       push('med', 48, `ASP.NET exposto: ${name}=${valSample} @ ${pageHost}`, 'Framework / versão');

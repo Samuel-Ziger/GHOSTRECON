@@ -11,7 +11,7 @@ import { fetchCrtShSubdomains } from './modules/subdomains.js';
 import { resolves } from './modules/dns.js';
 import { probeHttp, mapPool } from './modules/probe.js';
 import { extractSuspiciousHtmlComments } from './modules/html-surface.js';
-import { analyzeSecurityHeaders } from './modules/security-headers.js';
+import { analyzeSecurityHeaders, summarizeSecurityHeaderGaps } from './modules/security-headers.js';
 import { analyzeSuspiciousResponseHeaders } from './modules/header-intel.js';
 import { peekTlsCertificate } from './modules/tls-cert.js';
 import { crawlRobotsAndSitemapsForOrigin } from './modules/robots-sitemap.js';
@@ -136,9 +136,22 @@ import { mutatePayload } from './modules/payload-mutator.mjs';
 import { buildRacePlan } from './modules/race-harness.mjs';
 import { planSpray } from './modules/cred-spray.mjs';
 import { fingerprintLovable } from './modules/lovable-fingerprint.js';
-import { runSupabaseAudit } from './modules/supabase-audit.mjs';
+import { runSupabaseAudit, discoverSupabaseFromTarget } from './modules/supabase-audit.mjs';
+import { discoverFirebaseFromTarget, runFirebaseAudit, extractFirebaseConfig } from './modules/firebase-audit.mjs';
+import { auditClientSideAuth, mergeClientAuthFindings } from './modules/client-auth-audit.mjs';
+import {
+  auditClientSurface,
+  auditJsSurface,
+  auditHtmlSurface,
+  auditHeaderSurface,
+  mergeClientSurfaceFindings,
+  extractSourceMapUrl,
+  probeSourceMapDisclosure,
+} from './modules/client-surface-audit.mjs';
+import { auditOidcMetadata } from './modules/identity-surface.mjs';
 import { createProxyCapture, PROXY_DEFAULT_PORT, PROXY_CA_CERT_PATH } from './modules/proxy-capture.mjs';
 import { runCurlProbeModule } from './modules/curl-probe.mjs';
+import { runCorsAudit } from './modules/cors-audit.mjs';
 import {
   loadNavegationPlaybook,
   quickValidateTor,
@@ -826,18 +839,21 @@ async function runPipeline(ctx) {
     try {
       const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
 
-      // Reutiliza contexto do lovable_fingerprint se disponível, caso contrário extrai agora
+      // Reutiliza contexto do lovable_fingerprint; senão extrai URL/key/token dos bundles do alvo
       let auditCtx = lovableContext;
       if (!auditCtx?.supabaseUrl || !auditCtx?.anonKey) {
-        log('Supabase audit: executando fingerprint para obter Supabase URL/key', 'info');
-        const lov = await fingerprintLovable(targetUrl, { probeRls: false, probeMisconfig: false });
-        auditCtx = lov?.context || null;
+        log('Supabase audit: extraindo URL/key dos bundles JS do alvo', 'info');
+        const discovered = await discoverSupabaseFromTarget(targetUrl, { log });
+        auditCtx = discovered?.context || null;
+      } else if (lovableContext?.bundleText && !auditCtx.bundleText) {
+        auditCtx = { ...auditCtx, bundleText: lovableContext.bundleText };
       }
 
       if (auditCtx?.supabaseUrl && auditCtx?.anonKey) {
-        const authToken = String(process.env.GHOSTRECON_SUPABASE_AUTH_TOKEN || '').trim() || null;
+        log(`Supabase audit: anon key encontrada — testes usarão credenciais extraídas do alvo`, 'info');
+        const envAuth = String(process.env.GHOSTRECON_SUPABASE_AUTH_TOKEN || '').trim() || null;
         const { findings: auditFindings, summary } = await runSupabaseAudit(auditCtx, {
-          authToken,
+          authToken: envAuth,
           targetUrl,
           log,
         });
@@ -849,8 +865,10 @@ async function runPipeline(ctx) {
         } else {
           log('Supabase audit: nenhuma vulnerabilidade detectada', 'info');
         }
-        if (!authToken) {
-          log('Supabase audit: probes de escrita (business logic, payment bypass) desabilitados — defina GHOSTRECON_SUPABASE_AUTH_TOKEN para habilitar', 'info');
+        if (summary?.authTokenSource) {
+          log(`Supabase audit: token autenticado obtido automaticamente (fonte: ${summary.authTokenSource})`, 'success');
+        } else if (!envAuth) {
+          log('Supabase audit: probes autenticados limitados — signup/auth anônimo desabilitados no projeto', 'info');
         }
       } else {
         log('Supabase audit: Supabase URL/key não encontrados — alvo pode não usar Supabase', 'info');
@@ -859,6 +877,41 @@ async function runPipeline(ctx) {
       log(`Supabase audit: ${e?.message || e}`, 'warn');
     }
     pipe('supabase_audit', 'done');
+  }
+
+  // ── FIREBASE AUDIT ────────────────────────────
+  let firebaseContext = null;
+  if (!apexHostIsIp && modules.includes('firebase_audit')) {
+    pipe('firebase_audit', 'active');
+    try {
+      const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
+      log('Firebase audit: descobrindo config nos bundles JS', 'info');
+      const { config, bundleText } = await discoverFirebaseFromTarget(targetUrl, { log });
+      firebaseContext = config;
+      if (config?.apiKey || config?.projectId) {
+        const writeProbes = String(process.env.GHOSTRECON_FIREBASE_WRITE_PROBES || '1').trim() !== '0';
+        const { findings: fbFindings, summary } = await runFirebaseAudit(
+          { ...config, bundleText },
+          { targetUrl, log, writeProbes },
+        );
+        for (const f of fbFindings) addFinding(withProvenance(f, 'firebase_audit'));
+        const crit = summary?.critical || 0;
+        const high = summary?.high || 0;
+        if (fbFindings.length) {
+          log(`Firebase audit: ${fbFindings.length} achado(s) — ${crit} crítico(s) / ${high} alto(s)`, crit > 0 ? 'warn' : 'success');
+        } else {
+          log('Firebase audit: nenhuma vulnerabilidade detectada nas rules/APIs', 'info');
+        }
+        if (!writeProbes) {
+          log('Firebase audit: probes de escrita desabilitados (GHOSTRECON_FIREBASE_WRITE_PROBES=0)', 'info');
+        }
+      } else {
+        log('Firebase audit: config Firebase não encontrada — alvo pode não usar Firebase', 'info');
+      }
+    } catch (e) {
+      log(`Firebase audit: ${e?.message || e}`, 'warn');
+    }
+    pipe('firebase_audit', 'done');
   }
 
   // ── SUBDOMAINS ──────────────────────────────
@@ -1234,6 +1287,7 @@ async function runPipeline(ctx) {
   }
 
   if (modules.includes('security_headers')) {
+    const seenHeaderGapHosts = new Set();
     for (const { r } of probeResults) {
       if (!r.ok || !r.securityHeaders) continue;
       if (r.status <= 0 || r.status >= 500) continue;
@@ -1256,7 +1310,63 @@ async function runPipeline(ctx) {
           null,
         );
       }
+      if (!seenHeaderGapHosts.has(host)) {
+        seenHeaderGapHosts.add(host);
+        const gap = summarizeSecurityHeaderGaps(r.url, r.securityHeaders);
+        if (gap) {
+          addFinding(
+            withProvenance(
+              {
+                type: 'security_headers_missing_bundle',
+                value: gap.text,
+                score: gap.score,
+                prio: gap.prio,
+                url: r.url,
+                meta: {
+                  missing: gap.missing,
+                  clickjackingRisk: gap.clickjackingRisk,
+                  host: gap.host,
+                  remediation: 'Configurar CSP, X-Frame-Options/frame-ancestors, X-Content-Type-Options e Referrer-Policy no CDN (vercel.json, CloudFront, nginx)',
+                },
+                owasp: 'A02:2021',
+                mitre: 'T1190',
+              },
+              'security_headers',
+            ),
+            null,
+          );
+        }
+      }
+      if (modules.includes('client_surface_audit')) {
+        try {
+          const hdrAudit = auditHeaderSurface(r.securityHeaders, { url: r.url });
+          for (const f of hdrAudit.findings || []) addFinding(withProvenance(f, 'client_surface_audit'));
+        } catch (e) {
+          log(`Client surface (headers): ${e.message}`, 'warn');
+        }
+      }
     }
+  }
+
+  if (modules.includes('cors_audit')) {
+    pipe('cors_audit', 'active');
+    try {
+      const { findings: corsFindings, summary } = await runCorsAudit({
+        probeResults,
+        findings,
+        domain: domainStr,
+        log,
+      });
+      for (const f of corsFindings) addFinding(withProvenance(f, 'cors_audit'));
+      if (corsFindings.length) {
+        log(`CORS audit: ${corsFindings.length} achado(s) — ${summary?.critical || 0} crítico(s) / ${summary?.high || 0} alto(s)`, 'warn');
+      } else {
+        log(`CORS audit: nenhuma misconfig detectada (${summary?.probed || 0} URL(s) testadas)`, 'info');
+      }
+    } catch (e) {
+      log(`CORS audit: ${e?.message || e}`, 'warn');
+    }
+    pipe('cors_audit', 'done');
   }
 
   if (modules.includes('header_intel')) {
@@ -1407,7 +1517,7 @@ async function runPipeline(ctx) {
           }
         }
 
-        if (modules.includes('wellknown_openid')) {
+        if (modules.includes('wellknown_openid') || modules.includes('client_surface_audit')) {
           try {
             const oid = await fetchWellKnownOpenIdConfiguration(baseOrigin);
             if (oid.ok && oid.endpoints?.length) {
@@ -1429,6 +1539,28 @@ async function runPipeline(ctx) {
                     url: ep.url,
                   },
                   'endpoints',
+                );
+              }
+            }
+            if (oid.metadata && modules.includes('client_surface_audit')) {
+              let oHost = '';
+              try { oHost = new URL(baseOrigin).hostname; } catch { /* skip */ }
+              oid.metadata._url = new URL('/.well-known/openid-configuration', baseOrigin).href;
+              for (const f of auditOidcMetadata(oid.metadata, { host: oHost })) {
+                addFinding(
+                  withProvenance(
+                    {
+                      type: 'oidc_config',
+                      value: f.title,
+                      score: f.severity === 'high' ? 78 : f.severity === 'medium' ? 62 : 40,
+                      prio: f.severity === 'high' ? 'high' : f.severity === 'medium' ? 'med' : 'low',
+                      url: oid.metadata._url,
+                      meta: { description: f.description, evidence: f.evidence, owasp: f.owasp },
+                      owasp: Array.isArray(f.owasp) ? f.owasp[0] : f.owasp,
+                    },
+                    'client_surface_audit',
+                  ),
+                  null,
                 );
               }
             }
@@ -1767,11 +1899,45 @@ async function runPipeline(ctx) {
   pipe('js', 'active');
   const jsList = extractJsUrls(urlCorpus.length ? urlCorpus : [], 120).slice(0, limits.maxJsFetch);
   log(`Analisando ${jsList.length} arquivos JS (passivo)...`, 'info');
+  const clientAuthResults = [];
+  const clientSurfaceResults = [];
   for (const jsUrl of jsList) {
     const a = await analyzeJsUrl(jsUrl, { modules });
     if (!a.ok) {
       log(`JS skip: ${jsUrl} (${a.error || a.status})`, 'warn');
       continue;
+    }
+    if (modules.includes('client_surface_audit')) {
+      try {
+        clientSurfaceResults.push(auditJsSurface(a.body || '', {
+          url: jsUrl,
+          target: domain,
+          includeAuth: !modules.includes('client_auth_audit'),
+        }));
+        const mapUrl = extractSourceMapUrl(a.body || '', jsUrl);
+        if (mapUrl) {
+          const smFinding = await probeSourceMapDisclosure(mapUrl);
+          if (smFinding) clientSurfaceResults.push({ findings: [smFinding], summary: {} });
+        }
+      } catch (e) {
+        log(`Client surface audit (JS): ${e.message}`, 'warn');
+      }
+    }
+    if (modules.includes('client_auth_audit')) {
+      try {
+        clientAuthResults.push(auditClientSideAuth(a.body || '', { url: jsUrl, target: domain }));
+      } catch (e) {
+        log(`Client auth audit: ${e.message}`, 'warn');
+      }
+    }
+    if (modules.includes('firebase_audit') && !firebaseContext) {
+      try {
+        const cfg = extractFirebaseConfig(a.body || '', { targetOrigin: `https://${hostLiteralForUrl(domain)}` });
+        if (cfg?.apiKey || cfg?.projectId) {
+          firebaseContext = { ...cfg, bundleText: a.body || '', _auditPending: true };
+          log(`Firebase audit: config extraída de ${jsUrl} — probes após fase JS`, 'info');
+        }
+      } catch { /* skip */ }
     }
     if (modules.includes('js_intel')) {
       try {
@@ -1831,6 +1997,52 @@ async function runPipeline(ctx) {
         },
         'secrets',
       );
+    }
+  }
+  if (modules.includes('client_surface_audit')) {
+    try {
+      for (const { r } of probeResults) {
+        if (!r.ok || !r.htmlSample) continue;
+        const isHttps = String(r.url || '').toLowerCase().startsWith('https:');
+        clientSurfaceResults.push(auditHtmlSurface(r.htmlSample, { url: r.url, target: domain, isHttps }));
+      }
+      const mergedSurface = mergeClientSurfaceFindings(clientSurfaceResults);
+      for (const f of mergedSurface) addFinding(withProvenance(f, 'client_surface_audit'));
+      if (mergedSurface.length) {
+        const crit = mergedSurface.filter((f) => f.score >= 85).length;
+        log(`Client surface audit: ${mergedSurface.length} achado(s)${crit ? ` — ${crit} crítico(s)` : ''}`, crit ? 'warn' : 'success');
+      }
+    } catch (e) {
+      log(`Client surface audit: ${e.message}`, 'warn');
+    }
+  }
+  if (modules.includes('client_auth_audit') && clientAuthResults.length) {
+    try {
+      const merged = mergeClientAuthFindings(clientAuthResults);
+      for (const f of merged) addFinding(withProvenance(f, 'client_auth_audit'));
+      if (merged.length) {
+        log(`Client auth audit: ${merged.length} achado(s) em bundles JS`, merged.some((f) => f.score >= 85) ? 'warn' : 'success');
+      }
+    } catch (e) {
+      log(`Client auth audit: ${e.message}`, 'warn');
+    }
+  }
+  if (modules.includes('firebase_audit') && firebaseContext?._auditPending) {
+    try {
+      const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
+      const writeProbes = String(process.env.GHOSTRECON_FIREBASE_WRITE_PROBES || '1').trim() !== '0';
+      const { findings: fbFindings, summary } = await runFirebaseAudit(firebaseContext, {
+        targetUrl,
+        log,
+        writeProbes,
+      });
+      for (const f of fbFindings) addFinding(withProvenance(f, 'firebase_audit'));
+      if (fbFindings.length) {
+        log(`Firebase audit (pós-JS): ${fbFindings.length} achado(s)`, 'warn');
+      }
+      delete firebaseContext._auditPending;
+    } catch (e) {
+      log(`Firebase audit (pós-JS): ${e.message}`, 'warn');
     }
   }
   pipe('js', 'done');

@@ -151,6 +151,6 @@ export async function fetchWellKnownOpenIdConfiguration(baseOrigin) {
     dedup.push(e);
   }
 
-  return { ok: true, endpoints: dedup.slice(0, limits.wellKnownOpenIdMaxEndpoints) };
+  return { ok: true, endpoints: dedup.slice(0, limits.wellKnownOpenIdMaxEndpoints), metadata: data };
 }
 

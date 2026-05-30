@@ -1,0 +1,31 @@
+{
+  "name": "client-surface-hunt",
+  "description": "Caça generalista a falhas client-side: XSS sinks, postMessage, prototype pollution, JSONP, WebSocket, Service Worker, storage, SRI, CSRF forms, CSP fraca, source maps, OIDC, CORS, headers, open redirect (verify).",
+  "profile": "standard",
+  "tags": ["client-side", "xss", "csp", "spa", "pwa", "oauth", "postmessage"],
+  "targetHint": "qualquer SPA, PWA ou site com JS bundles públicos",
+  "modules": [
+    "http",
+    "security_headers",
+    "header_intel",
+    "html_surface",
+    "js_analyze",
+    "js_intel",
+    "client_surface_audit",
+    "client_auth_audit",
+    "cors_audit",
+    "secrets",
+    "wellknown_openid",
+    "graphql_probe",
+    "graphql_recon",
+    "dom_xss_verify",
+    "verify",
+    "curl_probe",
+    "jwt_lab",
+    "wayback",
+    "github"
+  ],
+  "limits": {
+    "notes": "client_surface_audit é estático + source maps. dom_xss_verify gera plano Playwright. verify.js testa reflected XSS e open redirect. cors_audit cobre misconfig CORS ativa."
+  }
+}

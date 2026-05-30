@@ -15,6 +15,7 @@
     "param_discovery",
     "header_intel",
     "security_headers",
+    "cors_audit",
     "js_analyze",
     "commoncrawl",
     "well_known"

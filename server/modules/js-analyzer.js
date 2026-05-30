@@ -12,7 +12,10 @@ const PATH_PATTERNS = [
 
 const INSIGHT_RES = [
   { kind: 'auth_token_ref', re: /(localStorage|sessionStorage)\.(getItem|setItem)\s*\(\s*['"](token|access_token|auth|jwt|refresh)['"]/gi },
-  { kind: 'role_admin_hint', re: /\b(isAdmin|is_admin|ROLE_ADMIN|role\s*[:=]\s*['"]admin|userRole\s*[:=])/gi },
+  { kind: 'storage_auth_gate', re: /(localStorage|sessionStorage)\.getItem\s*\(\s*['"][^'"]+['"]\s*\)\s*(?:===|==)\s*['"][^'"]+['"]/gi },
+  { kind: 'hardcoded_password', re: /(?:password|senha)\s*(?:===|==)\s*['"][^'"]{4,}['"]/gi },
+  { kind: 'role_admin_hint', re: /\b(isAdmin|is_admin|ROLE_ADMIN|role\s*[:=]\s*['"]admin|userRole\s*[:=]|hasRole\s*\(\s*['"]ADMIN)/gi },
+  { kind: 'firebase_auth', re: /signInWithEmailAndPassword|firebaseConfig|firestore\.googleapis\.com/gi },
   { kind: 'feature_flag', re: /\b(featureFlag|FEATURE_[A-Z0-9_]+|enableFeature|launchDarkly|posthog)/gi },
   { kind: 'api_key_literal', re: /['"](api[_-]?key|apikey|secret[_-]?key)['"]\s*[:=]/gi },
 ];
