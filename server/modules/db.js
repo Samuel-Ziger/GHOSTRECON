@@ -13,12 +13,31 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..', '..');
 const VALIDATE_DIR = path.join(ROOT, 'Validate');
 
-/** Conexão direta Postgres (recomendado no Node; IPv4 → Session Pooler no dashboard). */
+/** 1 = comportamento antigo: Supabase/Postgres como backend principal se estiver no .env */
+export function supabaseAutoEnabled() {
+  return String(process.env.GHOSTRECON_SUPABASE_AUTO || '').trim() === '1';
+}
+
+/** Credenciais remotas presentes (pode usar com interruptor no GhostDesk). */
+export function remoteStorageConfigured() {
+  if (process.env.DATABASE_URL?.trim()) return true;
+  const url = process.env.SUPABASE_URL?.trim();
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+    process.env.SUPABASE_ANON_KEY?.trim() ||
+    process.env.SUPABASE_KEY?.trim() ||
+    process.env.SUPABASE_PUBLISHABLE_KEY?.trim();
+  return Boolean(url && key);
+}
+
+/** Conexão direta Postgres — só automática com GHOSTRECON_SUPABASE_AUTO=1 */
 function useDatabaseUrl() {
+  if (!supabaseAutoEnabled()) return false;
   return Boolean(process.env.DATABASE_URL?.trim());
 }
 
 function useSupabaseApi() {
+  if (!supabaseAutoEnabled()) return false;
   if (useDatabaseUrl()) return false;
   const url = process.env.SUPABASE_URL?.trim();
   const key =
@@ -34,8 +53,13 @@ export function isUsingSupabase() {
 }
 
 export function storageLabel() {
-  if (useDatabaseUrl()) return 'Supabase Postgres (DATABASE_URL)';
-  if (useSupabaseApi()) return 'Supabase (API REST)';
+  if (isUsingSupabase()) {
+    if (useDatabaseUrl()) return 'Supabase Postgres (DATABASE_URL)';
+    return 'Supabase (API REST)';
+  }
+  if (remoteStorageConfigured()) {
+    return 'SQLite (local) — Supabase disponível sob demanda';
+  }
   return 'SQLite (data/bugbounty.db)';
 }
 

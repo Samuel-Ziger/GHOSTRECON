@@ -18,14 +18,14 @@
  *   GET  /search?q=                     → busca global (clientes/projetos/scans)
  */
 
+import { storageLabel, remoteStorageConfigured } from './db.js';
 import {
-  listRuns,
-  getRunById,
-  listIntelForTarget,
-  intelCountForTarget,
-  storageLabel,
-  isUsingSupabase,
-} from './db.js';
+  listRunsMerged,
+  listIntelMerged,
+  getRunByRef,
+  normalizeRunRef,
+  rollupSeverityFast,
+} from './db-runs-merge.mjs';
 import { listProjects, getProject, attachRunToProject } from './projects.mjs';
 import {
   listClients,
@@ -43,24 +43,10 @@ function normalizeTarget(t) {
   return /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s) ? s : null;
 }
 
-/** Tally de findings por prioridade a partir dos N runs mais recentes. */
-async function rollupSeverity(runs, sampleLimit = 40) {
-  const byPrio = {};
-  const sample = runs.slice(0, sampleLimit);
-  await Promise.all(
-    sample.map(async (r) => {
-      try {
-        const full = await getRunById(r.id);
-        for (const f of full?.findings || []) {
-          const p = String(f.prio || 'info').toLowerCase();
-          byPrio[p] = (byPrio[p] || 0) + 1;
-        }
-      } catch {
-        /* ignora run corrompido */
-      }
-    }),
-  );
-  return byPrio;
+/** Query ?supabase=1 — interruptor no GhostDesk para incluir nuvem. */
+function wantsSupabase(req) {
+  const q = req.query?.supabase;
+  return q === '1' || q === 'true' || String(q || '').toLowerCase() === 'on';
 }
 
 /** Mapeia um finding do GHOSTRECON para o contrato GhostreconFinding (GhostTrace). */
@@ -94,20 +80,36 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
     return true;
   };
 
+  app.get('/api/ghostdesk/config', requireScope('recon.read'), (_req, res) => {
+    res.json({
+      ok: true,
+      defaultStorage: 'sqlite',
+      remoteConfigured: remoteStorageConfigured(),
+      storageLabel: storageLabel(),
+      cacheMs: Number(process.env.GHOSTDESK_LOCAL_CACHE_MS) || 4000,
+    });
+  });
+
   // ---- Dashboard ----------------------------------------------------------
-  app.get('/api/ghostdesk/overview', requireScope('recon.read'), async (_req, res) => {
+  app.get('/api/ghostdesk/overview', requireScope('recon.read'), async (req, res) => {
     try {
-      const [runs, projects, clients] = await Promise.all([
-        listRuns(500),
+      const includeSupabase = wantsSupabase(req);
+      const [merged, projects, clients] = await Promise.all([
+        listRunsMerged(500, { includeSupabase }),
         projectsList(),
         listClients(),
       ]);
+      const runs = merged.runs;
       const targets = new Set(runs.map((r) => String(r.target || '').toLowerCase()));
-      const bySeverity = await rollupSeverity(runs);
+      const bySeverity = rollupSeverityFast(runs, 12);
       res.json({
         ok: true,
-        storage: storageLabel(),
-        usingSupabase: isUsingSupabase(),
+        storage: merged.storage,
+        storagePrimary: storageLabel(),
+        includeSupabase,
+        remoteConfigured: merged.remoteConfigured,
+        remoteError: merged.remoteError,
+        sources: merged.sources,
         totals: {
           scans: runs.length,
           targets: targets.size,
@@ -181,10 +183,18 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
   app.get('/api/ghostdesk/scans', requireScope('recon.read'), async (req, res) => {
     try {
       const limit = Math.min(Number(req.query.limit) || 100, 1000);
-      let runs = await listRuns(limit);
+      const merged = await listRunsMerged(limit, { includeSupabase: wantsSupabase(req) });
+      let runs = merged.runs;
       const target = normalizeTarget(req.query.target);
       if (target) runs = runs.filter((r) => String(r.target || '').toLowerCase() === target);
-      res.json({ ok: true, storage: storageLabel(), scans: runs });
+      res.json({
+        ok: true,
+        storage: merged.storage,
+        sources: merged.sources,
+        includeSupabase: merged.includeSupabase,
+        remoteError: merged.remoteError,
+        scans: runs,
+      });
     } catch (e) {
       res.status(500).json({ ok: false, error: e?.message || String(e) });
     }
@@ -192,9 +202,9 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
 
   app.get('/api/ghostdesk/scans/:id', requireScope('recon.read'), async (req, res) => {
     try {
-      const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
-      const run = await getRunById(id);
+      const ref = normalizeRunRef(decodeURIComponent(req.params.id));
+      if (!ref) return res.status(400).json({ ok: false, error: 'id inválido' });
+      const run = await getRunByRef(ref);
       if (!run) return res.status(404).json({ ok: false, error: 'scan não encontrado' });
       res.json({ ok: true, scan: run });
     } catch (e) {
@@ -205,13 +215,14 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
   app.post('/api/ghostdesk/scans/:id/attach', requireScope('project.write'), async (req, res) => {
     if (!requireCsrf(req, res)) return;
     try {
-      const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
-      const run = await getRunById(id);
+      const ref = normalizeRunRef(decodeURIComponent(req.params.id));
+      if (!ref) return res.status(400).json({ ok: false, error: 'id inválido' });
+      const run = await getRunByRef(ref);
       if (!run) return res.status(404).json({ ok: false, error: 'scan não encontrado' });
       const name = String(req.body?.project || '').trim();
       if (!name) return res.status(400).json({ ok: false, error: 'project é obrigatório' });
-      const updated = await attachRunToProject(name, { runId: id, target: run.target });
+      const runId = run.numericId ?? Number(String(ref).split(':').pop());
+      const updated = await attachRunToProject(name, { runId, target: run.target });
       res.json({ ok: true, project: updated });
     } catch (e) {
       res.status(400).json({ ok: false, error: e?.message || String(e) });
@@ -221,9 +232,9 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
   // ---- Relatório: monta pacote de handoff p/ GhostTrace (→ DOCX) ----------
   app.get('/api/ghostdesk/scans/:id/report-payload', requireScope('recon.read'), async (req, res) => {
     try {
-      const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'id inválido' });
-      const run = await getRunById(id);
+      const ref = normalizeRunRef(decodeURIComponent(req.params.id));
+      if (!ref) return res.status(400).json({ ok: false, error: 'id inválido' });
+      const run = await getRunByRef(ref);
       if (!run) return res.status(404).json({ ok: false, error: 'scan não encontrado' });
       const payload = {
         target: run.target,
@@ -241,11 +252,16 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
     try {
       const target = normalizeTarget(req.params.target);
       if (!target) return res.status(400).json({ ok: false, error: 'domínio inválido' });
-      const [totalUnique, items] = await Promise.all([
-        intelCountForTarget(target),
-        listIntelForTarget(target, 500),
-      ]);
-      res.json({ ok: true, target, source: storageLabel(), totalUnique, items });
+      const intel = await listIntelMerged(target, 500, { includeSupabase: wantsSupabase(req) });
+      res.json({
+        ok: true,
+        target,
+        source: intel.source,
+        totalUnique: intel.totalUnique,
+        items: intel.items,
+        includeSupabase: intel.includeSupabase,
+        remoteError: intel.remoteError,
+      });
     } catch (e) {
       res.status(500).json({ ok: false, error: e?.message || String(e) });
     }
@@ -256,11 +272,12 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
     try {
       const q = String(req.query.q || '').trim().toLowerCase();
       if (q.length < 2) return res.json({ ok: true, query: q, results: {} });
-      const [runs, projects, clients] = await Promise.all([
-        listRuns(500),
+      const [merged, projects, clients] = await Promise.all([
+        listRunsMerged(500, { includeSupabase: wantsSupabase(req) }),
         projectsList(),
         listClients(),
       ]);
+      const runs = merged.runs;
       res.json({
         ok: true,
         query: q,
