@@ -37,6 +37,7 @@ import {
   Footer,
   PageNumber,
   LevelFormat,
+  ImageRun,
   convertInchesToTwip
 } from 'docx';
 import type {
@@ -190,6 +191,73 @@ function codeBlock(content: string): Paragraph {
 
 function emptyLine(): Paragraph {
   return new Paragraph({ spacing: { after: 120 }, children: [] });
+}
+
+/* ─────────────── screenshots / imagens ─────────────── */
+
+/** Detecta o `type` da ImageRun a partir do mime do data URL. */
+function imageTypeFromDataUrl(dataUrl: string): 'png' | 'jpg' | 'gif' | 'bmp' {
+  const m = /^data:image\/(png|jpe?g|gif|bmp)/i.exec(dataUrl);
+  const t = (m?.[1] || 'png').toLowerCase();
+  if (t === 'jpeg' || t === 'jpg') return 'jpg';
+  if (t === 'gif') return 'gif';
+  if (t === 'bmp') return 'bmp';
+  return 'png';
+}
+
+/** Converte um data URL base64 em Uint8Array (cliente-side via atob). */
+function dataUrlToBytes(dataUrl: string): Uint8Array | null {
+  try {
+    const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Renderiza um screenshot (data URL) como parágrafo de imagem centralizado,
+ * escalando para caber na largura útil da página (~620px). Espelha as
+ * evidências embutidas na seção PROOF OF CONCEPT do template.
+ */
+function imageParagraph(dataUrl: string, caption?: string): Paragraph[] {
+  if (typeof window === 'undefined' || !dataUrl?.startsWith('data:image')) return [];
+  const bytes = dataUrlToBytes(dataUrl);
+  if (!bytes) return [];
+
+  // largura útil da página (~620px); proporção padrão 5:3 (o Word renderiza
+  // no DPI do documento). Dimensões reais exigiriam carregar a imagem async.
+  const width = 620;
+  const height = Math.round(width * 0.6);
+
+  const out: Paragraph[] = [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 120, after: caption ? 40 : 160 },
+      children: [
+        new ImageRun({
+          data: bytes,
+          type: imageTypeFromDataUrl(dataUrl),
+          transformation: { width, height }
+        })
+      ]
+    })
+  ];
+  if (caption) {
+    out.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 160 },
+        children: [
+          new TextRun({ text: caption, font: 'Calibri', size: 16, italics: true, color: COLORS.textMuted })
+        ]
+      })
+    );
+  }
+  return out;
 }
 
 /* ─────────────── HTML → docx Paragraph[] ─────────────── */
@@ -662,9 +730,10 @@ function testSummary(project: Project, vulns: Vulnerability[]): (Paragraph | Tab
     }),
     h2('Escopo do projeto'),
     ...project.scope.map((t) => numbered(t)),
-    ...(project.notes
-      ? [h2('Notas do projeto'), p(project.notes)]
-      : [])
+    h2('Histórico de reteste'),
+    p(s.retest > 0 ? `${s.retest} vulnerabilidade(s) em processo de reteste.` : 'Nenhum reteste realizado.'),
+    h2('Notas do projeto'),
+    p(project.notes ? project.notes : 'Nenhuma nota de projeto.')
   ];
 }
 
@@ -764,7 +833,7 @@ function vulnListSection(vulns: Vulnerability[]): Paragraph[] {
           indent: { left: 360 },
           children: [
             new TextRun({
-              text: `total de ativos afetados: ${v.targets.length} · corrigidas: ${v.status === 'fixed' ? 1 : 0} · reteste: ${v.status === 'retest' ? 1 : 0} · não corrigidas: ${v.status === 'unfixed' ? 1 : 0}`,
+              text: `total de ativos afetados: ${v.targets.length} - corrigidas: ${v.status === 'fixed' ? v.targets.length : 0} - reteste: ${v.status === 'retest' ? v.targets.length : 0} - não corrigidas: ${v.status === 'unfixed' || v.status === 'wont_fix' ? v.targets.length : 0}`,
               font: 'Calibri',
               size: 18,
               color: COLORS.textMuted
@@ -836,30 +905,32 @@ function vulnDetailSection(vulns: Vulnerability[]): Paragraph[] {
     out.push(h3('Ativos afetados'));
     v.targets.forEach((t) => out.push(bullet(t, true)));
 
-    if (v.remediationNotes) {
-      out.push(h3('Notas de remediação'));
-      out.push(...htmlToParagraphs(v.remediationNotes));
-    }
-    if (v.additionalNotes) {
-      out.push(h3('Notas adicionais'));
-      out.push(...htmlToParagraphs(v.additionalNotes));
-    }
+    // Notas sempre presentes (espelha o template: "Nenhuma nota...")
+    out.push(h3('Notas de remediação'));
+    out.push(...(v.remediationNotes ? htmlToParagraphs(v.remediationNotes) : [p('Nenhuma nota de remediação.')]));
+    out.push(h3('Notas adicionais'));
+    out.push(...(v.additionalNotes ? htmlToParagraphs(v.additionalNotes) : [p('Nenhuma nota adicional.')]));
 
     if (v.steps.length > 0) {
       out.push(h3('Passos de reprodução'));
       v.steps.forEach((s) => {
         out.push(numbered(s.text, 'steps-list'));
         if (s.command) out.push(codeBlock(s.command));
+        (s.screenshots || []).forEach((shot) => out.push(...imageParagraph(shot)));
       });
     }
 
+    // Proof of concept — sempre presente, com evidências (screenshots) embutidas
+    out.push(h3('Proof of concept'));
     if (v.pocs.length > 0) {
-      out.push(h3('Proof of concept'));
       v.pocs.forEach((poc) => {
         out.push(p(poc.title, { bold: true }));
         if (poc.description) out.push(p(poc.description));
         if (poc.code?.content) out.push(codeBlock(poc.code.content));
+        (poc.screenshots || []).forEach((shot) => out.push(...imageParagraph(shot)));
       });
+    } else {
+      out.push(p('Nenhuma prova de conceito registrada.'));
     }
   });
 

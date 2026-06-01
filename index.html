@@ -3085,6 +3085,37 @@
         <div class="hub-actions-row-mitre">
           <button
             type="button"
+            class="mitre-map-btn ghostdesk-hub-btn"
+            id="ghostdeskHubBtn"
+            title="GhostDesk — gestão de pentests: clientes, projetos, scans, intel (Supabase) e relatório DOCX."
+            aria-label="Abrir GhostDesk — nova aba"
+            onclick="openGhostDeskPage()"
+          >
+            <span class="mitre-map-btn-skin" aria-hidden="true">
+              <span class="mitre-map-btn-shine"></span>
+              <span class="mitre-map-btn-inner">
+                <span class="mitre-map-btn-icon-wrap ghostmap-globe-frame">
+                  <span class="ghostmap-orbit ghostmap-orbit--a" aria-hidden="true"></span>
+                  <span class="ghostmap-orbit ghostmap-orbit--b" aria-hidden="true"></span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <rect x="3" y="4" width="18" height="14" rx="2" />
+                    <path d="M3 9h18M8 21h8M12 18v3" />
+                  </svg>
+                </span>
+                <span class="mitre-map-btn-copy">
+                  <span class="mitre-map-btn-title">GhostDesk</span>
+                </span>
+                <span class="mitre-map-btn-aside">
+                  <span class="mitre-map-btn-live"><span class="mitre-map-btn-live-dot"></span> gestão</span>
+                  <span class="mitre-map-btn-arrow" aria-hidden="true">↗</span>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
+        <div class="hub-actions-row-mitre">
+          <button
+            type="button"
             class="mitre-map-btn postex-btn"
             id="postexHubBtn"
             title="Pós-Exploração — LinPEAS, Port Forwarding, SearchSploit, Shell Estável, File Transfer, Pivoting, Persistência, Credenciais."
@@ -5338,6 +5369,26 @@ function openPostExPage() {
   if (t) u.searchParams.set('target', t);
   const w = window.open(u.href, 'ghostrecon_postex', 'noopener,noreferrer');
   if (!w) addLog('Pós-Exploração: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
+}
+
+function resolveGhostDeskUrl() {
+  try {
+    const raw = String(localStorage.getItem('ghostrecon_ghostdesk_url') || '').trim();
+    if (raw) return new URL(raw, window.location.href).href;
+  } catch (_) {}
+  // Em produção o GhostDesk é servido pelo próprio GHOSTRECON; em dev usa Vite :5173.
+  const proto = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  const host = window.location.hostname || '127.0.0.1';
+  const port = window.location.port;
+  if (port === '5173' || port === '') return new URL('/', window.location.href).href;
+  return `${proto}//${host}:5173/`;
+}
+
+function openGhostDeskPage() {
+  const url = resolveGhostDeskUrl();
+  const w = window.open(url, 'ghostrecon_ghostdesk', 'noopener,noreferrer');
+  if (!w) addLog('GhostDesk: popup bloqueado — abre manualmente: ' + url, 'warn');
+  else addLog('GhostDesk: painel de gestão aberto.', 'info');
 }
 
 function resolveGhostAssistantUrl() {

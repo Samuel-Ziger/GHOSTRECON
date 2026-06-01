@@ -115,6 +115,7 @@ import { secretMaterialFingerprint } from './modules/db-common.js';
 import { syncValidatedCortexFindingToGhostKb } from './modules/ghost-kb-sync.js';
 import { registerInboundWebhooks } from './modules/inbound-webhooks.js';
 import { registerNewApiRoutes } from './modules/api-extensions.js';
+import { registerGhostDeskRoutes } from './modules/ghostdesk.mjs';
 import { getEngagement, preRunChecklist, attachRunToEngagement } from './modules/engagement.mjs';
 import { gateModules, applyWatermarkHeaders } from './modules/opsec.mjs';
 import { createIdentityController, normalizeIdentityOptions } from './modules/identity-controller.mjs';
@@ -4763,6 +4764,8 @@ app.post('/api/manual-validations/annotations-ai', requireScope('ai.run'), async
 registerInboundWebhooks(app);
 // Rotas auxiliares (playbooks list, cve enrich on-demand, projects CRUD, evidence trigger)
 registerNewApiRoutes(app, { validateCsrfToken });
+// GhostDesk — painel de gestão de pentests (clientes, projetos, scans, intel)
+registerGhostDeskRoutes(app, { validateCsrfToken });
 
 app.use(ghosttraceProxyMiddleware());
 app.use(ghostmapProxyMiddleware());
