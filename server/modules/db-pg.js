@@ -14,9 +14,10 @@ export function getSql() {
   if (!url) {
     throw new Error('DATABASE_URL em falta');
   }
+  const forceSsl = String(process.env.GHOSTRECON_DATABASE_SSL || '').trim() === '1';
   const isSupabaseHost = /supabase\.co/i.test(url);
   sqlInstance = postgres(url, {
-    ssl: isSupabaseHost ? 'require' : undefined,
+    ssl: forceSsl || isSupabaseHost ? 'require' : undefined,
     max: 10,
   });
   return sqlInstance;

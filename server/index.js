@@ -3330,12 +3330,12 @@ async function runPipeline(ctx) {
         log(`Team trail: falha ao registar — ${e?.message || e}`, 'warn');
       }
     }
-    const sqlitePath = saved.localMirrorPath || saved.dbPath;
+    const sqlitePath = saved.localMirrorPath || saved.localFallbackPath || saved.dbPath;
     if (sqlitePath) {
       log(`SQLite no disco: ${sqlitePath}`, 'success');
     }
     if (saved.remoteSaveFailed) {
-      log('Aviso: gravação na cloud falhou — este run ficou no SQLite local acima.', 'warn');
+      log('Aviso: gravação remota falhou — este run ficou no SQLite local acima.', 'warn');
     }
     if (intelMerge?.newArtifacts > 0) {
       log(
@@ -3402,7 +3402,8 @@ async function runPipeline(ctx) {
     kaliMode: Boolean(kaliMode),
     storage: storageLabel(),
     reportTemplates,
-    localSqlitePath: saved?.localMirrorPath || saved?.dbPath || null,
+    localSqlitePath: saved?.localMirrorPath || saved?.localFallbackPath || saved?.dbPath || null,
+    remoteSaveFailed: Boolean(saved?.remoteSaveFailed),
     reconCoverage: reconCoverageSnapshot,
   });
 

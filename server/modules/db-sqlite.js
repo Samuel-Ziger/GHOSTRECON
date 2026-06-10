@@ -13,6 +13,10 @@ export const DATA_DIR = path.join(ROOT, 'data');
 export const SCOPE_DIR = path.join(ROOT, 'escopo');
 const DEFAULT_DB = path.join(DATA_DIR, 'bugbounty.db');
 
+export function resolveDefaultDbPath() {
+  return process.env.GHOSTRECON_DB || DEFAULT_DB;
+}
+
 const SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,7 +189,7 @@ export function resolveLocalProjectDbDir(projectName, domain) {
 
 export function getDb() {
   if (dbInstance) return dbInstance;
-  const dbPath = process.env.GHOSTRECON_DB || DEFAULT_DB;
+  const dbPath = resolveDefaultDbPath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   dbInstance = new Database(dbPath);
   dbInstance.pragma('journal_mode = WAL');
@@ -397,7 +401,8 @@ export function saveRunToProjectDir(projectRootDir, payload) {
 export function saveRun({ target, exactMatch, modules, stats, findings, correlation, findingsJson = null }) {
   try {
     const d = getDb();
-    return saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation, findingsJson });
+    const out = saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation, findingsJson });
+    return { ...out, dbPath: resolveDefaultDbPath() };
   } catch (e) {
     console.error('[GHOSTRECON DB]', e.message);
     return null;

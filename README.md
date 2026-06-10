@@ -512,7 +512,37 @@ Camadas suportadas (auto-detectadas):
 | **Postgres direto** | Quer Postgres self-hosted ou Supabase via DB | `DATABASE_URL=postgresql://...` |
 | **Supabase API** | Sem expor Postgres direto | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (ou anon/publishable) |
 
-Schema/migrations em `supabase/migrations/`. Aplicar:
+Para VPS sem Supabase, aplique o schema Postgres puro em `docs/vps-postgres-schema.sql`:
+
+```bash
+psql "$DATABASE_URL" -f docs/vps-postgres-schema.sql
+```
+
+Fluxo recomendado quando o GhostRecon roda somente local:
+
+```bash
+# terminal 1: abre tunel para o Postgres privado da VPS
+ssh -N -L 15432:127.0.0.1:5432 usuario@SUA_VPS
+
+# .env local do GhostRecon
+DATABASE_URL=postgresql://ghostrecon_writer:SENHA@127.0.0.1:15432/ghostworkflow
+GHOSTRECON_REMOTE_FALLBACK_SQLITE=1
+
+# terminal 2: roda local, grava na VPS pelo tunel
+npm start
+```
+
+Se o tunel/VPS cair, o run e salvo em SQLite local (`data/bugbounty.db` ou `GHOSTRECON_DB`). Depois de reabrir o tunel, sincronize os runs pendentes:
+
+```bash
+npm run db:vps:sync
+# preview sem gravar:
+npm run db:vps:sync -- --dry-run
+```
+
+No WorkFlowVPS da VPS, aponte `ASM_DATABASE_URL` para esse mesmo database e habilite `source_postgres.enabled=true` no `config.yaml`; se usar usuario separado de leitura, defina `GHOSTRECON_SOURCE_DATABASE_URL`.
+
+Schema/migrations Supabase continuam em `supabase/migrations/`. Aplicar:
 
 ```bash
 npm run db:link            # liga ao projeto (project_id=gosthrecon)
@@ -855,7 +885,7 @@ Veja `.env.example` para a lista completa **comentada**. Categorias principais:
 
 - **Básico**: `PORT`, `HOST`, `GHOSTRECON_DB`
 - **GhostTrace**: `GHOSTTRACE_PROXY`, `GHOSTTRACE_PORT`, `GHOSTTRACE_HOST`, `GHOSTTRACE_STRIP_PREFIX`
-- **DB**: `DATABASE_URL` ou `SUPABASE_URL` + chaves
+- **DB**: `DATABASE_URL` ou `SUPABASE_URL` + chaves; fallback/sync: `GHOSTRECON_REMOTE_FALLBACK_SQLITE`, `GHOSTRECON_SYNC_DATABASE_URL`, `GHOSTRECON_SYNC_SQLITE`
 - **Auth**: `AUTH_MODE`, `AUTH_API_KEYS`, `AUTH_API_KEYS_FILE`, `AUTH_JWT_*`, `AUTH_DISABLE`, `AUTH_AUDIT_DIR`
 - **CSRF / RL**: `GHOSTRECON_RL_MAX`, `GHOSTRECON_RL_WINDOW_MS`
 - **IA cloud**: `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, modelos e retries
@@ -902,7 +932,7 @@ Com isso, ferramentas como `nmap`, `nuclei`, `ffuf`, `dirsearch`, `dalfox`, `who
 | GhostTrace API offline | `cd GhostTrace/backend && pip install -r requirements.txt && uvicorn app.main:app --port 8787` |
 | Status «API offline» na UI GhostTrace | Confirme `NEXT_PUBLIC_API_URL=http://127.0.0.1:8787` em `GhostTrace/.env.local` |
 | Tor não valida | `GET /api/tunnel/strict-check` e `tor-validator.html` no browser |
-| DB falhando | Valide `DATABASE_URL` (URL-encode da senha) ou troque para SQLite |
+| DB falhando | Valide `DATABASE_URL`/tunel SSH; se usou fallback SQLite, reabra o tunel e rode `npm run db:vps:sync` |
 | Audit log não aparece | `AUTH_AUDIT_DIR` e permissão de escrita; `AUTH_AUDIT_DISABLE=1` desliga ficheiro |
 
 ---

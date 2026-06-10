@@ -1,6 +1,0 @@
-# Um FQDN por linha. Linhas com # são ignoradas.
-# A ordem efectiva no ciclo é recalculada: raiz (eTLD+1) primeiro, depois subdomínios.
-#
-# example.com
-# api.example.com
-# www.example.com

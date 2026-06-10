@@ -18,6 +18,7 @@
     "pentestgpt-bridge": "node server/scripts/pentestgpt-ghost-bridge.mjs",
     "test:ai": "node server/scripts/test-ai-apis-smoke.js",
     "cli": "node bin/ghostrecon.mjs",
+    "db:vps:sync": "node server/scripts/sync-sqlite-to-postgres.mjs",
     "db:link": "supabase link --project-ref lchttisqazjuapczstkm",
     "db:push": "supabase db push",
     "db:migration:new": "supabase migration new"

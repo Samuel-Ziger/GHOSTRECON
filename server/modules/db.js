@@ -32,8 +32,14 @@ export function remoteStorageConfigured() {
 
 /** Conexão direta Postgres — só automática com GHOSTRECON_SUPABASE_AUTO=1 */
 function useDatabaseUrl() {
-  if (!supabaseAutoEnabled()) return false;
-  return Boolean(process.env.DATABASE_URL?.trim());
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url) return false;
+  if (databaseUrlLooksLikeSupabase()) return supabaseAutoEnabled();
+  return true;
+}
+
+function databaseUrlLooksLikeSupabase() {
+  return /supabase\.(co|com)|supabase\.co/i.test(process.env.DATABASE_URL?.trim() || '');
 }
 
 function useSupabaseApi() {
@@ -49,18 +55,20 @@ function useSupabaseApi() {
 }
 
 export function isUsingSupabase() {
-  return useDatabaseUrl() || useSupabaseApi();
+  return (useDatabaseUrl() && databaseUrlLooksLikeSupabase()) || useSupabaseApi();
 }
 
 export function storageLabel() {
-  if (isUsingSupabase()) {
-    if (useDatabaseUrl()) return 'Supabase Postgres (DATABASE_URL)';
-    return 'Supabase (API REST)';
+  if (useDatabaseUrl()) {
+    return databaseUrlLooksLikeSupabase() ? 'Supabase Postgres (DATABASE_URL)' : 'Postgres (DATABASE_URL)';
   }
-  if (remoteStorageConfigured()) {
-    return 'SQLite (local) — Supabase disponível sob demanda';
-  }
+  if (useSupabaseApi()) return 'Supabase (API REST)';
+  if (remoteStorageConfigured()) return 'SQLite (local) - armazenamento remoto disponivel sob demanda';
   return 'SQLite (data/bugbounty.db)';
+}
+
+function remoteFallbackEnabled() {
+  return String(process.env.GHOSTRECON_REMOTE_FALLBACK_SQLITE ?? '1').trim() !== '0';
 }
 
 function ensureValidateDir() {
@@ -188,6 +196,21 @@ export async function saveRun(payload) {
       }
     } catch (e) {
       console.error('[GHOSTRECON local mirror]', e);
+    }
+  }
+
+  if (!result && useRemote && !projectDir && remoteFallbackEnabled()) {
+    try {
+      const fallback = sqlite.saveRun(rest);
+      if (fallback?.dbPath) {
+        result = {
+          ...fallback,
+          localFallbackPath: fallback.dbPath,
+          remoteSaveFailed: true,
+        };
+      }
+    } catch (e) {
+      console.error('[GHOSTRECON remote fallback]', e);
     }
   }
 
