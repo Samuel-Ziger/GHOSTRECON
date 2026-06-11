@@ -158,6 +158,11 @@ import { auditCookieSession } from './modules/cookie-session-audit.mjs';
 import { auditCsrfFlows } from './modules/csrf-flow-audit.mjs';
 import { runJwtJwksAudit } from './modules/jwt-jwks-audit.mjs';
 import { runServiceWorkerAudit } from './modules/service-worker-audit.mjs';
+import { runWebSocketRecon } from './modules/websocket-recon.mjs';
+import { auditHppParamPollution } from './modules/hpp-param-pollution.mjs';
+import { runDomClobberingAudit } from './modules/dom-clobbering-audit.mjs';
+import { runEmailSecurityDeep } from './modules/email-security-deep.mjs';
+import { rankSecretFindings } from './modules/secrets-context-ranker.mjs';
 import {
   findPreviousApiContractSnapshots,
   runApiContractDiff,
@@ -1145,6 +1150,22 @@ async function runPipeline(ctx) {
     pipe('dns_enrichment', 'done');
   }
 
+  if (modules.includes('email_security_deep')) {
+    if (apexHostIsIp) {
+      log('Email security deep omitido: alvo e endereco IP, sem dominio para MX/TXT.', 'info');
+      emit({ type: 'pipe', name: 'email_security_deep', state: 'skip' });
+    } else {
+      pipe('email_security_deep', 'active');
+      try {
+        const { findings: emailFindings } = await runEmailSecurityDeep(domain, { log });
+        for (const f of emailFindings) addFinding(withProvenance(f, 'email_security_deep'), null);
+      } catch (e) {
+        log(`Email security deep: ${e.message}`, 'warn');
+      }
+      pipe('email_security_deep', 'done');
+    }
+  }
+
   if (modules.includes('rdap')) {
     if (apexHostIsIp) {
       log('RDAP omitido — alvo é endereço IP (este módulo consulta registo de domínio por FQDN).', 'info');
@@ -2033,6 +2054,19 @@ async function runPipeline(ctx) {
   }
   log(`${paramRows.length} nomes de parâmetros distintos (amostra Wayback)`, 'success');
   pipe('params', 'done');
+
+  if (modules.includes('hpp_param_pollution')) {
+    pipe('hpp_param_pollution', 'active');
+    try {
+      const hppFindings = auditHppParamPollution(urlCorpus.length ? urlCorpus : interesting, { paramRows });
+      for (const f of hppFindings) addFinding(withProvenance(f, 'hpp_param_pollution'), null);
+      if (hppFindings.length) log(`HPP audit: ${hppFindings.length} candidato(s) priorizado(s)`, 'success');
+    } catch (e) {
+      log(`HPP audit: ${e.message}`, 'warn');
+    }
+    pipe('hpp_param_pollution', 'done');
+  }
+
   progress(60);
 
   // ── JS ANALYSIS ─────────────────────────────
@@ -2041,12 +2075,14 @@ async function runPipeline(ctx) {
   log(`Analisando ${jsList.length} arquivos JS (passivo)...`, 'info');
   const clientAuthResults = [];
   const clientSurfaceResults = [];
+  const jsAuditBodies = [];
   for (const jsUrl of jsList) {
     const a = await analyzeJsUrl(jsUrl, { modules });
     if (!a.ok) {
       log(`JS skip: ${jsUrl} (${a.error || a.status})`, 'warn');
       continue;
     }
+    jsAuditBodies.push({ url: jsUrl, body: a.body || '' });
     if (modules.includes('client_surface_audit')) {
       try {
         clientSurfaceResults.push(auditJsSurface(a.body || '', {
@@ -2184,6 +2220,36 @@ async function runPipeline(ctx) {
     } catch (e) {
       log(`Firebase audit (pós-JS): ${e.message}`, 'warn');
     }
+  }
+  const htmlAuditBodies = probeResults
+    .map(({ r }) => (r?.ok && r.htmlSample ? { url: r.url, body: r.htmlSample } : null))
+    .filter(Boolean);
+  if (modules.includes('websocket_recon')) {
+    pipe('websocket_recon', 'active');
+    try {
+      const { findings: wsFindings, urls: wsUrls } = runWebSocketRecon({
+        urlCorpus,
+        jsBodies: jsAuditBodies,
+        htmlBodies: htmlAuditBodies,
+        target: domain,
+      });
+      for (const f of wsFindings) addFinding(withProvenance(f, 'websocket_recon'), null);
+      if (wsUrls.length) log(`WebSocket recon: ${wsUrls.length} endpoint(s) observado(s)`, wsFindings.length ? 'success' : 'info');
+    } catch (e) {
+      log(`WebSocket recon: ${e.message}`, 'warn');
+    }
+    pipe('websocket_recon', 'done');
+  }
+  if (modules.includes('dom_clobbering_audit')) {
+    pipe('dom_clobbering_audit', 'active');
+    try {
+      const { findings: domFindings } = runDomClobberingAudit({ htmlBodies: htmlAuditBodies, jsBodies: jsAuditBodies });
+      for (const f of domFindings) addFinding(withProvenance(f, 'dom_clobbering_audit'), null);
+      if (domFindings.length) log(`DOM clobbering audit: ${domFindings.length} achado(s)`, 'success');
+    } catch (e) {
+      log(`DOM clobbering audit: ${e.message}`, 'warn');
+    }
+    pipe('dom_clobbering_audit', 'done');
   }
   pipe('js', 'done');
   progress(72);
@@ -2475,6 +2541,18 @@ async function runPipeline(ctx) {
     log(`Secret validation: ${e.message}`, 'warn');
   }
   pipe('secrets', 'done');
+
+  if (modules.includes('secrets_context_ranker')) {
+    pipe('secrets_context_ranker', 'active');
+    try {
+      const rankedSecretFindings = rankSecretFindings(findings);
+      for (const f of rankedSecretFindings) addFinding(withProvenance(f, 'secrets_context_ranker'), null);
+      if (rankedSecretFindings.length) log(`Secrets context ranker: ${rankedSecretFindings.length} prioridade(s) calculada(s)`, 'success');
+    } catch (e) {
+      log(`Secrets context ranker: ${e.message}`, 'warn');
+    }
+    pipe('secrets_context_ranker', 'done');
+  }
 
   if (!modules.includes('shannon_whitebox')) {
     emit({ type: 'pipe', name: 'shannon', state: 'skip' });

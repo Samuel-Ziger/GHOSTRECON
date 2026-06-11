@@ -98,13 +98,18 @@ test('api contract diff resume e compara operacoes', () => {
   assert.equal(diff.operationsWithoutSecurityDelta, 1);
 });
 
-test('module registry lista primeiro lote', () => {
+test('module registry lista modulos passivos implementados', () => {
   const ids = listModuleManifests().map((m) => m.id).sort();
   assert.deepEqual(ids, [
     'api_contract_diff',
     'cookie_session_audit',
     'csrf_flow_audit',
+    'dom_clobbering_audit',
+    'email_security_deep',
+    'hpp_param_pollution',
     'jwt_jwks_audit',
+    'secrets_context_ranker',
     'service_worker_audit',
+    'websocket_recon',
   ]);
 });
