@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createCappedOutputCollector, mapPool } from '../modules/module-runner.mjs';
+import {
+  createCappedOutputCollector,
+  mapPool,
+  readResponseSnippet,
+  runProcess,
+} from '../modules/module-runner.mjs';
 
 test('createCappedOutputCollector limita stdout em modo head', () => {
   const c = createCappedOutputCollector({ maxBytes: 5, mode: 'head', marker: '[cut]' });
@@ -30,4 +35,19 @@ test('mapPool aplica timeout por item', async () => {
     () => mapPool([1], 1, () => new Promise((r) => setTimeout(r, 50)), { timeoutMs: 5, label: 'teste' }),
     /teste timeout/,
   );
+});
+
+test('runProcess limita stdout capturado', async () => {
+  const r = await runProcess(process.execPath, ['-e', 'process.stdout.write("abcdefghi")'], {
+    timeoutMs: 10_000,
+    stdoutMaxBytes: 5,
+  });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, 'abcde\n[ghostrecon: stdout truncated]\n');
+  assert.equal(r.stdoutStats.truncated, true);
+});
+
+test('readResponseSnippet le apenas prefixo do body', async () => {
+  const res = new Response('abcdefghi');
+  assert.equal(await readResponseSnippet(res, 4), 'abcd');
 });

@@ -136,6 +136,7 @@ import { detectOriginCandidates, originDiscoveryToFindings, resolveSubsForOrigin
 import { mutatePayload } from './modules/payload-mutator.mjs';
 import { buildRacePlan } from './modules/race-harness.mjs';
 import { planSpray } from './modules/cred-spray.mjs';
+import { createPipelineStageTracker, KALI_SUB_PIPE_STEPS } from './modules/pipeline-stages.mjs';
 import { fingerprintLovable } from './modules/lovable-fingerprint.js';
 import { runSupabaseAudit, discoverSupabaseFromTarget } from './modules/supabase-audit.mjs';
 import { discoverFirebaseFromTarget, runFirebaseAudit, extractFirebaseConfig } from './modules/firebase-audit.mjs';
@@ -793,25 +794,11 @@ async function runPipeline(ctx) {
   };
 
   const log = (msg, level = 'info') => emit({ type: 'log', msg, level });
-  const pipe = (name, state) => emit({ type: 'pipe', name, state });
+  const stageTracker = createPipelineStageTracker(emit);
+  const pipe = (name, state) => stageTracker.pipe(name, state);
   /** Marcos extra no Ghostmap quando a fase Kali não corre (emitidos por `kali-scan.js` durante o scan). */
-  const KALI_SUB_PIPE_STEPS = [
-    'nmap',
-    'nmap_udp',
-    'whois',
-    'ffuf',
-    'dirsearch',
-    'nuclei',
-    'nuclei_xss',
-    'nuclei_sqli',
-    'wpscan',
-    'dalfox',
-    'xss_vibes',
-  ];
-  const skipKaliSubPipe = () => {
-    for (const n of KALI_SUB_PIPE_STEPS) pipe(n, 'skip');
-  };
-  const progress = (p) => emit({ type: 'progress', pct: p });
+  const skipKaliSubPipe = () => stageTracker.skipMany(KALI_SUB_PIPE_STEPS);
+  const progress = (p) => stageTracker.progress(p);
 
   let pipelineAiOut = null;
 

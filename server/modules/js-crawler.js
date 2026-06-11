@@ -1,34 +1,7 @@
-import { spawn } from 'node:child_process';
+import { runProcess } from './module-runner.mjs';
 
 function runProc(cmd, args, timeoutMs = 120000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = [];
-    const err = [];
-    let killed = false;
-    const t = setTimeout(() => {
-      killed = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {}
-      reject(new Error(`${cmd} timeout (${timeoutMs}ms)`));
-    }, timeoutMs);
-    child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => err.push(d));
-    child.on('error', (e) => {
-      clearTimeout(t);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(t);
-      if (killed) return;
-      resolve({
-        code,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
-      });
-    });
-  });
+  return runProcess(cmd, args, { timeoutMs, label: cmd });
 }
 
 async function which(cmd) {

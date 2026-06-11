@@ -1,8 +1,8 @@
 import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
 import dns from 'node:dns/promises';
 import { torHealth, ensureBootstrapped } from './tor-control.js';
+import { runProcess } from './module-runner.mjs';
 
 function toStep(line) {
   const s = String(line || '').trim();
@@ -49,46 +49,21 @@ export async function executeNavegationPlaybook(rootDir, opts = {}) {
   const args = [nav.filePath];
   if (isShell) args.push(action);
   if (dryRun) args.push('--dry-run');
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = [];
-    const err = [];
-    let killed = false;
-    const t = setTimeout(() => {
-      killed = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
-    }, timeoutMs);
-    child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => err.push(d));
-    child.on('error', (e) => {
-      clearTimeout(t);
-      resolve({
-        ok: false,
-        code: -1,
-        command: `${cmd} ${args.join(' ')}`,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: `${Buffer.concat(err).toString('utf8')}\n${e?.message || e}`,
-        timedOut: false,
-        filePath: nav.filePath,
-      });
-    });
-    child.on('close', (code) => {
-      clearTimeout(t);
-      resolve({
-        ok: !killed && code === 0,
-        code: killed ? 124 : code,
-        command: `${cmd} ${args.join(' ')}`,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
-        timedOut: killed,
-        filePath: nav.filePath,
-      });
-    });
+  const res = await runProcess(cmd, args, {
+    timeoutMs,
+    rejectOnError: false,
+    rejectOnTimeout: false,
+    label: cmd,
   });
+  return {
+    ok: !res.timedOut && res.code === 0,
+    code: res.timedOut ? 124 : res.code,
+    command: `${cmd} ${args.join(' ')}`,
+    stdout: res.stdout,
+    stderr: res.stderr,
+    timedOut: res.timedOut,
+    filePath: nav.filePath,
+  };
 }
 
 export async function getNavegationTunnelStatus(rootDir) {
@@ -107,35 +82,19 @@ export async function getNavegationTunnelStatus(rootDir) {
 }
 
 function runSimple(cmd, args, timeoutMs = 20_000) {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = [];
-    const err = [];
-    let killed = false;
-    const t = setTimeout(() => {
-      killed = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
-    }, timeoutMs);
-    child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => err.push(d));
-    child.on('error', (e) => {
-      clearTimeout(t);
-      resolve({ ok: false, code: -1, stdout: '', stderr: String(e?.message || e), timedOut: false });
-    });
-    child.on('close', (code) => {
-      clearTimeout(t);
-      resolve({
-        ok: !killed && code === 0,
-        code: killed ? 124 : code,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
-        timedOut: killed,
-      });
-    });
+  return runProcess(cmd, args, {
+    timeoutMs,
+    rejectOnError: false,
+    rejectOnTimeout: false,
+    label: cmd,
+  }).then((res) => {
+    return {
+      ok: !res.timedOut && res.code === 0,
+      code: res.timedOut ? 124 : res.code,
+      stdout: res.stdout,
+      stderr: res.stderr,
+      timedOut: res.timedOut,
+    };
   });
 }
 

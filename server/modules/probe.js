@@ -3,7 +3,7 @@ import { detectTech } from './tech.js';
 import { extractHtmlSurface } from './html-surface.js';
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
 import { flattenResponseHeaderPairs } from './header-intel.js';
-import { mapPool as runMapPool } from './module-runner.mjs';
+import { mapPool as runMapPool, readResponseSnippet } from './module-runner.mjs';
 
 function extractTitle(html) {
   const m = html.match(/<title[^>]*>([^<]{0,300})/i);
@@ -68,46 +68,6 @@ function detectWaf(headers, bodySnippet = '') {
   return '';
 }
 
-async function readBodySnippet(res, maxBytes) {
-  const limit = Math.max(0, Number(maxBytes) || 0);
-  if (!res.body || limit <= 0) return '';
-
-  const chunks = [];
-  let total = 0;
-  const reader = res.body.getReader?.();
-  if (!reader) {
-    const buf = await res.arrayBuffer();
-    const slice = buf.byteLength > limit ? buf.slice(0, limit) : buf;
-    return new TextDecoder('utf-8', { fatal: false }).decode(slice);
-  }
-
-  try {
-    while (total < limit) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const buf = Buffer.from(value);
-      const remaining = limit - total;
-      if (buf.length <= remaining) {
-        chunks.push(buf);
-        total += buf.length;
-      } else {
-        chunks.push(buf.subarray(0, remaining));
-        total += remaining;
-        break;
-      }
-    }
-    if (total >= limit) await reader.cancel().catch(() => {});
-  } finally {
-    try {
-      reader.releaseLock?.();
-    } catch {
-      // ignore
-    }
-  }
-
-  return Buffer.concat(chunks, total).toString('utf8');
-}
-
 export async function probeHttp(url, opts = {}) {
   const { auth, modules = [], identityCtrl = null } = opts;
   if (!identityCtrl?.enabled) await stealthPause(modules);
@@ -123,7 +83,7 @@ export async function probeHttp(url, opts = {}) {
     const res = identityCtrl?.enabled
       ? await identityCtrl.fetchHtmlProbe(url, fetchInit)
       : await fetch(url, fetchInit);
-    const text = await readBodySnippet(res, limits.maxBodySnippet);
+    const text = await readResponseSnippet(res, limits.maxBodySnippet);
     const title = extractTitle(text);
     const tech = detectTech(res.headers, text);
     const securityHeaders = snapshotSecurityHeaders(res.headers);

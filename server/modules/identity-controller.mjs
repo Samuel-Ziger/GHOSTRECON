@@ -15,6 +15,7 @@ import {
   injectIsolationCredentials,
 } from './socks5-dispatcher.js';
 import { isStrict, sanitizeOutboundHeaders, telemetryFor } from './tor-strict.js';
+import { readResponseSnippet } from './module-runner.mjs';
 
 const ACCEPT_LANGS = [
   'pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -375,10 +376,7 @@ export function createIdentityController(opts = {}) {
       }
       const res = await fetch(url, nextInit);
       lastRes = res;
-      const peekBuf = await res.clone().arrayBuffer();
-      const peek = new TextDecoder('utf-8', { fatal: false }).decode(
-        peekBuf.byteLength > 24_000 ? peekBuf.slice(0, 24_000) : peekBuf,
-      );
+      const peek = await readResponseSnippet(res.clone(), 24_000);
       const ev = evaluateResponse(res.status, res.headers, peek);
       if (ev.captcha) {
         markBurned(proxyKey());

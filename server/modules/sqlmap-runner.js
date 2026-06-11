@@ -1,47 +1,19 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { SQLI_PARAM_RE, responseLooksLikeSqlError, evidenceHash } from './verify.js';
 import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
+import { runProcess } from './module-runner.mjs';
 
 function runProc(cmd, args, timeoutMs) {
-  // Quando strict, qualquer spawn de tool externa passa por proxychains4.
-  if (isStrict()) {
-    const w = torStrictWrap(cmd, args);
-    if (w.refuse) return Promise.reject(new Error(`tor-strict: ${w.reason}`));
-    cmd = w.cmd;
-    args = w.args;
-  }
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = [];
-    const err = [];
-    let killed = false;
-    const t = setTimeout(() => {
-      killed = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
-      reject(new Error(`${cmd} timeout (${timeoutMs}ms)`));
-    }, timeoutMs);
-    child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => err.push(d));
-    child.on('error', (e) => {
-      clearTimeout(t);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(t);
-      if (killed) return;
-      resolve({
-        code,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
-      });
-    });
+  return runProcess(cmd, args, {
+    timeoutMs,
+    label: cmd,
+    wrapCommand: (currentCmd, currentArgs) => {
+      if (!isStrict()) return { cmd: currentCmd, args: currentArgs };
+      const w = torStrictWrap(currentCmd, currentArgs);
+      return w.refuse ? { refuse: true, reason: `tor-strict: ${w.reason}` } : w;
+    },
   });
 }
 
