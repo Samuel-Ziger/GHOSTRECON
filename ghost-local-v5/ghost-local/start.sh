@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HEX_DIR="$REPO_ROOT/hexstrike-ai"
 
 PORT="${PORT:-8000}"
+HOST="${HOST:-${GHOST_HOST:-127.0.0.1}}"
 HEX_PORT="${HEXSTRIKE_PORT:-8888}"
 
 # ── HexStrike (opcional) ─────────────────────────────────────────
@@ -69,5 +70,5 @@ if [ ! -d venv ]; then
   ./venv/bin/pip install -r requirements.txt -q
 fi
 
-echo "[GHOST] API http://0.0.0.0:${PORT}  |  UI http://127.0.0.1:${PORT}/gui/  |  HexStrike bridge → http://127.0.0.1:${HEX_PORT}"
-exec ./venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port "$PORT"
+echo "[GHOST] API http://${HOST}:${PORT}  |  UI http://127.0.0.1:${PORT}/gui/  |  HexStrike bridge → http://127.0.0.1:${HEX_PORT}"
+exec ./venv/bin/python -m uvicorn main:app --host "$HOST" --port "$PORT"

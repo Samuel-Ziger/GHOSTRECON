@@ -279,14 +279,16 @@ test('createSocksDispatcher devolve undici.Agent funcional para HTTP plano', asy
   const httpPort = httpServer.address().port;
 
   const proxy = await startSocks5Server();
+  let dispatcher = null;
   try {
-    const dispatcher = await createSocksDispatcher(`socks5://127.0.0.1:${proxy.address().port}`);
+    dispatcher = await createSocksDispatcher(`socks5://127.0.0.1:${proxy.address().port}`);
     const undici = await import('undici');
     const res = await undici.fetch(`http://127.0.0.1:${httpPort}/`, { dispatcher });
     const text = await res.text();
     assert.equal(res.status, 200);
     assert.equal(text, 'OK');
   } finally {
+    await dispatcher?.close?.();
     proxy.close(); httpServer.close();
   }
 });

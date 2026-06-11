@@ -23,6 +23,18 @@ logs/
 # Clone local MITRE CTI (pesado); o mapa fixo está em mitre-attack/recon-bundle.json
 mitre-attack/cti/
 
+# Runtime local / evidências / material operacional
+.runtime/
+.ghostrecon-curl-probe/
+.ghostrecon-evidence/
+.ghostrecon-engagements/
+.ghostrecon-inbound/
+.ghostrecon-projects/
+.ghostrecon-team/
+logs/
+Validate/
+tokens/
+
 data/*.db
 data/*.db-*
 
@@ -35,7 +47,11 @@ clone/
 
 # PoCs/evidências locais geradas pelo recon
 pocs/
-.ghostrecon-evidence/
+Relatorio.txt
+passwords.txt
+subdomains.txt
+brute.py
+gerado.py
 
 # Clones locais em IAs/ (instruções em IAs/README.md)
 IAs/shannon/

@@ -28,7 +28,25 @@ from datetime import datetime
 import uuid
 
 app = FastAPI(title="GHOST v3", version="3.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+def _csv_env(name: str, default: str) -> list[str]:
+    raw = os.getenv(name, default)
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+GHOST_API_KEY = os.getenv("GHOST_API_KEY", os.getenv("GHOST_LOCAL_API_KEY", "")).strip()
+GHOST_ALLOW_REMOTE = os.getenv("GHOST_ALLOW_REMOTE", "0").strip().lower() in ("1", "true", "yes", "on")
+GHOST_CORS_ORIGINS = _csv_env(
+    "GHOST_CORS_ORIGINS",
+    "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:3847,http://localhost:3847",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if GHOST_CORS_ORIGINS == ["*"] else GHOST_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+)
 
 memory  = GhostMemory()
 grecon  = GhostreconParser(memory)
@@ -38,6 +56,37 @@ FORCE_PORTUGUESE = os.getenv("GHOST_FORCE_PORTUGUESE", "1").strip().lower() in (
 PORTUGUESE_ENFORCER = (
     "Responda sempre em português brasileiro (pt-BR), mantendo termos técnicos em inglês apenas quando necessário."
 )
+
+
+def _is_loopback(host: str) -> bool:
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _token_from_request(request: Request) -> str:
+    auth = request.headers.get("authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-api-key", "").strip()
+
+
+@app.middleware("http")
+async def local_first_guard(request: Request, call_next):
+    client_host = request.client.host if request.client else ""
+    if _is_loopback(client_host):
+        return await call_next(request)
+    if not GHOST_ALLOW_REMOTE:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "GHOST local aceita apenas loopback por padrão; defina GHOST_ALLOW_REMOTE=1 para expor."},
+        )
+    if not GHOST_API_KEY:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "GHOST_ALLOW_REMOTE exige GHOST_API_KEY ou GHOST_LOCAL_API_KEY."},
+        )
+    if _token_from_request(request) != GHOST_API_KEY:
+        return JSONResponse(status_code=401, content={"detail": "auth required"})
+    return await call_next(request)
 
 
 def with_portuguese_enforcer(system_text: str) -> str:

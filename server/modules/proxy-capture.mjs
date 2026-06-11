@@ -21,7 +21,7 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
-import { execSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,8 +39,22 @@ const MAX_BODY = 1 * 1024 * 1024; // 1 MB
 // ── OPENSSL HELPERS ───────────────────────────────────────────────────────────
 
 function opensslAvailable() {
-  try { execSync('openssl version', { stdio: 'pipe' }); return true; }
+  try { execFileSync('openssl', ['version'], { stdio: 'pipe' }); return true; }
   catch { return false; }
+}
+
+function validMitmHostname(hostname) {
+  const h = String(hostname || '').trim().toLowerCase();
+  if (!h || h.length > 253) return false;
+  if (net.isIP(h)) return true;
+  if (h.includes('..')) return false;
+  return /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h);
+}
+
+function sanForHostname(hostname) {
+  const h = String(hostname || '').trim().toLowerCase();
+  if (net.isIP(h)) return `IP:${h}`;
+  return `DNS:${h},DNS:*.${h}`;
 }
 
 function ensureCaExists() {
@@ -49,12 +63,20 @@ function ensureCaExists() {
   if (existsSync(CA_CERT) && existsSync(CA_KEY)) return true;
   if (!opensslAvailable()) return false;
   try {
-    execSync(
-      `openssl genrsa -out "${CA_KEY}" 4096 2>/dev/null && ` +
-      `openssl req -new -x509 -days 3650 -key "${CA_KEY}" -out "${CA_CERT}" ` +
-      `-subj "/C=BR/O=GHOSTRECON/CN=GHOSTRECON Proxy CA" 2>/dev/null`,
-      { shell: '/bin/bash', stdio: 'pipe' },
-    );
+    execFileSync('openssl', ['genrsa', '-out', CA_KEY, '4096'], { stdio: 'pipe' });
+    execFileSync('openssl', [
+      'req',
+      '-new',
+      '-x509',
+      '-days',
+      '3650',
+      '-key',
+      CA_KEY,
+      '-out',
+      CA_CERT,
+      '-subj',
+      '/C=BR/O=GHOSTRECON/CN=GHOSTRECON Proxy CA',
+    ], { stdio: 'pipe' });
     return true;
   } catch { return false; }
 }
@@ -65,6 +87,7 @@ function hostCertDir(hostname) {
 }
 
 function ensureHostCert(hostname) {
+  if (!validMitmHostname(hostname)) return null;
   const dir = hostCertDir(hostname);
   const certPath = path.join(dir, 'cert.pem');
   const keyPath  = path.join(dir, 'key.pem');
@@ -75,17 +98,34 @@ function ensureHostCert(hostname) {
   const sanConf = path.join(dir, 'san.cnf');
   writeFileSync(sanConf,
     `[req]\nreq_extensions = v3_req\ndistinguished_name = req_distinguished_name\n` +
-    `[req_distinguished_name]\n[v3_req]\nsubjectAltName = DNS:${hostname},DNS:*.${hostname}\n`,
+    `[req_distinguished_name]\n[v3_req]\nsubjectAltName = ${sanForHostname(hostname)}\n`,
   );
   try {
-    execSync(
-      `openssl genrsa -out "${keyPath}" 2048 2>/dev/null && ` +
-      `openssl req -new -key "${keyPath}" -out "${dir}/csr.pem" -subj "/CN=${hostname}" 2>/dev/null && ` +
-      `openssl x509 -req -in "${dir}/csr.pem" -CA "${CA_CERT}" -CAkey "${CA_KEY}" ` +
-      `-CAcreateserial -out "${certPath}" -days 825 -sha256 ` +
-      `-extensions v3_req -extfile "${sanConf}" 2>/dev/null`,
-      { shell: '/bin/bash', stdio: 'pipe' },
-    );
+    const csrPath = path.join(dir, 'csr.pem');
+    execFileSync('openssl', ['genrsa', '-out', keyPath, '2048'], { stdio: 'pipe' });
+    execFileSync('openssl', ['req', '-new', '-key', keyPath, '-out', csrPath, '-subj', `/CN=${hostname}`], {
+      stdio: 'pipe',
+    });
+    execFileSync('openssl', [
+      'x509',
+      '-req',
+      '-in',
+      csrPath,
+      '-CA',
+      CA_CERT,
+      '-CAkey',
+      CA_KEY,
+      '-CAcreateserial',
+      '-out',
+      certPath,
+      '-days',
+      '825',
+      '-sha256',
+      '-extensions',
+      'v3_req',
+      '-extfile',
+      sanConf,
+    ], { stdio: 'pipe' });
     return { key: readFileSync(keyPath), cert: readFileSync(certPath) };
   } catch {
     return null;
@@ -121,6 +161,22 @@ function normalizeHeaders(raw) {
 
 function shortId() {
   return createHash('sha256').update(String(Date.now() + Math.random())).digest('hex').slice(0, 8);
+}
+
+function parseConnectAuthority(authority) {
+  const raw = String(authority || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('[')) {
+    const end = raw.indexOf(']');
+    if (end <= 0) return null;
+    const host = raw.slice(1, end);
+    const rest = raw.slice(end + 1);
+    const port = rest.startsWith(':') ? Number(rest.slice(1)) || 443 : 443;
+    return { hostname: host, port };
+  }
+  const idx = raw.lastIndexOf(':');
+  if (idx <= 0) return { hostname: raw, port: 443 };
+  return { hostname: raw.slice(0, idx), port: Number(raw.slice(idx + 1)) || 443 };
 }
 
 // ── FORWARD HTTP REQUEST ──────────────────────────────────────────────────────
@@ -224,8 +280,13 @@ function forwardRequest(clientReq, clientRes, onCapture, targetOverride = null) 
 // ── HTTPS MITM ────────────────────────────────────────────────────────────────
 
 function handleConnect(clientReq, clientSocket, head, onCapture, mitmEnabled) {
-  const [hostname, portStr] = (clientReq.url || '').split(':');
-  const port = Number(portStr) || 443;
+  const authority = parseConnectAuthority(clientReq.url);
+  if (!authority || !validMitmHostname(authority.hostname)) {
+    clientSocket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    clientSocket.destroy();
+    return;
+  }
+  const { hostname, port } = authority;
 
   if (!mitmEnabled) {
     // Transparent tunnel — only metadata captured

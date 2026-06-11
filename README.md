@@ -2,7 +2,7 @@
 
 Framework local de **OSINT, recon, validação e priorização** para bug bounty e pentest autorizado, com pipeline em streaming, UI operacional, CLI headless e camada de IA (cloud + local).
 
-> Localhost-first, single-process, NDJSON streaming. Sem cloud obrigatório. Sem ferramentas externas obrigatórias além de Node 18+ — o resto é opcional e descoberto automaticamente em `/api/capabilities`.
+> Localhost-first, single-process, NDJSON streaming. Sem cloud obrigatório. Sem ferramentas externas obrigatórias além de Node 20+ — o resto é opcional e descoberto automaticamente em `/api/capabilities`.
 
 ---
 
@@ -131,7 +131,7 @@ Depois:
 
 Fluxo típico: recon → **Reporte** (validar achados) → botão **ANOTAÇÃO** → importar projeto no GhostTrace → documentar vulns / relatório DOCX.
 
-Sem `AUTH_API_KEYS` a API responde 401 nas rotas privilegiadas. Em dev local: `AUTH_DISABLE=1` no `.env` (só loopback). Veja [Auth + RBAC](#auth--rbac-p0).
+Sem `AUTH_API_KEYS` a API responde 401 nas rotas privilegiadas. Em dev local: `AUTH_DISABLE=1` no `.env` (só loopback). `X-Forwarded-For` e confiado apenas com `GHOSTRECON_TRUST_PROXY=1`. Veja [Auth + RBAC](#auth--rbac-p0).
 
 Variáveis úteis para anotações:
 
@@ -225,7 +225,7 @@ GHOSTRECON/
 
 ## Fluxo de execução ponta a ponta
 
-1. `npm start` executa `scripts/start-stack.sh`.
+1. `npm start` executa `scripts/start-stack.mjs` (`npm run start:bash` mantém o script Bash antigo).
 2. O script tenta subir o **Ghost local** em `:8000` e valida `/health`.
 3. Em seguida, sobe a API Node (`server/index.js`) em `:3847` (default `HOST=127.0.0.1`).
 4. A UI (`index.html`) faz `GET /api/csrf-token` e dispara `POST /api/recon/stream` recebendo **NDJSON**.
@@ -875,7 +875,7 @@ docker run --rm -p 3847:3847 \
   ghostrecon
 ```
 
-Imagem mínima da API (sem painéis auxiliares e ferramentas Kali externas — para isso use a stack completa via `npm start`).
+Imagem da API com painéis HTML, playbooks e bundle MITRE. Ferramentas Kali externas e Ghost local continuam fora da imagem — para isso use a stack completa via `npm start`.
 
 ---
 
@@ -944,7 +944,7 @@ Com isso, ferramentas como `nmap`, `nuclei`, `ffuf`, `dirsearch`, `dalfox`, `who
 - A stack depende de **APIs externas** (Gemini, OpenRouter, OSV, NVD, GitHub Code Search, etc.) e respeita seus rate-limits.
 - Higiene de dados locais: `.env`, `clone/`, `escopo/`, `pocs/`, `.ghostrecon-evidence/`, `data/*.db` não vão para Git (já no `.gitignore`).
 - Respeite a legislação local, políticas do alvo e regras de disclosure.
-- O modo `AUTH_DISABLE=1` é **só para loopback** em dev. Nunca exponha o servidor sem auth.
+- O modo `AUTH_DISABLE=1` é **só para loopback** em dev. Nunca exponha o servidor sem auth. Só habilite `GHOSTRECON_TRUST_PROXY=1` atrás de proxy local/confiável.
 
 ---
 

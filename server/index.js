@@ -223,6 +223,10 @@ const ghostProxy = createProxyCapture({
       ...entry,
       id: ++reconHttpSeq,
       ts: entry.ts || new Date().toISOString(),
+      requestHeaders: normalizeHeadersForHistory(entry.requestHeaders),
+      requestBody: redactBodyTextForHistory(entry.requestBody || ''),
+      responseHeaders: normalizeHeadersForHistory(entry.responseHeaders),
+      responseBody: redactBodyTextForHistory(entry.responseBody || ''),
       requestRunId: null,
       target: null,
       ok: entry.status ? entry.status < 400 : null,
@@ -238,9 +242,20 @@ function isLocalHostBind(host) {
 }
 
 function clientIp(req) {
-  return String(
-    req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '_',
+  const direct = String(req.socket?.remoteAddress || req.connection?.remoteAddress || '_');
+  const trustProxy = /^(1|true|yes|on)$/i.test(
+    String(process.env.GHOSTRECON_TRUST_PROXY || process.env.TRUST_PROXY || '').trim(),
   );
+  if (trustProxy && isLoopbackIp(direct)) {
+    return String(req.headers['x-forwarded-for'] || '')
+      .split(',')[0]
+      ?.trim() || direct;
+  }
+  return direct;
+}
+
+function isLoopbackIp(ip) {
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
 function cleanupExpiredCsrfTokens(now = Date.now()) {
@@ -293,15 +308,45 @@ function normalizeHeadersForHistory(headers) {
   return out;
 }
 
+function redactBodyTextForHistory(text) {
+  const raw = String(text || '');
+  if (!raw) return '';
+  const keyRe = /authorization|cookie|token|secret|password|passwd|pwd|api[_-]?key|apikey|x-api-key/i;
+  const trimmed = raw.trim();
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try {
+      return safeJsonBodyForHistory(JSON.parse(trimmed));
+    } catch {
+      /* fall through */
+    }
+  }
+  if (/^[^=\s&]+=[\s\S]*$/.test(trimmed) && trimmed.includes('=')) {
+    try {
+      const params = new URLSearchParams(trimmed);
+      const redacted = new URLSearchParams();
+      for (const [k, v] of params) redacted.append(k, keyRe.test(k) ? '[redacted]' : v);
+      return redacted.toString().slice(0, 8000);
+    } catch {
+      /* fall through */
+    }
+  }
+  return raw
+    .replace(
+      /((?:authorization|cookie|token|secret|password|passwd|pwd|api[_-]?key|apikey|x-api-key)\s*[:=]\s*)(["']?)[^&\s"',}]{4,}/gi,
+      '$1$2[redacted]',
+    )
+    .slice(0, 8000);
+}
+
 function bodyPreviewForHistory(body) {
   if (body == null) return '';
-  if (typeof body === 'string') return body.slice(0, 8000);
-  if (body instanceof URLSearchParams) return body.toString().slice(0, 8000);
-  if (Buffer.isBuffer(body)) return body.toString('utf8', 0, Math.min(body.length, 8000));
-  if (body instanceof ArrayBuffer) return Buffer.from(body).toString('utf8', 0, 8000);
+  if (typeof body === 'string') return redactBodyTextForHistory(body);
+  if (body instanceof URLSearchParams) return redactBodyTextForHistory(body.toString());
+  if (Buffer.isBuffer(body)) return redactBodyTextForHistory(body.toString('utf8', 0, Math.min(body.length, 8000)));
+  if (body instanceof ArrayBuffer) return redactBodyTextForHistory(Buffer.from(body).toString('utf8', 0, 8000));
   if (ArrayBuffer.isView(body)) {
     const b = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
-    return b.toString('utf8', 0, Math.min(b.length, 8000));
+    return redactBodyTextForHistory(b.toString('utf8', 0, Math.min(b.length, 8000)));
   }
   return `[${Object.prototype.toString.call(body).replace(/^\[object |\]$/g, '')}]`;
 }
@@ -335,14 +380,14 @@ function recordReconHttpHistory(entry) {
     method: String(entry.method || 'GET').toUpperCase(),
     url: String(entry.url || '').slice(0, 2000),
     requestHeaders: entry.requestHeaders || {},
-    requestBody: entry.requestBody || '',
+    requestBody: redactBodyTextForHistory(entry.requestBody || ''),
     status: entry.status ?? null,
     statusText: entry.statusText || '',
     ok: entry.ok ?? null,
     durationMs: entry.durationMs ?? null,
     error: entry.error || '',
     responseHeaders: entry.responseHeaders || {},
-    responseBody: entry.responseBody || '',
+    responseBody: redactBodyTextForHistory(entry.responseBody || ''),
     mimeType: entry.mimeType || '',
     responseSize: entry.responseSize ?? null,
   };
@@ -446,7 +491,7 @@ if (originalFetch && !globalThis.__ghostreconFetchHistoryWrapped) {
         responseSize: contentLengthHdr ? Number(contentLengthHdr) : null,
       });
       response.clone().text().then((body) => {
-        row.responseBody = body.slice(0, RECON_HTTP_RESPONSE_PREVIEW_MAX);
+        row.responseBody = redactBodyTextForHistory(body).slice(0, RECON_HTTP_RESPONSE_PREVIEW_MAX);
         if (row.responseSize == null) row.responseSize = body.length;
       }).catch(() => {});
       return response;
@@ -551,10 +596,8 @@ app.use(express.json({ limit: '5mb' }));
 // ── Auto-auth (loopback-only): devolve a primeira API key configurada para que a
 //    UI possa salvar no localStorage sem intervenção manual na 1ª visita.
 app.get('/api/setup/auto-auth', (req, res) => {
-  const ip = String(
-    req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '',
-  );
-  const loopback = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  const ip = clientIp(req);
+  const loopback = isLoopbackIp(ip);
   if (!loopback) return res.status(403).json({ error: 'apenas loopback' });
 
   const raw = process.env.AUTH_API_KEYS || '';

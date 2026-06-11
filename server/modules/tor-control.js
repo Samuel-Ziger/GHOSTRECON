@@ -54,6 +54,13 @@ function readCookie() {
   return null;
 }
 
+function torControlReplyComplete(raw) {
+  if (!/\r?\n$/.test(raw)) return false;
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const last = lines[lines.length - 1] || '';
+  return /^[2-5]\d\d /.test(last);
+}
+
 /**
  * Conecta + autentica + retorna um helper { send, close }.
  */
@@ -72,25 +79,26 @@ async function connectControl({ timeoutMs = 8_000 } = {}) {
     sock.on('connect', () => {
       clearTimeout(to);
       const helper = {
-        async send(line, { multi = false } = {}) {
+        async send(line, { multi = false, commandTimeoutMs = timeoutMs } = {}) {
           return new Promise((res, rej) => {
             buf = '';
+            const cleanup = () => {
+              clearTimeout(commandTimer);
+              sock.removeListener('data', onData);
+              sock.removeListener('error', onErr);
+            };
             const onData = (chunk) => {
               buf += chunk;
-              // Cada resposta termina com linha "250 OK\r\n" ou similar; split por \r\n.
-              if (multi) {
-                if (/\r?\n250 OK\r?\n$/.test(buf) || /\r?\n2\d\d [^\r\n]*\r?\n$/.test(buf)) {
-                  sock.removeListener('data', onData);
-                  res(buf);
-                }
-              } else {
-                if (/\r?\n$/.test(buf)) {
-                  sock.removeListener('data', onData);
-                  res(buf);
-                }
+              if ((multi && torControlReplyComplete(buf)) || (!multi && /\r?\n$/.test(buf))) {
+                cleanup();
+                res(buf);
               }
             };
-            const onErr = (e) => { sock.removeListener('data', onData); rej(e); };
+            const onErr = (e) => { cleanup(); rej(e); };
+            const commandTimer = setTimeout(() => {
+              cleanup();
+              rej(new Error(`Tor ControlPort: timeout aguardando resposta para ${line}`));
+            }, commandTimeoutMs);
             sock.on('data', onData);
             sock.once('error', onErr);
             sock.write(`${line}\r\n`);

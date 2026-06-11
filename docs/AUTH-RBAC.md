@@ -34,7 +34,9 @@ Sem auth → respostas `401`. Tentar uma rota intrusiva sem o role certo → `40
 | `disabled` | Só dev local em loopback (warn loud) | Principal sintético `disabled:loopback` é injectado para 127.0.0.1/::1 |
 
 `AUTH_DISABLE=1` em qualquer modo → bypass apenas para loopback. Pedidos remotos
-continuam a falhar com 401, mesmo com `AUTH_MODE=disabled`.
+continuam a falhar com 401, mesmo com `AUTH_MODE=disabled`. O loopback é
+calculado pelo endereço real do socket; `X-Forwarded-For` só é considerado quando
+`GHOSTRECON_TRUST_PROXY=1` e a conexão vem de um proxy local/confiável.
 
 ## Roles
 

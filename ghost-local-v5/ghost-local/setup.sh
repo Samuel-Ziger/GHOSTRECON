@@ -155,9 +155,10 @@ start_backend_if_enabled() {
 
   echo -e "${CYAN}[5/5] Backend GHOST v3...${NC}"
   cd "$SCRIPT_DIR/backend"
+  local host="${HOST:-${GHOST_HOST:-127.0.0.1}}"
   pkill -f "uvicorn main:app" 2>/dev/null || true
   sleep 1
-  nohup ./venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 > "$SCRIPT_DIR/ghost.log" 2>&1 &
+  nohup ./venv/bin/python -m uvicorn main:app --host "$host" --port 8000 > "$SCRIPT_DIR/ghost.log" 2>&1 &
   sleep 3
   if curl -s http://localhost:8000/health >/dev/null; then
     echo -e "${GREEN}✓ Backend online${NC}"

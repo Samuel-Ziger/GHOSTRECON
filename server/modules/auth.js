@@ -332,14 +332,32 @@ function verifyJwt(token) {
   };
 }
 
-function clientIp(req) {
-  return String(
-    req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '_',
+function isLoopback(ip) {
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+function trustProxyEnabled() {
+  return /^(1|true|yes|on)$/i.test(
+    String(process.env.GHOSTRECON_TRUST_PROXY || process.env.TRUST_PROXY || '').trim(),
   );
 }
 
-function isLoopback(ip) {
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+function socketIp(req) {
+  return String(req.socket?.remoteAddress || req.connection?.remoteAddress || '_');
+}
+
+function forwardedIp(req) {
+  return String(req.headers['x-forwarded-for'] || '')
+    .split(',')[0]
+    ?.trim() || '';
+}
+
+function clientIp(req) {
+  const direct = socketIp(req);
+  if (trustProxyEnabled() && isLoopback(direct)) {
+    return forwardedIp(req) || direct;
+  }
+  return direct;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
