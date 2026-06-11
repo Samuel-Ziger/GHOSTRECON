@@ -1,11 +1,11 @@
 Ideias de modulos futuros
 =========================
 
-1. api-contract-diff: compara OpenAPI/Swagger entre runs.
+1. api-contract-diff: compara OpenAPI/Swagger entre runs. [implementado lote 1: api_contract_diff]
 2. openapi-authz-matrix: testa endpoints por persona/token.
 3. websocket-recon: inventario e probes seguros de WebSocket.
-4. cookie-session-audit: flags, SameSite, escopo, rotacao, session fixation.
-5. csrf-flow-audit: detecta formularios/acoes sem token ou token reaproveitado.
+4. cookie-session-audit: flags, SameSite, escopo, rotacao, session fixation. [implementado lote 1: cookie_session_audit]
+5. csrf-flow-audit: detecta formularios/acoes sem token ou token reaproveitado. [implementado lote 1: csrf_flow_audit]
 6. cache-poisoning-audit: heuristicas de cache poisoning com headers seguros.
 7. web-cache-deception: identifica rotas com risco de cachear conteudo privado.
 8. hpp-param-pollution: HTTP parameter pollution em endpoints com query.
@@ -13,7 +13,7 @@ Ideias de modulos futuros
 10. ssti-fingerprint: fingerprint passivo/seguro de template injection.
 11. deserialization-surface: procura sinais de objetos serializados em params/bodies.
 12. graphql-cost-depth: analisa depth/cost/introspection/batching.
-13. jwt-jwks-audit: JWKS, kid, rotacao, cache, alg confusion.
+13. jwt-jwks-audit: JWKS, kid, rotacao, cache, alg confusion. [implementado lote 1: jwt_jwks_audit]
 14. oauth-flow-replay: valida redirect_uri, state, nonce, PKCE em fluxo real controlado.
 15. saml-metadata-audit: SAML metadata, ACS, assinatura, NameID, endpoints expostos.
 16. cdn-origin-leak: cruza DNS, headers, TLS SAN, historical IPs e WAF bypass.
@@ -23,7 +23,7 @@ Ideias de modulos futuros
 20. container-manifest-audit: Dockerfile/compose/K8s secrets e portas expostas.
 21. supply-chain-lockfile-audit: package-lock, pip, composer, go mod com risco exploravel.
 22. secrets-context-ranker: ranqueia segredo por contexto, nao so regex.
-23. service-worker-audit: cache, scope, push, offline leakage.
+23. service-worker-audit: cache, scope, push, offline leakage. [implementado lote 1: service_worker_audit]
 24. dom-clobbering-audit: sinks DOM especificos alem de XSS basico.
 25. rate-limit-behavior-audit: mede lockout/rate-limit sem spray agressivo.
 26. mobile-api-fingerprint: detecta padroes Firebase/Supabase/GraphQL/mobile backends.

@@ -20,6 +20,9 @@ export const moduleManifest = {
 };
 ```
 
+Depois de criar o manifesto, adicionar o modulo em `server/modules/module-registry.mjs`.
+O endpoint `/api/capabilities` expoe essa lista para a UI e para automacoes futuras.
+
 Campos obrigatorios:
 
 - `id`: slug estavel usado em UI, playbook, testes e logs.

@@ -154,6 +154,15 @@ import { auditOidcMetadata } from './modules/identity-surface.mjs';
 import { createProxyCapture, PROXY_DEFAULT_PORT, PROXY_CA_CERT_PATH } from './modules/proxy-capture.mjs';
 import { runCurlProbeModule } from './modules/curl-probe.mjs';
 import { runCorsAudit } from './modules/cors-audit.mjs';
+import { auditCookieSession } from './modules/cookie-session-audit.mjs';
+import { auditCsrfFlows } from './modules/csrf-flow-audit.mjs';
+import { runJwtJwksAudit } from './modules/jwt-jwks-audit.mjs';
+import { runServiceWorkerAudit } from './modules/service-worker-audit.mjs';
+import {
+  findPreviousApiContractSnapshots,
+  runApiContractDiff,
+} from './modules/api-contract-diff.mjs';
+import { listModuleManifests } from './modules/module-registry.mjs';
 import {
   loadNavegationPlaybook,
   quickValidateTor,
@@ -1317,6 +1326,36 @@ async function runPipeline(ctx) {
     if (surfaceN) log(`Superfície HTML: +${surfaceN} URL(s) (href/forms)`, 'info');
   }
 
+  if (modules.includes('cookie_session_audit')) {
+    pipe('cookie_session_audit', 'active');
+    try {
+      const rows = auditCookieSession(probeResults, { target: domain });
+      for (const f of rows) addFinding(withProvenance(f, 'cookie_session_audit'), null);
+      if (rows.length) log(`Cookie/session audit: ${rows.length} achado(s)`, 'warn');
+      else log('Cookie/session audit: sem achados relevantes', 'info');
+    } catch (e) {
+      log(`Cookie/session audit: ${e?.message || e}`, 'warn');
+    }
+    pipe('cookie_session_audit', 'done');
+  } else {
+    pipe('cookie_session_audit', 'skip');
+  }
+
+  if (modules.includes('csrf_flow_audit')) {
+    pipe('csrf_flow_audit', 'active');
+    try {
+      const rows = auditCsrfFlows(probeResults, { target: domain });
+      for (const f of rows) addFinding(withProvenance(f, 'csrf_flow_audit'), null);
+      if (rows.length) log(`CSRF flow audit: ${rows.length} achado(s)`, 'warn');
+      else log('CSRF flow audit: sem forms mutáveis suspeitos', 'info');
+    } catch (e) {
+      log(`CSRF flow audit: ${e?.message || e}`, 'warn');
+    }
+    pipe('csrf_flow_audit', 'done');
+  } else {
+    pipe('csrf_flow_audit', 'skip');
+  }
+
   if (modules.includes('security_headers')) {
     const seenHeaderGapHosts = new Set();
     for (const { r } of probeResults) {
@@ -1451,6 +1490,47 @@ async function runPipeline(ctx) {
       const port = u.port ? `:${u.port}` : '';
       originByHost.set(u.hostname, { origin: `${u.protocol}//${u.hostname}${port}/`, prefer });
     }
+  }
+
+  const activeOrigins = [...originByHost.values()].map((v) => v.origin);
+
+  if (modules.includes('jwt_jwks_audit')) {
+    pipe('jwt_jwks_audit', 'active');
+    try {
+      const rows = await runJwtJwksAudit({
+        origins: activeOrigins,
+        modules,
+        log,
+      });
+      for (const f of rows) addFinding(withProvenance(f, 'jwt_jwks_audit'), null);
+      if (rows.length) log(`JWT/JWKS audit: ${rows.length} achado(s)`, 'warn');
+      else log('JWT/JWKS audit: sem JWKS suspeito nas origens vivas', 'info');
+    } catch (e) {
+      log(`JWT/JWKS audit: ${e?.message || e}`, 'warn');
+    }
+    pipe('jwt_jwks_audit', 'done');
+  } else {
+    pipe('jwt_jwks_audit', 'skip');
+  }
+
+  if (modules.includes('service_worker_audit')) {
+    pipe('service_worker_audit', 'active');
+    try {
+      const rows = await runServiceWorkerAudit({
+        probeResults,
+        origins: activeOrigins,
+        modules,
+        log,
+      });
+      for (const f of rows) addFinding(withProvenance(f, 'service_worker_audit'), null);
+      if (rows.length) log(`Service Worker audit: ${rows.length} achado(s)`, 'warn');
+      else log('Service Worker audit: sem service worker relevante', 'info');
+    } catch (e) {
+      log(`Service Worker audit: ${e?.message || e}`, 'warn');
+    }
+    pipe('service_worker_audit', 'done');
+  } else {
+    pipe('service_worker_audit', 'skip');
   }
 
   const runWellKnown = modules.includes('wellknown_security_txt') || modules.includes('wellknown_openid');
@@ -1665,14 +1745,43 @@ async function runPipeline(ctx) {
   if (modules.includes('openapi_specs')) {
     log('OpenAPI/Swagger: a procurar specs em paths comuns…', 'info');
     try {
-      const bases = [...originByHost.values()].map((v) => v.origin);
-      const specRows = await harvestOpenApiFromOrigins(bases, domain, outOfScopeList, modules, log);
+      const specRows = await harvestOpenApiFromOrigins(activeOrigins, domain, outOfScopeList, modules, log);
       for (const row of specRows) {
         addFinding(row, row.type === 'param' ? 'params' : row.type === 'endpoint' ? 'endpoints' : null);
       }
     } catch (e) {
       log(`OpenAPI harvest: ${e.message}`, 'warn');
     }
+  }
+
+  if (modules.includes('api_contract_diff')) {
+    pipe('api_contract_diff', 'active');
+    try {
+      const previousSnapshots = await findPreviousApiContractSnapshots({
+        target: domain,
+        listRunsFn: listRuns,
+        getRunByIdFn: getRunById,
+      });
+      const { findings: apiDiffFindings, summaries } = await runApiContractDiff({
+        origins: activeOrigins,
+        domain,
+        outOfScopeList,
+        modules,
+        previousSnapshots,
+        log,
+      });
+      for (const f of apiDiffFindings) addFinding(withProvenance(f, 'api_contract_diff'), null);
+      const diffs = apiDiffFindings.filter((f) => f.type === 'api_contract_diff').length;
+      if (diffs) log(`API contract diff: ${diffs} mudança(s) detectada(s)`, 'warn');
+      else if (summaries.length && previousSnapshots.length) log('API contract diff: snapshots sem mudanças relevantes', 'info');
+      else if (summaries.length) log('API contract diff: snapshot inicial gravado para próximos runs', 'info');
+      else log('API contract diff: nenhuma spec OpenAPI encontrada', 'info');
+    } catch (e) {
+      log(`API contract diff: ${e?.message || e}`, 'warn');
+    }
+    pipe('api_contract_diff', 'done');
+  } else {
+    pipe('api_contract_diff', 'skip');
   }
 
   // ── WAYBACK / URLS ──────────────────────────
@@ -4165,6 +4274,7 @@ app.get('/api/capabilities', async (_req, res) => {
     res.json({
       ...cap,
       ai: aiKeysConfigured(),
+      modules: listModuleManifests(),
       shannon,
       pentestgpt,
     });
@@ -4174,6 +4284,7 @@ app.get('/api/capabilities', async (_req, res) => {
       message: e.message,
       tools: {},
       ai: aiKeysConfigured(),
+      modules: listModuleManifests(),
       shannon: null,
       pentestgpt: null,
     });
