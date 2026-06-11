@@ -16,6 +16,7 @@ import { hostLiteralForUrl } from './recon-target.js';
 import { buildMysql3306IntelFindings } from './mysql-nmap-intel.js';
 import { probeFtpAnonymousWritable } from './ftp-anon-write-probe.js';
 import { postFtpAnonymousWritableCriticalWebhook } from './webhook-notify.js';
+import { createCappedOutputCollector, positiveIntEnv } from './module-runner.mjs';
 
 const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt',
@@ -26,6 +27,12 @@ const WORDLISTS = [
 const XSS_VIBES_DIR = join(process.cwd(), 'Xss', 'xss_vibes');
 const XSS_VIBES_MAIN = join(XSS_VIBES_DIR, 'main.py');
 const XSS_VIBES_PAYLOADS = join(XSS_VIBES_DIR, 'payloads.json');
+const TOOL_STDOUT_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDOUT_MAX_BYTES', 16 * 1024 * 1024, {
+  max: 128 * 1024 * 1024,
+});
+const TOOL_STDERR_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDERR_MAX_BYTES', 2 * 1024 * 1024, {
+  max: 32 * 1024 * 1024,
+});
 
 function sanitizeHost(h) {
   if (typeof h !== 'string' || h.length < 3) return null;
@@ -158,8 +165,16 @@ function runProc(cmd, args, timeoutMs, spawnOpts = {}, execOpts = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
       ...spawnOpts,
     });
-    const out = [];
-    const err = [];
+    const out = createCappedOutputCollector({
+      maxBytes: TOOL_STDOUT_MAX_BYTES,
+      mode: 'head',
+      marker: '\n[ghostrecon: stdout truncated]\n',
+    });
+    const err = createCappedOutputCollector({
+      maxBytes: TOOL_STDERR_MAX_BYTES,
+      mode: 'tail',
+      marker: '\n[ghostrecon: stderr truncated]\n',
+    });
     let killed = false;
     const t = setTimeout(() => {
       killed = true;
@@ -170,8 +185,8 @@ function runProc(cmd, args, timeoutMs, spawnOpts = {}, execOpts = {}) {
       }
       reject(new Error(`${cmd} timeout (${timeoutMs}ms)`));
     }, timeoutMs);
-    child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => err.push(d));
+    child.stdout.on('data', (d) => out.append(d));
+    child.stderr.on('data', (d) => err.append(d));
     child.on('error', (e) => {
       clearTimeout(t);
       reject(e);
@@ -181,8 +196,10 @@ function runProc(cmd, args, timeoutMs, spawnOpts = {}, execOpts = {}) {
       if (killed) return;
       resolve({
         code,
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
+        stdout: out.toString(),
+        stderr: err.toString(),
+        stdoutStats: out.stats(),
+        stderrStats: err.stats(),
       });
     });
   });

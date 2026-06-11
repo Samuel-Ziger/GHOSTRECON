@@ -1,0 +1,31 @@
+Ideias de modulos futuros
+=========================
+
+1. api-contract-diff: compara OpenAPI/Swagger entre runs.
+2. openapi-authz-matrix: testa endpoints por persona/token.
+3. websocket-recon: inventario e probes seguros de WebSocket.
+4. cookie-session-audit: flags, SameSite, escopo, rotacao, session fixation.
+5. csrf-flow-audit: detecta formularios/acoes sem token ou token reaproveitado.
+6. cache-poisoning-audit: heuristicas de cache poisoning com headers seguros.
+7. web-cache-deception: identifica rotas com risco de cachear conteudo privado.
+8. hpp-param-pollution: HTTP parameter pollution em endpoints com query.
+9. file-upload-audit: superficie de upload, extensao, content-type, storage publico.
+10. ssti-fingerprint: fingerprint passivo/seguro de template injection.
+11. deserialization-surface: procura sinais de objetos serializados em params/bodies.
+12. graphql-cost-depth: analisa depth/cost/introspection/batching.
+13. jwt-jwks-audit: JWKS, kid, rotacao, cache, alg confusion.
+14. oauth-flow-replay: valida redirect_uri, state, nonce, PKCE em fluxo real controlado.
+15. saml-metadata-audit: SAML metadata, ACS, assinatura, NameID, endpoints expostos.
+16. cdn-origin-leak: cruza DNS, headers, TLS SAN, historical IPs e WAF bypass.
+17. dns-zone-transfer: AXFR, wildcard DNS, split-horizon hints.
+18. email-security-deep: SPF flattening, DMARC alignment, DKIM selectors, BIMI.
+19. cloud-iam-exposure: enumeracao passiva de IAM leaks em JS/configs.
+20. container-manifest-audit: Dockerfile/compose/K8s secrets e portas expostas.
+21. supply-chain-lockfile-audit: package-lock, pip, composer, go mod com risco exploravel.
+22. secrets-context-ranker: ranqueia segredo por contexto, nao so regex.
+23. service-worker-audit: cache, scope, push, offline leakage.
+24. dom-clobbering-audit: sinks DOM especificos alem de XSS basico.
+25. rate-limit-behavior-audit: mede lockout/rate-limit sem spray agressivo.
+26. mobile-api-fingerprint: detecta padroes Firebase/Supabase/GraphQL/mobile backends.
+27. llm-prompt-surface: acha endpoints/chatbots com risco de prompt injection/data leak.
+28. business-logic-planner: gera planos de teste para cupom, checkout, saldo, assinatura.

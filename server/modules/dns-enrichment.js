@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import { limits } from '../config.js';
+import { mapPool } from './module-runner.mjs';
 
 function uniq(arr) {
   return [...new Set(arr)];
@@ -83,20 +84,6 @@ async function resolveTxtSafe(hostname, timeoutMs) {
   } catch {
     return [];
   }
-}
-
-async function mapPool(items, concurrency, fn) {
-  const results = [];
-  let i = 0;
-  async function worker() {
-    while (i < items.length) {
-      const idx = i++;
-      results[idx] = await fn(items[idx], idx);
-    }
-  }
-  const workers = Array.from({ length: Math.max(1, Math.min(concurrency || 1, items.length)) }, () => worker());
-  await Promise.all(workers);
-  return results;
 }
 
 /**

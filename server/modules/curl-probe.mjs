@@ -4,10 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
+import { createCappedOutputCollector, positiveIntEnv } from './module-runner.mjs';
 
 const METHODS = ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const CORS_ORIGINS = ['https://attacker.tld', 'null', 'https://evil.example'];
 const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization']);
+const TOOL_STDOUT_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDOUT_MAX_BYTES', 16 * 1024 * 1024, {
+  max: 128 * 1024 * 1024,
+});
+const TOOL_STDERR_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDERR_MAX_BYTES', 2 * 1024 * 1024, {
+  max: 32 * 1024 * 1024,
+});
 
 function runProc(cmd, args, timeoutMs) {
   if (isStrict()) {
@@ -18,8 +25,16 @@ function runProc(cmd, args, timeoutMs) {
   }
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = [];
-    const err = [];
+    const out = createCappedOutputCollector({
+      maxBytes: TOOL_STDOUT_MAX_BYTES,
+      mode: 'head',
+      marker: '\n[ghostrecon: stdout truncated]\n',
+    });
+    const err = createCappedOutputCollector({
+      maxBytes: TOOL_STDERR_MAX_BYTES,
+      mode: 'tail',
+      marker: '\n[ghostrecon: stderr truncated]\n',
+    });
     let killed = false;
     const t = setTimeout(() => {
       killed = true;
@@ -28,8 +43,8 @@ function runProc(cmd, args, timeoutMs) {
       } catch {}
       reject(new Error(`${cmd} timeout (${timeoutMs}ms)`));
     }, timeoutMs);
-    child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => err.push(d));
+    child.stdout.on('data', (d) => out.append(d));
+    child.stderr.on('data', (d) => err.append(d));
     child.on('error', (e) => {
       clearTimeout(t);
       reject(e);
@@ -37,7 +52,13 @@ function runProc(cmd, args, timeoutMs) {
     child.on('close', (code) => {
       clearTimeout(t);
       if (killed) return;
-      resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') });
+      resolve({
+        code,
+        stdout: out.toString(),
+        stderr: err.toString(),
+        stdoutStats: out.stats(),
+        stderrStats: err.stats(),
+      });
     });
   });
 }
