@@ -9,6 +9,12 @@ function familyFromUrl(urlLike) {
 
 function findingFamilyKey(f) {
   const t = String(f?.type || '');
+  const val = String(f?.value || '').toLowerCase();
+  // Plataforma Cloudflare repetida em tech/intel ("Server: cloudflare",
+  // "Cloudflare (CF-Ray presente)", "Banner Server exposto: cloudflare") → 1 achado.
+  if ((t === 'tech' || t === 'intel') && /\bcloudflare\b|cf-ray/.test(val)) {
+    return 'platform:cloudflare';
+  }
   if (t === 'param') {
     const v = String(f.value || '').toLowerCase();
     return `param:${v.replace(/[?=]/g, '')}`;

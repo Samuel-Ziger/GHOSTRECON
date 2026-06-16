@@ -6,11 +6,35 @@
 const SENSITIVE_PARAM_IN_URL =
   /[?&](token|api_?key|access_token|auth|password|secret|jwt|session|bearer|apikey|id_token|refresh_token)=/i;
 
-function baseMultiplierFromMeta(meta) {
+const CLOUDFLARE_IP_RE = /\b(104\.1[6-9]\.|104\.2[0-7]\.|172\.6[4-9]\.|172\.7[01]\.|108\.162\.|141\.101\.|162\.158\.|173\.245\.|188\.114\.|190\.93\.|197\.234\.|198\.41\.)/;
+
+/** Converte meta (objeto ou string) num texto legível — evita "[object Object]". */
+function metaToText(meta) {
+  if (meta == null) return '';
+  if (typeof meta === 'string') return meta;
+  if (Array.isArray(meta)) return meta.map((v) => metaToText(v)).filter(Boolean).join(' - ');
+  if (typeof meta === 'object') {
+    return Object.entries(meta)
+      .filter(([, v]) => v != null && v !== '' && !(Array.isArray(v) && v.length === 0))
+      .map(([k, v]) => {
+        if (Array.isArray(v)) return `${k}=${v.join(',')}`;
+        if (typeof v === 'object') {
+          try { return `${k}=${JSON.stringify(v)}`; } catch { return `${k}=[obj]`; }
+        }
+        return `${k}=${v}`;
+      })
+      .join(' - ');
+  }
+  return String(meta);
+}
+
+function baseMultiplierFromMeta(meta, type = '') {
   const m = String(meta || '').toLowerCase();
+  const isDork = type === 'dork';
   let x = 1;
   const reasons = [];
-  if (m.includes('github')) {
+  // Dork é apenas uma busca SUGERIDA: a menção a "github" não é evidência de leak.
+  if (m.includes('github') && !isDork) {
     x *= 1.38;
     reasons.push('fonte GitHub (leaks/code)');
   }
@@ -169,11 +193,14 @@ function exploitabilityBoost(f) {
 export function applyPrioritizationV2(findings, bountyContext = null) {
   const bc = bountyContextMultiplier(bountyContext);
   for (const f of findings) {
+    // Normaliza meta-objeto para texto legível antes de qualquer concatenação.
+    if (f.meta != null && typeof f.meta !== 'string') f.meta = metaToText(f.meta);
+
     const why = [];
     let base = Number(f.score);
     if (!Number.isFinite(base)) base = f.prio === 'high' ? 80 : f.prio === 'med' ? 55 : 35;
 
-    const { x: mx, reasons: metaR } = baseMultiplierFromMeta(f.meta);
+    const { x: mx, reasons: metaR } = baseMultiplierFromMeta(f.meta, f.type);
     why.push(...metaR);
 
     const tm = typeMultiplier(f);
@@ -195,7 +222,25 @@ export function applyPrioritizationV2(findings, bountyContext = null) {
     mult *= bc.x;
     why.push(...bc.reasons);
 
+    // ── Cloudflare edge awareness: portas/ativos atrás do CDN não são origin ──
+    const cfBlob = `${String(f.meta || '')} ${String(f.value || '')}`.toLowerCase();
+    let cfEdgePort = false;
+    if (f.type === 'nmap' && /cloudflare/.test(cfBlob)) {
+      const port = (String(f.value || '').match(/tcp\/(\d+)/) || [])[1];
+      if (port && !['80', '443'].includes(port)) {
+        cfEdgePort = true;
+        mult *= 0.5;
+        why.push('porta atrás de Cloudflare (edge, não-origin)');
+        if (!cfBlob.includes('edge=cloudflare')) f.meta = [f.meta, 'edge=cloudflare(non-origin)'].filter(Boolean).join(' • ');
+      }
+    }
+    if ((f.type === 'asset' || f.type === 'whois') && (CLOUDFLARE_IP_RE.test(String(f.value || '')) || /cloudflare\.com/.test(cfBlob))) {
+      if (!cfBlob.includes('edge=cloudflare')) f.meta = [f.meta, 'edge=cloudflare(non-origin)'].filter(Boolean).join(' • ');
+    }
+
     let composite = Math.min(100, Math.round(base * mult));
+
+    const isSuggestion = f.type === 'dork';
 
     /** Tier: HIGH_PROBABILITY = prioridade máxima para exploração manual */
     let attackTier = 'STANDARD';
@@ -206,12 +251,20 @@ export function applyPrioritizationV2(findings, bountyContext = null) {
       f.type === 'exploit' ||
       (f.type === 'secret' && composite >= 88) ||
       (f.type === 'js' && composite >= 86) ||
-      (metaR.some((s) => s.includes('GitHub')) && composite >= 78)
+      (!isSuggestion && metaR.some((s) => s.includes('GitHub')) && composite >= 78)
     ) {
       attackTier = 'HIGH_PROBABILITY';
     } else if (composite >= 72 || strongSignals >= 2) {
       attackTier = 'ELEVATED';
     }
+
+    // Dorks são SUGESTÕES de busca, não achados verificados: nunca promovem sozinhos.
+    if (isSuggestion) {
+      attackTier = 'STANDARD';
+      composite = Math.min(composite, 50);
+    }
+    // Porta de edge Cloudflare (não-origin) não deve subir de tier por contagem de sinais.
+    if (cfEdgePort) attackTier = 'STANDARD';
 
     let bountyProbability = Math.min(100, Math.max(0, Math.round(composite)));
     if (attackTier === 'HIGH_PROBABILITY') {
@@ -219,9 +272,24 @@ export function applyPrioritizationV2(findings, bountyContext = null) {
     } else if (attackTier === 'ELEVATED') {
       bountyProbability = Math.min(100, Math.round(bountyProbability * 1.03));
     }
+    if (isSuggestion) bountyProbability = Math.min(bountyProbability, 45);
     f.bountyProbability = bountyProbability;
 
-    if (composite >= 93 && f.prio !== 'high') {
+    // ── Confiança: separa "potencial de bounty" de "verificado ao vivo" ──
+    let confidence = 'heuristic';
+    if (f?.verification?.classification === 'confirmed') confidence = 'confirmed';
+    else if (f?.verification?.classification === 'probable') confidence = 'probable';
+    else if (isSuggestion) confidence = 'suggestion';
+    f.confidence = confidence;
+    f.verified = confidence === 'confirmed';
+
+    if (isSuggestion) {
+      // Sugestão de busca não conta como prioridade alta verificada.
+      if (f.prio === 'high' || f.prio === 'med') {
+        f.prio = 'low';
+        why.push('dork = sugestão de busca (não verificado)');
+      }
+    } else if (composite >= 93 && f.prio !== 'high') {
       f.prio = 'high';
       why.push('composite ≥93 → prioridade HIGH');
     } else if (composite >= 82 && f.prio === 'low') {

@@ -22,6 +22,23 @@ function resolveUrl(f) {
 }
 
 /**
+ * URLs de buscadores (Google/Bing/DDG/GitHub search) — um 200 aqui só significa
+ * que o buscador respondeu, NÃO que o dork encontrou algo. Recheck inútil/enganoso.
+ */
+function isSearchEngineUrl(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    if (/(?:^|\.)google\.[a-z.]+$/.test(h) && /\/search/.test(new URL(url).pathname)) return true;
+    if (/(?:^|\.)(bing|duckduckgo|yandex|baidu)\./.test(h)) return true;
+    if (h === 'github.com' && /\/search/.test(new URL(url).pathname)) return true;
+    if (h === 'www.google.com' || h === 'google.com') return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Pedido HTTP leve em achados HIGH / HIGH_PROBABILITY com URL, para refrescar meta (status).
  */
 export async function runHighPrioHttpRecheck({ findings, auth, modules, log, limit = 20 }) {
@@ -30,8 +47,12 @@ export async function runHighPrioHttpRecheck({ findings, auth, modules, log, lim
   for (const f of findings || []) {
     if (picked.length >= cap) break;
     if (f?.prio !== 'high' && f?.attackTier !== 'HIGH_PROBABILITY') continue;
+    // Dorks/sugestões não são verificáveis por GET — pular.
+    if (f?.type === 'dork' || f?.confidence === 'suggestion') continue;
     const url = resolveUrl(f);
     if (!url) continue;
+    // Recheck em página de buscador não verifica nada — só polui o meta.
+    if (isSearchEngineUrl(url)) continue;
     picked.push({ f, url });
   }
   if (!picked.length) return { checked: 0 };

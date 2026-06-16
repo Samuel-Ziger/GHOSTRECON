@@ -1981,7 +1981,26 @@ async function runPipeline(ctx) {
   // ── PARAMS ──────────────────────────────────
   pipe('params', 'active');
   const paramRows = extractParamsFromUrls(urlCorpus.length ? urlCorpus : interesting);
+  // Evidência REAL de WordPress: caminhos/recursos que só existem em WP de verdade.
+  const wpCorpusBlob = [
+    ...(urlCorpus || []),
+    ...(interesting || []),
+    ...findings.filter((f) => f.type === 'tech' || f.type === 'endpoint').map((f) => `${f.value || ''} ${f.url || ''}`),
+  ]
+    .map((u) => String(typeof u === 'string' ? u : u?.url || u?.value || ''))
+    .join('\n')
+    .toLowerCase();
+  const hasWordpressEvidence =
+    /wp-content\/|wp-includes\/|\/wp-json\b|wp-login\.php|\/wp-admin\b|<meta name="generator" content="wordpress|x-pingback/i.test(wpCorpusBlob);
+  // Params/endpoints exclusivos de WordPress que viram falso positivo em alvo não-WP.
+  const WP_ONLY_PARAMS = new Set(['rsd', 'pingback', 'wp-json', 'wlwmanifest']);
+  const WP_ONLY_URL_RE = /\/(?:xmlrpc\.php|wlwmanifest\.xml|wp-login\.php|wp-cron\.php)\b/i;
   for (const { name, count, sampleUrl } of paramRows.slice(0, 60)) {
+    // Pula artefatos WordPress quando não há nenhuma evidência real de WordPress no alvo.
+    if (!hasWordpressEvidence
+      && (WP_ONLY_PARAMS.has(String(name).toLowerCase()) || WP_ONLY_URL_RE.test(String(sampleUrl || '')))) {
+      continue;
+    }
     const { score, prio } = scoreParamName(name);
     const vuln =
       ['redirect', 'url', 'file', 'path', 'callback'].includes(name.toLowerCase()) ? ' → Open Redirect/SSRF?' : '';
@@ -3132,16 +3151,9 @@ async function runPipeline(ctx) {
       if (!nav.steps.length) {
         log('Navegation: ficheiro encontrado, mas sem comandos úteis.', 'warn');
       } else {
-        addFinding(
-          {
-            type: 'intel',
-            prio: 'med',
-            score: 58,
-            value: 'Navegation playbook carregado',
-            meta: `source=${nav.filePath} • steps=${nav.steps.length}`,
-          },
-          null,
-        );
+        // Evento operacional/telemetria — NÃO é um achado sobre o alvo (não entra em findings).
+        const navRel = (() => { try { return path.relative(ROOT, nav.filePath); } catch { return 'playbook'; } })();
+        emit({ type: 'intel', line: `NAVEGATION: playbook carregado (${navRel} • ${nav.steps.length} passos)` });
         for (const step of nav.steps.slice(0, 12)) {
           emit({ type: 'intel', line: `NAVEGATION: ${step}` });
         }
@@ -3161,16 +3173,8 @@ async function runPipeline(ctx) {
           timeoutMs: Number(process.env.GHOSTRECON_NAVEGATION_TIMEOUT_MS || 900000),
         });
         if (execRes.ok) {
-          addFinding(
-            {
-              type: 'intel',
-              prio: 'med',
-              score: 62,
-              value: 'Navegation executado automaticamente',
-              meta: `cmd=${execRes.command} • code=${execRes.code} • dry_run=${navDryRun ? '1' : '0'}`,
-            },
-            null,
-          );
+          // Evento operacional/telemetria — não entra em findings.
+          emit({ type: 'intel', line: `NAVEGATION: executado (code=${execRes.code} • dry_run=${navDryRun ? '1' : '0'})` });
           log(`Navegation exec: sucesso (${execRes.command})`, 'success');
         } else {
           log(

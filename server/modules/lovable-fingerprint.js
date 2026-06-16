@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
+import { parseSourceMap } from './js-intel.mjs';
+import { detectCatchAll, matchesCatchAll } from './catchall-detect.mjs';
 
 /**
  * lovable-fingerprint.js
@@ -391,14 +393,28 @@ async function probeDotfiles({ targetUrl, fetchImpl }) {
   return out;
 }
 
-async function probeSourceMaps({ targetUrl, fetchImpl, bundles }) {
+async function probeSourceMaps({ targetUrl, fetchImpl, bundles, catchAllSig = null }) {
   const out = [];
   for (const b of bundles || []) {
     try {
       const mapPath = `${b.path}.map`;
       const mapUrl = new URL(mapPath, targetUrl).href;
       const res = await safeFetch(mapUrl, { headers: { Accept: 'application/json,*/*' } }, fetchImpl);
-      if (res.status === 200) out.push({ jsPath: b.path, mapPath, mapUrl });
+      if (res.status !== 200) continue;
+      const body = await res.text();
+      const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
+      // SPA/catch-all devolve o index.html com 200 — não é um source map real.
+      if (matchesCatchAll(catchAllSig, { status: res.status, contentType: ct, body })) continue;
+      if (/text\/html/.test(ct) || /^\s*<(?:!doctype|html)/i.test(body)) continue;
+      const parsed = parseSourceMap(body);
+      if (!parsed.sources?.length) continue;
+      out.push({
+        jsPath: b.path,
+        mapPath,
+        mapUrl,
+        sources: parsed.sources.length,
+        internal: parsed.internal.slice(0, 5),
+      });
     } catch {
       // ignore
     }
@@ -423,7 +439,7 @@ async function probeCorsPermissive({ targetUrl, fetchImpl }) {
   }
 }
 
-async function probeAuthlessEndpoints({ targetUrl, fetchImpl }) {
+async function probeAuthlessEndpoints({ targetUrl, fetchImpl, catchAllSig = null }) {
   const out = [];
   for (const path of COMMON_AUTHLESS_ENDPOINTS) {
     try {
@@ -431,7 +447,11 @@ async function probeAuthlessEndpoints({ targetUrl, fetchImpl }) {
       const res = await safeFetch(url, { headers: { Accept: 'application/json,*/*' } }, fetchImpl);
       if (res.status >= 200 && res.status < 300) {
         const body = await res.text();
-        out.push({ path, url, status: res.status, bodySize: body.length, contentType: res.headers?.get?.('content-type') || '' });
+        const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
+        // SPA/catch-all (200 + index.html) não é um endpoint de API exposto.
+        if (matchesCatchAll(catchAllSig, { status: res.status, contentType: ct, body })) continue;
+        if (/text\/html/.test(ct) || /^\s*<(?:!doctype|html)/i.test(body)) continue;
+        out.push({ path, url, status: res.status, bodySize: body.length, contentType: ct });
       }
     } catch {
       // ignore
@@ -564,6 +584,10 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
   }
 
   if (probeMisconfig) {
+    // Assinatura de catch-all/soft-404: evita FP em probes baseados em status 200.
+    const catchAllSig = await detectCatchAll(targetUrl, fetchImpl).catch(() => null);
+    context.catchAll = !!(catchAllSig && catchAllSig.catchAll);
+
     const dotfiles = await probeDotfiles({ targetUrl, fetchImpl });
     context.dotfilesExposed = dotfiles.map((d) => d.path);
     findings.push(...dotfiles.map((d) => makeFinding({
@@ -576,14 +600,14 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
       mitre: 'T1083',
     })));
 
-    const maps = await probeSourceMaps({ targetUrl, fetchImpl, bundles });
+    const maps = await probeSourceMaps({ targetUrl, fetchImpl, bundles, catchAllSig });
     context.sourceMapsExposed = maps.map((m) => m.mapPath);
     findings.push(...maps.map((m) => makeFinding({
       type: 'source_map_exposed',
-      value: `Source map publico: ${m.mapPath}`,
-      score: 58,
+      value: `Source map publico: ${m.mapPath} (${m.sources} fonte(s))`,
+      score: m.internal?.length ? 62 : 58,
       url: m.mapUrl,
-      meta: { jsPath: m.jsPath },
+      meta: `jsPath=${m.jsPath} - sources=${m.sources}${m.internal?.length ? ` - internal=${m.internal.join(',')}` : ''}`,
       owasp: 'A05:2021',
       mitre: 'T1592',
     })));
@@ -602,7 +626,7 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
       }));
     }
 
-    const authless = await probeAuthlessEndpoints({ targetUrl, fetchImpl });
+    const authless = await probeAuthlessEndpoints({ targetUrl, fetchImpl, catchAllSig });
     context.authlessEndpoints = authless.map((a) => a.path);
     findings.push(...authless.map((a) => makeFinding({
       type: 'auth_missing_endpoint',

@@ -52,10 +52,13 @@ export function inferOwaspTags(f) {
 
   if (t === 'security' || t === 'waf' || (t === 'nuclei' && !set.has('A05'))) add(set, 'A02');
   if (t === 'nmap' && /default|anonymous|misconfig/i.test(blob)) add(set, 'A02');
-  if (t === 'tls' && /weak|expired|self-?signed|deprecated/i.test(blob)) add(set, 'A02');
+  // TLS só é falha de config/cripto quando há sinal de fraqueza — cert válido é só intel.
+  const tlsWeakRe = /weak|expired|self-?signed|deprecated|revoked|insecure|ssl\s?v[23]|tls\s?1\.[01]|rc4|3des|\bmd5\b|\bsha1\b|null cipher|export cipher/i;
+  if (t === 'tls' && tlsWeakRe.test(blob)) add(set, 'A02');
 
   if (['secret', 'secret_validation'].includes(t)) add(set, 'A04');
-  if (t === 'tls' && !set.has('A02')) add(set, 'A04');
+  // A04 (Cryptographic Failures) em TLS apenas quando há fraqueza real, não para cert válido.
+  if (t === 'tls' && tlsWeakRe.test(blob) && !set.has('A02')) add(set, 'A04');
   if (blob.match(/\b(jwt|api[_-]?key|bearer|client_secret|private[_-]?key|BEGIN RSA|BEGIN OPENSSH)\b/)) add(set, 'A04');
 
   if (t === 'github' || meta.includes('github code search') || meta.includes('shannon') || meta.includes('wpscan')) add(set, 'A03');
