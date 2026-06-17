@@ -23,7 +23,7 @@ import { extractParamsFromUrls } from '../../modules/params.js';
 import { analyzeJsUrl } from '../../modules/js-analyzer.js';
 import { scanSecrets } from '../../modules/secrets.js';
 import { githubCodeSearch, githubRepoSearch } from '../../modules/github.js';
-import { cloneGithubReposForTarget, githubCloneConfig } from '../../modules/github-clone.js';
+import { cloneGithubReposForTarget, githubCloneConfig, githubRepoHtmlUrl } from '../../modules/github-clone.js';
 import { parseGithubManualRepoList } from '../../modules/github-manual-repos.js';
 import { buildDorks } from '../../modules/dorks.js';
 import { scoreEndpointPath, scoreParamName } from '../../modules/scoring.js';
@@ -729,6 +729,13 @@ export async function runContentDiscoveryPhase(s) {
       const repoCandidates = [...repoMap.values()];
       if (repoCandidates.length) {
         log(`GitHub repos candidatos: ${repoCandidates.length}`, 'success');
+        for (const r of repoCandidates.slice(0, 12)) {
+          const url = githubRepoHtmlUrl(r);
+          if (url) log(`${r.full_name} → ${url}`, 'find');
+        }
+        if (repoCandidates.length > 12) {
+          log(`+${repoCandidates.length - 12} candidato(s) adicionais (não listados)`, 'info');
+        }
 
         const cloneCfg = githubCloneConfig();
         if (cloneCfg.enabled) {
@@ -758,7 +765,11 @@ export async function runContentDiscoveryPhase(s) {
             }
             if (cloned.failed?.length) {
               for (const item of cloned.failed.slice(0, 4)) {
-                log(`Clone falhou (${item.full_name}): ${item.error}`, 'warn');
+                const url = githubRepoHtmlUrl(item);
+                log(
+                  `Clone falhou (${item.full_name}): ${item.error}${url ? ` — ${url}` : ''}`,
+                  'warn',
+                );
               }
               if (cloned.failed.length > 4) {
                 log(`+${cloned.failed.length - 4} falha(s) de clone adicionais`, 'warn');
@@ -792,7 +803,11 @@ export async function runContentDiscoveryPhase(s) {
             log(`Clone local concluído: ${cloned.cloned.length} repo(s) em ${cloned.base_dir}`, 'success');
           } else if (!cloned.skipped && cloned.failed?.length) {
             for (const item of cloned.failed.slice(0, 4)) {
-              log(`Clone falhou (${item.full_name}): ${item.error}`, 'warn');
+              const url = githubRepoHtmlUrl(item);
+              log(
+                `Clone falhou (${item.full_name}): ${item.error}${url ? ` — ${url}` : ''}`,
+                'warn',
+              );
             }
           }
         } catch (e) {

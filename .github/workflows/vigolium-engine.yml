@@ -1,0 +1,31 @@
+name: vigolium-engine
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'scripts/install-vigolium-engine.sh'
+      - 'scripts/build-vigolium-engine.sh'
+      - 'bridge/**'
+      - 'engines/**'
+      - '.github/workflows/vigolium-engine.yml'
+
+jobs:
+  install-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Vigolium upstream
+        run: curl -fsSL https://vigolium.com/install.sh | bash
+      - name: Copy to engines/
+        run: bash scripts/install-vigolium-engine.sh
+      - name: Verify binary
+        run: ./engines/vigolium version
+      - name: Bridge tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test server/tests/vigolium-bridge.test.js server/tests/vigolium-agent.test.js

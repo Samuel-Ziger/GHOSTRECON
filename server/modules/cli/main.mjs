@@ -25,7 +25,7 @@ Uso:
   ghostrecon <comando> [opções]
 
 Comandos:
-  run                Executa um recon e grava o resultado.
+  run, scan          Executa um recon e grava o resultado (scan = alias de run).
   runs               Lista os últimos runs (--target opcional).
   diff               Mostra a diferença entre dois runs (baseline vs newer).
   playbooks          Lista playbooks disponíveis e seus módulos.
@@ -67,9 +67,13 @@ Opções de "run":
   --auth-header K=V  Header extra (repetível).
   --auth-cookie STR  Cookie bruto para requisições autenticadas.
   --timeout SEC      Timeout global do stream (default: 1800).
+  --engine MODE      node | go | both — motor Vigolium DAST (default: env ou node).
+  --strategy NAME    lite | balanced | deep — estratégia Vigolium (com --engine go/both ou módulo vigolium_dast).
+  --vigolium-modules CSV  Filtro -m do vigolium scan.
 
 Exemplos:
   ghostrecon run --target example.com --modules crtsh,http,github
+  ghostrecon scan -t example.com --engine both --strategy lite --modules rdap,vigolium_dast
   ghostrecon run --target api.example.com --playbook api-first --output api.json
   ghostrecon runs --target example.com --limit 5
   ghostrecon diff --baseline 12 --newer 18 --format summary
@@ -92,6 +96,7 @@ export async function cliMain(argv) {
       process.stdout.write(`${VERSION}\n`);
       return 0;
     case 'run':
+    case 'scan':
       return runCommand(rest);
     case 'runs':
       return runsCommand(rest);

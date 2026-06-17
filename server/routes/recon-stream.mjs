@@ -361,6 +361,20 @@ export function registerReconStreamRoutes(app, deps) {
         identityCtrl,
         navegation: navegationBody,
         navigatorMode: navigatorActive,
+        engine: req.body?.engine != null ? String(req.body.engine).trim().toLowerCase() : null,
+        vigoliumStrategy:
+          req.body?.vigoliumStrategy != null
+            ? String(req.body.vigoliumStrategy).trim().toLowerCase()
+            : req.body?.strategy != null
+              ? String(req.body.strategy).trim().toLowerCase()
+              : null,
+        vigoliumModules: Array.isArray(req.body?.vigoliumModules)
+          ? req.body.vigoliumModules.map(String)
+          : null,
+        vigoliumAgent: req.body?.vigoliumAgent != null ? String(req.body.vigoliumAgent).trim().toLowerCase() : null,
+        vigoliumSource: req.body?.vigoliumSource != null ? String(req.body.vigoliumSource).trim() : null,
+        vigoliumAuditMode:
+          req.body?.vigoliumAuditMode != null ? String(req.body.vigoliumAuditMode).trim().toLowerCase() : null,
       });
     });
   } catch (e) {

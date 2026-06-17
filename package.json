@@ -7,10 +7,11 @@
     "start": "node scripts/start-stack.mjs",
     "start:bash": "bash scripts/start-stack.sh",
     "start:api": "node server/index.js",
+    "start:minimal": "GHOSTRECON_STACK_VIGOLIUM=0 GHOSTRECON_STACK_GHOST=0 GHOSTRECON_STACK_GHOSTTRACE=0 GHOSTRECON_STACK_GHOSTMAP=0 GHOSTRECON_STACK_GHOSTDESK=0 node server/index.js",
     "start:anotacao": "bash scripts/start-anotacao.sh",
     "start:ghostmap": "bash scripts/start-ghostmap.sh",
     "start:ghostdesk": "bash scripts/start-ghostdesk.sh",
-    "start:stack+anotacao": "bash scripts/start-stack-with-anotacao.sh",
+    "start:stack+anotacao": "npm start",
     "start:ghost": "bash ghost-local-v5/ghost-local/start.sh",
     "dev": "node --watch server/index.js",
     "test": "node --test server/tests/*.test.js",
@@ -22,7 +23,9 @@
     "db:vps:sync": "node server/scripts/sync-sqlite-to-postgres.mjs",
     "db:link": "supabase link --project-ref lchttisqazjuapczstkm",
     "db:push": "supabase db push",
-    "db:migration:new": "supabase migration new"
+    "db:migration:new": "supabase migration new",
+    "engine:install": "bash scripts/install-vigolium-engine.sh",
+    "engine:build": "bash scripts/build-vigolium-engine.sh"
   },
   "bin": {
     "ghostrecon": "./bin/ghostrecon.mjs"

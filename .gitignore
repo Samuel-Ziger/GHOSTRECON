@@ -15,6 +15,7 @@ GhostTrace/out/
 GhostTrace/.ghosttrace/
 GhostTrace/backend/.venv/
 GhostTrace/backend/ghosttrace.db
+GhostTrace/ghosttrace-dev.log
 GhostTrace/backend/**/__pycache__/
 GhostTrace/.env.local
 
@@ -69,3 +70,14 @@ ghost-local-v5/ghost-local/backend/__pycache__/
 ghost-local-v5/ghost-local/backend/ghost_data/
 ghost-local-v5/ghost-local/ghost.log
 ghost-local-v5/hexstrike-ai/hexstrike.log
+
+# Vigolium — fonte temporária (apagar após build → engines/vigolium)
+vigolium/
+
+# Vigolium engine (Go) — artefactos de build
+vigolium/bin/
+engines/vigolium
+engines/*.exe
+vigolium/**/node_modules/
+vigolium/platform/**/node_modules/
+vigolium/.vigolium/

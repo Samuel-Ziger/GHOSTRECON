@@ -30,6 +30,12 @@ const SPEC = [
   { name: 'auth-cookie', type: 'string' },
   { name: 'timeout', type: 'int', default: 1800 },
   { name: 'no-auto-reports', type: 'bool', default: false },
+  { name: 'engine', type: 'string' },
+  { name: 'strategy', type: 'string' },
+  { name: 'vigolium-modules', type: 'csv', default: [] },
+  { name: 'vigolium-source', type: 'string' },
+  { name: 'vigolium-agent', type: 'string' },
+  { name: 'vigolium-audit-mode', type: 'string' },
 ];
 
 export async function runCommand(argv) {
@@ -164,6 +170,12 @@ export async function runCommand(argv) {
           ? { headers, cookie: '' }
           : null,
   };
+  if (opts.engine) body.engine = String(opts.engine).trim().toLowerCase();
+  if (opts.strategy) body.vigoliumStrategy = String(opts.strategy).trim().toLowerCase();
+  if (opts['vigolium-modules']?.length) body.vigoliumModules = opts['vigolium-modules'];
+  if (opts['vigolium-source']) body.vigoliumSource = String(opts['vigolium-source']).trim();
+  if (opts['vigolium-agent']) body.vigoliumAgent = String(opts['vigolium-agent']).trim().toLowerCase();
+  if (opts['vigolium-audit-mode']) body.vigoliumAuditMode = String(opts['vigolium-audit-mode']).trim().toLowerCase();
 
   log(`[run] target=${opts.target} modules=${modules.length} profile=${opts.profile}`);
   const collected = { events: [], runId: null, finalStats: null, errors: [] };

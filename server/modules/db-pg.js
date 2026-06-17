@@ -23,6 +23,17 @@ export function getSql() {
   return sqlInstance;
 }
 
+/** Teste rápido de ligação — usado para fallback SQLite quando o Postgres está inacessível. */
+export async function probeConnection() {
+  try {
+    const sql = getSql();
+    await sql`select 1 as ok`;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 function parseJsonField(v) {
   if (v == null) return v;
   if (typeof v === 'object') return v;

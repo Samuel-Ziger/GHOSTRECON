@@ -56,16 +56,42 @@ function useSupabaseApi() {
 }
 
 export function isUsingSupabase() {
-  return (useDatabaseUrl() && databaseUrlLooksLikeSupabase()) || useSupabaseApi();
+  return usePostgresPrimary() && ((useDatabaseUrl() && databaseUrlLooksLikeSupabase()) || useSupabaseApi());
+}
+
+/**
+ * Backend principal de runs/intel.
+ * - sqlite | local → sempre SQLite (ignora DATABASE_URL)
+ * - postgres | remote → Postgres/Supabase se configurado
+ * - vazio → postgres se DATABASE_URL/Supabase auto, senão sqlite
+ */
+export function resolveStorageMode() {
+  const raw = String(process.env.GHOSTRECON_STORAGE || '').trim().toLowerCase();
+  if (raw === 'sqlite' || raw === 'local') return 'sqlite';
+  if (raw === 'postgres' || raw === 'remote') return 'postgres';
+  if (useDatabaseUrl() || useSupabaseApi()) return 'postgres';
+  return 'sqlite';
+}
+
+export function usePostgresPrimary() {
+  return resolveStorageMode() === 'postgres';
 }
 
 export function storageLabel() {
+  if (!usePostgresPrimary()) {
+    const p = sqlite.resolveDefaultDbPath();
+    return `SQLite (${p.replace(/^.*\//, '')})`;
+  }
   if (useDatabaseUrl()) {
     return databaseUrlLooksLikeSupabase() ? 'Supabase Postgres (DATABASE_URL)' : 'Postgres (DATABASE_URL)';
   }
   if (useSupabaseApi()) return 'Supabase (API REST)';
-  if (remoteStorageConfigured()) return 'SQLite (local) - armazenamento remoto disponivel sob demanda';
   return 'SQLite (data/bugbounty.db)';
+}
+
+async function postgresReachable() {
+  if (!useDatabaseUrl()) return { ok: false, error: 'DATABASE_URL em falta' };
+  return pg.probeConnection();
 }
 
 function remoteFallbackEnabled() {
@@ -164,12 +190,12 @@ function listValidationArchivesForTarget(targetRaw) {
 export async function saveRun(payload) {
   const { localProjectName, ...rest } = payload;
   const projectDir = sqlite.resolveLocalProjectDbDir(localProjectName, rest.target);
-  const useRemote = useDatabaseUrl() || useSupabaseApi();
+  const useRemote = usePostgresPrimary();
 
   let result = null;
-  if (useDatabaseUrl()) {
+  if (useRemote && useDatabaseUrl()) {
     result = await pg.saveRun(rest);
-  } else if (useSupabaseApi()) {
+  } else if (useRemote && useSupabaseApi()) {
     result = await supabase.saveRun(rest);
   } else if (projectDir) {
     result = sqlite.saveRunToProjectDir(projectDir, rest);
@@ -237,26 +263,68 @@ export function listProjectSecretDuplicates(projectName) {
 }
 
 export async function listRuns(limit) {
-  if (useDatabaseUrl()) return pg.listRuns(limit);
-  if (useSupabaseApi()) return supabase.listRuns(limit);
+  if (usePostgresPrimary()) {
+    if (useDatabaseUrl()) {
+      const probe = await postgresReachable();
+      if (probe.ok) return pg.listRuns(limit);
+      if (remoteFallbackEnabled()) {
+        console.warn(`[GHOSTRECON DB] Postgres indisponível — listRuns via SQLite: ${probe.error}`);
+        return sqlite.listRuns(limit);
+      }
+      return [];
+    }
+    if (useSupabaseApi()) return supabase.listRuns(limit);
+  }
   return sqlite.listRuns(limit);
 }
 
 export async function getRunById(id) {
-  if (useDatabaseUrl()) return pg.getRunById(id);
-  if (useSupabaseApi()) return supabase.getRunById(id);
+  if (usePostgresPrimary()) {
+    if (useDatabaseUrl()) {
+      const probe = await postgresReachable();
+      if (probe.ok) {
+        const run = await pg.getRunById(id);
+        if (run) return run;
+      } else if (remoteFallbackEnabled()) {
+        console.warn(`[GHOSTRECON DB] Postgres indisponível — getRunById via SQLite: ${probe.error}`);
+      } else {
+        return null;
+      }
+    } else if (useSupabaseApi()) {
+      return supabase.getRunById(id);
+    }
+  }
   return sqlite.getRunById(id);
 }
 
 export async function listIntelForTarget(target, limit) {
-  if (useDatabaseUrl()) return pg.listIntelForTarget(target, limit);
-  if (useSupabaseApi()) return supabase.listIntelForTarget(target, limit);
+  if (usePostgresPrimary()) {
+    if (useDatabaseUrl()) {
+      const probe = await postgresReachable();
+      if (probe.ok) return pg.listIntelForTarget(target, limit);
+      if (remoteFallbackEnabled()) {
+        console.warn(`[GHOSTRECON DB] Postgres indisponível — intel via SQLite: ${probe.error}`);
+        return sqlite.listIntelForTarget(target, limit);
+      }
+      return [];
+    }
+    if (useSupabaseApi()) return supabase.listIntelForTarget(target, limit);
+  }
   return sqlite.listIntelForTarget(target, limit);
 }
 
 export async function intelCountForTarget(target) {
-  if (useDatabaseUrl()) return pg.intelCountForTarget(target);
-  if (useSupabaseApi()) return supabase.intelCountForTarget(target);
+  if (usePostgresPrimary()) {
+    if (useDatabaseUrl()) {
+      const probe = await postgresReachable();
+      if (probe.ok) return pg.intelCountForTarget(target);
+      if (remoteFallbackEnabled()) {
+        return sqlite.intelCountForTarget(target);
+      }
+      return 0;
+    }
+    if (useSupabaseApi()) return supabase.intelCountForTarget(target);
+  }
   return sqlite.intelCountForTarget(target);
 }
 

@@ -8,6 +8,9 @@ import { moduleManifest as jwtJwksAudit } from './jwt-jwks-audit.mjs';
 import { moduleManifest as secretsContextRanker } from './secrets-context-ranker.mjs';
 import { moduleManifest as serviceWorkerAudit } from './service-worker-audit.mjs';
 import { moduleManifest as websocketRecon } from './websocket-recon.mjs';
+import { moduleManifest as vigoliumDast } from './vigolium-dast.mjs';
+import { moduleManifest as vigoliumAudit } from './vigolium-audit.mjs';
+import { moduleManifest as vigoliumSwarm } from './vigolium-swarm.mjs';
 import { moduleRunners } from './module-registry-runners.mjs';
 import { normalizeModuleId } from './module-ids.mjs';
 
@@ -22,6 +25,9 @@ export const moduleManifests = [
   domClobberingAudit,
   emailSecurityDeep,
   secretsContextRanker,
+  vigoliumDast,
+  vigoliumAudit,
+  vigoliumSwarm,
 ];
 
 const registry = new Map(

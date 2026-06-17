@@ -110,6 +110,9 @@ test('module registry lista modulos passivos implementados', () => {
     'jwt_jwks_audit',
     'secrets_context_ranker',
     'service_worker_audit',
+    'vigolium_audit',
+    'vigolium_dast',
+    'vigolium_swarm',
     'websocket_recon',
   ]);
 });

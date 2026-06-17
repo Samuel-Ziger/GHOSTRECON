@@ -1,0 +1,24 @@
+GHOSTRECON — avisos de licenciamento de terceiros
+=================================================
+
+Este repositório incorpora código de projetos open-source. Ao distribuir ou
+operar uma versão modificada como serviço de rede, respeite as licenças abaixo.
+
+Vigolium (motor DAST Go)
+------------------------
+Diretório: vigolium/
+Licença:   GNU Affero General Public License v3.0 (AGPL-3.0)
+Copyright: Vigolium e contribuidores
+Upstream:  https://github.com/vigolium/vigolium
+
+O código em vigolium/ permanece sob AGPL-3.0. Modificações devem manter este
+aviso, o ficheiro vigolium/LICENSE e vigolium/THIRD_PARTY_NOTICES.md.
+
+A integração Node (bridge/, server/pipeline/phases/go-engine.mjs) invoca o
+binário Vigolium como motor de scan; não remove obrigações da licença AGPL
+sobre o código Go derivado ou modificado.
+
+Outros componentes
+------------------
+Consulte package.json, GhostTrace, ghostmap, ghost-local-v5 e dependências npm
+para licenças adicionais.

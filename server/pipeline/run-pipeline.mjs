@@ -4,6 +4,8 @@ import { runFingerprintPhase } from './phases/fingerprint.mjs';
 import { runDiscoveryPhase } from './phases/discovery.mjs';
 import { runProbePhase } from './phases/probe.mjs';
 import { runContentDiscoveryPhase } from './phases/content-discovery.mjs';
+import { runGoEnginePhase } from './phases/go-engine.mjs';
+import { runGoAgentPhase } from './phases/go-agent.mjs';
 import { runValidationPhase } from './phases/validation.mjs';
 import { runAggressivePhase } from './phases/aggressive.mjs';
 import { runAssetDiscoveryPhase } from './phases/asset-discovery.mjs';
@@ -19,9 +21,12 @@ export async function runPipeline(ctx) {
   await runDiscoveryPhase(s);
   await runProbePhase(s);
   await runContentDiscoveryPhase(s);
+  await runGoEnginePhase(s);
   await runValidationPhase(s);
   await runAggressivePhase(s);
   await runAssetDiscoveryPhase(s);
+
+  await runGoAgentPhase(s);
 
   await runFinalizePhase({
     domain: s.domain,

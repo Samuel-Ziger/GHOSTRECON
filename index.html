@@ -1749,44 +1749,107 @@
 
   /* ===== PIPELINE BAR ===== */
   .pipeline-bar {
-    padding: 12px 24px;
+    padding: 8px 20px 10px;
     border-bottom: 1px solid var(--border);
-    background: var(--bg2);
+    background: var(--panel);
     display: flex;
-    align-items: center;
+    align-items: stretch;
     gap: 8px;
     overflow-x: auto;
+    overflow-y: hidden;
     scrollbar-width: none;
     flex-shrink: 0;
+    position: relative;
   }
 
   .pipeline-bar::-webkit-scrollbar { display: none; }
 
-  .pipe-step {
+  .pipe-phase {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    flex-shrink: 0;
+    padding: 8px 10px 9px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    min-width: 0;
+  }
+
+  .pipe-phase-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+    line-height: 1;
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .pipe-phase-label::after {
+    content: '';
+    flex: 1;
+    min-width: 12px;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .pipe-phase-steps {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-wrap: nowrap;
+  }
+
+  .pipe-phase-divider {
+    display: none;
+  }
+
+  .pipe-step {
+    display: flex;
+    align-items: center;
+    gap: 3px;
     flex-shrink: 0;
   }
 
   .pipe-node {
-    padding: 5px 14px;
+    padding: 4px 9px;
     border: 1px solid var(--border);
+    background: var(--bg3);
     font-family: var(--mono);
-    font-size: 10px;
+    font-size: 9px;
     color: var(--text-dim);
-    letter-spacing: 1px;
+    letter-spacing: 0.8px;
     white-space: nowrap;
-    transition: all 0.3s;
+    transition: border-color 0.2s, color 0.2s, background 0.2s, box-shadow 0.2s;
     position: relative;
     overflow: hidden;
+    cursor: default;
+  }
+
+  .pipe-node[data-pipe-group="attack"] {
+    border-color: rgba(255, 136, 0, 0.35);
+    background: rgba(255, 136, 0, 0.04);
+  }
+
+  .pipe-node[data-pipe-group="agent"] {
+    border-color: rgba(0, 212, 255, 0.28);
+    background: rgba(0, 212, 255, 0.03);
+  }
+
+  .pipe-node[data-pipe-group="report"] {
+    border-color: rgba(0, 255, 136, 0.25);
+    background: rgba(0, 255, 136, 0.03);
   }
 
   .pipe-node.active {
     border-color: var(--accent);
     color: var(--accent);
     box-shadow: var(--glow);
-    background: rgba(0,212,255,0.05);
+    background: rgba(0, 212, 255, 0.06);
   }
 
   .pipe-node.active::before {
@@ -1795,7 +1858,7 @@
     top: 0; left: -100%;
     width: 60%;
     height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(0,212,255,0.2), transparent);
+    background: linear-gradient(90deg, transparent, rgba(0,212,255,0.18), transparent);
     animation: sweep 1.5s linear infinite;
   }
 
@@ -1807,7 +1870,7 @@
   .pipe-node.done {
     border-color: var(--accent2);
     color: var(--accent2);
-    background: rgba(0,255,136,0.05);
+    background: rgba(0, 255, 136, 0.05);
   }
 
   .pipe-node.done::after {
@@ -1815,14 +1878,17 @@
   }
 
   .pipe-node.skip {
-    opacity: 0.4;
+    opacity: 0.35;
     border-style: dashed;
-    font-size: 9px;
+    background: transparent;
+    font-size: 8px;
   }
 
   .pipe-arrow {
-    color: var(--border-bright);
-    font-size: 10px;
+    color: var(--text-dim);
+    font-size: 8px;
+    opacity: 0.55;
+    user-select: none;
   }
 
   /* ===== CONTENT AREA ===== */
@@ -3479,6 +3545,56 @@
       </div>
 
       <div class="module-group">
+        <div class="module-group-title">// Vigolium (motor Go — DAST + audit código)</div>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Binário em <code>engines/vigolium</code> (não precisas da pasta <code>vigolium/</code> fonte após <code>bash scripts/install-vigolium-engine.sh</code>). DAST activo requer <strong>Confirmar ativo</strong>. Audit usa Codex/Claude Code no PATH.</p>
+        <div id="vigoliumCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">Vigolium: a carregar…</div>
+        <div class="toggle-row" style="align-items:center;gap:10px;margin-bottom:8px">
+          <span class="toggle-label">Motor</span>
+          <select id="vigoliumEngineSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
+            <option value="node" selected>node (só GHOSTRECON)</option>
+            <option value="both">both (OSINT + Go DAST)</option>
+            <option value="go">go (só Vigolium)</option>
+          </select>
+        </div>
+        <div class="toggle-row" style="align-items:center;gap:10px;margin-bottom:8px">
+          <span class="toggle-label">Estratégia Go</span>
+          <select id="vigoliumStrategySelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
+            <option value="lite" selected>lite (rápido)</option>
+            <option value="balanced">balanced</option>
+            <option value="deep">deep</option>
+          </select>
+        </div>
+        <label class="checkbox-item" title="273 módulos DAST nativos (XSS, SQLi, OAST, …). Corre após content-discovery.">
+          <input type="checkbox" class="mod" value="vigolium_dast" id="modVigoliumDast">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Vigolium DAST (motor Go)</span>
+          <span class="tag tag-high">GO</span>
+        </label>
+        <label class="checkbox-item" title="SAST multi-fase no repositório — requer caminho do código abaixo. Usa codex/claude no PATH.">
+          <input type="checkbox" class="mod" value="vigolium_audit" id="modVigoliumAudit">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Vigolium code audit (SAST IA)</span>
+          <span class="tag tag-high">IA</span>
+        </label>
+        <label class="checkbox-item" title="IA planeia módulos + scan + triage. Intrusivo.">
+          <input type="checkbox" class="mod" value="vigolium_swarm" id="modVigoliumSwarm">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Vigolium agent swarm</span>
+          <span class="tag tag-high">GO+IA</span>
+        </label>
+        <label for="vigoliumSourceInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Caminho do código-fonte (audit / swarm opcional)</label>
+        <input id="vigoliumSourceInput" class="domain-input" type="text" placeholder="/caminho/para/repo ou ." autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+        <div class="toggle-row" style="align-items:center;gap:10px;margin-top:8px">
+          <span class="toggle-label">Modo audit</span>
+          <select id="vigoliumAuditModeSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
+            <option value="lite" selected>lite</option>
+            <option value="balanced">balanced</option>
+            <option value="deep">deep</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="module-group">
         <div class="module-group-title">// IA · relatórios (cloud + LM Studio)</div>
         <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Ao marcar <strong>Confirmo envio</strong> abre-se um diálogo: podes aceitar <strong>OpenRouter</strong> (pode haver cobrança; modelo por defeito <code>google/gemma-4-31b-it</code>), recusar OpenRouter (só Gemini → Claude → LM) ou activar <strong>somente OpenRouter</strong> (saltar Gemini — útil se a API grátis falhar). Com a confirmação activa: ao terminar <em>cada</em> recon, o servidor envia o JSON pela cascata escolhida e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown. Sem confirmação, não há chamadas cloud. <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code> desliga a geração automática no servidor mesmo com a caixa marcada.</p>
         <div id="aiKeysLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">APIs IA: a carregar…</div>
@@ -3550,79 +3666,65 @@
   <!-- MAIN CONTENT -->
   <div class="main">
 
-    <!-- Pipeline Bar -->
-    <div class="pipeline-bar" id="pipelineBar">
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-input">INPUT</div>
-        <div class="pipe-arrow">──▶</div>
+    <!-- Pipeline Bar — ordem alinhada ao runPipeline (9 fases) -->
+    <div class="pipeline-bar" id="pipelineBar" role="list" aria-label="Pipeline OSINT e DAST">
+
+      <div class="pipe-phase" data-phase="recon">
+        <span class="pipe-phase-label">① RECON</span>
+        <div class="pipe-phase-steps">
+          <div class="pipe-step"><div class="pipe-node" id="pipe-input" title="Validação alvo, escopo, OPSEC">INPUT</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-subdomains" title="crt.sh, VT, subfinder, amass">SUBS</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-dns_enrichment" title="TXT/MX, SPF, DMARC">DNS</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-rdap" title="Registo WHOIS/RDAP">RDAP</div></div>
+        </div>
       </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-subdomains">SUBDOMAIN ENUM</div>
-        <div class="pipe-arrow">──▶</div>
+
+      <div class="pipe-phase" data-phase="surface">
+        <span class="pipe-phase-label">② SUPERFÍCIE</span>
+        <div class="pipe-phase-steps">
+          <div class="pipe-step"><div class="pipe-node" id="pipe-alive" title="HTTP probe, hosts vivos">ALIVE</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-surface" title="Headers, TLS, WAF, CORS">SURFACE</div></div>
+        </div>
       </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-dns_enrichment">DNS ENRICH</div>
-        <div class="pipe-arrow">──▶</div>
+
+      <div class="pipe-phase" data-phase="content">
+        <span class="pipe-phase-label">③ CONTEÚDO</span>
+        <div class="pipe-phase-steps">
+          <div class="pipe-step"><div class="pipe-node" id="pipe-urls" title="Wayback, CC, gau, Katana">URLS</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-params" title="Parâmetros em URLs">PARAMS</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-js" title="Bundles JS, source maps">JS</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-dorks" title="Google dorks + CSE">DORKS</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-secrets" title="Scan + validação de leaks">SECRETS</div></div>
+        </div>
       </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-rdap">RDAP</div>
-        <div class="pipe-arrow">──▶</div>
+
+      <div class="pipe-phase" data-phase="attack">
+        <span class="pipe-phase-label">④ ATAQUE</span>
+        <div class="pipe-phase-steps">
+          <div class="pipe-step"><div class="pipe-node" id="pipe-vigolium_dast" data-pipe-group="attack" title="Motor Go Vigolium — DAST (273 módulos)">VIGOLIUM</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-verify" data-pipe-group="attack" title="Verify heurístico, micro-exploit">VERIFY</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-sqlmap" data-pipe-group="attack" title="SQLmap runner">SQLMAP</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-kali" data-pipe-group="attack" title="nmap, nuclei, ffuf, dalfox…">KALI</div></div>
+        </div>
       </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-alive">ALIVE CHECK</div>
-        <div class="pipe-arrow">──▶</div>
+
+      <div class="pipe-phase" data-phase="explore">
+        <span class="pipe-phase-label">⑤ ATIVOS</span>
+        <div class="pipe-phase-steps">
+          <div class="pipe-step"><div class="pipe-node" id="pipe-assets" title="Takeover, cloud, Navegation">ASSETS</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-vigolium_agent" data-pipe-group="agent" title="Vigolium audit/swarm — Codex / Claude Code">VIG AGENT</div></div>
+        </div>
       </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-surface">SURFACE</div>
-        <div class="pipe-arrow">──▶</div>
+
+      <div class="pipe-phase" data-phase="report">
+        <span class="pipe-phase-label">⑥ RELATÓRIO</span>
+        <div class="pipe-phase-steps">
+          <div class="pipe-step"><div class="pipe-node" id="pipe-score" data-pipe-group="report" title="Score v2, dedupe, chaining">PRIORITIZE</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-shannon" data-pipe-group="report" title="Shannon white-box">SHANNON</div><span class="pipe-arrow">›</span></div>
+          <div class="pipe-step"><div class="pipe-node" id="pipe-pentestgpt" data-pipe-group="report" title="Validação PentestGPT">PENTESTGPT</div></div>
+        </div>
       </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-urls">URL GATHERING</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-params">PARAM DISCOVERY</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-js">JS ANALYSIS</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-dorks">DORKING</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-secrets">SECRETS</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-verify">VERIFY</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-sqlmap">SQLMAP</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-kali">KALI SCAN</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-assets">ASSETS</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-score">PRIORITIZE</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-shannon">SHANNON</div>
-        <div class="pipe-arrow">──▶</div>
-      </div>
-      <div class="pipe-step">
-        <div class="pipe-node" id="pipe-pentestgpt">PENTESTGPT</div>
-      </div>
+
     </div>
 
     <!-- Content -->
@@ -4446,10 +4548,26 @@ async function ensureCsrfToken(force = false) {
 }
 
 // ─── PIPELINE CONTROL ────────────────────────────────────
+/** Nomes emitidos pelo servidor → nó visual na barra */
+const PIPE_UI_ALIASES = {
+  vigolium_engine: 'vigolium_dast',
+  vigolium_audit: 'vigolium_agent',
+};
+
+const PIPE_RESET_ORDER = [
+  'input', 'subdomains', 'dns_enrichment', 'rdap',
+  'alive', 'surface',
+  'urls', 'params', 'js', 'dorks', 'secrets',
+  'vigolium_dast', 'verify', 'webshell_probe', 'sqlmap', 'kali',
+  'assets', 'vigolium_agent',
+  'score', 'shannon', 'pentestgpt',
+];
+
 function setPipe(name, state) {
-  const el = document.getElementById(`pipe-${name}`);
+  const id = PIPE_UI_ALIASES[name] || name;
+  const el = document.getElementById(`pipe-${id}`);
   if (!el) return;
-  el.className = `pipe-node ${state}`;
+  el.className = state ? `pipe-node ${state}` : 'pipe-node';
 }
 
 function setProgress(pct) {
@@ -4995,27 +5113,7 @@ findingsSearchChipsEl?.addEventListener('click', (ev) => {
 });
 
 function resetPipelineVisual() {
-  [
-    'input',
-    'subdomains',
-    'dns_enrichment',
-    'rdap',
-    'alive',
-    'surface',
-    'urls',
-    'params',
-    'js',
-    'dorks',
-    'secrets',
-    'verify',
-    'webshell_probe',
-    'sqlmap',
-    'kali',
-    'assets',
-    'score',
-    'shannon',
-    'pentestgpt',
-  ].forEach((n) => setPipe(n, ''));
+  PIPE_RESET_ORDER.forEach((n) => setPipe(n, ''));
 }
 
 let dorkActiveTabs = 0;
@@ -6005,6 +6103,17 @@ async function startRecon() {
         };
       }
 
+      const vigEngine = String(document.getElementById('vigoliumEngineSelect')?.value || '').trim().toLowerCase();
+      if (['node', 'go', 'both'].includes(vigEngine)) streamBody.engine = vigEngine;
+      const vigStrat = String(document.getElementById('vigoliumStrategySelect')?.value || '').trim().toLowerCase();
+      if (['lite', 'balanced', 'deep'].includes(vigStrat)) streamBody.vigoliumStrategy = vigStrat;
+      const vigSrc = (document.getElementById('vigoliumSourceInput')?.value || '').trim();
+      if (vigSrc) streamBody.vigoliumSource = vigSrc;
+      const vigAuditMode = String(document.getElementById('vigoliumAuditModeSelect')?.value || '').trim().toLowerCase();
+      if (['lite', 'balanced', 'deep'].includes(vigAuditMode)) streamBody.vigoliumAuditMode = vigAuditMode;
+      if (mods.includes('vigolium_swarm')) streamBody.vigoliumAgent = 'swarm';
+      else if (mods.includes('vigolium_audit')) streamBody.vigoliumAgent = 'audit';
+
       const anonModeOn = Boolean(document.getElementById('anonModeToggle')?.checked);
       const anonTorOn = anonModeOn && Boolean(document.getElementById('anonTorToggle')?.checked);
       if (anonTorOn) {
@@ -6853,7 +6962,25 @@ async function refreshShannonCapabilities() {
   window.__shannonCap = c.shannon || null;
   applyShannonCapToUI(c.shannon);
   applyPentestgptCapToUI(c.pentestgpt);
+  applyVigoliumCapToUI(c.vigolium);
   return c.shannon;
+}
+
+function applyVigoliumCapToUI(v) {
+  const el = document.getElementById('vigoliumCapLine');
+  if (!el) return;
+  if (!v) {
+    el.textContent = 'Vigolium: indisponível';
+    el.style.color = 'var(--text-dim)';
+    return;
+  }
+  if (v.installed) {
+    el.textContent = `Vigolium: ${v.version || 'OK'} · ${v.binary || 'engines/vigolium'}`;
+    el.style.color = 'var(--accent2)';
+  } else {
+    el.textContent = `Vigolium: ${v.message || 'não instalado'} — bash scripts/install-vigolium-engine.sh`;
+    el.style.color = 'var(--accent4)';
+  }
 }
 
 document.getElementById('shannonPrepPullBtn')?.addEventListener('click', async () => {
@@ -6998,6 +7125,7 @@ async function fetchKaliCapabilities() {
     window.__shannonCap = c.shannon || null;
     applyShannonCapToUI(c.shannon);
     applyPentestgptCapToUI(c.pentestgpt);
+    applyVigoliumCapToUI(c.vigolium);
   } catch (e) {
     if (line) {
       line.style.color = 'var(--accent3)';

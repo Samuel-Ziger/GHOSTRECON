@@ -11,6 +11,22 @@ function parseBool(v, defaultValue = false) {
   return n === '1' || n === 'true' || n === 'yes' || n === 'on';
 }
 
+export function githubRepoHtmlUrl(repoOrFullName) {
+  if (typeof repoOrFullName === 'string') {
+    const n = repoOrFullName
+      .trim()
+      .replace(/^https?:\/\/github\.com\//i, '')
+      .replace(/\.git$/i, '')
+      .replace(/\/$/, '');
+    return n ? `https://github.com/${n}` : '';
+  }
+  const r = repoOrFullName || {};
+  const full = String(r.full_name || '').trim();
+  const fromField = String(r.html_url || '').trim();
+  if (fromField) return fromField;
+  return full ? `https://github.com/${full}` : '';
+}
+
 export function githubCloneConfig() {
   const enabled = parseBool(process.env.GHOSTRECON_GITHUB_CLONE_ENABLED, true);
   const cloneDir = String(process.env.GHOSTRECON_CLONE_DIR || 'clone')
@@ -162,6 +178,7 @@ export async function cloneGithubReposForTarget({ targetDomain, repos, log = nul
       cloned.push({
         full_name: fullName,
         clone_url: cloneUrl,
+        html_url: githubRepoHtmlUrl(fullName),
         local_path: repoDir,
         size_bytes: sizeBytes,
       });
@@ -173,6 +190,8 @@ export async function cloneGithubReposForTarget({ targetDomain, repos, log = nul
       }
       failed.push({
         full_name: fullName,
+        clone_url: cloneUrl,
+        html_url: githubRepoHtmlUrl(fullName),
         error: e?.message || String(e),
       });
     }
