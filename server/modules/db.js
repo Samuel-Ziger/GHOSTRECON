@@ -6,7 +6,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-export { fingerprintFinding, norm } from './db-common.js';
+import { fingerprintFinding, norm, isSha256FingerprintHex } from './db-common.js';
+export { fingerprintFinding, norm, isSha256FingerprintHex } from './db-common.js';
 export { resolveLocalProjectDbDir, sanitizePathSegment } from './db-sqlite.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -76,9 +77,6 @@ function ensureValidateDir() {
   return VALIDATE_DIR;
 }
 
-function isSha256FingerprintHex(fp) {
-  return /^[a-f0-9]{64}$/.test(String(fp || '').trim().toLowerCase());
-}
 
 function normalizeValidationArchiveRecord(row) {
   const target = String(row?.target || '')

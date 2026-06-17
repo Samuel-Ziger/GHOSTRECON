@@ -8,6 +8,10 @@ export function norm(s) {
     .replace(/\s+/g, ' ');
 }
 
+export function isSha256FingerprintHex(fp) {
+  return /^[a-f0-9]{64}$/.test(String(fp || '').trim().toLowerCase());
+}
+
 /** Tipos em que URL equivalente com query reordenada deve colapsar no dedupe */
 const FINGERPRINT_URL_NORMALIZE_TYPES = new Set([
   'endpoint',

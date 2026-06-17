@@ -71,14 +71,14 @@ function toHandoffFinding(f) {
   };
 }
 
-export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
-  const requireCsrf = (req, res) => {
-    if (typeof validateCsrfToken === 'function' && !validateCsrfToken(req)) {
+export function registerGhostDeskRoutes(app, { validateCsrfToken, requireCsrf } = {}) {
+  const guard =
+    requireCsrf ||
+    ((req, res) => {
+      if (typeof validateCsrfToken === 'function' && validateCsrfToken(req)) return true;
       res.status(403).json({ ok: false, error: 'CSRF' });
       return false;
-    }
-    return true;
-  };
+    });
 
   app.get('/api/ghostdesk/config', requireScope('recon.read'), (_req, res) => {
     res.json({
@@ -135,7 +135,7 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
   });
 
   app.post('/api/ghostdesk/clients', requireScope('project.write'), async (req, res) => {
-    if (!requireCsrf(req, res)) return;
+    if (!guard(req, res)) return;
     try {
       const client = await upsertClient(req.body || {});
       res.json({ ok: true, client });
@@ -145,7 +145,7 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
   });
 
   app.delete('/api/ghostdesk/clients/:id', requireScope('project.write'), async (req, res) => {
-    if (!requireCsrf(req, res)) return;
+    if (!guard(req, res)) return;
     try {
       const removed = await removeClient(req.params.id);
       res.json({ ok: removed });
@@ -168,7 +168,7 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
   });
 
   app.post('/api/ghostdesk/projects/:name/client', requireScope('project.write'), async (req, res) => {
-    if (!requireCsrf(req, res)) return;
+    if (!guard(req, res)) return;
     try {
       const project = await getProject(req.params.name);
       if (!project) return res.status(404).json({ ok: false, error: 'projeto não encontrado' });
@@ -213,7 +213,7 @@ export function registerGhostDeskRoutes(app, { validateCsrfToken } = {}) {
   });
 
   app.post('/api/ghostdesk/scans/:id/attach', requireScope('project.write'), async (req, res) => {
-    if (!requireCsrf(req, res)) return;
+    if (!guard(req, res)) return;
     try {
       const ref = normalizeRunRef(decodeURIComponent(req.params.id));
       if (!ref) return res.status(400).json({ ok: false, error: 'id inválido' });

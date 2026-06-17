@@ -1,0 +1,30 @@
+/** Aliases legados (kebab-case / UI antiga) → snake_case canónico. */
+const MODULE_ALIASES = new Map([
+  ['cookie-session-audit', 'cookie_session_audit'],
+  ['csrf-flow-audit', 'csrf_flow_audit'],
+  ['jwt-jwks-audit', 'jwt_jwks_audit'],
+  ['service-worker-audit', 'service_worker_audit'],
+  ['api-contract-diff', 'api_contract_diff'],
+  ['websocket-recon', 'websocket_recon'],
+  ['hpp-param-pollution', 'hpp_param_pollution'],
+  ['dom-clobbering-audit', 'dom_clobbering_audit'],
+  ['email-security-deep', 'email_security_deep'],
+  ['secrets-context-ranker', 'secrets_context_ranker'],
+]);
+
+/**
+ * Normaliza ID de módulo para snake_case canónico (contrato do registry).
+ */
+export function normalizeModuleId(id) {
+  const raw = String(id || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (MODULE_ALIASES.has(raw)) return MODULE_ALIASES.get(raw);
+  return raw.replace(/-/g, '_');
+}
+
+/** Verifica se o módulo está activo no array `modules` (com aliases). */
+export function moduleEnabled(modules, moduleId) {
+  const want = normalizeModuleId(moduleId);
+  if (!want) return false;
+  return (modules || []).some((m) => normalizeModuleId(m) === want);
+}

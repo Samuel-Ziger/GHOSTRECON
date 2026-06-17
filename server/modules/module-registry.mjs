@@ -8,6 +8,8 @@ import { moduleManifest as jwtJwksAudit } from './jwt-jwks-audit.mjs';
 import { moduleManifest as secretsContextRanker } from './secrets-context-ranker.mjs';
 import { moduleManifest as serviceWorkerAudit } from './service-worker-audit.mjs';
 import { moduleManifest as websocketRecon } from './websocket-recon.mjs';
+import { moduleRunners } from './module-registry-runners.mjs';
+import { normalizeModuleId } from './module-ids.mjs';
 
 export const moduleManifests = [
   cookieSessionAudit,
@@ -22,6 +24,36 @@ export const moduleManifests = [
   secretsContextRanker,
 ];
 
+const registry = new Map(
+  moduleManifests.map((manifest) => [
+    manifest.id,
+    {
+      manifest,
+      run: moduleRunners[manifest.id] || null,
+    },
+  ]),
+);
+
 export function listModuleManifests() {
   return moduleManifests.map((m) => ({ ...m, outputs: [...(m.outputs || [])] }));
 }
+
+export function getRegistryEntry(moduleId) {
+  const id = normalizeModuleId(moduleId);
+  return registry.get(id) || null;
+}
+
+export function getModulesForCategory(category) {
+  const cat = String(category || '').trim().toLowerCase();
+  return moduleManifests.filter((m) => String(m.category || '').toLowerCase() === cat);
+}
+
+export async function runModule(moduleId, state) {
+  const entry = getRegistryEntry(moduleId);
+  if (!entry?.run) {
+    throw new Error(`módulo não registado ou sem run(): ${moduleId}`);
+  }
+  return entry.run(state);
+}
+
+export { registry as moduleRegistry };

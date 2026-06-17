@@ -2666,19 +2666,23 @@
           <div class="section-label" style="font-size:10px;margin-top:10px">Playbook (nome — pré-checklist)</div>
           <input id="playbookNameInput" class="domain-input" type="text" placeholder="ex.: quick-triage" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
           <div class="toggle-row" style="margin-top:10px">
-            <span class="toggle-label" title="Quando o módulo Navegation estiver marcado, executa script automaticamente no host">Navegation auto-exec</span>
+            <span class="toggle-label" title="Obrigatório para Navegation/Tor no pipeline — não activa no preset Full">Modo Navigator</span>
+            <label class="toggle">
+              <input type="checkbox" id="navigatorModeToggle">
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+          <div id="navigatorModeWrap" style="display:none">
+          <div class="toggle-row" style="margin-top:6px">
+            <span class="toggle-label" title="Com Modo Navigator, sobe Tor em .runtime/tor/ (sem sudo) no início do run">Navigator auto-exec (Tor utilizador)</span>
             <label class="toggle">
               <input type="checkbox" id="navegationExecToggle">
               <div class="toggle-track"><div class="toggle-thumb"></div></div>
             </label>
           </div>
-          <div class="toggle-row">
-            <span class="toggle-label" title="Executa Navegation em modo seguro (--dry-run)">Navegation dry-run</span>
-            <label class="toggle">
-              <input type="checkbox" id="navegationDryRunToggle" checked>
-              <div class="toggle-track"><div class="toggle-thumb"></div></div>
-            </label>
-          </div>
+          <p class="gh-hint" style="font-size:9px;margin:0 0 8px;line-height:1.45">
+            Sem Modo Navigator, o módulo Navegation fica oculto e não corre no pipeline (incluindo preset Full).
+          </p>
           <div class="section-label" style="font-size:10px;margin-top:8px">Túnel (Tor/OpenVPN)</div>
           <div id="tunnelStatusLine" class="gh-hint" style="font-size:10px;margin:6px 0 8px;line-height:1.45">
             Estado: a consultar…
@@ -2687,6 +2691,7 @@
             <button type="button" class="find-btn" id="tunnelEnableBtn" onclick="setTunnelState('enable')">Tunnel ON</button>
             <button type="button" class="find-btn" id="tunnelDisableBtn" onclick="setTunnelState('disable')">Tunnel OFF</button>
             <button type="button" class="find-btn" id="tunnelRefreshBtn" onclick="refreshTunnelStatus()">Atualizar status</button>
+          </div>
           </div>
           <hr style="border:0;border-top:1px solid var(--border);margin:14px 0 10px;opacity:.75">
           <div class="section-label" style="font-size:10px">Rotação de identidade</div>
@@ -2774,7 +2779,7 @@
       <div id="anonModeWrap" style="display:none;margin-bottom:12px">
         <div class="section-label" style="font-size:10px;opacity:.9">Opções anônimas</div>
         <div class="toggle-row" style="margin-top:6px">
-          <span class="toggle-label" title="Ativa módulo Navegation + auto-exec para túnel Tor/OpenVPN">Tor tunnel (Navegation)</span>
+          <span class="toggle-label" title="Roteia o recon via Tor (SOCKS) — não activa Navegation; use Modo Navigator para subir Tor">Usar rede Tor no recon</span>
           <label class="toggle">
             <input type="checkbox" id="anonTorToggle">
             <div class="toggle-track"><div class="toggle-thumb"></div></div>
@@ -3422,13 +3427,13 @@
           <span class="tag tag-high">KALI</span>
         </label>
         <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Ideal para busca "por tudo". Mais lento por desenho; achados entram no bucket <code>directories</code> junto dos paths do ffuf.</p>
-        <label class="checkbox-item" title="Carrega e mostra no pipeline os passos do playbook local tools/Navegation/navegation.sh|py (fallback: node_modules/Navegation).">
+        <label class="checkbox-item" title="Só com Modo Navigator activo (painel Engagement/OPSEC). Não incluído no preset Full." style="display:none" aria-hidden="true">
           <input type="checkbox" class="mod" value="navegation" id="modNavegation">
           <div class="checkbox-box"></div>
           <span class="checkbox-text">Navegation playbook (Tor/OpenVPN)</span>
           <span class="tag tag-med">OPS</span>
         </label>
-        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Mostra os comandos como checklist/intel no run para execução manual no host.</p>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45;display:none" aria-hidden="true">Reservado ao Modo Navigator.</p>
         <label class="checkbox-item" title="Só corre com Modo Kali ligado e ferramenta nuclei no PATH. Pesado em RAM/CPU — desmarcado por defeito.">
           <input type="checkbox" class="mod" value="kali_nuclei" id="modKaliNuclei">
           <div class="checkbox-box"></div>
@@ -4205,7 +4210,7 @@ const ENG_OPSEC_LS = {
   identityRotation: 'ghostrecon_identity_rotation',
   identityBodyEnabled: 'ghostrecon_identity_body_enabled',
   navegationExec: 'ghostrecon_navegation_exec',
-  navegationDryRun: 'ghostrecon_navegation_dry_run',
+  navigatorMode: 'ghostrecon_navigator_mode',
   anonMode: 'ghostrecon_anon_mode',
   anonTor: 'ghostrecon_anon_tor',
   anonProxychains: 'ghostrecon_anon_proxychains',
@@ -4231,7 +4236,7 @@ function initEngagementOpsecUi() {
     const ir = localStorage.getItem(ENG_OPSEC_LS.identityRotation);
     const ide = localStorage.getItem(ENG_OPSEC_LS.identityBodyEnabled);
     const navExec = localStorage.getItem(ENG_OPSEC_LS.navegationExec);
-    const navDry = localStorage.getItem(ENG_OPSEC_LS.navegationDryRun);
+    const navMode = localStorage.getItem(ENG_OPSEC_LS.navigatorMode);
     const anonMode = localStorage.getItem(ENG_OPSEC_LS.anonMode);
     const anonTor = localStorage.getItem(ENG_OPSEC_LS.anonTor);
     const anonProxy = localStorage.getItem(ENG_OPSEC_LS.anonProxychains);
@@ -4246,7 +4251,7 @@ function initEngagementOpsecUi() {
     const elRot = document.getElementById('identityRotationSelect');
     const elIdEn = document.getElementById('identityBodyEnabledToggle');
     const elNavExec = document.getElementById('navegationExecToggle');
-    const elNavDry = document.getElementById('navegationDryRunToggle');
+    const elNavMode = document.getElementById('navigatorModeToggle');
     const elAnonMode = document.getElementById('anonModeToggle');
     const elAnonTor = document.getElementById('anonTorToggle');
     const elAnonProxy = document.getElementById('anonProxychainsToggle');
@@ -4261,7 +4266,7 @@ function initEngagementOpsecUi() {
     if (elRot && ir && ['round_robin', 'random', 'fixed'].includes(ir)) elRot.value = ir;
     if (elIdEn && ide === '1') elIdEn.checked = true;
     if (elNavExec && navExec === '1') elNavExec.checked = true;
-    if (elNavDry && navDry !== '0') elNavDry.checked = true;
+    if (elNavMode && navMode === '1') elNavMode.checked = true;
     if (elAnonMode && anonMode === '1') elAnonMode.checked = true;
     if (elAnonTor && anonTor === '1') elAnonTor.checked = true;
     if (elAnonProxy && anonProxy === '1') elAnonProxy.checked = true;
@@ -4297,12 +4302,13 @@ function initEngagementOpsecUi() {
   wireSelect('identityRotationSelect', ENG_OPSEC_LS.identityRotation);
   wireCheckbox('identityBodyEnabledToggle', ENG_OPSEC_LS.identityBodyEnabled);
   wireCheckbox('navegationExecToggle', ENG_OPSEC_LS.navegationExec);
-  wireCheckbox('navegationDryRunToggle', ENG_OPSEC_LS.navegationDryRun);
+  wireCheckbox('navigatorModeToggle', ENG_OPSEC_LS.navigatorMode);
   wireCheckbox('anonModeToggle', ENG_OPSEC_LS.anonMode);
   wireCheckbox('anonTorToggle', ENG_OPSEC_LS.anonTor);
   wireCheckbox('anonProxychainsToggle', ENG_OPSEC_LS.anonProxychains);
   wireCheckbox('anonIdentityRotationToggle', ENG_OPSEC_LS.anonIdentityRotation);
   wireCheckbox('confirmActiveToggle', ENG_OPSEC_LS.confirmActive);
+  syncNavigatorModeUi();
 }
 
 // ─── CLOCK ────────────────────────────────────────────────
@@ -4795,7 +4801,6 @@ async function setTunnelState(action) {
   const enableBtn = document.getElementById('tunnelEnableBtn');
   const disableBtn = document.getElementById('tunnelDisableBtn');
   const refreshBtn = document.getElementById('tunnelRefreshBtn');
-  const dryRun = document.getElementById('navegationDryRunToggle')?.checked !== false;
   const isEnable = action === 'enable';
   const endpoint = isEnable ? '/api/tunnel/enable' : '/api/tunnel/disable';
   const label = isEnable ? 'ativação' : 'desativação';
@@ -4812,14 +4817,14 @@ async function setTunnelState(action) {
     const res = await fetch(apiUrl(endpoint), {
       method: 'POST',
       headers: fetchHeaders,
-      body: JSON.stringify({ dryRun }),
+      body: JSON.stringify({ dryRun: false }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data?.ok === false) {
       throw new Error(data?.error || `HTTP ${res.status}`);
     }
-    addLog(`Tunnel ${label}: OK (dry-run=${dryRun ? 'on' : 'off'})`, 'success');
-    if (isEnable && !dryRun) {
+    addLog(`Tunnel ${label}: OK (modo utilizador, sem sudo)`, 'success');
+    if (isEnable) {
       const u = new URL('tor-validator.html', window.location.href);
       const w = window.open(u.href, 'ghostrecon_tor_validator');
       if (!w) addLog('Validador Tor: popup bloqueado — abre manualmente tor-validator.html', 'warn');
@@ -5982,9 +5987,23 @@ async function startRecon() {
       }
       const pbn = (document.getElementById('playbookNameInput')?.value || '').trim();
       if (pbn) streamBody.playbook = pbn;
-      const navExec = Boolean(document.getElementById('navegationExecToggle')?.checked);
-      const navDryRun = document.getElementById('navegationDryRunToggle')?.checked !== false;
-      streamBody.navegation = { exec: navExec, dryRun: navDryRun };
+      const navigatorModeOn = Boolean(document.getElementById('navigatorModeToggle')?.checked);
+      const fullPresetOn = Boolean(document.getElementById('fullPresetToggle')?.checked);
+      if (fullPresetOn) streamBody.fullPreset = true;
+      let mods = [...selectedMods];
+      if (!navigatorModeOn || fullPresetOn) {
+        mods = mods.filter((m) => m !== 'navegation');
+      } else if (!mods.includes('navegation')) {
+        mods.push('navegation');
+      }
+      streamBody.modules = mods;
+      if (navigatorModeOn && !fullPresetOn) {
+        streamBody.navigatorMode = true;
+        streamBody.navegation = {
+          exec: Boolean(document.getElementById('navegationExecToggle')?.checked),
+          userMode: true,
+        };
+      }
 
       const anonModeOn = Boolean(document.getElementById('anonModeToggle')?.checked);
       const anonTorOn = anonModeOn && Boolean(document.getElementById('anonTorToggle')?.checked);
@@ -5995,7 +6014,6 @@ async function startRecon() {
           newnymBeforeRun: true,
           perTargetCircuit: true,
         };
-        streamBody.navegation = { exec: true, dryRun: false };
       }
 
       const identityMod = selectedMods.includes('identity_rotation');
@@ -6442,31 +6460,34 @@ syncOutOfScopeUi();
 
 function applyAnonymousModeOptions() {
   const anonMode = Boolean(document.getElementById('anonModeToggle')?.checked);
-  const anonTor = Boolean(document.getElementById('anonTorToggle')?.checked);
   const anonProxy = Boolean(document.getElementById('anonProxychainsToggle')?.checked);
   const anonIdentityRotation = Boolean(document.getElementById('anonIdentityRotationToggle')?.checked);
   const wrap = document.getElementById('anonModeWrap');
   if (wrap) wrap.style.display = anonMode ? 'block' : 'none';
-  const modNavegation = document.getElementById('modNavegation');
   const modProxy = document.getElementById('modKaliProxychains');
   const modIdentity = document.getElementById('modIdentityRotation');
-  const navExec = document.getElementById('navegationExecToggle');
-  const navDryRun = document.getElementById('navegationDryRunToggle');
   const kaliMode = document.getElementById('kaliModeToggle');
   if (!anonMode) {
-    if (modNavegation) modNavegation.checked = false;
-    if (navExec) navExec.checked = false;
-    if (navDryRun) navDryRun.checked = true;
     if (modProxy) modProxy.checked = false;
     if (modIdentity) modIdentity.checked = false;
     return;
   }
-  if (modNavegation) modNavegation.checked = anonTor;
-  if (navExec) navExec.checked = anonTor;
-  if (navDryRun && anonTor) navDryRun.checked = false;
   if (modProxy) modProxy.checked = anonProxy;
   if (modIdentity) modIdentity.checked = anonIdentityRotation;
+  const anonTor = Boolean(document.getElementById('anonTorToggle')?.checked);
   if ((anonTor || anonProxy) && kaliMode && !kaliMode.checked && !kaliMode.disabled) kaliMode.checked = true;
+}
+
+function syncNavigatorModeUi() {
+  const on = Boolean(document.getElementById('navigatorModeToggle')?.checked);
+  const wrap = document.getElementById('navigatorModeWrap');
+  if (wrap) wrap.style.display = on ? 'block' : 'none';
+  const modNavegation = document.getElementById('modNavegation');
+  if (modNavegation) modNavegation.checked = on;
+  if (!on) {
+    const navExec = document.getElementById('navegationExecToggle');
+    if (navExec) navExec.checked = false;
+  }
 }
 
 function syncAnonymousModeUi() {
@@ -6475,6 +6496,9 @@ function syncAnonymousModeUi() {
   if (wrap) wrap.style.display = on ? 'block' : 'none';
   applyAnonymousModeOptions();
 }
+
+document.getElementById('navigatorModeToggle')?.addEventListener('change', syncNavigatorModeUi);
+syncNavigatorModeUi();
 
 document.getElementById('anonModeToggle')?.addEventListener('change', syncAnonymousModeUi);
 document.getElementById('anonProxychainsToggle')?.addEventListener('change', applyAnonymousModeOptions);
@@ -6710,6 +6734,7 @@ function showModuleDetailForCheckbox(input) {
 const FULL_MODULES_EXCLUDE = new Set([
   'shannon_whitebox',
   'pentestgpt_validate',
+  'navegation',
   'kali_ffuf',
   'kali_dirsearch',
   'kali_proxychains',
@@ -6721,6 +6746,9 @@ const FULL_MODULES_EXCLUDE = new Set([
 function applyFullModulesPresetFromUi() {
   closeAiReportsConsentOverlay();
   window.__ghostreconAiConsentPending = false;
+  const navMode = document.getElementById('navigatorModeToggle');
+  if (navMode) navMode.checked = false;
+  syncNavigatorModeUi();
   document.querySelectorAll('input.mod[type="checkbox"]').forEach((cb) => {
     if (FULL_MODULES_EXCLUDE.has(cb.value)) cb.checked = false;
     else cb.checked = true;

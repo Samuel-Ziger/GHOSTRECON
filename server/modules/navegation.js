@@ -1,8 +1,114 @@
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import dns from 'node:dns/promises';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
 import { torHealth, ensureBootstrapped } from './tor-control.js';
 import { runProcess } from './module-runner.mjs';
+
+const USER_TORRC_LINES = [
+  'SocksPort 127.0.0.1:9050 IsolateDestAddr IsolateClientAuth IsolateSOCKSAuth',
+  'TransPort 127.0.0.1:9040',
+  'DNSPort 127.0.0.1:5353',
+  'VirtualAddrNetwork 10.192.0.0/10',
+  'AutomapHostsOnResolve 1',
+  'ControlPort 127.0.0.1:9051',
+  'CookieAuthentication 1',
+  'CookieAuthFileGroupReadable 1',
+  'AvoidDiskWrites 1',
+  'ClientUseIPv4 1',
+  'ClientUseIPv6 0',
+  'SafeSocks 1',
+  'WarnUnsafeSocks 1',
+];
+
+/** Modo Navigator activo — só então o pipeline toca em Navegation/Tor setup. */
+export function isNavigatorModeActive({ navigatorMode = false, navegation = null } = {}) {
+  if (navigatorMode === true) return true;
+  if (navegation && typeof navegation === 'object' && navegation.enabled === true) return true;
+  return String(process.env.GHOSTRECON_NAVIGATOR_MODE || '0').trim() === '1';
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function portOpen(host, port, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    const t = setTimeout(() => {
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(false);
+    }, timeoutMs);
+    sock.on('connect', () => {
+      clearTimeout(t);
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(true);
+    });
+    sock.on('error', () => {
+      clearTimeout(t);
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Tor em modo utilizador: torrc em .runtime/tor/ — sem sudo, sem /etc/tor/torrc.
+ */
+export async function ensureUserTorStack(rootDir, opts = {}) {
+  const torDir = join(rootDir, '.runtime', 'tor');
+  const dataDir = join(torDir, 'data');
+  const torrcPath = join(torDir, 'torrc');
+  const pidFile = join(torDir, 'tor.pid');
+  await mkdir(dataDir, { recursive: true });
+
+  const torrc = [
+    `DataDirectory ${dataDir}`,
+    `PidFile ${pidFile}`,
+    ...USER_TORRC_LINES,
+    '',
+  ].join('\n');
+  await writeFile(torrcPath, torrc, 'utf8');
+
+  const socksHost = String(opts.socksHost || '127.0.0.1');
+  const socksPort = Number(opts.socksPort || 9050);
+  if (await portOpen(socksHost, socksPort)) {
+    return {
+      ok: true,
+      started: false,
+      userMode: true,
+      torrcPath,
+      message: `Tor já activo em ${socksHost}:${socksPort}`,
+    };
+  }
+
+  const child = spawn('tor', ['-f', torrcPath], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+
+  const waitMs = Math.max(500, Number(opts.bootstrapWaitMs || 2500));
+  await sleep(waitMs);
+  const up = await portOpen(socksHost, socksPort, 2000);
+  return {
+    ok: up,
+    started: up,
+    userMode: true,
+    torrcPath,
+    message: up
+      ? `Tor iniciado (modo utilizador, ${torrcPath})`
+      : 'Tor não respondeu em 127.0.0.1:9050 — instala `tor` no PATH ou activa o serviço manualmente',
+  };
+}
 
 function toStep(line) {
   const s = String(line || '').trim();
@@ -40,10 +146,41 @@ export async function loadNavegationPlaybook(rootDir) {
 }
 
 export async function executeNavegationPlaybook(rootDir, opts = {}) {
+  const userMode = opts.userMode !== false && String(process.env.GHOSTRECON_NAVEGATION_SYSTEM || '0').trim() !== '1';
+  const action = String(opts.action || 'up').trim().toLowerCase();
+
+  if (userMode && action === 'up') {
+    const stack = await ensureUserTorStack(rootDir, opts);
+    return {
+      ok: stack.ok,
+      code: stack.ok ? 0 : 1,
+      command: 'tor -f .runtime/tor/torrc (user mode)',
+      stdout: stack.message || '',
+      stderr: stack.ok ? '' : stack.message || '',
+      timedOut: false,
+      filePath: stack.torrcPath,
+      userMode: true,
+    };
+  }
+
+  if (userMode && action === 'status') {
+    const torUp = await portOpen('127.0.0.1', 9050);
+    const out = `tor=${torUp ? 'active' : 'inactive'}\nopenvpn=skipped-user-mode`;
+    return {
+      ok: true,
+      code: torUp ? 0 : 3,
+      command: 'status (user mode)',
+      stdout: out,
+      stderr: '',
+      timedOut: false,
+      filePath: join(rootDir, '.runtime', 'tor', 'torrc'),
+      userMode: true,
+    };
+  }
+
   const nav = await loadNavegationPlaybook(rootDir);
   const timeoutMs = Math.max(10_000, Number(opts.timeoutMs || 900_000));
   const dryRun = Boolean(opts.dryRun);
-  const action = String(opts.action || 'up').trim().toLowerCase();
   const isShell = nav.filePath.endsWith('.sh');
   const cmd = isShell ? 'bash' : 'python3';
   const args = [nav.filePath];
