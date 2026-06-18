@@ -557,12 +557,17 @@ const INTRUSIVE_MODULE_PREFIXES = [
   'cred_spray',
   'cred-spray',
   'shannon_whitebox',
+  'vigolium_',
+  'vigolium-',
 ];
 const INTRUSIVE_MODULES_EXACT = new Set([
   'sqlmap',
   'shannon_whitebox',
   'browser_xss_verify',
   'sandbox_exec',
+  'vigolium_dast',
+  'vigolium_swarm',
+  'vigolium_audit',
 ]);
 
 export function reconBodyIsIntrusive(body = {}) {
@@ -570,6 +575,10 @@ export function reconBodyIsIntrusive(body = {}) {
   if (body.kaliMode === true) return true;
   const profile = String(body.opsecProfile || '').toLowerCase();
   if (profile === 'aggressive') return true;
+  const engine = String(body.engine || '').toLowerCase();
+  if (engine === 'go' || engine === 'both') return true;
+  const vigoliumAgent = String(body.vigoliumAgent || '').toLowerCase();
+  if (vigoliumAgent && vigoliumAgent !== 'none') return true;
   const modules = Array.isArray(body.modules) ? body.modules : [];
   for (const m of modules) {
     const n = String(m || '').toLowerCase();

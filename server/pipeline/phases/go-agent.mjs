@@ -25,6 +25,8 @@ export async function runGoAgentPhase(s) {
   if (!cap.installed) {
     log(`Vigolium agent: ${cap.message}`, 'warn');
     pipe('vigolium_agent', 'skip');
+    if (agentMode === 'audit') pipe('vigolium_audit', 'skip');
+    if (agentMode === 'swarm') pipe('vigolium_swarm', 'skip');
     return;
   }
 
@@ -38,12 +40,18 @@ export async function runGoAgentPhase(s) {
 
   pipe('vigolium_agent', 'active');
   if (agentMode === 'audit') pipe('vigolium_audit', 'active');
+  if (agentMode === 'swarm') pipe('vigolium_swarm', 'active');
   progress(88);
 
   try {
     const out = await runVigoliumAgent(s, agentMode);
     if (out.skipped) {
       log(`Vigolium agent: ${out.reason}`, 'warn');
+      if (agentMode === 'audit') pipe('vigolium_audit', 'skip');
+      if (agentMode === 'swarm') pipe('vigolium_swarm', 'skip');
+      pipe('vigolium_agent', 'skip');
+      progress(90);
+      return;
     } else {
       for (const f of out.findings || []) addFinding(f, null);
       logVigoliumFindingsSummary(log, out.findings, {
@@ -52,9 +60,15 @@ export async function runGoAgentPhase(s) {
     }
   } catch (e) {
     log(`Vigolium agent: ${e?.message || e}`, 'warn');
+    if (agentMode === 'audit') pipe('vigolium_audit', 'skip');
+    if (agentMode === 'swarm') pipe('vigolium_swarm', 'skip');
+    pipe('vigolium_agent', 'skip');
+    progress(90);
+    return;
   }
 
   if (agentMode === 'audit') pipe('vigolium_audit', 'done');
+  if (agentMode === 'swarm') pipe('vigolium_swarm', 'done');
   pipe('vigolium_agent', 'done');
   progress(90);
 }

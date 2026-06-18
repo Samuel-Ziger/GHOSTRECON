@@ -9,9 +9,56 @@ import {
   resolveVigoliumBinary,
   resolveVigoliumStrategy,
   resolveVigoliumModuleFilter,
+  resolveVigoliumModuleTags,
+  resolveVigoliumAuthFiles,
   resolveVigoliumTarget,
   vigoliumTimeoutMs,
 } from './vigolium-config.mjs';
+
+export function buildVigoliumScanArgs(s, { outFile } = {}) {
+  const target = resolveVigoliumTarget(s);
+  const strategy = resolveVigoliumStrategy(s);
+  const moduleFilter = resolveVigoliumModuleFilter(s);
+  const moduleTags = resolveVigoliumModuleTags(s);
+  const authFiles = resolveVigoliumAuthFiles(s);
+  const args = [
+    'scan',
+    '-t',
+    target,
+    '--strategy',
+    strategy,
+    '--format',
+    'jsonl',
+    '-o',
+    outFile || '-',
+    '--ci-output-format',
+    '-F',
+    '--soft-fail',
+  ];
+
+  for (const mod of moduleFilter) {
+    args.push('-m', mod);
+  }
+  for (const tag of moduleTags) {
+    args.push('--module-tag', tag);
+  }
+  for (const authFile of authFiles) {
+    args.push('--auth-file', authFile);
+  }
+
+  if (s.auth?.cookie) {
+    args.push('--auth', `ghostrecon:Cookie:${s.auth.cookie}`);
+  }
+  if (s.auth?.headers && typeof s.auth.headers === 'object') {
+    for (const [hk, hv] of Object.entries(s.auth.headers)) {
+      if (hv != null && String(hv).trim()) {
+        args.push('-H', `${hk}: ${hv}`);
+      }
+    }
+  }
+
+  return { args, target, strategy, moduleFilter, moduleTags, authFiles };
+}
 
 /**
  * Executa `vigolium scan` e devolve findings normalizados.
@@ -31,41 +78,9 @@ export async function runVigoliumScan(s, hooks = {}) {
     };
   }
 
-  const target = resolveVigoliumTarget(s);
-  const strategy = resolveVigoliumStrategy(s);
-  const moduleFilter = resolveVigoliumModuleFilter(s);
   const tmpDir = await mkdtemp(path.join(tmpdir(), 'ghostrecon-vig-'));
   const outFile = path.join(tmpDir, 'findings.jsonl');
-
-  const args = [
-    'scan',
-    '-t',
-    target,
-    '--strategy',
-    strategy,
-    '--format',
-    'jsonl',
-    '-o',
-    outFile,
-    '--ci-output-format',
-    '-F',
-    '--soft-fail',
-  ];
-
-  for (const mod of moduleFilter) {
-    args.push('-m', mod);
-  }
-
-  if (s.auth?.cookie) {
-    args.push('--auth', `ghostrecon:Cookie:${s.auth.cookie}`);
-  }
-  if (s.auth?.headers && typeof s.auth.headers === 'object') {
-    for (const [hk, hv] of Object.entries(s.auth.headers)) {
-      if (hv != null && String(hv).trim()) {
-        args.push('-H', `${hk}: ${hv}`);
-      }
-    }
-  }
+  const { args, target, strategy } = buildVigoliumScanArgs(s, { outFile });
 
   log(`Vigolium scan: ${target} (strategy=${strategy})`, 'info');
 

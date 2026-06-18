@@ -1,11 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   resolveEngineMode,
   shouldRunGoEngine,
   resolveVigoliumStrategy,
   resolveVigoliumTarget,
+  vigoliumBinaryCandidates,
+  resolveVigoliumAuthFiles,
+  resolveVigoliumModuleTags,
 } from '../../bridge/vigolium-config.mjs';
+import { buildVigoliumScanArgs } from '../../bridge/vigolium-runner.mjs';
 import { vigoliumRowToFinding, parseVigoliumJsonl } from '../../bridge/findings-normalizer.mjs';
 import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs';
 import { logVigoliumFindingsSummary } from '../../bridge/vigolium-log.mjs';
@@ -33,6 +38,54 @@ describe('vigolium bridge — config', () => {
   it('resolveVigoliumTarget usa https no domínio', () => {
     assert.equal(resolveVigoliumTarget({ domain: 'example.com' }), 'https://example.com');
   });
+
+  it('vigoliumBinaryCandidates inclui variantes .exe para Windows', () => {
+    const root = path.resolve('tmp-vigolium-root');
+    const candidates = vigoliumBinaryCandidates(root);
+    assert.ok(candidates.includes(path.join(root, 'engines', 'vigolium')));
+    assert.ok(candidates.includes(path.join(root, 'engines', 'vigolium.exe')));
+    assert.ok(candidates.includes(path.join(root, 'vigolium', 'bin', 'vigolium.exe')));
+  });
+
+  it('resolveVigoliumAuthFiles aceita lista do contexto', () => {
+    assert.deepEqual(resolveVigoliumAuthFiles({ vigoliumAuthFiles: ['admin.json', ' user.yaml '] }), [
+      'admin.json',
+      'user.yaml',
+    ]);
+    assert.deepEqual(resolveVigoliumAuthFiles({ vigoliumAuthFile: 'solo.json' }), ['solo.json']);
+  });
+
+  it('resolveVigoliumModuleTags aceita lista ou tag unica', () => {
+    assert.deepEqual(resolveVigoliumModuleTags({ vigoliumModuleTags: ['access-control', ' xss '] }), [
+      'access-control',
+      'xss',
+    ]);
+    assert.deepEqual(resolveVigoliumModuleTags({ vigoliumModuleTag: 'oast' }), ['oast']);
+  });
+
+  it('buildVigoliumScanArgs inclui modulos, module-tag, auth-file e auth inline', () => {
+    const built = buildVigoliumScanArgs({
+      domain: 'example.com',
+      vigoliumStrategy: 'balanced',
+      vigoliumModules: ['xss_light_scanner'],
+      vigoliumModuleTags: ['access-control'],
+      vigoliumAuthFiles: ['admin.json', 'user.json'],
+      auth: {
+        cookie: 'sid=abc',
+        headers: { Authorization: 'Bearer token' },
+      },
+    }, { outFile: 'out.jsonl' });
+    assert.deepEqual(built.args.slice(0, 8), ['scan', '-t', 'https://example.com', '--strategy', 'balanced', '--format', 'jsonl', '-o']);
+    assert.ok(built.args.includes('out.jsonl'));
+    assert.ok(built.args.includes('xss_light_scanner'));
+    assert.ok(built.args.includes('--module-tag'));
+    assert.ok(built.args.includes('access-control'));
+    assert.ok(built.args.includes('--auth-file'));
+    assert.ok(built.args.includes('admin.json'));
+    assert.ok(built.args.includes('user.json'));
+    assert.ok(built.args.includes('ghostrecon:Cookie:sid=abc'));
+    assert.ok(built.args.includes('Authorization: Bearer token'));
+  });
 });
 
 describe('vigolium bridge — normalizer', () => {
@@ -56,6 +109,9 @@ describe('vigolium bridge — normalizer', () => {
     assert.equal(f.prio, 'high');
     assert.ok(f.meta.includes('vigolium:active-xss-light-url-params'));
     assert.equal(f.owasp, 'A03:2021');
+    assert.equal(f.sourceEngine, 'vigolium');
+    assert.equal(f.moduleId, 'active-xss-light-url-params');
+    assert.equal(f.evidence.matchedAt, 'https://example.com/search?q=<script>');
   });
 
   it('parseVigoliumJsonl ignora linhas inválidas', () => {

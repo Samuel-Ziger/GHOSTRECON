@@ -70,6 +70,8 @@ Opções de "run":
   --engine MODE      node | go | both — motor Vigolium DAST (default: env ou node).
   --strategy NAME    lite | balanced | deep — estratégia Vigolium (com --engine go/both ou módulo vigolium_dast).
   --vigolium-modules CSV  Filtro -m do vigolium scan.
+  --vigolium-module-tag TAG  Filtro --module-tag do Vigolium (repetivel; ex.: access-control).
+  --vigolium-auth-file FILE  YAML/JSON de sessao Vigolium (repetivel; primary/compare para IDOR/BOLA).
 
 Exemplos:
   ghostrecon run --target example.com --modules crtsh,http,github

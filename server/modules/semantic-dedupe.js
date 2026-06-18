@@ -7,9 +7,19 @@ function familyFromUrl(urlLike) {
   }
 }
 
+function sourceModuleKey(f) {
+  if (String(f?.sourceEngine || '').toLowerCase() === 'vigolium' && f?.moduleId) {
+    return `vigolium:${String(f.moduleId).toLowerCase()}`;
+  }
+  const meta = typeof f?.meta === 'string' ? f.meta : '';
+  const m = meta.match(/source=vigolium:([^\s]+)/i);
+  return m ? `vigolium:${m[1].toLowerCase()}` : '';
+}
+
 function findingFamilyKey(f) {
   const t = String(f?.type || '');
   const val = String(f?.value || '').toLowerCase();
+  const moduleKey = sourceModuleKey(f);
   // Plataforma Cloudflare repetida em tech/intel ("Server: cloudflare",
   // "Cloudflare (CF-Ray presente)", "Banner Server exposto: cloudflare") → 1 achado.
   if ((t === 'tech' || t === 'intel') && /\bcloudflare\b|cf-ray/.test(val)) {
@@ -24,9 +34,9 @@ function findingFamilyKey(f) {
     return `nmap:${String(f?.value || '').toLowerCase()}`;
   }
   if (f?.url || /^https?:\/\//i.test(String(f?.value || ''))) {
-    return `${t}:${familyFromUrl(f.url || f.value)}`;
+    return `${t}:${moduleKey ? `${moduleKey}:` : ''}${familyFromUrl(f.url || f.value)}`;
   }
-  return `${t}:${String(f?.value || '').toLowerCase().slice(0, 120)}`;
+  return `${t}:${moduleKey ? `${moduleKey}:` : ''}${String(f?.value || '').toLowerCase().slice(0, 120)}`;
 }
 
 function pickBestFinding(a, b) {

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { parseReconTarget } from '../modules/recon-target.js';
 import { getEngagement, preRunChecklist } from '../modules/engagement.mjs';
-import { gateModules, applyWatermarkHeaders } from '../modules/opsec.mjs';
+import { gateModules, applyWatermarkHeaders, expandIntrusiveRunModules } from '../modules/opsec.mjs';
 import { createIdentityController, normalizeIdentityOptions } from '../modules/identity-controller.mjs';
 import { prependExtraPathToEnvPath } from '../modules/tool-path.js';
 import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
@@ -98,6 +98,11 @@ export function registerReconStreamRoutes(app, deps) {
   if (!navigatorActive || isFullPresetRun) {
     modules = modules.filter((m) => m !== 'navegation');
   }
+  const modulesForOpsecGate = expandIntrusiveRunModules({
+    modules,
+    engine: req.body?.engine,
+    vigoliumAgent: req.body?.vigoliumAgent,
+  });
 
   let engagement = null;
   if (engagementIdRaw) {
@@ -137,7 +142,7 @@ export function registerReconStreamRoutes(app, deps) {
   let gate;
   try {
     gate = gateModules({
-      modules,
+      modules: modulesForOpsecGate,
       profile: opsecProfile,
       confirm: confirmActive || process.env.GHOSTRECON_CONFIRM_ACTIVE === '1',
       engagement,
@@ -371,8 +376,16 @@ export function registerReconStreamRoutes(app, deps) {
         vigoliumModules: Array.isArray(req.body?.vigoliumModules)
           ? req.body.vigoliumModules.map(String)
           : null,
+        vigoliumModuleTags: Array.isArray(req.body?.vigoliumModuleTags)
+          ? req.body.vigoliumModuleTags.map(String)
+          : null,
+        vigoliumModuleTag: req.body?.vigoliumModuleTag != null ? String(req.body.vigoliumModuleTag).trim() : null,
         vigoliumAgent: req.body?.vigoliumAgent != null ? String(req.body.vigoliumAgent).trim().toLowerCase() : null,
         vigoliumSource: req.body?.vigoliumSource != null ? String(req.body.vigoliumSource).trim() : null,
+        vigoliumAuthFiles: Array.isArray(req.body?.vigoliumAuthFiles)
+          ? req.body.vigoliumAuthFiles.map(String)
+          : null,
+        vigoliumAuthFile: req.body?.vigoliumAuthFile != null ? String(req.body.vigoliumAuthFile).trim() : null,
         vigoliumAuditMode:
           req.body?.vigoliumAuditMode != null ? String(req.body.vigoliumAuditMode).trim().toLowerCase() : null,
       });

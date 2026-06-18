@@ -9,6 +9,8 @@ COPY bin ./bin
 COPY docs ./docs
 COPY mitre-attack ./mitre-attack
 COPY playbooks ./playbooks
+COPY bridge ./bridge
+COPY engines ./engines
 COPY server ./server
 COPY tools ./tools
 COPY Xss ./Xss

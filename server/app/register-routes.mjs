@@ -11,6 +11,7 @@ import { registerRunsRoutes } from '../routes/runs.mjs';
 import { registerBrainRoutes } from '../routes/brain.mjs';
 import { registerHandoffRoutes } from '../routes/handoff.mjs';
 import { registerValidationsRoutes } from '../routes/validations.mjs';
+import { registerVigoliumRoutes } from '../routes/vigolium.mjs';
 import { registerStaticRoutes } from '../routes/static.mjs';
 
 /**
@@ -54,6 +55,7 @@ export function registerAllRoutes(app, deps) {
   registerBrainRoutes(app, { validateCsrfToken });
   registerHandoffRoutes(app, { validateCsrfToken });
   registerValidationsRoutes(app, { validateCsrfToken });
+  registerVigoliumRoutes(app, { ROOT });
 
   registerInboundWebhooks(app);
   registerNewApiRoutes(app, { validateCsrfToken, requireCsrf });

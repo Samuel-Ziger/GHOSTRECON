@@ -305,6 +305,14 @@ test('reconBodyIsIntrusive: módulo cloud_bruteforce → true', () => {
 test('reconBodyIsIntrusive: shannon_whitebox → true', () => {
   assert.equal(reconBodyIsIntrusive({ modules: ['shannon_whitebox'] }), true);
 });
+test('reconBodyIsIntrusive: engine Vigolium go/both -> true', () => {
+  assert.equal(reconBodyIsIntrusive({ engine: 'both', modules: ['rdap'] }), true);
+  assert.equal(reconBodyIsIntrusive({ engine: 'go', modules: ['rdap'] }), true);
+});
+test('reconBodyIsIntrusive: modulos/agent Vigolium -> true', () => {
+  assert.equal(reconBodyIsIntrusive({ modules: ['vigolium_dast'] }), true);
+  assert.equal(reconBodyIsIntrusive({ vigoliumAgent: 'swarm', modules: ['rdap'] }), true);
+});
 
 // ─── Audit log file is created ──────────────────────────────────────────────
 test('audit log NDJSON é gerado em AUTH_AUDIT_DIR', async () => {

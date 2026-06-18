@@ -6,7 +6,14 @@ import {
 import { resolveReconProfile } from '../modules/runtime-profile.js';
 import { targetIsIp } from '../modules/recon-target.js';
 import { createPipelineContext } from './finding-context.mjs';
-import { resolveEngineMode, resolveVigoliumStrategy, resolveVigoliumAgentMode, resolveVigoliumSource } from '../../bridge/vigolium-config.mjs';
+import {
+  resolveEngineMode,
+  resolveVigoliumStrategy,
+  resolveVigoliumAgentMode,
+  resolveVigoliumSource,
+  resolveVigoliumAuthFiles,
+  resolveVigoliumModuleTags,
+} from '../../bridge/vigolium-config.mjs';
 
 /** Estado mutável partilhado entre fases do pipeline. */
 export function createPipelineState(ctx) {
@@ -38,8 +45,12 @@ export function createPipelineState(ctx) {
     engine = null,
     vigoliumStrategy = null,
     vigoliumModules = null,
+    vigoliumModuleTags = null,
+    vigoliumModuleTag = null,
     vigoliumAgent = null,
     vigoliumSource = null,
+    vigoliumAuthFiles = null,
+    vigoliumAuthFile = null,
     vigoliumAuditMode = null,
   } = ctx;
 
@@ -117,8 +128,10 @@ export function createPipelineState(ctx) {
     engineMode: resolveEngineMode({ engine, modules }),
     vigoliumStrategy: resolveVigoliumStrategy({ vigoliumStrategy, strategy: vigoliumStrategy }),
     vigoliumModules: Array.isArray(vigoliumModules) ? vigoliumModules : [],
+    vigoliumModuleTags: resolveVigoliumModuleTags({ vigoliumModuleTags, vigoliumModuleTag }),
     vigoliumAgentMode: resolveVigoliumAgentMode({ vigoliumAgent, modules }),
     vigoliumSource: resolveVigoliumSource({ vigoliumSource }),
+    vigoliumAuthFiles: resolveVigoliumAuthFiles({ vigoliumAuthFiles, vigoliumAuthFile }),
     vigoliumAuditMode: vigoliumAuditMode || null,
     ...pctx,
   };

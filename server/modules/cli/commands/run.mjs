@@ -8,7 +8,7 @@ import { parseArgs, kvListToObject } from '../args.mjs';
 import { GhostClient, GLOBAL_OPTS } from '../client.mjs';
 import { resolvePlaybook } from '../../playbooks/loader.mjs';
 import { getEngagement, preRunChecklist } from '../../engagement.mjs';
-import { gateModules, applyWatermarkHeaders } from '../../opsec.mjs';
+import { gateModules, applyWatermarkHeaders, expandIntrusiveRunModules } from '../../opsec.mjs';
 
 const SPEC = [
   ...GLOBAL_OPTS,
@@ -33,6 +33,8 @@ const SPEC = [
   { name: 'engine', type: 'string' },
   { name: 'strategy', type: 'string' },
   { name: 'vigolium-modules', type: 'csv', default: [] },
+  { name: 'vigolium-module-tag', type: 'repeat', default: [] },
+  { name: 'vigolium-auth-file', type: 'repeat', default: [] },
   { name: 'vigolium-source', type: 'string' },
   { name: 'vigolium-agent', type: 'string' },
   { name: 'vigolium-audit-mode', type: 'string' },
@@ -123,8 +125,13 @@ export async function runCommand(argv) {
 
   let gate;
   try {
-    gate = gateModules({
+    const modulesForOpsecGate = expandIntrusiveRunModules({
       modules,
+      engine: opts.engine,
+      vigoliumAgent: opts['vigolium-agent'],
+    });
+    gate = gateModules({
+      modules: modulesForOpsecGate,
       profile: opsecProfile,
       confirm: Boolean(opts['confirm-active']) || process.env.GHOSTRECON_CONFIRM_ACTIVE === '1',
       engagement,
@@ -173,6 +180,8 @@ export async function runCommand(argv) {
   if (opts.engine) body.engine = String(opts.engine).trim().toLowerCase();
   if (opts.strategy) body.vigoliumStrategy = String(opts.strategy).trim().toLowerCase();
   if (opts['vigolium-modules']?.length) body.vigoliumModules = opts['vigolium-modules'];
+  if (opts['vigolium-module-tag']?.length) body.vigoliumModuleTags = opts['vigolium-module-tag'].map(String);
+  if (opts['vigolium-auth-file']?.length) body.vigoliumAuthFiles = opts['vigolium-auth-file'].map(String);
   if (opts['vigolium-source']) body.vigoliumSource = String(opts['vigolium-source']).trim();
   if (opts['vigolium-agent']) body.vigoliumAgent = String(opts['vigolium-agent']).trim().toLowerCase();
   if (opts['vigolium-audit-mode']) body.vigoliumAuditMode = String(opts['vigolium-audit-mode']).trim().toLowerCase();
@@ -307,6 +316,14 @@ Opções principais:
   --timeout SEC                           Default: 1800.
   --server URL                            Default: http://127.0.0.1:3847
   --start-server                          Auto-spawn do server.
+  --engine MODE                           node | go | both.
+  --strategy NAME                         lite | balanced | deep.
+  --vigolium-modules CSV                  Filtro -m do Vigolium.
+  --vigolium-module-tag TAG               Filtro --module-tag do Vigolium (repetivel).
+  --vigolium-auth-file FILE               YAML/JSON de sessao Vigolium (repetivel).
+  --vigolium-source PATH                  Caminho do repo para audit/swarm.
+  --vigolium-agent MODE                   query | audit | swarm | autopilot.
+  --vigolium-audit-mode MODE              lite | balanced | deep.
   --verbose / --quiet
 `);
 }

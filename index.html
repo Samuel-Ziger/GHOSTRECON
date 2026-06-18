@@ -3582,8 +3582,23 @@
           <span class="checkbox-text">Vigolium agent swarm</span>
           <span class="tag tag-high">GO+IA</span>
         </label>
+        <label class="checkbox-item" title="IA executa ciclo agentico completo do Vigolium. Intrusivo.">
+          <input type="checkbox" class="mod" value="vigolium_autopilot" id="modVigoliumAutopilot">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Vigolium autopilot</span>
+          <span class="tag tag-high">AUTO</span>
+        </label>
         <label for="vigoliumSourceInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Caminho do código-fonte (audit / swarm opcional)</label>
         <input id="vigoliumSourceInput" class="domain-input" type="text" placeholder="/caminho/para/repo ou ." autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+        <label for="vigoliumAuthFileInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Auth file Vigolium (YAML/JSON, opcional; CSV para varios)</label>
+        <input id="vigoliumAuthFileInput" class="domain-input" type="text" placeholder="C:\\sessions\\auth.json ou admin.yaml,user.yaml" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+        <label for="vigoliumModuleTagsInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Tags de modulos Vigolium (CSV/opcional)</label>
+        <input id="vigoliumModuleTagsInput" class="domain-input" type="text" placeholder="access-control,xss,oast" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+        <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+          <input id="vigoliumCatalogQueryInput" class="domain-input" type="text" placeholder="buscar catalogo (idor, jwt, xss...)" autocomplete="off" spellcheck="false" style="padding:7px 9px;width:100%;min-width:0">
+          <button id="vigoliumLoadModulesBtn" type="button" class="sqlmap-help-btn" style="align-self:stretch">catalogo</button>
+        </div>
+        <div id="vigoliumCatalogBox" style="display:none;margin-top:8px;border:1px solid var(--border);background:rgba(255,255,255,0.02);padding:8px;font-family:var(--mono);font-size:9px;color:var(--text-dim);line-height:1.45;max-height:170px;overflow:auto"></div>
         <div class="toggle-row" style="align-items:center;gap:10px;margin-top:8px">
           <span class="toggle-label">Modo audit</span>
           <select id="vigoliumAuditModeSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
@@ -6109,6 +6124,16 @@ async function startRecon() {
       if (['lite', 'balanced', 'deep'].includes(vigStrat)) streamBody.vigoliumStrategy = vigStrat;
       const vigSrc = (document.getElementById('vigoliumSourceInput')?.value || '').trim();
       if (vigSrc) streamBody.vigoliumSource = vigSrc;
+      const vigAuthFiles = (document.getElementById('vigoliumAuthFileInput')?.value || '')
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (vigAuthFiles.length) streamBody.vigoliumAuthFiles = vigAuthFiles;
+      const vigModuleTags = (document.getElementById('vigoliumModuleTagsInput')?.value || '')
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (vigModuleTags.length) streamBody.vigoliumModuleTags = vigModuleTags;
       const vigAuditMode = String(document.getElementById('vigoliumAuditModeSelect')?.value || '').trim().toLowerCase();
       if (['lite', 'balanced', 'deep'].includes(vigAuditMode)) streamBody.vigoliumAuditMode = vigAuditMode;
       if (mods.includes('vigolium_swarm')) streamBody.vigoliumAgent = 'swarm';
@@ -6969,6 +6994,12 @@ async function refreshShannonCapabilities() {
 function applyVigoliumCapToUI(v) {
   const el = document.getElementById('vigoliumCapLine');
   if (!el) return;
+  const appendVigoliumExtra = () => {
+    const count = v?.moduleCounts?.total || v?.moduleCount || null;
+    const moduleBit = count ? ` · ${count} modulos` : '';
+    const serverBit = v?.server?.configured ? ` · server ${v.server.baseUrl || 'configurado'}` : '';
+    if (moduleBit || serverBit) el.textContent = `${el.textContent}${moduleBit}${serverBit}`;
+  };
   if (!v) {
     el.textContent = 'Vigolium: indisponível';
     el.style.color = 'var(--text-dim)';
@@ -6977,11 +7008,91 @@ function applyVigoliumCapToUI(v) {
   if (v.installed) {
     el.textContent = `Vigolium: ${v.version || 'OK'} · ${v.binary || 'engines/vigolium'}`;
     el.style.color = 'var(--accent2)';
+    appendVigoliumExtra();
   } else {
     el.textContent = `Vigolium: ${v.message || 'não instalado'} — bash scripts/install-vigolium-engine.sh`;
     el.style.color = 'var(--accent4)';
+    appendVigoliumExtra();
   }
 }
+
+function renderVigoliumCatalog(data) {
+  const box = document.getElementById('vigoliumCatalogBox');
+  if (!box) return;
+  box.style.display = 'block';
+  if (!data?.ok) {
+    box.innerHTML = `<span style="color:var(--accent4)">Catalogo Vigolium indisponivel: ${escapeHtml(data?.error || 'sem dados')}</span>`;
+    return;
+  }
+  const counts = data.counts || {};
+  const page = data.page || {};
+  const tags = (data.tags || [])
+    .slice(0, 18)
+    .map((t) => `<button type="button" data-vigolium-tag="${escapeHtml(t)}" class="sqlmap-help-btn" style="font-size:8px;padding:3px 6px;margin:2px">${escapeHtml(t)}</button>`)
+    .join('');
+  const rows = (data.modules || [])
+    .slice(0, 20)
+    .map((m) => {
+      const tagText = (m.tags || []).slice(0, 4).join(',');
+      const bits = [m.severity, m.confidence, tagText].filter(Boolean).join(' | ');
+      return `<div style="padding:5px 0;border-top:1px solid var(--border)">
+        <strong style="color:var(--text)">${escapeHtml(m.id || m.name || '')}</strong>
+        <span style="color:var(--accent2)"> ${escapeHtml(m.kind || '')}</span>
+        <div>${escapeHtml(m.short || m.descriptionSummary || '')}</div>
+        <div style="color:var(--text-dim)">${escapeHtml(bits)}</div>
+      </div>`;
+    })
+    .join('');
+  box.innerHTML = `
+    <div style="color:var(--text)">Catalogo: ${counts.filtered ?? counts.total ?? 0}/${counts.total ?? 0} modulos (${counts.active ?? 0} active, ${counts.passive ?? 0} passive). Mostrando ${page.returned ?? (data.modules || []).length}.</div>
+    <div style="margin:6px 0">${tags || '<span>Sem tags detectadas.</span>'}</div>
+    ${rows || '<div>Nenhum modulo encontrado para o filtro.</div>'}
+  `;
+}
+
+document.getElementById('vigoliumLoadModulesBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('vigoliumLoadModulesBtn');
+  const prev = btn?.textContent || 'catalogo';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+  }
+  try {
+    const authConfig = getOptionalAuthConfig();
+    const headers = {};
+    if (authConfig?.ghostreconApiKey) headers['X-API-Key'] = authConfig.ghostreconApiKey;
+    const q = (document.getElementById('vigoliumCatalogQueryInput')?.value || '').trim();
+    const tag = (document.getElementById('vigoliumModuleTagsInput')?.value || '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)[0] || '';
+    const params = new URLSearchParams({ limit: '40' });
+    if (q) params.set('q', q);
+    if (tag) params.set('tag', tag);
+    const res = await fetch(apiUrl(`/api/vigolium/modules?${params.toString()}`), { headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    renderVigoliumCatalog(data);
+  } catch (e) {
+    renderVigoliumCatalog({ ok: false, error: e.message });
+    addLog(`Vigolium catalogo: ${e.message}`, 'warn');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  }
+});
+
+document.getElementById('vigoliumCatalogBox')?.addEventListener('click', (ev) => {
+  const tag = ev.target?.getAttribute?.('data-vigolium-tag');
+  if (!tag) return;
+  const input = document.getElementById('vigoliumModuleTagsInput');
+  if (!input) return;
+  const current = input.value.split(',').map((x) => x.trim()).filter(Boolean);
+  if (!current.includes(tag)) current.push(tag);
+  input.value = current.join(',');
+});
 
 document.getElementById('shannonPrepPullBtn')?.addEventListener('click', async () => {
   const btn = document.getElementById('shannonPrepPullBtn');

@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PROFILES, getProfile, isIntrusive, gateModules,
+  PROFILES, getProfile, isIntrusive, gateModules, expandIntrusiveRunModules,
   createProxyPool, loadProxyPoolFromEnv, buildWatermark, applyWatermarkHeaders,
 } from '../modules/opsec.mjs';
 
@@ -19,8 +19,18 @@ test('opsec: perfis conhecidos', () => {
 test('opsec: isIntrusive detecta módulos conhecidos', () => {
   assert.equal(isIntrusive('sqlmap'), true);
   assert.equal(isIntrusive('nuclei-aggressive'), true);
+  assert.equal(isIntrusive('vigolium_dast'), true);
+  assert.equal(isIntrusive('vigolium_swarm'), true);
+  assert.equal(isIntrusive('vigolium_autopilot'), true);
   assert.equal(isIntrusive('crtsh'), false);
   assert.equal(isIntrusive('http'), false);
+});
+
+test('opsec: engine go/both expande gate Vigolium', () => {
+  assert.deepEqual(
+    expandIntrusiveRunModules({ modules: ['rdap'], engine: 'both', vigoliumAgent: 'swarm' }),
+    ['rdap', 'vigolium_dast', 'vigolium_swarm'],
+  );
 });
 
 test('opsec: gate bloqueia intrusivo em perfil passive', () => {

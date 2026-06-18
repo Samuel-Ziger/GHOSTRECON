@@ -66,10 +66,26 @@ export const INTRUSIVE_MODULES = new Set([
   'dirsearch', 'gobuster', 'nmap-aggressive', 'nmap-port-scan', 'nikto',
   'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe', 'kali-active',
   'naabu-active', 'masscan',
+  'vigolium-dast', 'vigolium_dast', 'vigolium-swarm', 'vigolium_swarm',
+  'vigolium-audit', 'vigolium_audit', 'vigolium-agent', 'vigolium_agent',
+  'vigolium-autopilot', 'vigolium_autopilot',
 ]);
 
 export function isIntrusive(mod) {
   return INTRUSIVE_MODULES.has(String(mod || '').toLowerCase());
+}
+
+export function expandIntrusiveRunModules({
+  modules = [],
+  engine = null,
+  vigoliumAgent = null,
+} = {}) {
+  const out = [...(Array.isArray(modules) ? modules : [])];
+  const e = String(engine || '').trim().toLowerCase();
+  if (e === 'go' || e === 'both') out.push('vigolium_dast');
+  const agent = String(vigoliumAgent || '').trim().toLowerCase();
+  if (agent && agent !== 'none') out.push(`vigolium_${agent}`);
+  return [...new Set(out.filter(Boolean))];
 }
 
 /**

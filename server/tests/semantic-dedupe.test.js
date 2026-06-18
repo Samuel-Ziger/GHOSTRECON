@@ -35,3 +35,56 @@ test('dedupe semântico não colapsa duas linhas nmap só porque partilham url h
   assert.equal(out.findings.length, 2);
   assert.equal(out.merged, 0);
 });
+
+test('dedupe semantico preserva modulos Vigolium diferentes no mesmo endpoint', () => {
+  const input = [
+    {
+      type: 'vuln',
+      prio: 'high',
+      score: 90,
+      value: 'XSS',
+      url: 'https://app.example.com/search?q=a',
+      sourceEngine: 'vigolium',
+      moduleId: 'xss_light_scanner',
+    },
+    {
+      type: 'vuln',
+      prio: 'high',
+      score: 92,
+      value: 'SQLi',
+      url: 'https://app.example.com/search?q=b',
+      sourceEngine: 'vigolium',
+      moduleId: 'sqli_error_based',
+    },
+  ];
+  const out = dedupeBySemanticFamily(input);
+  assert.equal(out.findings.length, 2);
+  assert.equal(out.merged, 0);
+});
+
+test('dedupe semantico ainda colapsa duplicata do mesmo modulo Vigolium', () => {
+  const input = [
+    {
+      type: 'vuln',
+      prio: 'med',
+      score: 60,
+      value: 'XSS variant 1',
+      url: 'https://app.example.com/search?q=a',
+      sourceEngine: 'vigolium',
+      moduleId: 'xss_light_scanner',
+    },
+    {
+      type: 'vuln',
+      prio: 'high',
+      score: 88,
+      value: 'XSS variant 2',
+      url: 'https://app.example.com/search?q=b',
+      sourceEngine: 'vigolium',
+      moduleId: 'xss_light_scanner',
+    },
+  ];
+  const out = dedupeBySemanticFamily(input);
+  assert.equal(out.findings.length, 1);
+  assert.equal(out.merged, 1);
+  assert.equal(out.findings[0].score, 88);
+});

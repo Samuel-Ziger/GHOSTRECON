@@ -8,6 +8,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 const ENGINE_MODES = new Set(['node', 'go', 'both']);
 const STRATEGIES = new Set(['lite', 'balanced', 'deep']);
+const PATH_LOOKUP_TIMEOUT_MS = 3_000;
 
 /** Raiz do monorepo (onde vive vigolium/). */
 export function ghostreconRoot() {
@@ -52,6 +53,32 @@ export function resolveVigoliumModuleFilter(ctx = {}) {
     .filter(Boolean);
 }
 
+export function resolveVigoliumModuleTags(ctx = {}) {
+  const fromCtx = Array.isArray(ctx.vigoliumModuleTags) ? ctx.vigoliumModuleTags : [];
+  if (fromCtx.length) return fromCtx.map(String).map((s) => s.trim()).filter(Boolean);
+  const single = String(ctx.vigoliumModuleTag || '').trim();
+  if (single) return [single];
+  const env = String(process.env.GHOSTRECON_VIGOLIUM_MODULE_TAGS || process.env.GHOSTRECON_VIGOLIUM_MODULE_TAG || '').trim();
+  if (!env) return [];
+  return env
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export function resolveVigoliumAuthFiles(ctx = {}) {
+  const fromCtx = Array.isArray(ctx.vigoliumAuthFiles) ? ctx.vigoliumAuthFiles : [];
+  if (fromCtx.length) return fromCtx.map(String).map((s) => s.trim()).filter(Boolean);
+  const single = String(ctx.vigoliumAuthFile || '').trim();
+  if (single) return [single];
+  const env = String(process.env.GHOSTRECON_VIGOLIUM_AUTH_FILES || process.env.GHOSTRECON_VIGOLIUM_AUTH_FILE || '').trim();
+  if (!env) return [];
+  return env
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function vigoliumTimeoutMs() {
   const n = Number(process.env.GHOSTRECON_VIGOLIUM_TIMEOUT_MS);
   if (Number.isFinite(n) && n > 0) return Math.min(n, 3_600_000);
@@ -68,17 +95,31 @@ function fileExecutable(p) {
   }
 }
 
+function homeDir() {
+  return process.env.HOME || process.env.USERPROFILE || '';
+}
+
+function withExecutableVariants(p) {
+  const base = String(p || '').trim();
+  if (!base) return [];
+  if (/\.exe$/i.test(base)) return [base];
+  return [base, `${base}.exe`];
+}
+
 /** Candidatos ao binário vigolium (ordem de preferência). */
 export function vigoliumBinaryCandidates(root = ghostreconRoot()) {
   const list = [];
   const envBin = String(process.env.GHOSTRECON_VIGOLIUM_BIN || '').trim();
-  if (envBin) list.push(envBin);
-  list.push(
+  if (envBin) list.push(...withExecutableVariants(envBin));
+  const home = homeDir();
+  for (const p of [
     path.join(root, 'engines', 'vigolium'),
     path.join(root, 'vigolium', 'bin', 'vigolium'),
-    path.join(process.env.HOME || '', 'go', 'bin', 'vigolium'),
-    path.join(process.env.HOME || '', '.local', 'bin', 'vigolium'),
-  );
+    home ? path.join(home, 'go', 'bin', 'vigolium') : '',
+    home ? path.join(home, '.local', 'bin', 'vigolium') : '',
+  ]) {
+    list.push(...withExecutableVariants(p));
+  }
   return [...new Set(list.filter(Boolean))];
 }
 
@@ -90,15 +131,26 @@ export async function resolveVigoliumBinary(root = ghostreconRoot()) {
     const finder = process.platform === 'win32' ? 'where' : 'which';
     const p = spawn(finder, ['vigolium'], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch {}
+      finish(null);
+    }, PATH_LOOKUP_TIMEOUT_MS);
     p.stdout?.on('data', (d) => {
       out += String(d);
     });
-    p.on('error', () => resolve(null));
+    p.on('error', () => finish(null));
     p.on('close', (code) => {
-      if (code !== 0) resolve(null);
+      if (code !== 0) finish(null);
       else {
         const line = out.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-        resolve(line || null);
+        finish(line || null);
       }
     });
   });
@@ -137,16 +189,17 @@ export function resolveVigoliumTarget(s) {
   return `https://${d}`;
 }
 
-const AGENT_MODES = new Set(['audit', 'swarm', 'query']);
+const AGENT_MODES = new Set(['audit', 'swarm', 'query', 'autopilot']);
 
 /**
  * @param {{ modules?: string[], vigoliumAgent?: string }} ctx
- * @returns {'none'|'audit'|'swarm'|'query'}
+ * @returns {'none'|'audit'|'swarm'|'query'|'autopilot'}
  */
 export function resolveVigoliumAgentMode(ctx = {}) {
   const fromCtx = String(ctx.vigoliumAgent || '').trim().toLowerCase();
   if (AGENT_MODES.has(fromCtx)) return fromCtx;
   const mods = ctx.modules || [];
+  if (mods.includes('vigolium_autopilot')) return 'autopilot';
   if (mods.includes('vigolium_swarm')) return 'swarm';
   if (mods.includes('vigolium_audit')) return 'audit';
   return 'none';
@@ -154,7 +207,7 @@ export function resolveVigoliumAgentMode(ctx = {}) {
 
 export function shouldRunGoAgent(agentMode, modules = []) {
   if (agentMode !== 'none') return true;
-  return modules.includes('vigolium_audit') || modules.includes('vigolium_swarm');
+  return modules.includes('vigolium_audit') || modules.includes('vigolium_swarm') || modules.includes('vigolium_autopilot');
 }
 
 export function resolveVigoliumSource(ctx = {}) {

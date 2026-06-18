@@ -33,7 +33,10 @@ export async function runGoEnginePhase(s) {
     const out = await runVigoliumScan(s, { log });
     if (out.skipped) {
       log(`Vigolium: ${out.reason}`, 'warn');
+      pipe('vigolium_engine', 'skip');
       pipe('vigolium_dast', 'skip');
+      progress(78);
+      return;
     } else if (!out.ok && !out.findings?.length) {
       log(`Vigolium scan terminou sem findings (exit=${out.exitCode ?? '?'})`, 'info');
     } else {
@@ -46,6 +49,10 @@ export async function runGoEnginePhase(s) {
     }
   } catch (e) {
     log(`Vigolium: ${e?.message || e}`, 'warn');
+    pipe('vigolium_dast', 'skip');
+    pipe('vigolium_engine', 'skip');
+    progress(78);
+    return;
   }
 
   pipe('vigolium_dast', 'done');
