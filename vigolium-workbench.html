@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GHOSTRECON - Vigolium Workbench</title>
+  <style>
+    :root {
+      --bg: #0c0b09;
+      --panel: #141310;
+      --panel2: #1c1b19;
+      --line: #2e2b26;
+      --muted: #918175;
+      --dim: #5f554d;
+      --text: #fce8c3;
+      --green: #7fd962;
+      --blue: #68a8e4;
+      --cyan: #2be4d0;
+      --yellow: #f2c55c;
+      --orange: #ff9f2f;
+      --red: #ef2f27;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      height: 100vh;
+      overflow: hidden;
+    }
+    button, input, textarea, select {
+      font: inherit;
+    }
+    button {
+      border: 1px solid var(--line);
+      background: var(--panel2);
+      color: var(--muted);
+      cursor: pointer;
+      padding: 6px 9px;
+    }
+    button:hover { color: var(--text); border-color: var(--muted); }
+    button.active { color: var(--green); border-color: rgba(127, 217, 98, .6); background: rgba(127, 217, 98, .08); }
+    button.hot { color: var(--orange); border-color: rgba(255,159,47,.75); background: rgba(255,159,47,.1); box-shadow: inset 0 0 18px rgba(255,159,47,.25); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      padding: 7px 8px;
+      outline: none;
+    }
+    textarea { resize: vertical; min-height: 76px; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(127,217,98,.55); }
+    .app { display: grid; grid-template-rows: auto auto 1fr; height: 100vh; min-height: 0; }
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #090806;
+    }
+    .brand { color: var(--green); font-weight: 800; letter-spacing: .08em; }
+    .subtitle { color: var(--muted); }
+    .pill { border: 1px solid var(--line); padding: 3px 7px; color: var(--muted); background: var(--panel); }
+    .pill.ok { color: var(--green); border-color: rgba(127,217,98,.45); }
+    .pill.warn { color: var(--yellow); border-color: rgba(242,197,92,.45); }
+    .pill.bad { color: var(--red); border-color: rgba(239,47,39,.45); }
+    .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .tab { border-width: 0 1px 0 0; background: transparent; padding: 9px 14px; color: var(--muted); }
+    .tab.active { color: var(--green); background: var(--panel2); }
+    .main { min-height: 0; overflow: hidden; }
+    .view { display: none; height: 100%; min-height: 0; }
+    .view.active { display: grid; }
+    .split { grid-template-columns: minmax(0, 1fr) minmax(340px, 42vw); }
+    .single { grid-template-columns: minmax(0, 1fr); }
+    .left, .right { min-height: 0; overflow: hidden; }
+    .right { border-left: 1px solid var(--line); background: var(--panel); }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel2);
+      flex-wrap: wrap;
+    }
+    .toolbar input, .toolbar select { width: auto; min-width: 140px; max-width: 260px; }
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; padding: 10px; }
+    .card { border: 1px solid var(--line); background: var(--panel2); padding: 10px; min-height: 70px; }
+    .card .k { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .card .v { color: var(--text); font-size: 22px; margin-top: 4px; }
+    .table-wrap { height: calc(100% - 51px); overflow: auto; }
+    table { border-collapse: collapse; width: 100%; min-width: 760px; }
+    th, td { border-bottom: 1px solid rgba(46,43,38,.75); padding: 7px 9px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 10px; text-transform: uppercase; position: sticky; top: 0; background: var(--panel2); z-index: 2; }
+    tr:hover td { background: rgba(255,255,255,.025); }
+    tr.selected td { background: rgba(104,168,228,.08); }
+    .method { font-weight: 800; }
+    .sev, .status { font-weight: 800; text-transform: uppercase; }
+    .sev.critical, .sev.high, .s5 { color: var(--red); }
+    .sev.medium, .s4, .s3 { color: var(--yellow); }
+    .sev.low, .s2 { color: var(--blue); }
+    .sev.info, .s1 { color: var(--muted); }
+    .oktext, .s2 { color: var(--green); }
+    .s3 { color: var(--yellow); }
+    .s4, .s5 { color: var(--red); }
+    .mGET { color: var(--green); }
+    .mPOST { color: var(--blue); }
+    .mPUT, .mPATCH { color: var(--yellow); }
+    .mDELETE { color: var(--red); }
+    .group { border-bottom: 1px solid var(--line); }
+    .group-head { width: 100%; display: flex; gap: 8px; align-items: center; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: var(--panel2); }
+    .group-items { display: grid; }
+    .rowbtn { width: 100%; display: grid; grid-template-columns: 70px 55px minmax(0,1fr) 80px 80px; gap: 8px; text-align: left; border-width: 0 0 1px 0; background: var(--panel); }
+    .detail-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid var(--line); }
+    .detail-title { color: var(--green); font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-body { height: calc(100% - 42px); overflow: auto; padding: 10px; }
+    .kv { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 6px; margin-bottom: 4px; }
+    .kv .key { color: var(--muted); }
+    .codebox {
+      margin: 8px 0 14px;
+      border: 1px solid var(--line);
+      background: #090806;
+      color: var(--text);
+      padding: 9px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 320px;
+      overflow: auto;
+    }
+    .section-title { color: var(--green); font-weight: 800; margin: 13px 0 6px; }
+    .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; padding: 10px; }
+    .form-wide { grid-column: 1 / -1; }
+    .mode-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; }
+    .mode-card { min-height: 88px; text-align: center; border-color: var(--line); background: var(--panel2); }
+    .mode-card .t { color: var(--text); font-weight: 800; }
+    .mode-card .d { color: var(--dim); font-size: 10px; margin-top: 5px; line-height: 1.35; }
+    .mode-card.active .t { color: var(--green); }
+    .terminal { height: 100%; overflow: auto; background: #070605; padding: 10px; color: var(--muted); }
+    .tag { display: inline-block; border: 1px solid var(--line); color: var(--blue); padding: 2px 5px; margin: 2px; cursor: pointer; }
+    .tag:hover { border-color: var(--blue); color: var(--text); }
+    .muted { color: var(--muted); }
+    .dim { color: var(--dim); }
+    .blue { color: var(--blue); }
+    .green { color: var(--green); }
+    .yellow { color: var(--yellow); }
+    .red { color: var(--red); }
+    .hidden { display: none !important; }
+    @media (max-width: 980px) {
+      body { overflow: auto; height: auto; }
+      .app { height: auto; min-height: 100vh; }
+      .view.active, .split { display: block; }
+      .right { border-left: 0; border-top: 1px solid var(--line); height: 70vh; }
+      .card-grid, .form-grid { grid-template-columns: 1fr; }
+      .toolbar input, .toolbar select { width: 100%; max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">GHOSTRECON / VIGOLIUM WORKBENCH</div>
+      <div class="subtitle">requests, findings, agent IA e catalogo de modulos</div>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <span id="serverPill" class="pill warn">server: checando</span>
+        <button onclick="refreshAll()">refresh</button>
+        <button onclick="window.location.href='index.html'">voltar</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="overview">OVERVIEW</button>
+      <button class="tab" data-tab="requests">HTTP RECORDS</button>
+      <button class="tab" data-tab="findings">FINDINGS</button>
+      <button class="tab" data-tab="oast">OAST</button>
+      <button class="tab" data-tab="agent">IA / CODE REVIEW</button>
+      <button class="tab" data-tab="modules">MODULES</button>
+      <button class="tab" data-tab="reports">REPORTS</button>
+    </nav>
+
+    <main class="main">
+      <section id="view-overview" class="view active single">
+        <div class="left">
+          <div class="card-grid">
+            <div class="card"><div class="k">HTTP records</div><div class="v" id="ovRecords">-</div></div>
+            <div class="card"><div class="k">Findings</div><div class="v" id="ovFindings">-</div></div>
+            <div class="card"><div class="k">Scans</div><div class="v" id="ovScans">-</div></div>
+            <div class="card"><div class="k">Agent sessions</div><div class="v" id="ovAgents">-</div></div>
+            <div class="card"><div class="k">OAST</div><div class="v" id="ovOast">-</div></div>
+            <div class="card"><div class="k">Reports</div><div class="v" id="ovReports">-</div></div>
+          </div>
+          <div class="toolbar">
+            <span class="green">Server mode</span>
+            <span id="serverDetail" class="muted">Use GHOSTRECON_VIGOLIUM_SERVER para conectar ao workbench de dados do Vigolium.</span>
+          </div>
+          <div class="toolbar">
+            <button class="hot" onclick="showTab('agent')">abrir IA/code review</button>
+            <button onclick="showTab('requests')">ver requests agrupadas</button>
+            <button onclick="showTab('findings')">ver findings</button>
+            <button onclick="showTab('modules')">catalogo local</button>
+            <button onclick="showTab('reports')">reports HTML</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Status</th><th>Scan</th><th>Mode/source</th><th>Findings</th><th>Started</th></tr></thead>
+              <tbody id="overviewScans"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-requests" class="view split">
+        <div class="left">
+          <div class="toolbar">
+            <input id="reqSearch" placeholder="search url/path" />
+            <select id="reqMethod"><option value="">method:all</option><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select>
+            <input id="reqHost" placeholder="host / *.domain" />
+            <input id="reqStatus" placeholder="status 200,301" />
+            <button onclick="loadRequests()">filtrar</button>
+            <button id="reqGroupBtn" onclick="toggleReqGrouped()">by-host</button>
+          </div>
+          <div class="table-wrap" id="requestsTableWrap">
+            <table>
+              <thead><tr><th>Meth</th><th>SC</th><th>Host</th><th>Path</th><th>Type</th><th>Size</th><th>MS</th></tr></thead>
+              <tbody id="requestsRows"></tbody>
+            </table>
+          </div>
+          <div class="table-wrap hidden" id="requestsGrouped"></div>
+        </div>
+        <aside class="right" id="requestDetail">
+          <div class="detail-head"><div class="detail-title">HTTP RECORD DETAIL</div></div>
+          <div class="detail-body muted">Selecione uma request para ver headers, raw request/response e curl.</div>
+        </aside>
+      </section>
+
+      <section id="view-findings" class="view split">
+        <div class="left">
+          <div class="toolbar">
+            <input id="findSearch" placeholder="search finding/module/url" />
+            <select id="findSeverity"><option value="">severity:all</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select>
+            <input id="findDomain" placeholder="domain" />
+            <input id="findSource" placeholder="source: agent/audit/oast" />
+            <button onclick="loadFindings()">filtrar</button>
+            <button id="findGroupBtn" onclick="toggleFindGrouped()">by-host</button>
+          </div>
+          <div class="table-wrap" id="findingsTableWrap">
+            <table>
+              <thead><tr><th>Sev</th><th>Conf</th><th>Module</th><th>Description</th><th>Matched</th><th>Source</th></tr></thead>
+              <tbody id="findingsRows"></tbody>
+            </table>
+          </div>
+          <div class="table-wrap hidden" id="findingsGrouped"></div>
+        </div>
+        <aside class="right" id="findingDetail">
+          <div class="detail-head"><div class="detail-title">FINDING DETAIL</div></div>
+          <div class="detail-body muted">Selecione um finding para ver evidencia e pedir revisao por IA.</div>
+        </aside>
+      </section>
+
+      <section id="view-agent" class="view split">
+        <div class="left">
+          <div class="form-grid">
+            <div class="form-wide mode-grid">
+              <button class="mode-card active" data-agent-mode="autopilot" onclick="setAgentMode('autopilot')"><div class="t">AUTOPILOT</div><div class="d">Agente autonomo: explora, escaneia, audita e itera.</div></button>
+              <button class="mode-card" data-agent-mode="swarm" onclick="setAgentMode('swarm')"><div class="t">SWARM</div><div class="d">Planejamento IA + selecao de modulos + triage.</div></button>
+              <button class="mode-card" data-agent-mode="audit" onclick="setAgentMode('audit')"><div class="t">AUDIT</div><div class="d">Review de codigo com fases do Vigolium.</div></button>
+              <button class="mode-card" data-agent-mode="query" onclick="setAgentMode('query')"><div class="t">QUERY</div><div class="d">Pergunta unica para confirmar finding, request ou trecho de codigo.</div></button>
+            </div>
+            <div>
+              <label class="muted">Target URL</label>
+              <input id="agentTarget" placeholder="https://target.tld" />
+            </div>
+            <div>
+              <label class="muted">Source code / repo / zip path</label>
+              <input id="agentSource" placeholder="C:\\repo\\app ou https://github.com/org/repo" />
+            </div>
+            <div>
+              <label class="muted">Intensity</label>
+              <select id="agentIntensity"><option>quick</option><option selected>balanced</option><option>deep</option></select>
+            </div>
+            <div>
+              <label class="muted">Audit mode</label>
+              <select id="agentAuditMode"><option>lite</option><option selected>balanced</option><option>deep</option></select>
+            </div>
+            <div>
+              <label class="muted">Diff / PR</label>
+              <input id="agentDiff" placeholder="HEAD~1 ou GitHub PR URL" />
+            </div>
+            <div>
+              <label class="muted">Files CSV</label>
+              <input id="agentFiles" placeholder="src/auth.ts,src/api/users.ts" />
+            </div>
+            <div class="form-wide">
+              <label class="muted">Prompt / objetivo</label>
+              <textarea id="agentPrompt" placeholder="Revise autenticacao/autorizacao, IDOR/BOLA, secrets, injection e paths de API."></textarea>
+            </div>
+            <div class="form-wide">
+              <label class="muted">Instruction extra</label>
+              <textarea id="agentInstruction" placeholder="Foque em impacto real, PoC reproduzivel e falsos positivos baixos."></textarea>
+            </div>
+            <div class="form-wide toolbar" style="padding:0;border:0;background:transparent">
+              <button onclick="applyReviewTemplate('auth')">template auth/authz</button>
+              <button onclick="applyReviewTemplate('pr')">template PR diff</button>
+              <button onclick="applyReviewTemplate('api')">template API routes</button>
+              <button onclick="applyReviewTemplate('fp')">template false-positive review</button>
+              <button class="hot" onclick="runAgent()">RUN IA</button>
+              <button onclick="loadAgentSessions()">sessions</button>
+            </div>
+          </div>
+          <div class="table-wrap" style="height:calc(100% - 360px)">
+            <table>
+              <thead><tr><th>Status</th><th>Mode</th><th>Target/source</th><th>Findings</th><th>Started</th></tr></thead>
+              <tbody id="agentRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <aside class="right">
+          <div class="detail-head"><div class="detail-title">IA OUTPUT</div><button onclick="clearAgentOutput()">clear</button></div>
+          <pre id="agentOutput" class="terminal">Pronto. Configure GHOSTRECON_VIGOLIUM_SERVER para executar pelo server-mode do Vigolium.</pre>
+        </aside>
+      </section>
+
+      <section id="view-oast" class="view split">
+        <div class="left">
+          <div class="toolbar">
+            <input id="oastSearch" placeholder="search OAST interaction" />
+            <select id="oastProtocol"><option value="">protocol:all</option><option>dns</option><option>http</option><option>smtp</option></select>
+            <input id="oastModule" placeholder="module_id" />
+            <button onclick="loadOast()">filtrar</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Protocol</th><th>Unique ID</th><th>Target</th><th>Param</th><th>Module</th><th>Time</th></tr></thead>
+              <tbody id="oastRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <aside class="right" id="oastDetail">
+          <div class="detail-head"><div class="detail-title">OAST DETAIL</div></div>
+          <div class="detail-body muted">Selecione uma interacao OAST para ver raw request/response.</div>
+        </aside>
+      </section>
+
+      <section id="view-modules" class="view single">
+        <div class="left">
+          <div class="toolbar">
+            <input id="modSearch" placeholder="buscar modulos: idor, jwt, xss" />
+            <input id="modTag" placeholder="tag: access-control" />
+            <select id="modKind"><option value="">kind:all</option><option>active</option><option>passive</option></select>
+            <button onclick="loadModules()">buscar</button>
+          </div>
+          <div id="moduleTags" style="padding:10px;border-bottom:1px solid var(--line)"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Kind</th><th>ID</th><th>Severity</th><th>Confidence</th><th>Tags</th><th>Short</th></tr></thead>
+              <tbody id="moduleRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-reports" class="view single">
+        <div class="left">
+          <div class="toolbar">
+            <span class="green">Vigolium HTML reports</span>
+            <span class="muted">Arquivos gerados em .runtime/vigolium-reports</span>
+            <button onclick="loadReports()">refresh</button>
+          </div>
+          <div class="toolbar">
+            <input id="reportImportPath" placeholder="importar report externo: C:\\tmp\\report.html ou /tmp/report.html" />
+            <input id="reportImportName" placeholder="nome opcional" />
+            <button onclick="importReport()">importar</button>
+          </div>
+          <textarea id="reportImportHtml" placeholder="ou cole HTML do report aqui" style="min-height:76px"></textarea>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>File</th><th>Size</th><th>Modified</th><th>Path</th><th>Actions</th></tr></thead>
+              <tbody id="reportRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      serverOk: false,
+      requests: [],
+      findings: [],
+      scans: [],
+      agents: [],
+      oast: [],
+      reports: [],
+      reqGrouped: false,
+      findGrouped: false,
+      agentMode: 'autopilot',
+      selectedRequest: null,
+      selectedFinding: null,
+    };
+
+    function apiUrl(path) {
+      const p = path.startsWith('/') ? path : '/' + path;
+      if (location.protocol === 'file:') return 'http://127.0.0.1:3847' + p;
+      return p;
+    }
+
+    function authHeaders(extra) {
+      const h = Object.assign({}, extra || {});
+      try {
+        const raw = localStorage.getItem('ghostrecon_auth_json');
+        if (raw) {
+          const cfg = JSON.parse(raw);
+          if (cfg && cfg.ghostreconApiKey) h['X-API-Key'] = cfg.ghostreconApiKey;
+        }
+      } catch (_) {}
+      return h;
+    }
+
+    async function apiGet(path) {
+      const res = await fetch(apiUrl(path), { headers: authHeaders() });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
+      return j;
+    }
+
+    async function apiPost(path, body) {
+      const res = await fetch(apiUrl(path), {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body || {}),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
+      return j;
+    }
+
+    function unwrap(out) {
+      if (out && Object.prototype.hasOwnProperty.call(out, 'data')) return out.data;
+      return out;
+    }
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function jsArg(v) {
+      return esc(JSON.stringify(v == null ? '' : String(v)));
+    }
+
+    function short(s, n) {
+      s = String(s == null ? '' : s);
+      return s.length > n ? s.slice(0, n - 1) + '...' : s;
+    }
+
+    function fmtDate(s) {
+      if (!s) return '-';
+      const d = new Date(s);
+      return Number.isNaN(d.getTime()) ? String(s) : d.toLocaleString();
+    }
+
+    function bytes(n) {
+      n = Number(n || 0);
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    function safeDecode(s) {
+      if (!s) return '';
+      const raw = String(s);
+      if (/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|HTTP\/)/.test(raw.trim())) return raw;
+      try { return atob(raw); } catch (_) { return raw; }
+    }
+
+    function toB64(s) {
+      try { return btoa(unescape(encodeURIComponent(String(s || '')))); } catch (_) { return btoa(String(s || '')); }
+    }
+
+    function copy(text) {
+      navigator.clipboard && navigator.clipboard.writeText(String(text || ''));
+    }
+
+    function curlFor(record) {
+      const raw = safeDecode(record.raw_request || '');
+      const method = record.method || (raw.match(/^(\S+)/) || [,'GET'])[1];
+      let cmd = `curl -i -X ${method} '${record.url || ''}'`;
+      const headers = raw.split(/\r?\n/).filter(x => /^[^:]+:\s+/.test(x)).slice(0, 30);
+      for (const h of headers) {
+        if (/^host:/i.test(h)) continue;
+        cmd += ` \\\n  -H '${h.replace(/'/g, "'\\''")}'`;
+      }
+      const body = raw.split(/\r?\n\r?\n/).slice(1).join('\n\n');
+      if (body) cmd += ` \\\n  --data '${body.replace(/'/g, "'\\''")}'`;
+      return cmd;
+    }
+
+    function showTab(name) {
+      document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.getElementById('view-' + name).classList.add('active');
+      if (name === 'requests' && !state.requests.length) loadRequests();
+      if (name === 'findings' && !state.findings.length) loadFindings();
+      if (name === 'oast' && !state.oast.length) loadOast();
+      if (name === 'modules') loadModules();
+      if (name === 'agent') loadAgentSessions();
+      if (name === 'reports') loadReports();
+    }
+
+    document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+    async function refreshStatus() {
+      const pill = document.getElementById('serverPill');
+      const detail = document.getElementById('serverDetail');
+      try {
+        const st = await apiGet('/api/vigolium/server/status');
+        state.serverOk = !!st.ok;
+        pill.className = 'pill ' + (st.ok ? 'ok' : st.configured ? 'bad' : 'warn');
+        pill.textContent = st.ok ? 'server: online' : st.configured ? 'server: erro' : 'server: nao configurado';
+        detail.textContent = st.baseUrl ? `${st.baseUrl} - ${st.message || ''}` : (st.message || 'Configure GHOSTRECON_VIGOLIUM_SERVER.');
+      } catch (e) {
+        state.serverOk = false;
+        pill.className = 'pill bad';
+        pill.textContent = 'server: erro';
+        detail.textContent = e.message;
+      }
+    }
+
+    function qs(obj) {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(obj || {})) {
+        if (v != null && String(v).trim()) p.set(k, String(v).trim());
+      }
+      return p.toString();
+    }
+
+    async function loadOverview() {
+      await refreshStatus();
+      await Promise.allSettled([loadScans(), loadRequests(true), loadFindings(true), loadAgentSessions(true)]);
+      await Promise.allSettled([loadOast(true), loadReports(true)]);
+      document.getElementById('ovRecords').textContent = state.requests.total ?? state.requests.length ?? '-';
+      document.getElementById('ovFindings').textContent = state.findings.total ?? state.findings.length ?? '-';
+      document.getElementById('ovScans').textContent = state.scans.total ?? state.scans.length ?? '-';
+      document.getElementById('ovAgents').textContent = state.agents.total ?? state.agents.length ?? '-';
+      document.getElementById('ovOast').textContent = state.oast.total ?? state.oast.length ?? '-';
+      document.getElementById('ovReports').textContent = state.reports.total ?? state.reports.length ?? '-';
+    }
+
+    async function loadReports(silent) {
+      try {
+        const out = await apiGet('/api/vigolium/reports');
+        const rows = Array.isArray(out?.reports) ? out.reports : [];
+        state.reports = rows;
+        state.reports.total = out?.total ?? rows.length;
+        document.getElementById('reportRows').innerHTML = rows.map(r => `
+          <tr>
+            <td class="blue">${esc(r.file || '-')}</td>
+            <td>${esc(bytes(r.size || 0))}</td>
+            <td class="muted">${esc(fmtDate(r.mtime))}</td>
+            <td class="muted">${esc(short(r.path || '-', 120))}</td>
+            <td>
+              <button onclick="window.open(apiUrl(${jsArg(r.url || '')}), '_blank', 'noopener,noreferrer')">abrir</button>
+              <button onclick="copy(${jsArg(r.url || '')})">copy url</button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="5" class="muted">sem reports HTML</td></tr>';
+      } catch (e) {
+        if (!silent) renderError('reportRows', 5, e);
+      }
+    }
+
+    async function importReport() {
+      const pathValue = document.getElementById('reportImportPath').value.trim();
+      const name = document.getElementById('reportImportName').value.trim();
+      const html = document.getElementById('reportImportHtml').value.trim();
+      if (!pathValue && !html) {
+        alert('Informe um caminho .html/.htm ou cole o HTML do report.');
+        return;
+      }
+      try {
+        const out = await apiPost('/api/vigolium/reports/import', {
+          sourcePath: pathValue || undefined,
+          html: pathValue ? undefined : html,
+          name: name || undefined,
+        });
+        if (out?.report?.url) {
+          document.getElementById('reportImportPath').value = '';
+          document.getElementById('reportImportName').value = '';
+          if (!pathValue) document.getElementById('reportImportHtml').value = '';
+        }
+        await loadReports();
+        if (out?.report?.url) window.open(apiUrl(out.report.url), '_blank', 'noopener,noreferrer');
+      } catch (e) {
+        alert('Import report: ' + (e.message || e));
+      }
+    }
+
+    async function loadScans() {
+      const out = unwrap(await apiGet('/api/vigolium/server/scans?limit=20'));
+      const rows = Array.isArray(out?.data) ? out.data : Array.isArray(out) ? out : [];
+      state.scans = rows;
+      state.scans.total = out?.total ?? rows.length;
+      document.getElementById('overviewScans').innerHTML = rows.map(s => `
+        <tr>
+          <td><span class="status ${esc(s.status)}">${esc(s.status || '-')}</span></td>
+          <td>${esc(s.name || s.uuid || s.scan_uuid || '-')}</td>
+          <td class="muted">${esc([s.scan_mode, s.scan_source].filter(Boolean).join(' / ') || '-')}</td>
+          <td>${esc(s.total_findings ?? s.findings ?? 0)}</td>
+          <td class="muted">${esc(fmtDate(s.started_at || s.created_at))}</td>
+        </tr>`).join('') || '<tr><td colspan="5" class="muted">sem scans</td></tr>';
+    }
+
+    async function loadRequests(silent) {
+      try {
+        const p = qs({
+          limit: 100,
+          search: document.getElementById('reqSearch')?.value,
+          method: document.getElementById('reqMethod')?.value,
+          domain: document.getElementById('reqHost')?.value,
+          status_code: document.getElementById('reqStatus')?.value,
+        });
+        const out = unwrap(await apiGet('/api/vigolium/server/http-records?' + p));
+        const rows = Array.isArray(out?.data) ? out.data : Array.isArray(out) ? out : [];
+        state.requests = rows;
+        state.requests.total = out?.total ?? rows.length;
+        renderRequests();
+      } catch (e) {
+        if (!silent) renderError('requestsRows', 7, e);
+      }
+    }
+
+    function renderRequests() {
+      document.getElementById('requestsRows').innerHTML = state.requests.map(r => {
+        const codeClass = 's' + Math.floor(Number(r.status_code || 0) / 100);
+        return `<tr onclick="selectRequest('${esc(r.uuid)}')" class="${state.selectedRequest === r.uuid ? 'selected' : ''}">
+          <td class="method m${esc(r.method)}">${esc(r.method || '-')}</td>
+          <td class="${codeClass}">${esc(r.status_code || '---')}</td>
+          <td>${esc(r.hostname || '-')}</td>
+          <td>${esc(short(r.path || r.url || '-', 110))}</td>
+          <td class="muted">${esc(short(r.response_content_type || '-', 34))}</td>
+          <td class="muted">${esc(bytes(r.response_content_length))}</td>
+          <td class="muted">${esc(r.response_time_ms ? r.response_time_ms + 'ms' : '-')}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="7" class="muted">sem records</td></tr>';
+      renderRequestGroups();
+    }
+
+    function renderRequestGroups() {
+      const byHost = new Map();
+      for (const r of state.requests) {
+        const host = r.hostname || '(unknown)';
+        if (!byHost.has(host)) byHost.set(host, []);
+        byHost.get(host).push(r);
+      }
+      document.getElementById('requestsGrouped').innerHTML = [...byHost.entries()].sort((a,b) => b[1].length - a[1].length).map(([host, recs]) => `
+        <div class="group">
+          <button class="group-head" onclick="this.nextElementSibling.classList.toggle('hidden')"><span class="blue">${esc(host)}</span><span style="margin-left:auto">${recs.length}</span></button>
+          <div class="group-items">${recs.map(r => `<button class="rowbtn" onclick="selectRequest('${esc(r.uuid)}')">
+            <span class="method m${esc(r.method)}">${esc(r.method || '-')}</span>
+            <span class="s${Math.floor(Number(r.status_code || 0) / 100)}">${esc(r.status_code || '---')}</span>
+            <span>${esc(short(r.path || r.url || '-', 120))}</span>
+            <span class="muted">${esc(bytes(r.response_content_length))}</span>
+            <span class="muted">${esc(r.response_time_ms ? r.response_time_ms + 'ms' : '-')}</span>
+          </button>`).join('')}</div>
+        </div>`).join('') || '<div class="muted" style="padding:10px">sem records</div>';
+    }
+
+    function toggleReqGrouped() {
+      state.reqGrouped = !state.reqGrouped;
+      document.getElementById('requestsTableWrap').classList.toggle('hidden', state.reqGrouped);
+      document.getElementById('requestsGrouped').classList.toggle('hidden', !state.reqGrouped);
+      document.getElementById('reqGroupBtn').classList.toggle('active', state.reqGrouped);
+    }
+
+    async function selectRequest(uuid) {
+      state.selectedRequest = uuid;
+      renderRequests();
+      const pane = document.getElementById('requestDetail');
+      pane.innerHTML = '<div class="detail-head"><div class="detail-title">LOADING RECORD</div></div><div class="detail-body muted">carregando...</div>';
+      try {
+        const rec = unwrap(await apiGet('/api/vigolium/server/http-records/' + encodeURIComponent(uuid)));
+        const req = safeDecode(rec.raw_request || '');
+        const res = safeDecode(rec.raw_response || '');
+        pane.innerHTML = `
+          <div class="detail-head"><div class="detail-title">${esc(rec.method || '')} ${esc(rec.url || uuid)}</div><button onclick="document.getElementById('requestDetail').innerHTML=''">x</button></div>
+          <div class="detail-body">
+            <div class="kv"><span class="key">status</span><span class="s${Math.floor(Number(rec.status_code || 0) / 100)}">${esc(rec.status_code || '-')} ${esc(rec.status_phrase || '')}</span></div>
+            <div class="kv"><span class="key">host</span><span>${esc(rec.hostname || '-')}:${esc(rec.port || '')}</span></div>
+            <div class="kv"><span class="key">source</span><span>${esc(rec.source || '-')}</span></div>
+            <div class="kv"><span class="key">risk</span><span>${esc(rec.risk_score || 0)}</span></div>
+            <div class="toolbar" style="padding:6px 0;background:transparent;border:0">
+              <button onclick="copy(${jsArg(rec.url || '')})">copy url</button>
+              <button onclick="copy(${jsArg(req)})">copy request</button>
+              <button onclick="copy(${jsArg(curlFor(rec))})">copy curl</button>
+              <button onclick="sendRequestToAgent('${esc(uuid)}')">IA review request</button>
+            </div>
+            <div class="section-title">raw request</div><pre class="codebox">${esc(req || 'sem raw_request')}</pre>
+            <div class="section-title">raw response</div><pre class="codebox">${esc(res || 'sem raw_response')}</pre>
+          </div>`;
+      } catch (e) {
+        pane.innerHTML = `<div class="detail-head"><div class="detail-title red">ERRO</div></div><div class="detail-body red">${esc(e.message)}</div>`;
+      }
+    }
+
+    async function loadFindings(silent) {
+      try {
+        const p = qs({
+          limit: 100,
+          search: document.getElementById('findSearch')?.value,
+          severity: document.getElementById('findSeverity')?.value,
+          domain: document.getElementById('findDomain')?.value,
+          finding_source: document.getElementById('findSource')?.value,
+        });
+        const out = unwrap(await apiGet('/api/vigolium/server/findings?' + p));
+        const rows = Array.isArray(out?.data) ? out.data : Array.isArray(out) ? out : [];
+        state.findings = rows;
+        state.findings.total = out?.total ?? rows.length;
+        renderFindings();
+      } catch (e) {
+        if (!silent) renderError('findingsRows', 6, e);
+      }
+    }
+
+    function findingHost(f) {
+      const u = f.hostname || f.url || (Array.isArray(f.matched_at) ? f.matched_at[0] : '');
+      try { return new URL(u).hostname; } catch (_) { return u || '(unknown)'; }
+    }
+
+    function renderFindings() {
+      document.getElementById('findingsRows').innerHTML = state.findings.map(f => `
+        <tr onclick="selectFinding('${esc(f.id)}')" class="${String(state.selectedFinding) === String(f.id) ? 'selected' : ''}">
+          <td class="sev ${esc(f.severity)}">${esc(f.severity || '-')}</td>
+          <td class="muted">${esc(f.confidence || '-')}</td>
+          <td>${esc(short(f.module_name || f.module_id || '-', 36))}</td>
+          <td>${esc(short(f.description || f.module_short || '-', 120))}</td>
+          <td class="muted">${esc(short((f.matched_at || [f.url || '']).join(', '), 90))}</td>
+          <td class="blue">${esc(f.finding_source || f.module_type || '-')}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="muted">sem findings</td></tr>';
+      renderFindingGroups();
+    }
+
+    function renderFindingGroups() {
+      const byHost = new Map();
+      for (const f of state.findings) {
+        const host = findingHost(f);
+        if (!byHost.has(host)) byHost.set(host, []);
+        byHost.get(host).push(f);
+      }
+      document.getElementById('findingsGrouped').innerHTML = [...byHost.entries()].sort((a,b) => b[1].length - a[1].length).map(([host, items]) => `
+        <div class="group">
+          <button class="group-head" onclick="this.nextElementSibling.classList.toggle('hidden')"><span class="blue">${esc(host)}</span><span style="margin-left:auto">${items.length}</span></button>
+          <div class="group-items">${items.map(f => `<button class="rowbtn" style="grid-template-columns:70px 90px minmax(0,1fr) 130px 90px" onclick="selectFinding('${esc(f.id)}')">
+            <span class="sev ${esc(f.severity)}">${esc(f.severity || '-')}</span>
+            <span class="muted">${esc(f.confidence || '-')}</span>
+            <span>${esc(short(f.description || f.module_name || '-', 120))}</span>
+            <span class="muted">${esc(short(f.module_name || f.module_id || '-', 30))}</span>
+            <span class="blue">${esc(f.finding_source || '-')}</span>
+          </button>`).join('')}</div>
+        </div>`).join('') || '<div class="muted" style="padding:10px">sem findings</div>';
+    }
+
+    function toggleFindGrouped() {
+      state.findGrouped = !state.findGrouped;
+      document.getElementById('findingsTableWrap').classList.toggle('hidden', state.findGrouped);
+      document.getElementById('findingsGrouped').classList.toggle('hidden', !state.findGrouped);
+      document.getElementById('findGroupBtn').classList.toggle('active', state.findGrouped);
+    }
+
+    async function selectFinding(id) {
+      state.selectedFinding = id;
+      renderFindings();
+      const pane = document.getElementById('findingDetail');
+      pane.innerHTML = '<div class="detail-head"><div class="detail-title">LOADING FINDING</div></div><div class="detail-body muted">carregando...</div>';
+      try {
+        const f = unwrap(await apiGet('/api/vigolium/server/findings/' + encodeURIComponent(id)));
+        const ev = (f.additional_evidence || []).join('\n\n---\n\n');
+        pane.innerHTML = `
+          <div class="detail-head"><div class="detail-title">${esc(f.module_name || f.module_id || 'finding')} #${esc(f.id)}</div><button onclick="document.getElementById('findingDetail').innerHTML=''">x</button></div>
+          <div class="detail-body">
+            <div class="kv"><span class="key">severity</span><span class="sev ${esc(f.severity)}">${esc(f.severity || '-')}</span></div>
+            <div class="kv"><span class="key">confidence</span><span>${esc(f.confidence || '-')}</span></div>
+            <div class="kv"><span class="key">source</span><span>${esc(f.finding_source || '-')}</span></div>
+            <div class="kv"><span class="key">matched</span><span>${esc((f.matched_at || [f.url || '-']).join(', '))}</span></div>
+            <div class="toolbar" style="padding:6px 0;background:transparent;border:0">
+              <button onclick="copy(${jsArg(JSON.stringify(f, null, 2))})">copy json</button>
+              <button onclick="reviewFinding(${jsArg(String(f.id))})">IA revisar finding</button>
+            </div>
+            <div class="section-title">description</div><div>${esc(f.description || f.module_short || '-')}</div>
+            <div class="section-title">request</div><pre class="codebox">${esc(f.request || 'sem request')}</pre>
+            <div class="section-title">response</div><pre class="codebox">${esc(f.response || 'sem response')}</pre>
+            <div class="section-title">additional evidence</div><pre class="codebox">${esc(ev || 'sem evidencia extra')}</pre>
+          </div>`;
+      } catch (e) {
+        pane.innerHTML = `<div class="detail-head"><div class="detail-title red">ERRO</div></div><div class="detail-body red">${esc(e.message)}</div>`;
+      }
+    }
+
+    async function loadOast(silent) {
+      try {
+        const p = qs({
+          limit: 100,
+          search: document.getElementById('oastSearch')?.value,
+          protocol: document.getElementById('oastProtocol')?.value,
+          module_id: document.getElementById('oastModule')?.value,
+        });
+        const out = unwrap(await apiGet('/api/vigolium/server/oast-interactions?' + p));
+        const rows = Array.isArray(out?.data) ? out.data : Array.isArray(out) ? out : [];
+        state.oast = rows;
+        state.oast.total = out?.total ?? rows.length;
+        document.getElementById('oastRows').innerHTML = rows.map(o => `
+          <tr onclick="selectOast('${esc(o.id || o.unique_id)}')">
+            <td class="blue">${esc(o.protocol || '-')}</td>
+            <td>${esc(o.unique_id || o.full_id || '-')}</td>
+            <td>${esc(short(o.target_url || '-', 80))}</td>
+            <td class="muted">${esc(o.parameter_name || '-')}</td>
+            <td class="muted">${esc(o.module_id || '-')}</td>
+            <td class="muted">${esc(fmtDate(o.interacted_at || o.created_at))}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">sem OAST</td></tr>';
+      } catch (e) {
+        if (!silent) renderError('oastRows', 6, e);
+      }
+    }
+
+    async function selectOast(id) {
+      const pane = document.getElementById('oastDetail');
+      pane.innerHTML = '<div class="detail-head"><div class="detail-title">LOADING OAST</div></div><div class="detail-body muted">carregando...</div>';
+      try {
+        const o = unwrap(await apiGet('/api/vigolium/server/oast-interactions/' + encodeURIComponent(id)));
+        pane.innerHTML = `
+          <div class="detail-head"><div class="detail-title">${esc(o.protocol || 'OAST')} ${esc(o.unique_id || o.id || '')}</div><button onclick="document.getElementById('oastDetail').innerHTML=''">x</button></div>
+          <div class="detail-body">
+            <div class="kv"><span class="key">target</span><span>${esc(o.target_url || '-')}</span></div>
+            <div class="kv"><span class="key">parameter</span><span>${esc(o.parameter_name || '-')}</span></div>
+            <div class="kv"><span class="key">module</span><span>${esc(o.module_id || '-')}</span></div>
+            <div class="kv"><span class="key">remote</span><span>${esc(o.remote_address || '-')}</span></div>
+            <div class="section-title">raw request</div><pre class="codebox">${esc(o.raw_request || 'sem raw_request')}</pre>
+            <div class="section-title">raw response</div><pre class="codebox">${esc(o.raw_response || 'sem raw_response')}</pre>
+          </div>`;
+      } catch (e) {
+        pane.innerHTML = `<div class="detail-head"><div class="detail-title red">ERRO</div></div><div class="detail-body red">${esc(e.message)}</div>`;
+      }
+    }
+
+    function setAgentMode(mode) {
+      state.agentMode = mode;
+      document.querySelectorAll('[data-agent-mode]').forEach(b => b.classList.toggle('active', b.dataset.agentMode === mode));
+    }
+
+    function applyReviewTemplate(kind) {
+      const p = document.getElementById('agentPrompt');
+      const i = document.getElementById('agentInstruction');
+      if (kind === 'auth') {
+        setAgentMode('audit');
+        p.value = 'Review authentication and authorization flows. Focus on IDOR/BOLA, missing checks, privilege escalation, session handling, JWT/OIDC flaws, and unsafe middleware.';
+        i.value = 'Return concrete vulnerable files/routes, exploit preconditions, impact, and minimal fixes. Prefer high-confidence issues.';
+      } else if (kind === 'pr') {
+        setAgentMode('autopilot');
+        p.value = 'Review this PR/diff for security regressions and exploitable behavior.';
+        i.value = 'Focus only on changed code paths. Include attack scenario, affected endpoint, and patch guidance.';
+      } else if (kind === 'api') {
+        setAgentMode('swarm');
+        p.value = 'Map API routes and test auth bypass, mass assignment, rate-limit bypass, injection, SSRF, and unsafe object access.';
+        i.value = 'Prioritize bugs that can be proven from request/response evidence.';
+      } else {
+        setAgentMode('query');
+        p.value = 'Review the supplied finding/request/response and decide if it is a real vulnerability or likely false positive.';
+        i.value = 'Answer with verdict, confidence, reasoning, missing evidence, and next verification step.';
+      }
+    }
+
+    async function runAgent() {
+      const out = document.getElementById('agentOutput');
+      out.textContent = 'starting ' + state.agentMode + '...\n';
+      const files = document.getElementById('agentFiles').value.split(',').map(x => x.trim()).filter(Boolean);
+      const body = {
+        target: document.getElementById('agentTarget').value.trim(),
+        input: document.getElementById('agentTarget').value.trim(),
+        source: document.getElementById('agentSource').value.trim(),
+        intensity: document.getElementById('agentIntensity').value,
+        audit_mode: document.getElementById('agentAuditMode').value,
+        mode: document.getElementById('agentAuditMode').value,
+        diff: document.getElementById('agentDiff').value.trim(),
+        files,
+        focus: document.getElementById('agentPrompt').value.trim(),
+        prompt: document.getElementById('agentPrompt').value.trim(),
+        instruction: document.getElementById('agentInstruction').value.trim(),
+      };
+      if (state.agentMode === 'query') {
+        body.prompt_template = body.prompt ? '' : 'security-code-review';
+      }
+      try {
+        const res = await apiPost('/api/vigolium/agent/' + state.agentMode, body);
+        out.textContent += JSON.stringify(res, null, 2);
+        setTimeout(loadAgentSessions, 1200);
+      } catch (e) {
+        out.textContent += 'ERROR: ' + e.message;
+      }
+    }
+
+    async function loadAgentSessions(silent) {
+      try {
+        const out = unwrap(await apiGet('/api/vigolium/server/agent-sessions?limit=50'));
+        const rows = Array.isArray(out?.data) ? out.data : Array.isArray(out) ? out : [];
+        state.agents = rows;
+        state.agents.total = out?.total ?? rows.length;
+        document.getElementById('agentRows').innerHTML = rows.map(a => `
+          <tr onclick="selectAgentSession('${esc(a.uuid || a.agentic_scan_uuid || a.id)}')">
+            <td><span class="status ${esc(a.status)}">${esc(a.status || '-')}</span></td>
+            <td class="blue">${esc(a.mode || '-')}</td>
+            <td>${esc(short(a.target_url || a.source_label || a.source || a.prompt || '-', 90))}</td>
+            <td>${esc(a.finding_count ?? a.total_findings ?? 0)}</td>
+            <td class="muted">${esc(fmtDate(a.started_at || a.created_at))}</td>
+          </tr>`).join('') || '<tr><td colspan="5" class="muted">sem sessions</td></tr>';
+      } catch (e) {
+        if (!silent) document.getElementById('agentRows').innerHTML = `<tr><td colspan="5" class="red">${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    async function selectAgentSession(id) {
+      const out = document.getElementById('agentOutput');
+      out.textContent = 'loading session ' + id + '...\n';
+      try {
+        const detail = unwrap(await apiGet('/api/vigolium/server/agent-sessions/' + encodeURIComponent(id)));
+        out.textContent = JSON.stringify(detail, null, 2);
+      } catch (e) {
+        out.textContent = 'ERROR: ' + e.message;
+      }
+    }
+
+    function clearAgentOutput() {
+      document.getElementById('agentOutput').textContent = '';
+    }
+
+    async function reviewFinding(id) {
+      const f = unwrap(await apiGet('/api/vigolium/server/findings/' + encodeURIComponent(id)));
+      showTab('agent');
+      setAgentMode('query');
+      document.getElementById('agentPrompt').value = 'Review this finding for exploitability and false positives:\n\n' + JSON.stringify(f, null, 2);
+      document.getElementById('agentInstruction').value = 'Return verdict, confidence, reasoning, reproduction notes, and what evidence is still missing.';
+    }
+
+    async function sendRequestToAgent(uuid) {
+      const r = unwrap(await apiGet('/api/vigolium/server/http-records/' + encodeURIComponent(uuid)));
+      showTab('agent');
+      setAgentMode('query');
+      document.getElementById('agentTarget').value = r.url || '';
+      document.getElementById('agentPrompt').value = 'Review this HTTP exchange for vulnerabilities, auth/session issues, sensitive data, injection signs, and next tests:\n\nREQUEST:\n' + safeDecode(r.raw_request || '') + '\n\nRESPONSE:\n' + safeDecode(r.raw_response || '');
+      document.getElementById('agentInstruction').value = 'Be concrete and avoid speculation. Suggest exact follow-up requests if useful.';
+    }
+
+    async function loadModules() {
+      const p = qs({
+        limit: 200,
+        q: document.getElementById('modSearch').value,
+        tag: document.getElementById('modTag').value,
+        kind: document.getElementById('modKind').value,
+      });
+      try {
+        const out = await apiGet('/api/vigolium/modules?' + p);
+        const tags = (out.tags || []).slice(0, 60);
+        document.getElementById('moduleTags').innerHTML = tags.map(t => `<span class="tag" onclick="document.getElementById('modTag').value='${esc(t)}';loadModules()">${esc(t)}</span>`).join('');
+        document.getElementById('moduleRows').innerHTML = (out.modules || []).map(m => `
+          <tr>
+            <td class="blue">${esc(m.kind || '')}</td>
+            <td>${esc(m.id || '')}</td>
+            <td class="sev ${esc(m.severity)}">${esc(m.severity || '-')}</td>
+            <td class="muted">${esc(m.confidence || '-')}</td>
+            <td>${(m.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</td>
+            <td>${esc(m.short || m.descriptionSummary || '')}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">sem modulos</td></tr>';
+      } catch (e) {
+        renderError('moduleRows', 6, e);
+      }
+    }
+
+    function renderError(id, cols, e) {
+      document.getElementById(id).innerHTML = `<tr><td colspan="${cols}" class="red">${esc(e.message || e)}</td></tr>`;
+    }
+
+    async function refreshAll() {
+      await loadOverview();
+      if (document.getElementById('view-requests').classList.contains('active')) await loadRequests();
+      if (document.getElementById('view-findings').classList.contains('active')) await loadFindings();
+      if (document.getElementById('view-oast').classList.contains('active')) await loadOast();
+      if (document.getElementById('view-agent').classList.contains('active')) await loadAgentSessions();
+      if (document.getElementById('view-modules').classList.contains('active')) await loadModules();
+      if (document.getElementById('view-reports').classList.contains('active')) await loadReports();
+    }
+
+    document.getElementById('reqSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadRequests(); });
+    document.getElementById('findSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadFindings(); });
+    document.getElementById('oastSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadOast(); });
+    document.getElementById('modSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadModules(); });
+
+    loadOverview();
+    loadModules();
+  </script>
+</body>
+</html>

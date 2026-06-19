@@ -93,6 +93,8 @@ export function serverEndpointFor(kind) {
     oast: '/api/oast-interactions',
     'oast-interactions': '/api/oast-interactions',
     agents: '/api/agent/status/list',
+    'agent-status': '/api/agent/status',
+    'agent-sessions': '/api/agent/sessions',
   };
   return map[kind] || null;
 }

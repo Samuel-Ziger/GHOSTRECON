@@ -245,6 +245,46 @@
     border-bottom: 1px solid var(--border);
   }
 
+  .sidebar-help-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .sidebar-help-head .section-label {
+    margin-bottom: 0;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .sidebar-help-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-doc-btn {
+    height: 24px;
+    border: 1px solid var(--border-bright);
+    background: var(--bg2);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    padding: 0 8px;
+  }
+
+  .sidebar-doc-btn:hover {
+    color: var(--text-bright);
+    border-color: var(--accent);
+    box-shadow: 0 0 12px rgba(0, 212, 255, 0.22);
+  }
+
   .section-label {
     font-family: var(--mono);
     font-size: 10px;
@@ -2315,6 +2355,54 @@
     flex-shrink: 0;
   }
 
+  .finding-vigolium-badge {
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 2px;
+    color: #66ccff;
+    border: 1px solid rgba(100, 200, 255, 0.45);
+    background: rgba(100, 200, 255, 0.1);
+    flex-shrink: 0;
+  }
+
+  .vigolium-tool-panel {
+    margin-top: 8px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.02);
+    padding: 8px;
+  }
+
+  .vigolium-health-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .vigolium-health-item {
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.18);
+    padding: 6px;
+    font-family: var(--mono);
+    font-size: 9px;
+    line-height: 1.35;
+  }
+
+  .vigolium-health-item.ok {
+    color: var(--accent2);
+    border-color: rgba(0, 255, 136, 0.32);
+    background: rgba(0, 255, 136, 0.06);
+  }
+
+  .vigolium-health-item.missing {
+    color: var(--accent4);
+    border-color: rgba(255, 180, 70, 0.32);
+    background: rgba(255, 180, 70, 0.06);
+  }
+
   .finding-comp-score {
     margin-left: 6px;
     font-family: var(--mono);
@@ -2664,6 +2752,19 @@
   <aside class="sidebar">
     <!-- Target Input -->
     <div class="target-section">
+      <div class="sidebar-help-head">
+        <div class="section-label">Painel esquerdo</div>
+        <div class="sidebar-help-actions">
+          <button
+            type="button"
+            class="findings-help-trigger"
+            onclick="openSidebarHelpModal()"
+            title="Explica item por item do painel esquerdo"
+            aria-label="Ajuda: painel esquerdo"
+          >?</button>
+          <button type="button" class="sidebar-doc-btn" onclick="openComoUsarPage()" title="Abrir guia completo atualizado">Como usar</button>
+        </div>
+      </div>
       <div id="fileModeWarn" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--accent4);background:rgba(255,170,0,0.08);font-family:var(--mono);font-size:10px;color:var(--accent4);line-height:1.45">
         Abriste o HTML pelo <strong>disco</strong> (file://). O histórico e o recon usam o servidor em <span id="fileModeApiUrl">http://127.0.0.1:3847</span> — corre <code style="color:var(--text-bright)">npm start</code>. Melhor: abre <a id="fileModeOpenLink" href="#" style="color:var(--accent)">http://127.0.0.1:3847</a> no browser.
       </div>
@@ -3124,6 +3225,39 @@
         <div class="hub-actions-row-mitre">
           <button
             type="button"
+            class="mitre-map-btn history-btn"
+            id="vigoliumWorkbenchBtn"
+            title="Vigolium Workbench - HTTP records, findings, agent IA, code review e catalogo de modulos."
+            aria-label="Abrir Vigolium Workbench em nova janela"
+            onclick="openVigoliumWorkbenchPage()"
+          >
+            <span class="mitre-map-btn-skin" aria-hidden="true">
+              <span class="mitre-map-btn-shine"></span>
+              <span class="mitre-map-btn-inner">
+                <span class="mitre-map-btn-icon-wrap ghostmap-globe-frame">
+                  <span class="ghostmap-orbit ghostmap-orbit--a" aria-hidden="true"></span>
+                  <span class="ghostmap-orbit ghostmap-orbit--b" aria-hidden="true"></span>
+                  <svg class="reporte-hub-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <path d="M4 5h16v14H4z" />
+                    <path d="M4 10h16" />
+                    <path d="M9 10v9" />
+                    <path d="M7 7h.01M10 7h.01M13 7h.01" />
+                  </svg>
+                </span>
+                <span class="mitre-map-btn-copy">
+                  <span class="mitre-map-btn-title">Vigolium</span>
+                </span>
+                <span class="mitre-map-btn-aside">
+                  <span class="mitre-map-btn-live"><span class="mitre-map-btn-live-dot"></span> workbench</span>
+                  <span class="mitre-map-btn-arrow" aria-hidden="true">↗</span>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
+        <div class="hub-actions-row-mitre">
+          <button
+            type="button"
             class="mitre-map-btn reporte-hub-btn"
             id="reporteHubBtn"
             title="Checklist manual + SQLite. Abre com os achados da sessão; com o recon a correr, a aba Reporte actualiza ao vivo (BroadcastChannel, mesmo canal que o Ghostmap). Importar JSON: painel «Importar»."
@@ -3548,6 +3682,15 @@
         <div class="module-group-title">// Vigolium (motor Go — DAST + audit código)</div>
         <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Binário em <code>engines/vigolium</code> (não precisas da pasta <code>vigolium/</code> fonte após <code>bash scripts/install-vigolium-engine.sh</code>). DAST activo requer <strong>Confirmar ativo</strong>. Audit usa Codex/Claude Code no PATH.</p>
         <div id="vigoliumCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">Vigolium: a carregar…</div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+          <button type="button" class="sqlmap-help-btn" onclick="applyVigoliumKaliDeepPreset()">preset Kali Deep</button>
+          <button type="button" class="sqlmap-help-btn" onclick="runVigoliumKaliHealthcheck()">healthcheck Kali</button>
+          <button type="button" class="sqlmap-help-btn" onclick="saveVigoliumRunProfile()">salvar preset</button>
+          <button type="button" class="sqlmap-help-btn" onclick="loadVigoliumRunProfile()">carregar preset</button>
+          <button type="button" class="sqlmap-help-btn" onclick="clearVigoliumRunProfile()">limpar preset</button>
+          <button type="button" class="sqlmap-help-btn" onclick="openVigoliumWorkbenchPage()">abrir workbench</button>
+        </div>
+        <div id="vigoliumHealthBox" class="vigolium-tool-panel" style="display:none;font-family:var(--mono);font-size:9px;color:var(--text-dim);line-height:1.45"></div>
         <div class="toggle-row" style="align-items:center;gap:10px;margin-bottom:8px">
           <span class="toggle-label">Motor</span>
           <select id="vigoliumEngineSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
@@ -3564,7 +3707,20 @@
             <option value="deep">deep</option>
           </select>
         </div>
-        <label class="checkbox-item" title="273 módulos DAST nativos (XSS, SQLi, OAST, …). Corre após content-discovery.">
+        <label class="checkbox-item" title="No modo Kali, tenta primeiro o binario vigolium instalado no PATH. Se nao existir, usa o fallback local atual.">
+          <input type="checkbox" id="vigoliumPreferPathToggle" checked>
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Modo Vigolium PATH (Kali)</span>
+          <span class="tag tag-med">PATH</span>
+        </label>
+        <label class="checkbox-item" title="Usa provider Codex/OAuth nos agents do Vigolium. Requer Codex CLI/login e plano habilitado pela OpenAI.">
+          <input type="checkbox" id="vigoliumUseCodexToggle">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Usar Vigolium com Codex</span>
+          <span class="tag tag-high">CODEX</span>
+        </label>
+        <p class="gh-hint" style="font-size:9px;margin:4px 0 8px">Codex depende de login/plano Codex/OpenAI; instalar wrapper/CLI nao desbloqueia acesso.</p>
+        <label class="checkbox-item" title="273 modulos DAST nativos (XSS, SQLi, OAST, ...). Corre apos content-discovery.">
           <input type="checkbox" class="mod" value="vigolium_dast" id="modVigoliumDast">
           <div class="checkbox-box"></div>
           <span class="checkbox-text">Vigolium DAST (motor Go)</span>
@@ -3588,10 +3744,50 @@
           <span class="checkbox-text">Vigolium autopilot</span>
           <span class="tag tag-high">AUTO</span>
         </label>
+        <div id="vigoliumGuardrailBox" class="vigolium-tool-panel" style="display:none;font-family:var(--mono);font-size:9px;color:var(--text-dim);line-height:1.45"></div>
         <label for="vigoliumSourceInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Caminho do código-fonte (audit / swarm opcional)</label>
         <input id="vigoliumSourceInput" class="domain-input" type="text" placeholder="/caminho/para/repo ou ." autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
         <label for="vigoliumAuthFileInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Auth file Vigolium (YAML/JSON, opcional; CSV para varios)</label>
         <input id="vigoliumAuthFileInput" class="domain-input" type="text" placeholder="C:\\sessions\\auth.json ou admin.yaml,user.yaml" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+        <label for="vigoliumAuthEntriesInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Logins / auth inline Vigolium (um por linha)</label>
+        <textarea id="vigoliumAuthEntriesInput" class="domain-input" rows="2" placeholder="admin:Cookie:session_id=abc123&#10;user:Cookie:session_id=xyz789" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%;resize:vertical;min-height:58px"></textarea>
+        <div class="vigolium-tool-panel">
+          <div style="display:flex;gap:6px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+            <span class="toggle-label">Auth compare</span>
+            <button type="button" class="sqlmap-help-btn" onclick="applyVigoliumAuthComparePreset()">aplicar compare</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+            <input id="vigoliumCompareAdminInput" class="domain-input" type="text" placeholder="admin cookie/header" autocomplete="off" spellcheck="false" style="padding:7px 9px;width:100%">
+            <input id="vigoliumCompareUserInput" class="domain-input" type="text" placeholder="user cookie/header" autocomplete="off" spellcheck="false" style="padding:7px 9px;width:100%">
+          </div>
+          <p class="gh-hint" style="font-size:9px;margin:6px 0 0">Preenche os dois papéis no formato <code>admin:Cookie:...</code>/<code>user:Cookie:...</code>, ativa PATH + DAST + HTML e adiciona tags IDOR/BOLA.</p>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 120px;gap:6px;margin-top:10px">
+          <div>
+            <label for="vigoliumInputFileInput" style="display:block;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Entrada Vigolium -T</label>
+            <input id="vigoliumInputFileInput" class="domain-input" type="text" placeholder="openapi.yaml" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          </div>
+          <div>
+            <label for="vigoliumInputTypeInput" style="display:block;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Tipo -I</label>
+            <input id="vigoliumInputTypeInput" class="domain-input" type="text" placeholder="openapi" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px">
+          <div>
+            <label for="vigoliumOnlyInput" style="display:block;font-size:10px;color:var(--text-dim);font-family:var(--mono)">--only scan JSONL</label>
+            <input id="vigoliumOnlyInput" class="domain-input" type="text" placeholder="discovery, xss, ..." autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          </div>
+          <div>
+            <label for="vigoliumReportOnlyInput" style="display:block;font-size:10px;color:var(--text-dim);font-family:var(--mono)">--only report HTML</label>
+            <input id="vigoliumReportOnlyInput" class="domain-input" type="text" placeholder="discovery" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          </div>
+        </div>
+        <label class="checkbox-item" title="Roda um segundo vigolium scan com --format html -o report.html e anexa o caminho ao run.">
+          <input type="checkbox" id="vigoliumHtmlReportToggle">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Gerar report HTML Vigolium</span>
+          <span class="tag tag-med">HTML</span>
+        </label>
         <label for="vigoliumModuleTagsInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Tags de modulos Vigolium (CSV/opcional)</label>
         <input id="vigoliumModuleTagsInput" class="domain-input" type="text" placeholder="access-control,xss,oast" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
         <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
@@ -3834,6 +4030,7 @@
           <div class="filter-tab" onclick="filterFindings('nmap', this)">NMAP</div>
           <div class="filter-tab" onclick="filterFindings('exploit', this)">EXPLOIT.DB</div>
           <div class="filter-tab" onclick="filterFindings('nuclei', this)">NUCLEI</div>
+          <div class="filter-tab" onclick="filterFindings('vigolium', this)">VIGOLIUM</div>
           <div class="filter-tab" onclick="filterFindings('wpscan', this)">WPSCAN</div>
           <div class="filter-tab" onclick="filterFindings('dalfox', this)">DALFOX</div>
           <div class="filter-tab" onclick="filterFindings('xss', this)">XSS</div>
@@ -4603,10 +4800,18 @@ function isDorkFindingType(t) {
   return x === 'dork' || x === 'dorks';
 }
 
+function isVigoliumFinding(f) {
+  const src = String(f?.sourceEngine || f?.source || '').toLowerCase();
+  const meta = String(f?.meta || '').toLowerCase();
+  const mod = String(f?.moduleId || '').toLowerCase();
+  return src === 'vigolium' || src.includes('vigolium') || mod.includes('vigolium') || meta.includes('source=vigolium');
+}
+
 function findingMatchesFilter(f) {
   const x = currentFilter;
   if (x === 'all') return !isDorkFindingType(f.type);
   if (x === 'dorks') return isDorkFindingType(f.type);
+  if (x === 'vigolium') return isVigoliumFinding(f);
   if (x === 'subfinder') {
     return f.type === 'subdomain' && /\btool=subfinder\b/.test(String(f.meta || ''));
   }
@@ -4680,6 +4885,13 @@ function renderFinding(f) {
     badge.textContent = 'Alta prob.';
     badge.title = (f.priorityWhy && f.priorityWhy.length) ? f.priorityWhy.join(' · ') : 'Priorização v2 — alvo de teste prioritário';
     top.appendChild(badge);
+  }
+  if (isVigoliumFinding(f)) {
+    const vb = document.createElement('span');
+    vb.className = 'finding-vigolium-badge';
+    vb.textContent = 'Vigolium';
+    vb.title = f.moduleId ? `Modulo Vigolium: ${f.moduleId}` : 'Finding produzido pelo motor Vigolium';
+    top.appendChild(vb);
   }
   if (f.fingerprint && window.__ghostreconManualFp && window.__ghostreconManualFp.has(f.fingerprint)) {
     const mb = document.createElement('span');
@@ -5079,17 +5291,18 @@ function refreshFindingsList() {
       nmap: 12,
       exploit: 13,
       nuclei: 14,
-      security: 15,
-      tls: 16,
-      rdap: 17,
-      intel: 18,
-      wpscan: 19,
-      takeover: 20,
-      secret_validation: 21,
+      vigolium: 15,
+      security: 16,
+      tls: 17,
+      rdap: 18,
+      intel: 19,
+      wpscan: 20,
+      takeover: 21,
+      secret_validation: 22,
     };
     filtered.sort((a, b) => {
-      const ra = rank[a.type] ?? 999;
-      const rb = rank[b.type] ?? 999;
+      const ra = isVigoliumFinding(a) ? rank.vigolium : (rank[a.type] ?? 999);
+      const rb = isVigoliumFinding(b) ? rank.vigolium : (rank[b.type] ?? 999);
       if (ra !== rb) return ra - rb;
       return (a.__idx ?? 0) - (b.__idx ?? 0);
     });
@@ -5489,6 +5702,313 @@ function openHistoryPage() {
   if (t) u.searchParams.set('target', t);
   const w = window.open(u.href, 'ghostrecon_history', 'noopener,noreferrer');
   if (!w) addLog('History: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
+}
+
+function openComoUsarPage() {
+  const u = new URL('como-usar.html', window.location.href);
+  const w = window.open(u.href, 'ghostrecon_como_usar', 'noopener,noreferrer');
+  if (!w) addLog('Como usar: popup bloqueado — abre manualmente: ' + u.href, 'warn');
+}
+
+function openVigoliumWorkbenchPage() {
+  const u = new URL('vigolium-workbench.html', window.location.href);
+  const t = ghostreconReportTargetKey();
+  if (t) u.searchParams.set('target', t);
+  const w = window.open(u.href, 'ghostrecon_vigolium_workbench', 'noopener,noreferrer');
+  if (!w) addLog('Vigolium Workbench: popup bloqueado - permite popups ou abre: ' + u.href, 'warn');
+}
+
+function setInputChecked(id, checked) {
+  const el = document.getElementById(id);
+  if (el && 'checked' in el) el.checked = Boolean(checked);
+}
+
+function setSelectValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value;
+}
+
+const VIGOLIUM_RUN_PROFILE_KEY = 'ghostrecon_vigolium_run_profile';
+
+function collectVigoliumRunProfile() {
+  return {
+    engine: document.getElementById('vigoliumEngineSelect')?.value || 'node',
+    strategy: document.getElementById('vigoliumStrategySelect')?.value || 'lite',
+    preferPath: Boolean(document.getElementById('vigoliumPreferPathToggle')?.checked),
+    useCodex: Boolean(document.getElementById('vigoliumUseCodexToggle')?.checked),
+    dast: Boolean(document.getElementById('modVigoliumDast')?.checked),
+    audit: Boolean(document.getElementById('modVigoliumAudit')?.checked),
+    swarm: Boolean(document.getElementById('modVigoliumSwarm')?.checked),
+    autopilot: Boolean(document.getElementById('modVigoliumAutopilot')?.checked),
+    source: document.getElementById('vigoliumSourceInput')?.value || '',
+    authFile: document.getElementById('vigoliumAuthFileInput')?.value || '',
+    authEntries: document.getElementById('vigoliumAuthEntriesInput')?.value || '',
+    inputFile: document.getElementById('vigoliumInputFileInput')?.value || '',
+    inputType: document.getElementById('vigoliumInputTypeInput')?.value || '',
+    only: document.getElementById('vigoliumOnlyInput')?.value || '',
+    reportOnly: document.getElementById('vigoliumReportOnlyInput')?.value || '',
+    htmlReport: Boolean(document.getElementById('vigoliumHtmlReportToggle')?.checked),
+    moduleTags: document.getElementById('vigoliumModuleTagsInput')?.value || '',
+    auditMode: document.getElementById('vigoliumAuditModeSelect')?.value || 'lite',
+    savedAt: new Date().toISOString(),
+  };
+}
+
+function applyVigoliumRunProfile(profile) {
+  if (!profile || typeof profile !== 'object') return false;
+  setSelectValue('vigoliumEngineSelect', profile.engine || 'node');
+  setSelectValue('vigoliumStrategySelect', profile.strategy || 'lite');
+  setInputChecked('vigoliumPreferPathToggle', profile.preferPath);
+  setInputChecked('vigoliumUseCodexToggle', profile.useCodex);
+  setInputChecked('modVigoliumDast', profile.dast);
+  setInputChecked('modVigoliumAudit', profile.audit);
+  setInputChecked('modVigoliumSwarm', profile.swarm);
+  setInputChecked('modVigoliumAutopilot', profile.autopilot);
+  const fields = {
+    vigoliumSourceInput: profile.source,
+    vigoliumAuthFileInput: profile.authFile,
+    vigoliumAuthEntriesInput: profile.authEntries,
+    vigoliumInputFileInput: profile.inputFile,
+    vigoliumInputTypeInput: profile.inputType,
+    vigoliumOnlyInput: profile.only,
+    vigoliumReportOnlyInput: profile.reportOnly,
+    vigoliumModuleTagsInput: profile.moduleTags,
+  };
+  for (const [id, value] of Object.entries(fields)) {
+    const el = document.getElementById(id);
+    if (el) el.value = value || '';
+  }
+  setInputChecked('vigoliumHtmlReportToggle', profile.htmlReport);
+  setSelectValue('vigoliumAuditModeSelect', profile.auditMode || 'lite');
+  renderVigoliumGuardrails();
+  return true;
+}
+
+function saveVigoliumRunProfile() {
+  try {
+    localStorage.setItem(VIGOLIUM_RUN_PROFILE_KEY, JSON.stringify(collectVigoliumRunProfile()));
+    addLog('Preset Vigolium salvo neste browser.', 'info');
+  } catch (e) {
+    addLog(`Preset Vigolium: falha ao salvar (${e.message || e})`, 'warn');
+  }
+}
+
+function loadVigoliumRunProfile({ silent = false } = {}) {
+  try {
+    const raw = localStorage.getItem(VIGOLIUM_RUN_PROFILE_KEY);
+    if (!raw) {
+      if (!silent) addLog('Preset Vigolium: nenhum preset salvo neste browser.', 'warn');
+      return false;
+    }
+    const ok = applyVigoliumRunProfile(JSON.parse(raw));
+    if (ok && !silent) addLog('Preset Vigolium carregado.', 'info');
+    return ok;
+  } catch (e) {
+    if (!silent) addLog(`Preset Vigolium: falha ao carregar (${e.message || e})`, 'warn');
+    return false;
+  }
+}
+
+function clearVigoliumRunProfile() {
+  try {
+    localStorage.removeItem(VIGOLIUM_RUN_PROFILE_KEY);
+    addLog('Preset Vigolium removido deste browser.', 'info');
+  } catch (e) {
+    addLog(`Preset Vigolium: falha ao remover (${e.message || e})`, 'warn');
+  }
+}
+
+function applyVigoliumKaliDeepPreset() {
+  setSelectValue('vigoliumEngineSelect', 'both');
+  setSelectValue('vigoliumStrategySelect', 'deep');
+  setInputChecked('vigoliumPreferPathToggle', true);
+  setInputChecked('modVigoliumDast', true);
+  setInputChecked('vigoliumHtmlReportToggle', true);
+  setInputChecked('confirmActiveToggle', true);
+  const reportOnly = document.getElementById('vigoliumReportOnlyInput');
+  if (reportOnly && !reportOnly.value.trim()) reportOnly.value = 'discovery';
+  renderVigoliumGuardrails();
+  addLog('Preset Vigolium Kali Deep aplicado: PATH + both + DAST + deep + HTML report.', 'info');
+}
+
+function appendUniqueLines(textareaId, lines) {
+  const el = document.getElementById(textareaId);
+  if (!el) return;
+  const current = String(el.value || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  const seen = new Set(current.map((x) => x.toLowerCase()));
+  for (const line of lines.map((x) => String(x || '').trim()).filter(Boolean)) {
+    const key = line.toLowerCase();
+    if (!seen.has(key)) {
+      current.push(line);
+      seen.add(key);
+    }
+  }
+  el.value = current.join('\n');
+}
+
+function mergeCsvInput(id, values) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const current = String(el.value || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const seen = new Set(current.map((x) => x.toLowerCase()));
+  for (const value of values.map((x) => String(x || '').trim()).filter(Boolean)) {
+    const key = value.toLowerCase();
+    if (!seen.has(key)) {
+      current.push(value);
+      seen.add(key);
+    }
+  }
+  el.value = current.join(',');
+}
+
+function vigoliumAuthEntry(role, raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  if (new RegExp(`^${role}:`, 'i').test(value)) return value;
+  if (/^(cookie|header|bearer):/i.test(value)) return `${role}:${value}`;
+  const kind = /^authorization\s*[:=]/i.test(value) || /^[a-z0-9-]+\s*:/i.test(value)
+    ? 'Header'
+    : 'Cookie';
+  return `${role}:${kind}:${value}`;
+}
+
+function applyVigoliumAuthComparePreset() {
+  const adminRaw = document.getElementById('vigoliumCompareAdminInput')?.value || '';
+  const userRaw = document.getElementById('vigoliumCompareUserInput')?.value || '';
+  const entries = [
+    vigoliumAuthEntry('admin', adminRaw),
+    vigoliumAuthEntry('user', userRaw),
+  ].filter(Boolean);
+  if (entries.length) appendUniqueLines('vigoliumAuthEntriesInput', entries);
+  setSelectValue('vigoliumEngineSelect', 'both');
+  setSelectValue('vigoliumStrategySelect', 'deep');
+  setInputChecked('vigoliumPreferPathToggle', true);
+  setInputChecked('modVigoliumDast', true);
+  setInputChecked('vigoliumHtmlReportToggle', true);
+  setInputChecked('confirmActiveToggle', true);
+  mergeCsvInput('vigoliumModuleTagsInput', ['access-control', 'idor', 'bola', 'authz']);
+  const reportOnly = document.getElementById('vigoliumReportOnlyInput');
+  if (reportOnly && !reportOnly.value.trim()) reportOnly.value = 'discovery';
+  renderVigoliumGuardrails();
+  addLog(
+    entries.length
+      ? 'Vigolium Auth Compare aplicado: admin/user + tags IDOR/BOLA + report HTML.'
+      : 'Vigolium Auth Compare aplicado sem credenciais inline; preencha admin/user para comparar papeis.',
+    entries.length ? 'info' : 'warn',
+  );
+}
+
+function vigoliumAgentModeFromMods(mods) {
+  const set = new Set(mods || []);
+  if (set.has('vigolium_autopilot')) return 'autopilot';
+  if (set.has('vigolium_swarm')) return 'swarm';
+  if (set.has('vigolium_audit')) return 'audit';
+  return 'none';
+}
+
+function currentVigoliumModulesSelected() {
+  return [...document.querySelectorAll('.mod:checked')].map((x) => x.value);
+}
+
+function vigoliumGuardrailMessages(mods = currentVigoliumModulesSelected()) {
+  const mode = vigoliumAgentModeFromMods(mods);
+  const messages = [];
+  const source = String(document.getElementById('vigoliumSourceInput')?.value || '').trim();
+  const useCodex = Boolean(document.getElementById('vigoliumUseCodexToggle')?.checked);
+  const confirmActive = Boolean(document.getElementById('confirmActiveToggle')?.checked);
+  const codexInstalled = window.__vigoliumCap?.codex?.installed;
+  if (mode === 'none') return messages;
+  if (mode === 'audit' && !source) {
+    messages.push({ level: 'block', text: 'audit precisa de caminho do codigo-fonte; sem isso o agent sera ignorado.' });
+  }
+  if (mode === 'autopilot') {
+    if (!confirmActive) messages.push({ level: 'block', text: 'autopilot exige Confirmar ativo antes do RUN.' });
+    if (!useCodex) messages.push({ level: 'warn', text: 'autopilot sem Codex marcado pode cair em provider externo/indefinido do Vigolium.' });
+    if (!source) messages.push({ level: 'warn', text: 'sem source, autopilot fica limitado ao alvo web e perde code review.' });
+  }
+  if (useCodex && codexInstalled === false) {
+    messages.push({ level: 'warn', text: 'Codex nao foi detectado no PATH deste ambiente.' });
+  }
+  return messages;
+}
+
+function renderVigoliumGuardrails() {
+  const box = document.getElementById('vigoliumGuardrailBox');
+  if (!box) return;
+  const messages = vigoliumGuardrailMessages();
+  if (!messages.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  box.style.display = 'block';
+  box.innerHTML = messages.map((m) => {
+    const color = m.level === 'block' ? 'var(--accent4)' : 'var(--accent3)';
+    const label = m.level === 'block' ? 'BLOQUEIO' : 'AVISO';
+    return `<div style="color:${color};margin-bottom:3px"><strong>${label}</strong> · ${escapeHtml(m.text)}</div>`;
+  }).join('');
+}
+
+function validateVigoliumGuardrailsBeforeRun(mods) {
+  const messages = vigoliumGuardrailMessages(mods);
+  const blockers = messages.filter((m) => m.level === 'block');
+  renderVigoliumGuardrails();
+  if (blockers.length) {
+    addLog(`Vigolium guardrail: ${blockers.map((m) => m.text).join(' | ')}`, 'error');
+    return false;
+  }
+  const warnings = messages.filter((m) => m.level === 'warn');
+  if (warnings.length) {
+    return window.confirm(`Vigolium guardrail:\n\n${warnings.map((m) => '- ' + m.text).join('\n')}\n\nContinuar mesmo assim?`);
+  }
+  return true;
+}
+
+function vigoliumHealthHeaders() {
+  const authConfig = getOptionalAuthConfig();
+  const headers = {};
+  if (authConfig?.ghostreconApiKey) headers['X-API-Key'] = authConfig.ghostreconApiKey;
+  return headers;
+}
+
+function vigoliumHealthItem(label, ok, detail) {
+  return `<div class="vigolium-health-item ${ok ? 'ok' : 'missing'}">
+    <strong>${escapeHtml(label)}</strong><br>
+    ${ok ? 'OK' : 'MISS'}${detail ? ` · ${escapeHtml(detail)}` : ''}
+  </div>`;
+}
+
+async function runVigoliumKaliHealthcheck() {
+  const box = document.getElementById('vigoliumHealthBox');
+  if (!box) return;
+  box.style.display = 'block';
+  box.innerHTML = 'checando Kali/PATH/Codex...';
+  try {
+    const res = await fetch(apiUrl('/api/capabilities'), { headers: vigoliumHealthHeaders() });
+    const c = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(c.error || c.message || `HTTP ${res.status}`);
+    const tools = c.tools || {};
+    const vig = c.vigolium || {};
+    const codex = vig.codex || {};
+    const names = ['nmap', 'nuclei', 'ffuf', 'dirsearch', 'sqlmap', 'dalfox', 'tor', 'proxychains'];
+    const toolItems = names.map((name) => vigoliumHealthItem(name, Boolean(tools[name]), 'PATH'));
+    const missing = names.filter((name) => !tools[name]);
+    const distro = c.qualifyDistro ? 'Kali/force habilitado' : 'fora do Kali';
+    const vigDetail = vig.binary || vig.message || 'curl -fsSL https://vigolium.com/install.sh | bash';
+    box.innerHTML = `
+      <div style="color:var(--text)">Kali mode: ${escapeHtml(distro)} · ${missing.length ? `${missing.length} tool(s) faltando` : 'toolchain pronta'}</div>
+      <div class="vigolium-health-grid">
+        ${vigoliumHealthItem('vigolium', Boolean(vig.installed), vigDetail)}
+        ${vigoliumHealthItem('codex', Boolean(codex.installed), codex.binary || 'necessario apenas para agent IA')}
+        ${toolItems.join('')}
+      </div>
+      <div style="margin-top:6px;color:var(--text-dim)">Codex exige login/plano habilitado; o healthcheck valida somente presenca no PATH.</div>
+    `;
+    addLog(`Vigolium healthcheck: ${missing.length ? missing.join(', ') + ' ausente(s)' : 'toolchain Kali OK'}; vigolium=${vig.installed ? 'OK' : 'MISS'}; codex=${codex.installed ? 'OK' : 'MISS'}.`, missing.length || !vig.installed ? 'warn' : 'info');
+  } catch (e) {
+    box.innerHTML = `<span style="color:var(--accent4)">Healthcheck Vigolium falhou: ${escapeHtml(e.message || e)}</span>`;
+    addLog(`Vigolium healthcheck falhou: ${e.message || e}`, 'warn');
+  }
 }
 
 function openPostExPage() {
@@ -5930,6 +6450,10 @@ async function startRecon() {
 
   const exact = document.getElementById('exactMatch').checked;
   const selectedMods = [...document.querySelectorAll('.mod:checked')].map(x => x.value);
+  if (!validateVigoliumGuardrailsBeforeRun(selectedMods)) {
+    finishOk();
+    return;
+  }
   const aiReportsEnabled = Boolean(document.getElementById('modAiReports')?.checked);
   const lmStudioOnly = Boolean(document.getElementById('modAiLmStudioOnly')?.checked);
 
@@ -6122,6 +6646,8 @@ async function startRecon() {
       if (['node', 'go', 'both'].includes(vigEngine)) streamBody.engine = vigEngine;
       const vigStrat = String(document.getElementById('vigoliumStrategySelect')?.value || '').trim().toLowerCase();
       if (['lite', 'balanced', 'deep'].includes(vigStrat)) streamBody.vigoliumStrategy = vigStrat;
+      if (document.getElementById('vigoliumPreferPathToggle')?.checked) streamBody.vigoliumPreferPath = true;
+      if (document.getElementById('vigoliumUseCodexToggle')?.checked) streamBody.vigoliumUseCodex = true;
       const vigSrc = (document.getElementById('vigoliumSourceInput')?.value || '').trim();
       if (vigSrc) streamBody.vigoliumSource = vigSrc;
       const vigAuthFiles = (document.getElementById('vigoliumAuthFileInput')?.value || '')
@@ -6129,6 +6655,20 @@ async function startRecon() {
         .map((x) => x.trim())
         .filter(Boolean);
       if (vigAuthFiles.length) streamBody.vigoliumAuthFiles = vigAuthFiles;
+      const vigAuthEntries = (document.getElementById('vigoliumAuthEntriesInput')?.value || '')
+        .split(/\r?\n/)
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (vigAuthEntries.length) streamBody.vigoliumAuthEntries = vigAuthEntries;
+      const vigInputFile = (document.getElementById('vigoliumInputFileInput')?.value || '').trim();
+      if (vigInputFile) streamBody.vigoliumInputFile = vigInputFile;
+      const vigInputType = (document.getElementById('vigoliumInputTypeInput')?.value || '').trim();
+      if (vigInputType) streamBody.vigoliumInputType = vigInputType;
+      const vigOnly = (document.getElementById('vigoliumOnlyInput')?.value || '').trim();
+      if (vigOnly) streamBody.vigoliumOnly = vigOnly;
+      if (document.getElementById('vigoliumHtmlReportToggle')?.checked) streamBody.vigoliumHtmlReport = true;
+      const vigReportOnly = (document.getElementById('vigoliumReportOnlyInput')?.value || '').trim();
+      if (vigReportOnly) streamBody.vigoliumReportOnly = vigReportOnly;
       const vigModuleTags = (document.getElementById('vigoliumModuleTagsInput')?.value || '')
         .split(',')
         .map((x) => x.trim())
@@ -6136,7 +6676,8 @@ async function startRecon() {
       if (vigModuleTags.length) streamBody.vigoliumModuleTags = vigModuleTags;
       const vigAuditMode = String(document.getElementById('vigoliumAuditModeSelect')?.value || '').trim().toLowerCase();
       if (['lite', 'balanced', 'deep'].includes(vigAuditMode)) streamBody.vigoliumAuditMode = vigAuditMode;
-      if (mods.includes('vigolium_swarm')) streamBody.vigoliumAgent = 'swarm';
+      if (mods.includes('vigolium_autopilot')) streamBody.vigoliumAgent = 'autopilot';
+      else if (mods.includes('vigolium_swarm')) streamBody.vigoliumAgent = 'swarm';
       else if (mods.includes('vigolium_audit')) streamBody.vigoliumAgent = 'audit';
 
       const anonModeOn = Boolean(document.getElementById('anonModeToggle')?.checked);
@@ -6992,13 +7533,15 @@ async function refreshShannonCapabilities() {
 }
 
 function applyVigoliumCapToUI(v) {
+  window.__vigoliumCap = v || null;
   const el = document.getElementById('vigoliumCapLine');
   if (!el) return;
   const appendVigoliumExtra = () => {
     const count = v?.moduleCounts?.total || v?.moduleCount || null;
     const moduleBit = count ? ` · ${count} modulos` : '';
     const serverBit = v?.server?.configured ? ` · server ${v.server.baseUrl || 'configurado'}` : '';
-    if (moduleBit || serverBit) el.textContent = `${el.textContent}${moduleBit}${serverBit}`;
+    const codexBit = v?.codex ? ` · codex:${v.codex.installed ? 'OK' : 'MISS'}` : '';
+    if (moduleBit || serverBit || codexBit) el.textContent = `${el.textContent}${moduleBit}${serverBit}${codexBit}`;
   };
   if (!v) {
     el.textContent = 'Vigolium: indisponível';
@@ -7006,7 +7549,7 @@ function applyVigoliumCapToUI(v) {
     return;
   }
   if (v.installed) {
-    el.textContent = `Vigolium: ${v.version || 'OK'} · ${v.binary || 'engines/vigolium'}`;
+    el.textContent = `Vigolium: ${v.version || 'OK'} · source=${v.resolveSource || 'auto'} · ${v.binary || 'engines/vigolium'}`;
     el.style.color = 'var(--accent2)';
     appendVigoliumExtra();
   } else {
@@ -7093,6 +7636,23 @@ document.getElementById('vigoliumCatalogBox')?.addEventListener('click', (ev) =>
   if (!current.includes(tag)) current.push(tag);
   input.value = current.join(',');
 });
+
+[
+  'modVigoliumAudit',
+  'modVigoliumSwarm',
+  'modVigoliumAutopilot',
+  'vigoliumUseCodexToggle',
+  'vigoliumSourceInput',
+  'confirmActiveToggle',
+].forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('change', renderVigoliumGuardrails);
+  el.addEventListener('input', renderVigoliumGuardrails);
+});
+
+loadVigoliumRunProfile({ silent: true });
+renderVigoliumGuardrails();
 
 document.getElementById('shannonPrepPullBtn')?.addEventListener('click', async () => {
   const btn = document.getElementById('shannonPrepPullBtn');
@@ -7309,12 +7869,27 @@ function closeFindingsHelpModal() {
   o.setAttribute('aria-hidden', 'true');
 }
 
+function openSidebarHelpModal() {
+  const o = document.getElementById('sidebarHelpOverlay');
+  if (!o) return;
+  o.classList.add('is-open');
+  o.setAttribute('aria-hidden', 'false');
+}
+
+function closeSidebarHelpModal() {
+  const o = document.getElementById('sidebarHelpOverlay');
+  if (!o) return;
+  o.classList.remove('is-open');
+  o.setAttribute('aria-hidden', 'true');
+}
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (document.getElementById('aiReportsConsentOverlay')?.classList.contains('is-open')) {
       aiReportsConsentFinish('cancel');
       return;
     }
+    closeSidebarHelpModal();
     closeFindingsHelpModal();
     closeModulesHelpModal();
     closeSqlmapHelpModal();
@@ -7467,6 +8042,135 @@ function closeXssHelpModal() {
           OK — confirmar
         </button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div
+  id="sidebarHelpOverlay"
+  class="findings-help-overlay"
+  aria-hidden="true"
+  onclick="if (event.target === this) closeSidebarHelpModal()"
+>
+  <div
+    class="findings-help-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="sidebarHelpTitle"
+    onclick="event.stopPropagation()"
+    style="width: min(660px, 100%)"
+  >
+    <button type="button" class="findings-help-close" onclick="closeSidebarHelpModal()" aria-label="Fechar">×</button>
+    <div class="findings-help-dialog-head">
+      <h2 id="sidebarHelpTitle">PAINEL ESQUERDO — GUIA</h2>
+      <p class="findings-help-intro">
+        O lado esquerdo é o cockpit do GhostRecon: define alvo, escopo, OPSEC, módulos, Vigolium, IA, relatórios e páginas auxiliares. Use este guia quando um campo parecer “mais uma caixa misteriosa”.
+      </p>
+    </div>
+    <div class="findings-help-scroll">
+      <h3 class="findings-help-section-title" style="margin-top:0;padding-top:0;border-top:none">Topo e alvo</h3>
+      <dl class="findings-help-dl">
+        <dt>Projeto (pasta local)</dt>
+        <dd>Nome opcional do cliente/projeto. Quando preenchido, o run também grava corpus e SQLite em <code>escopo/{projeto}/{dominio}/ghostrecon.db</code>, além do storage configurado.</dd>
+        <dt>Contexto bounty (JSON)</dt>
+        <dd>Ajusta a priorização v2. Use modelos como Web/API/Mobile/VDP e edite o JSON para refletir escopo, recompensa, foco técnico e exclusões do programa.</dd>
+        <dt>Target ($)</dt>
+        <dd>Alvo principal do recon. Aceita domínio, URL, IPv4 ou IPv6. Esse valor alimenta o pipeline, Reporte, Ghostmap, Workbench e filtros de alvo.</dd>
+        <dt>Fila de alvos</dt>
+        <dd>Roda vários alvos em sequência. O Target ($) é o primeiro; a textarea adiciona os próximos. É mais seguro para rate limit do que paralelizar tudo.</dd>
+        <dt>Fora de escopo</dt>
+        <dd>Lista hosts/URLs/wildcards que não devem entrar em corpus, sitemap, superfície HTML nem Google CSE. Também soma com <code>GHOSTRECON_OUT_OF_SCOPE</code> do servidor.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">Engagement, OPSEC e identidade</h3>
+      <dl class="findings-help-dl">
+        <dt>Engagement ID</dt>
+        <dd>Conecta o run a um engagement já criado no servidor. Ativa checklist pré-run, valida escopo e registra auditoria.</dd>
+        <dt>Operador</dt>
+        <dd>Identificador curto usado em auditoria e watermark de headers quando há engagement.</dd>
+        <dt>Confirmar ativo</dt>
+        <dd>Confirma que você tem autorização para módulos ativos/intrusivos. Necessário para Kali agressivo, SQLmap, Vigolium DAST/autopilot e outros módulos de ataque.</dd>
+        <dt>Perfil OPSEC</dt>
+        <dd><code>passive</code>, <code>stealth</code>, <code>standard</code> ou <code>aggressive</code>. O gate OPSEC bloqueia módulos incompatíveis com o perfil escolhido.</dd>
+        <dt>Modo Navigator / Tor</dt>
+        <dd>Ativa fluxo Navigator e Tor em modo usuário. No Windows sem binário Tor, esses recursos podem falhar; use Kali/WSL/Linux com ferramentas instaladas.</dd>
+        <dt>Rotação de identidade</dt>
+        <dd>Configura proxies, rotação, retries em 403/429 e comportamento anti-WAF. Pode ser usado via módulo ou via JSON do run.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">Execução rápida</h3>
+      <dl class="findings-help-dl">
+        <dt>Modo anônimo</dt>
+        <dd>Atalho para Tor, proxychains e rotação de identidade. Pode deixar o recon muito mais lento.</dd>
+        <dt>Exact match</dt>
+        <dd>Usa aspas em dorks quando aplicável, reduzindo ruído em pesquisas externas.</dd>
+        <dt>Abrir dorks</dt>
+        <dd>Abre as pesquisas Google geradas em abas, respeitando delay e máximo de abas.</dd>
+        <dt>Full</dt>
+        <dd>Preset amplo: marca vários módulos, ativa relatório por IA e pede confirmação. Não substitui leitura de escopo do programa.</dd>
+        <dt>Recon subs</dt>
+        <dd>Depois do alvo principal, roda recon nos subdomínios encontrados, respeitando fila e fora de escopo.</dd>
+        <dt>Perfil recon</dt>
+        <dd><code>quick</code>, <code>standard</code> ou <code>deep</code>. Ajusta profundidade, tempo e algumas fontes/ferramentas do pipeline.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">Auth, Kali e botões do hub</h3>
+      <dl class="findings-help-dl">
+        <dt>Auth opcional</dt>
+        <dd>Guarda API key do GhostRecon, Authorization, Cookie e headers de programa bug bounty. O recon usa esses dados em requests e ferramentas compatíveis.</dd>
+        <dt>Kali (scan ativo)</dt>
+        <dd>Mostra capacidades do servidor: nmap, nuclei, ffuf, sqlmap, dalfox, tor, proxychains etc. Em Windows puro é esperado aparecer indisponível.</dd>
+        <dt>PATH</dt>
+        <dd>Pede ao servidor para reavaliar pastas comuns de binários. Útil em Kali/WSL quando Node iniciou sem PATH completo.</dd>
+        <dt>RUN RECON</dt>
+        <dd>Dispara o pipeline NDJSON. Antes de enviar, a UI valida guardrails como OPSEC, Shannon, PentestGPT e Vigolium autopilot.</dd>
+        <dt>Ghostmap</dt>
+        <dd>Mapa MITRE ao vivo por BroadcastChannel. Pode abrir antes do run para receber eventos durante a execução.</dd>
+        <dt>Cortex</dt>
+        <dd>Grafo de conhecimento com dados reais da SQLite. Shift+clique abre demo.</dd>
+        <dt>History</dt>
+        <dd>Histórico HTTP estilo Burp com requests feitas pelo recon e corpos capturados.</dd>
+        <dt>Vigolium</dt>
+        <dd>Abre o Workbench: records HTTP, findings do servidor Vigolium, agent IA, catálogo de módulos, OAST e reports HTML.</dd>
+        <dt>Reporte / GhostDesk / Pós-Exploração</dt>
+        <dd>Reporte valida findings e gera checklist; GhostDesk organiza pentests e relatórios; Pós-Exploração reúne cheatsheets e módulos pós-compromisso.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">Módulos e Vigolium</h3>
+      <dl class="findings-help-dl">
+        <dt>Modules</dt>
+        <dd>Caixas <code>.mod</code> enviadas em <code>modules[]</code> para o backend. Tags HIGH/MED/LOW indicam sensibilidade aproximada; CRIT/KALI/API/IA indicam dependência ou risco.</dd>
+        <dt>Google Dorking / OSINT</dt>
+        <dd>Gera dorks, endpoints históricos, subdomínios, RDAP, headers, TLS, robots/sitemap, GitHub leaks, Pastebin hints, CSE e fontes externas.</dd>
+        <dt>Verificação e módulos ativos</dt>
+        <dd>Inclui XSS, SQLi, LFI, open redirect, IDOR/BOLA, CORS, cookies, CSRF, JWT/JWKS, GraphQL, OpenAPI, cloud, takeover, race condition e outros testes.</dd>
+        <dt>Vigolium PATH</dt>
+        <dd>No modo Kali, tenta usar <code>vigolium</code> instalado no PATH. Se não existir, cai para o fallback local atual quando disponível.</dd>
+        <dt>Vigolium DAST</dt>
+        <dd>Roda o motor Go do Vigolium com estratégia <code>lite</code>, <code>balanced</code> ou <code>deep</code>. Pode gerar findings e report HTML.</dd>
+        <dt>Vigolium com Codex</dt>
+        <dd>Marca provider Codex/OAuth para agents do Vigolium. Só funciona se Codex estiver instalado, logado e com plano/acesso compatível.</dd>
+        <dt>Auth Compare</dt>
+        <dd>Preenche admin/user em <code>--auth</code>, ativa PATH + DAST + report HTML e adiciona tags IDOR/BOLA para comparar papéis.</dd>
+        <dt>Guardrails Vigolium</dt>
+        <dd>Autopilot exige <strong>Confirmar ativo</strong>; a UI avisa se faltar Codex ou source. Audit precisa de caminho de código.</dd>
+      </dl>
+
+      <h3 class="findings-help-section-title">IA e relatórios</h3>
+      <dl class="findings-help-dl">
+        <dt>IA · relatórios</dt>
+        <dd>Ao marcar confirmação, o servidor pode usar Gemini, OpenRouter, Claude e/ou LM Studio para gerar <code>relatorio</code> e <code>proximos_passos</code>. Sem confirmação, não há chamada cloud.</dd>
+        <dt>Shannon white-box</dt>
+        <dd>Análise local em Docker sobre código-fonte/repositórios. Gera relatório de segurança e findings <code>intel</code>.</dd>
+        <dt>PentestGPT HTTP</dt>
+        <dd>Envia resumo pós-recon para um endpoint configurado em <code>GHOSTRECON_PENTESTGPT_URL</code>, útil para triagem e bug bounty report.</dd>
+        <dt>Histórico SQLite</dt>
+        <dd>Lista runs recentes. Ao abrir um run, os findings retornam para o painel central/direito.</dd>
+      </dl>
+
+      <p class="findings-help-section-intro" style="margin-top:16px">
+        Para o passo a passo completo e atualizado, use o botão <strong>Como usar</strong> no topo do painel esquerdo.
+      </p>
     </div>
   </div>
 </div>

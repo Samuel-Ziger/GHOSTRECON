@@ -11,30 +11,36 @@ import {
   resolveVigoliumModuleFilter,
   resolveVigoliumModuleTags,
   resolveVigoliumAuthFiles,
+  resolveVigoliumAuthEntries,
+  resolveVigoliumInputFile,
+  resolveVigoliumInputType,
+  resolveVigoliumOnly,
+  resolveVigoliumReportOnly,
   resolveVigoliumTarget,
+  shouldPreferVigoliumPath,
+  shouldUseVigoliumCodex,
+  shouldWriteVigoliumHtmlReport,
   vigoliumTimeoutMs,
 } from './vigolium-config.mjs';
 
-export function buildVigoliumScanArgs(s, { outFile } = {}) {
+function addTargetArgs(args, s) {
+  const inputFile = resolveVigoliumInputFile(s);
+  const inputType = resolveVigoliumInputType(s);
+  if (inputFile) {
+    args.push('-T', inputFile);
+    if (inputType) args.push('-I', inputType);
+    return { target: inputFile, inputFile, inputType };
+  }
   const target = resolveVigoliumTarget(s);
-  const strategy = resolveVigoliumStrategy(s);
+  args.push('-t', target);
+  return { target, inputFile: null, inputType: null };
+}
+
+function addSharedScanArgs(args, s) {
   const moduleFilter = resolveVigoliumModuleFilter(s);
   const moduleTags = resolveVigoliumModuleTags(s);
   const authFiles = resolveVigoliumAuthFiles(s);
-  const args = [
-    'scan',
-    '-t',
-    target,
-    '--strategy',
-    strategy,
-    '--format',
-    'jsonl',
-    '-o',
-    outFile || '-',
-    '--ci-output-format',
-    '-F',
-    '--soft-fail',
-  ];
+  const authEntries = resolveVigoliumAuthEntries(s);
 
   for (const mod of moduleFilter) {
     args.push('-m', mod);
@@ -44,6 +50,9 @@ export function buildVigoliumScanArgs(s, { outFile } = {}) {
   }
   for (const authFile of authFiles) {
     args.push('--auth-file', authFile);
+  }
+  for (const authEntry of authEntries) {
+    args.push('--auth', authEntry);
   }
 
   if (s.auth?.cookie) {
@@ -57,7 +66,75 @@ export function buildVigoliumScanArgs(s, { outFile } = {}) {
     }
   }
 
-  return { args, target, strategy, moduleFilter, moduleTags, authFiles };
+  return { moduleFilter, moduleTags, authFiles, authEntries };
+}
+
+export function buildVigoliumScanArgs(s, { outFile } = {}) {
+  const strategy = resolveVigoliumStrategy(s);
+  const only = resolveVigoliumOnly(s);
+  const args = [
+    'scan',
+  ];
+  const targetInfo = addTargetArgs(args, s);
+  args.push(
+    '--strategy',
+    strategy,
+  );
+  if (only) args.push('--only', only);
+  args.push(
+    '--format',
+    'jsonl',
+    '-o',
+    outFile || '-',
+    '--ci-output-format',
+    '-F',
+    '--soft-fail',
+  );
+  const shared = addSharedScanArgs(args, s);
+
+  return { args, target: targetInfo.target, strategy, only, ...targetInfo, ...shared };
+}
+
+export function buildVigoliumHtmlReportArgs(s, { outFile } = {}) {
+  const strategy = resolveVigoliumStrategy(s);
+  const reportOnly = resolveVigoliumReportOnly(s);
+  const args = ['scan'];
+  const targetInfo = addTargetArgs(args, s);
+  args.push('--strategy', strategy);
+  if (reportOnly) args.push('--only', reportOnly);
+  args.push('--format', 'html', '-o', outFile || 'report.html', '-F', '--soft-fail');
+  const shared = addSharedScanArgs(args, s);
+  return { args, target: targetInfo.target, strategy, reportOnly, ...targetInfo, ...shared };
+}
+
+function slugForFile(value) {
+  return String(value || 'target')
+    .replace(/^https?:\/\//i, '')
+    .replace(/[\\/:*?"<>|\s]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'target';
+}
+
+async function ensureReportFile(s, target) {
+  const root = s.ROOT || ghostreconRoot();
+  const dir = path.join(root, '.runtime', 'vigolium-reports');
+  await fs.mkdir(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return path.join(dir, `${stamp}-${slugForFile(target)}.html`);
+}
+
+function reportUrlForPath(reportPath) {
+  const file = path.basename(String(reportPath || ''));
+  return file ? `/api/vigolium/reports/${encodeURIComponent(file)}` : null;
+}
+
+function vigoliumProcessEnv(s) {
+  if (!shouldUseVigoliumCodex(s)) return process.env;
+  return {
+    ...process.env,
+    GHOSTRECON_VIGOLIUM_USE_CODEX: '1',
+    VIGOLIUM_PROVIDER: process.env.VIGOLIUM_PROVIDER || 'openai-codex-oauth',
+  };
 }
 
 /**
@@ -68,7 +145,7 @@ export function buildVigoliumScanArgs(s, { outFile } = {}) {
 export async function runVigoliumScan(s, hooks = {}) {
   const log = hooks.log || s.log || (() => {});
   const root = s.ROOT || ghostreconRoot();
-  const { bin } = await resolveVigoliumBinary(root);
+  const { bin, source } = await resolveVigoliumBinary(root, { preferPath: shouldPreferVigoliumPath(s) });
   if (!bin) {
     return {
       ok: false,
@@ -82,7 +159,7 @@ export async function runVigoliumScan(s, hooks = {}) {
   const outFile = path.join(tmpDir, 'findings.jsonl');
   const { args, target, strategy } = buildVigoliumScanArgs(s, { outFile });
 
-  log(`Vigolium scan: ${target} (strategy=${strategy})`, 'info');
+  log(`Vigolium scan: ${target} (strategy=${strategy}, source=${source || 'auto'})`, 'info');
 
   let result;
   try {
@@ -90,6 +167,7 @@ export async function runVigoliumScan(s, hooks = {}) {
       timeoutMs: vigoliumTimeoutMs(),
       rejectOnError: false,
       rejectOnTimeout: false,
+      spawnOpts: { env: vigoliumProcessEnv(s) },
       label: 'vigolium scan',
     });
   } catch (e) {
@@ -114,6 +192,37 @@ export async function runVigoliumScan(s, hooks = {}) {
 
   const findings = parseVigoliumJsonl(raw);
   const scanOk = result.code === 0 || findings.length > 0;
+  let htmlReport = null;
+
+  if (shouldWriteVigoliumHtmlReport(s)) {
+    const reportPath = await ensureReportFile(s, target);
+    const html = buildVigoliumHtmlReportArgs(s, { outFile: reportPath });
+    try {
+      const reportResult = await runProcess(bin, html.args, {
+        timeoutMs: vigoliumTimeoutMs(),
+        rejectOnError: false,
+        rejectOnTimeout: false,
+        spawnOpts: { env: vigoliumProcessEnv(s) },
+        label: 'vigolium html report',
+      });
+      htmlReport = {
+        ok: reportResult.code === 0,
+        path: reportPath,
+        url: reportUrlForPath(reportPath),
+        exitCode: reportResult.code,
+        timedOut: reportResult.timedOut,
+        only: html.reportOnly,
+      };
+      if (!htmlReport.ok && reportResult.stderr) {
+        log(`Vigolium report stderr: ${reportResult.stderr.slice(0, 400)}`, 'warn');
+      } else {
+        log(`Vigolium HTML report: ${reportPath}`, 'info');
+      }
+    } catch (e) {
+      htmlReport = { ok: false, path: reportPath, url: reportUrlForPath(reportPath), reason: e?.message || String(e) };
+      log(`Vigolium HTML report falhou: ${htmlReport.reason}`, 'warn');
+    }
+  }
 
   if (!scanOk && result.stderr) {
     log(`Vigolium stderr: ${result.stderr.slice(0, 400)}`, 'warn');
@@ -128,5 +237,7 @@ export async function runVigoliumScan(s, hooks = {}) {
     exitCode: result.code,
     timedOut: result.timedOut,
     binary: bin,
+    binarySource: source,
+    htmlReport,
   };
 }

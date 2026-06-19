@@ -72,10 +72,17 @@ Opções de "run":
   --vigolium-modules CSV  Filtro -m do vigolium scan.
   --vigolium-module-tag TAG  Filtro --module-tag do Vigolium (repetivel; ex.: access-control).
   --vigolium-auth-file FILE  YAML/JSON de sessao Vigolium (repetivel; primary/compare para IDOR/BOLA).
+  --vigolium-auth ROLE:KIND:VALUE  Auth inline (ex.: admin:Cookie:session_id=abc123).
+  --vigolium-input-file FILE  Entrada -T (ex.: openapi.yaml); combine com --vigolium-input-type openapi.
+  --vigolium-html-report  Gera HTML em .runtime/vigolium-reports usando o Vigolium instalado.
+  --vigolium-prefer-path  Prefere o binario vigolium do PATH no modo Kali.
+  --vigolium-use-codex  Usa Codex/OAuth no agent IA (requer plano/login).
 
 Exemplos:
   ghostrecon run --target example.com --modules crtsh,http,github
   ghostrecon scan -t example.com --engine both --strategy lite --modules rdap,vigolium_dast
+  ghostrecon scan -t example.com --kali --engine both --modules vigolium_dast --strategy deep --vigolium-prefer-path
+  ghostrecon scan -t api.example.com --engine both --modules vigolium_dast --vigolium-input-file openapi.yaml --vigolium-input-type openapi
   ghostrecon run --target api.example.com --playbook api-first --output api.json
   ghostrecon runs --target example.com --limit 5
   ghostrecon diff --baseline 12 --newer 18 --format summary

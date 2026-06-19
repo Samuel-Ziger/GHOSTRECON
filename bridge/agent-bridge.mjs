@@ -3,9 +3,12 @@ import { parseVigoliumJsonl } from './findings-normalizer.mjs';
 import {
   ghostreconRoot,
   resolveVigoliumBinary,
+  resolveVigoliumAuthEntries,
   resolveVigoliumAuthFiles,
   resolveVigoliumModuleTags,
   resolveVigoliumTarget,
+  shouldPreferVigoliumPath,
+  shouldUseVigoliumCodex,
   vigoliumAgentTimeoutMs,
 } from './vigolium-config.mjs';
 
@@ -13,6 +16,7 @@ export function buildVigoliumAgentArgs(s, mode) {
   const target = resolveVigoliumTarget(s);
   const source = String(s.vigoliumSource || '').trim();
   const authFiles = resolveVigoliumAuthFiles(s);
+  const authEntries = resolveVigoliumAuthEntries(s);
   const moduleTags = resolveVigoliumModuleTags(s);
   const args = ['agent', mode, '-j', '-F', '--soft-fail'];
 
@@ -28,11 +32,13 @@ export function buildVigoliumAgentArgs(s, mode) {
     if (source) args.push('--source', source);
     for (const tag of moduleTags) args.push('--module-tag', tag);
     for (const authFile of authFiles) args.push('--auth-file', authFile);
+    for (const authEntry of authEntries) args.push('--auth', authEntry);
   } else if (mode === 'autopilot') {
     args.push('-t', target);
     if (source) args.push('--source', source);
     for (const tag of moduleTags) args.push('--module-tag', tag);
     for (const authFile of authFiles) args.push('--auth-file', authFile);
+    for (const authEntry of authEntries) args.push('--auth', authEntry);
   } else if (mode === 'query') {
     const prompt = String(s.vigoliumAgentPrompt || 'security-code-review').trim();
     args.length = 0;
@@ -40,7 +46,16 @@ export function buildVigoliumAgentArgs(s, mode) {
     if (source) args.push('--source', source);
   }
 
-  return { args, target, source, authFiles, moduleTags, skipped: false };
+  return { args, target, source, authFiles, authEntries, moduleTags, skipped: false };
+}
+
+function vigoliumAgentEnv(s) {
+  if (!shouldUseVigoliumCodex(s)) return process.env;
+  return {
+    ...process.env,
+    GHOSTRECON_VIGOLIUM_USE_CODEX: '1',
+    VIGOLIUM_PROVIDER: process.env.VIGOLIUM_PROVIDER || 'openai-codex-oauth',
+  };
 }
 
 /**
@@ -50,7 +65,7 @@ export function buildVigoliumAgentArgs(s, mode) {
 export async function runVigoliumAgent(s, mode) {
   const log = s.log || (() => {});
   const root = s.ROOT || ghostreconRoot();
-  const { bin } = await resolveVigoliumBinary(root);
+  const { bin, source: binarySource } = await resolveVigoliumBinary(root, { preferPath: shouldPreferVigoliumPath(s) });
   if (!bin) {
     return { ok: false, skipped: true, reason: 'binário vigolium não encontrado', findings: [] };
   }
@@ -69,6 +84,7 @@ export async function runVigoliumAgent(s, mode) {
       timeoutMs: vigoliumAgentTimeoutMs(),
       rejectOnError: false,
       rejectOnTimeout: false,
+      spawnOpts: { env: vigoliumAgentEnv(s) },
       label: `vigolium agent ${mode}`,
     });
   } catch (e) {
@@ -87,6 +103,7 @@ export async function runVigoliumAgent(s, mode) {
     exitCode: result.code,
     timedOut: result.timedOut,
     binary: bin,
+    binarySource,
   };
 }
 

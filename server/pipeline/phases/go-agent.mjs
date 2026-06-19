@@ -37,6 +37,12 @@ export async function runGoAgentPhase(s) {
     pipe('vigolium_agent', 'skip');
     return;
   }
+  if (agentMode === 'autopilot' && !s.vigoliumUseCodex) {
+    log('vigolium_autopilot: Codex nao foi marcado; o Vigolium pode usar provider externo/indefinido conforme ambiente.', 'warn');
+  }
+  if (agentMode === 'autopilot' && !s.vigoliumSource) {
+    log('vigolium_autopilot: sem vigoliumSource; code review fica limitado/indisponivel.', 'warn');
+  }
 
   pipe('vigolium_agent', 'active');
   if (agentMode === 'audit') pipe('vigolium_audit', 'active');

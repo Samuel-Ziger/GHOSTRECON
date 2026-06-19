@@ -388,6 +388,22 @@ export function registerReconStreamRoutes(app, deps) {
         vigoliumAuthFile: req.body?.vigoliumAuthFile != null ? String(req.body.vigoliumAuthFile).trim() : null,
         vigoliumAuditMode:
           req.body?.vigoliumAuditMode != null ? String(req.body.vigoliumAuditMode).trim().toLowerCase() : null,
+        vigoliumInputFile:
+          req.body?.vigoliumInputFile != null ? String(req.body.vigoliumInputFile).trim() : null,
+        vigoliumInputType:
+          req.body?.vigoliumInputType != null ? String(req.body.vigoliumInputType).trim() : null,
+        vigoliumOnly:
+          req.body?.vigoliumOnly != null ? String(req.body.vigoliumOnly).trim() : null,
+        vigoliumAuthEntries: Array.isArray(req.body?.vigoliumAuthEntries)
+          ? req.body.vigoliumAuthEntries.map(String)
+          : null,
+        vigoliumAuth:
+          req.body?.vigoliumAuth != null ? String(req.body.vigoliumAuth).trim() : null,
+        vigoliumHtmlReport: req.body?.vigoliumHtmlReport === true,
+        vigoliumReportOnly:
+          req.body?.vigoliumReportOnly != null ? String(req.body.vigoliumReportOnly).trim() : null,
+        vigoliumPreferPath: req.body?.vigoliumPreferPath === true,
+        vigoliumUseCodex: req.body?.vigoliumUseCodex === true,
       });
     });
   } catch (e) {

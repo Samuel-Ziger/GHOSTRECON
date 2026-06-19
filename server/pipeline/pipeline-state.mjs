@@ -13,6 +13,14 @@ import {
   resolveVigoliumSource,
   resolveVigoliumAuthFiles,
   resolveVigoliumModuleTags,
+  resolveVigoliumAuthEntries,
+  resolveVigoliumInputFile,
+  resolveVigoliumInputType,
+  resolveVigoliumOnly,
+  resolveVigoliumReportOnly,
+  shouldPreferVigoliumPath,
+  shouldUseVigoliumCodex,
+  shouldWriteVigoliumHtmlReport,
 } from '../../bridge/vigolium-config.mjs';
 
 /** Estado mutável partilhado entre fases do pipeline. */
@@ -52,6 +60,15 @@ export function createPipelineState(ctx) {
     vigoliumAuthFiles = null,
     vigoliumAuthFile = null,
     vigoliumAuditMode = null,
+    vigoliumInputFile = null,
+    vigoliumInputType = null,
+    vigoliumOnly = null,
+    vigoliumAuthEntries = null,
+    vigoliumAuth = null,
+    vigoliumHtmlReport = false,
+    vigoliumReportOnly = null,
+    vigoliumPreferPath = false,
+    vigoliumUseCodex = false,
   } = ctx;
 
   const apexHostIsIp = targetIsIp(domain);
@@ -132,6 +149,14 @@ export function createPipelineState(ctx) {
     vigoliumAgentMode: resolveVigoliumAgentMode({ vigoliumAgent, modules }),
     vigoliumSource: resolveVigoliumSource({ vigoliumSource }),
     vigoliumAuthFiles: resolveVigoliumAuthFiles({ vigoliumAuthFiles, vigoliumAuthFile }),
+    vigoliumAuthEntries: resolveVigoliumAuthEntries({ vigoliumAuthEntries, vigoliumAuth }),
+    vigoliumInputFile: resolveVigoliumInputFile({ vigoliumInputFile }),
+    vigoliumInputType: resolveVigoliumInputType({ vigoliumInputType }),
+    vigoliumOnly: resolveVigoliumOnly({ vigoliumOnly }),
+    vigoliumHtmlReport: shouldWriteVigoliumHtmlReport({ vigoliumHtmlReport }),
+    vigoliumReportOnly: resolveVigoliumReportOnly({ vigoliumReportOnly }),
+    vigoliumPreferPath: shouldPreferVigoliumPath({ vigoliumPreferPath, kaliMode }),
+    vigoliumUseCodex: shouldUseVigoliumCodex({ vigoliumUseCodex }),
     vigoliumAuditMode: vigoliumAuditMode || null,
     ...pctx,
   };

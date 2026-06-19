@@ -1,105 +1,461 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GHOSTRECON — Como usar (Reporte e Anotações)</title>
+  <title>GHOSTRECON - Como usar</title>
   <style>
     :root {
-      --bg: #0a0e14;
-      --bg2: #121a24;
-      --border: #2a3848;
+      --bg: #05080d;
+      --bg2: #0a0e14;
+      --bg3: #101824;
+      --panel: #0c121b;
+      --border: #243447;
+      --border-bright: #315069;
       --text: #c8d0dc;
+      --text-bright: #f4f8ff;
       --dim: #7a8a9e;
       --accent: #00d4ff;
       --ok: #00ff88;
-      --mono: ui-monospace, 'Cascadia Code', monospace;
-      --sans: system-ui, sans-serif;
+      --warn: #ffb020;
+      --danger: #ff4d6d;
+      --mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      --sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
+
     * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
     body {
       margin: 0;
       min-height: 100vh;
-      background: var(--bg);
+      background:
+        linear-gradient(180deg, rgba(0, 212, 255, 0.06), transparent 320px),
+        radial-gradient(circle at top right, rgba(0, 255, 136, 0.06), transparent 280px),
+        var(--bg);
       color: var(--text);
       font-family: var(--sans);
       font-size: 14px;
-      line-height: 1.55;
-      padding: 24px 20px 48px;
-      max-width: 720px;
-      margin-left: auto;
-      margin-right: auto;
+      line-height: 1.6;
     }
-    h1 {
-      font-size: 11px;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: var(--accent);
-      margin: 0 0 8px;
-    }
-    h2 {
-      font-size: 13px;
-      margin: 28px 0 10px;
-      color: var(--ok);
-    }
-    p, li { margin: 0 0 12px; }
-    ol { padding-left: 1.2rem; }
-    code {
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--text-bright); }
+
+    code, pre {
       font-family: var(--mono);
       font-size: 12px;
+    }
+
+    code {
+      color: var(--text-bright);
       background: var(--bg2);
-      padding: 2px 6px;
       border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 4px;
     }
-    a {
-      color: var(--accent);
+
+    pre {
+      margin: 12px 0 0;
+      padding: 14px;
+      overflow-x: auto;
+      color: var(--text-bright);
+      background: #060a10;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      line-height: 1.5;
     }
-    a:hover {
-      color: #a7ecff;
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
     }
-    .back {
-      margin-bottom: 20px;
+
+    .side {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 16px;
+      border-right: 1px solid var(--border);
+      background: rgba(5, 8, 13, 0.94);
+      overflow-y: auto;
+    }
+
+    .brand {
       font-family: var(--mono);
       font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+
+    .muted {
+      color: var(--dim);
+      font-size: 12px;
+      margin: 0 0 18px;
+    }
+
+    .back {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 34px;
+      margin-bottom: 18px;
+      border: 1px solid var(--border-bright);
+      background: var(--bg2);
+      color: var(--text-bright);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav a {
+      display: block;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .nav a:hover {
+      border-color: var(--border-bright);
+      background: var(--bg2);
+      color: var(--accent);
+    }
+
+    main {
+      width: min(100%, 1040px);
+      padding: 34px 30px 70px;
+    }
+
+    .hero {
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--ok);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      color: var(--text-bright);
+      font-size: 30px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 0;
+      color: var(--text);
+      font-size: 15px;
+    }
+
+    section {
+      padding: 22px 0;
+      border-bottom: 1px solid rgba(36, 52, 71, 0.72);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      color: var(--text-bright);
+      font-size: 15px;
+    }
+
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0 0 12px; padding-left: 20px; }
+    li { margin: 0 0 8px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      background: rgba(12, 18, 27, 0.72);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .card h3 {
+      margin-top: 0;
+      color: var(--ok);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .callout {
+      margin: 14px 0;
+      padding: 12px 14px;
+      border-left: 3px solid var(--warn);
+      background: rgba(255, 176, 32, 0.08);
+      color: var(--text-bright);
+    }
+
+    .ok {
+      border-left-color: var(--ok);
+      background: rgba(0, 255, 136, 0.08);
+    }
+
+    .danger {
+      border-left-color: var(--danger);
+      background: rgba(255, 77, 109, 0.08);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      margin: 0 6px 6px 0;
+      padding: 2px 7px;
+      border: 1px solid var(--border);
+      color: var(--dim);
+      background: var(--bg2);
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .steps strong { color: var(--text-bright); }
+
+    @media (max-width: 860px) {
+      .shell { display: block; }
+      .side {
+        position: relative;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      main { padding: 26px 18px 54px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 24px; }
     }
   </style>
 </head>
 <body>
-  <p class="back"><a href="index.html">← Voltar ao GHOSTRECON</a></p>
-  <h1>Guia mínimo</h1>
-  <p><strong>Reporte</strong> e <strong>Anotações</strong> trabalham em conjunto com a mesma lista de achados e o mesmo alvo (<code>target</code>).</p>
+  <div class="shell">
+    <aside class="side">
+      <a class="back" href="index.html">Voltar ao GHOSTRECON</a>
+      <div class="brand">GHOSTRECON</div>
+      <p class="muted">Guia operacional atualizado para a UI atual, Vigolium, PATH, Codex, IA e relatórios.</p>
+      <nav class="nav" aria-label="Seções do guia">
+        <a href="#inicio">Inicio rapido</a>
+        <a href="#painel">Painel esquerdo</a>
+        <a href="#recon">Recon e modulos</a>
+        <a href="#vigolium">Vigolium</a>
+        <a href="#ia">IA</a>
+        <a href="#findings">Findings</a>
+        <a href="#relatorios">Relatorios</a>
+        <a href="#hub">Hub</a>
+        <a href="#problemas">Problemas</a>
+      </nav>
+    </aside>
 
-  <h2>1. GHOSTRECON → Reporte</h2>
-  <ol>
-    <li>No <code>index.html</code>, corre o recon ou carrega achados na lista.</li>
-    <li>Clica <strong>Reporte</strong> no hub (sidebar). Abre-se <code>reporte.html</code> com o pacote em <code>sessionStorage</code>.</li>
-    <li>Marca com o toggle só o que testaste manualmente — grava na <strong>SQLite</strong> por fingerprint e alvo.</li>
-  </ol>
+    <main>
+      <header class="hero" id="inicio">
+        <p class="eyebrow">Atualizado em 2026-06-19</p>
+        <h1>Como usar o GHOSTRECON hoje</h1>
+        <p class="lead">
+          Este guia cobre o fluxo atual do GhostRecon: alvo, escopo, OPSEC, módulos, modo Kali,
+          integração Vigolium, Codex, IA, findings, histórico, workbench e geração de relatório.
+        </p>
+      </header>
 
-  <h2>2. Reporte → Anotações</h2>
-  <ol>
-    <li>Na barra do Reporte, clica <strong>ANOTAÇÃO</strong>. Abre-se <code>anotacao.html</code> noutra aba.</li>
-    <li>
-      O preenchimento automático das secções (e o botão «Atualizar a partir das validações») usa
-      <strong>apenas achados já validados</strong> na checklist. Tudo o resto podes escrever à mão.
-    </li>
-    <li><strong>Descarregar .md</strong> exporta o modelo; <strong>IA</strong> envia o Markdown à OpenRouter (servidor com <code>OPENROUTER_API_KEY</code>).</li>
-  </ol>
+      <section>
+        <h2>Inicio rapido</h2>
+        <ol class="steps">
+          <li><strong>Suba a interface:</strong> execute <code>npm start</code> e abra <code>http://127.0.0.1:3847/</code>.</li>
+          <li><strong>Informe o alvo:</strong> use o campo Target com domínio ou URL. Em modo arquivo, carregue uma lista.</li>
+          <li><strong>Defina o contexto:</strong> preencha projeto, contexto bounty, escopo, fora de escopo e operador quando fizer sentido.</li>
+          <li><strong>Escolha o perfil:</strong> use recon passivo para mapeamento leve, Full/deep para varredura mais completa e Kali/PATH quando houver ferramentas externas instaladas.</li>
+          <li><strong>Rode o recon:</strong> clique em <code>RUN RECON</code>. A saída aparece no terminal, nos cards e na área de findings.</li>
+          <li><strong>Revise e exporte:</strong> valide findings, abra Reporte/History/Vigolium Workbench e gere o pacote final.</li>
+        </ol>
+        <div class="callout danger">
+          No Windows puro, ferramentas Kali, Go e binários externos podem não existir no PATH. Nesse caso o GhostRecon usa os módulos internos.
+          Para Vigolium PATH, nuclei, httpx, subfinder e fluxo Kali, rode em Kali, Linux ou WSL com as ferramentas instaladas.
+        </div>
+      </section>
 
-  <h2>3. Listas enormes</h2>
-  <p>
-    Na barra inferior do GHOSTRECON usa <strong>⬇ JSON · high</strong> ou <strong>⬇ JSON · validados</strong>, ou abre
-    <strong>Reporte · high</strong> / <strong>Reporte · validados</strong>, para não encher o
-    <code>sessionStorage</code>. Depois podes importar o JSON no painel «Importar» do Reporte.
-  </p>
+      <section id="painel">
+        <h2>Painel esquerdo</h2>
+        <p>
+          O painel esquerdo é o cockpit do recon. O botão <code>?</code> ao lado do título abre uma explicação item por item dentro da própria UI.
+          O botão <code>Como usar</code> traz você para esta página.
+        </p>
+        <div class="grid">
+          <article class="card">
+            <h3>Alvo e projeto</h3>
+            <p><code>Projeto</code>, <code>Contexto bounty</code>, <code>Target</code>, fila de alvos e fora de escopo alimentam o pipeline, o histórico SQLite e os relatórios.</p>
+          </article>
+          <article class="card">
+            <h3>OPSEC</h3>
+            <p>Engagement ID, operador, confirmação de ativo, perfil OPSEC, Navigator/Tor e rotação de identidade ajudam a controlar risco e rastreabilidade.</p>
+          </article>
+          <article class="card">
+            <h3>Execução</h3>
+            <p>Modo anônimo, exact match, dorks, Full, Recon subs e perfil recon ajustam intensidade, ruído e profundidade da varredura.</p>
+          </article>
+          <article class="card">
+            <h3>Integrações</h3>
+            <p>Auth, Kali, PATH, Ghostmap, Cortex, History, Vigolium, Reporte, GhostDesk e Pós-Exploração conectam o recon aos fluxos auxiliares.</p>
+          </article>
+        </div>
+      </section>
 
-  <h2>4. Problemas frequentes</h2>
-  <ul>
-    <li><strong>Sem pacote</strong> no Reporte: volta ao hub e clica Reporte de novo (ou «Recarregar da base» no Reporte).</li>
-    <li><strong>Servidor offline</strong>: o Reporte avisa se não conseguir falar com a API (<code>npm start</code>, rede, CORS).</li>
-    <li><strong>Alvo do pacote ≠ host nos URLs</strong>: aparece um aviso amarelo no topo do Reporte — confirma qual domínio queres gravar na SQLite.</li>
-  </ul>
+      <section id="recon">
+        <h2>Recon e módulos</h2>
+        <p>
+          O GhostRecon combina módulos internos com ferramentas externas quando elas estão disponíveis. A UI mostra módulos ativos,
+          capacidades detectadas e logs de execução para você entender o que realmente rodou.
+        </p>
+        <p>
+          Use <span class="tag">passivo</span> para enumeração segura, <span class="tag">full</span> para ampliar cobertura,
+          <span class="tag">kali</span> para delegar a ferramentas do ambiente e <span class="tag">path</span> para priorizar binários instalados.
+        </p>
+        <ul>
+          <li><strong>Google Dorking/OSINT:</strong> abre consultas úteis e coleta pistas sem tocar diretamente o alvo quando possível.</li>
+          <li><strong>Recon subs:</strong> aprofunda subdomínios, endpoints e sinais de exposição.</li>
+          <li><strong>Verificação:</strong> módulos ativos validam status, títulos, tecnologias, headers, rotas e achados importados.</li>
+          <li><strong>Kali:</strong> quando habilitado, tenta usar ferramentas no PATH antes de cair para comportamento interno.</li>
+        </ul>
+      </section>
 
-  <p class="back" style="margin-top: 32px"><a href="README.md">Documentação completa (README)</a> no repositório.</p>
+      <section id="vigolium">
+        <h2>Vigolium</h2>
+        <p>
+          A integração Vigolium agora tem dois caminhos: usar os recursos internos do GhostRecon ou delegar para o Vigolium instalado no PATH.
+          Quando o binário existe, o GhostRecon coleta a saída, transforma em findings e mistura com o relatório atual.
+        </p>
+        <h3>Instalação no modo Kali/Linux</h3>
+        <pre>curl -fsSL https://vigolium.com/install.sh | bash</pre>
+        <p>Depois da instalação, o modo PATH pode rodar comandos como:</p>
+        <pre>vigolium scan -t https://example.com --strategy deep
+vigolium scan -t https://example.com --only discovery --format html -o report.html</pre>
+        <h3>Codex + Vigolium</h3>
+        <p>
+          A instalação pode perguntar se o operador quer usar Codex. Avise no onboarding que Codex depende de login/plano compatível.
+          O fluxo com OpenAPI pode usar:
+        </p>
+        <pre>vigolium scan -T openapi.yaml -I openapi</pre>
+        <p>
+          Na UI, use as opções de Vigolium DAST, Vigolium com Codex, audit/swarm/autopilot e Auth Compare para escolher como a varredura será conduzida.
+        </p>
+        <h3>Autenticação</h3>
+        <p>Quando o alvo exige sessão, informe cookies ou perfis de login no painel Auth. O modo externo aceita o padrão:</p>
+        <pre>vigolium scan -t https://example.com \
+  --auth "admin:Cookie:session_id=abc123" \
+  --auth "user:Cookie:session_id=xyz789"</pre>
+        <div class="callout ok">
+          O Vigolium Workbench concentra comparação de capacidades, execução assistida, importação de relatórios externos e revisão dos resultados antes de mandar tudo para findings.
+        </div>
+      </section>
+
+      <section id="ia">
+        <h2>IA</h2>
+        <p>
+          A camada de IA apoia revisão, priorização e texto de relatório. Ela não substitui validação manual: use para triagem,
+          narrativa, próximos passos e explicação de impacto.
+        </p>
+        <ul>
+          <li><strong>IA relatórios:</strong> gera resumo executivo, impacto, evidência, recomendação e próximos passos a partir dos achados.</li>
+          <li><strong>Gemini/OpenRouter/Claude/LM Studio:</strong> provedores podem ser configurados no backend por variáveis de ambiente.</li>
+          <li><strong>Shannon:</strong> ajuda a estimar qualidade/sinal dos dados coletados.</li>
+          <li><strong>PentestGPT:</strong> apoia raciocínio de exploração e checklist de validação quando configurado.</li>
+          <li><strong>Vigolium com Codex:</strong> usa Codex como assistente do fluxo Vigolium quando instalado e autenticado.</li>
+        </ul>
+      </section>
+
+      <section id="findings">
+        <h2>Findings</h2>
+        <p>
+          A área de findings centraliza descobertas vindas dos módulos internos, Kali/PATH, Vigolium, importações e validações manuais.
+          Use filtros, severidade, origem, badges Vigolium e busca para separar ruído de evidência real.
+        </p>
+        <ul>
+          <li><strong>Validação:</strong> marque o que foi confirmado antes de enviar para relatório final.</li>
+          <li><strong>Histórico:</strong> o SQLite preserva achados por alvo, fingerprint e sessão.</li>
+          <li><strong>Importação:</strong> relatórios HTML/JSON externos podem entrar no fluxo e virar findings normalizados.</li>
+          <li><strong>Ajuda:</strong> o botão <code>?</code> dos findings explica filtros, badges, severidade e estados.</li>
+        </ul>
+      </section>
+
+      <section id="relatorios">
+        <h2>Relatórios e Reporte</h2>
+        <p>
+          O fluxo de Reporte usa os findings atuais, validações manuais e histórico local para montar pacote de bug bounty ou pentest.
+          Para listas enormes, exporte JSON filtrado ou abra Reporte já limitado por severidade/validados.
+        </p>
+        <ul>
+          <li><strong>Reporte:</strong> organiza achados, evidências, checklist e exportações.</li>
+          <li><strong>Anotações:</strong> cria texto em Markdown a partir das validações confirmadas.</li>
+          <li><strong>HTML Vigolium:</strong> relatórios gerados por <code>--format html</code> podem ser importados e comparados com o pacote GhostRecon.</li>
+          <li><strong>SQLite:</strong> use recarregar da base quando abrir uma aba nova ou perder o pacote em sessão.</li>
+        </ul>
+      </section>
+
+      <section id="hub">
+        <h2>Hub e telas</h2>
+        <p>Os botões do hub levam para telas auxiliares que reaproveitam o alvo, os findings e o contexto atual.</p>
+        <div class="grid">
+          <article class="card"><h3>History</h3><p>Lista execuções, requisições e achados por alvo para auditoria e comparação.</p></article>
+          <article class="card"><h3>Vigolium</h3><p>Abre o workbench com capacidades, execução PATH, DAST, Codex, importação e relatório.</p></article>
+          <article class="card"><h3>Ghostmap</h3><p>Visualiza relações, superfície, endpoints e caminhos encontrados no recon.</p></article>
+          <article class="card"><h3>Cortex</h3><p>Centraliza análise assistida, contexto e revisão de achados.</p></article>
+          <article class="card"><h3>GhostDesk</h3><p>Ajuda no trabalho operacional e acompanhamento de evidências.</p></article>
+          <article class="card"><h3>Pós-Exploração</h3><p>Organiza próximos passos autorizados após validação do achado.</p></article>
+        </div>
+      </section>
+
+      <section id="problemas">
+        <h2>Problemas frequentes</h2>
+        <ul>
+          <li><strong>Servidor offline:</strong> confirme <code>npm start</code>, porta <code>3847</code> e logs do backend.</li>
+          <li><strong>Popup bloqueado:</strong> libere popups locais ou abra manualmente <code>como-usar.html</code>, <code>reporte.html</code> ou <code>vigolium-workbench.html</code>.</li>
+          <li><strong>Ferramenta não encontrada:</strong> em Windows puro é esperado que Go/Kali/Vigolium não existam. Instale no Kali/Linux/WSL ou use módulos internos.</li>
+          <li><strong>Codex não roda:</strong> confirme instalação, login e plano compatível antes de usar Vigolium com Codex.</li>
+          <li><strong>Auth não aplicado:</strong> confira formato de cookie, domínio, perfil selecionado e se o alvo realmente reutiliza aquela sessão.</li>
+          <li><strong>SessionStorage cheio:</strong> exporte JSON filtrado, use Reporte por severidade/validados ou recarregue dados da SQLite.</li>
+          <li><strong>Tor/Navigator falha:</strong> em Windows sem Tor instalado a checagem pode falhar; isso não impede recon interno.</li>
+          <li><strong>Escopo divergente:</strong> se o host do pacote for diferente do alvo, confirme antes de gravar na base ou gerar reporte.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
 </body>
 </html>

@@ -135,6 +135,7 @@ export async function getKaliCapabilities() {
     smbclient: await pathWhich('smbclient'),
     rpcclient: await pathWhich('rpcclient'),
     proxychains: await pathWhichOrPaths('proxychains4', ['/usr/bin/proxychains4', '/usr/local/bin/proxychains4']),
+    tor: await pathWhich('tor'),
     python3,
     python,
     xss_vibes: (python3 || python) && fs.existsSync(XSS_VIBES_MAIN) && fs.existsSync(XSS_VIBES_PAYLOADS),

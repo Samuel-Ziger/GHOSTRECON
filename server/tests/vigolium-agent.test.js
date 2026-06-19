@@ -50,11 +50,12 @@ describe('vigolium agent — config', () => {
     assert.equal(built.args.includes('--format'), false);
   });
 
-  it('buildVigoliumAgentArgs passa auth-file para swarm', () => {
+  it('buildVigoliumAgentArgs passa auth-file e auth inline para swarm', () => {
     const built = buildVigoliumAgentArgs({
       domain: 'example.com',
       vigoliumSource: 'C:/repo/app',
       vigoliumAuthFiles: ['admin.json', 'user.json'],
+      vigoliumAuthEntries: ['admin:Cookie:sid=1'],
       vigoliumModuleTags: ['access-control'],
     }, 'swarm');
     assert.equal(built.skipped, false);
@@ -63,6 +64,8 @@ describe('vigolium agent — config', () => {
     assert.ok(built.args.includes('--auth-file'));
     assert.ok(built.args.includes('admin.json'));
     assert.ok(built.args.includes('user.json'));
+    assert.ok(built.args.includes('--auth'));
+    assert.ok(built.args.includes('admin:Cookie:sid=1'));
     assert.ok(built.args.includes('--module-tag'));
     assert.ok(built.args.includes('access-control'));
   });

@@ -43,8 +43,31 @@ export async function runGoEnginePhase(s) {
       for (const f of out.findings || []) {
         addFinding(f, null);
       }
+      if (out.htmlReport?.path) {
+        addFinding({
+          type: 'intel',
+          prio: out.htmlReport.ok ? 'info' : 'low',
+          url: out.target,
+          value: out.htmlReport.ok ? 'Vigolium HTML report gerado' : 'Vigolium HTML report solicitado, mas falhou',
+          meta: [
+            'source=vigolium:html-report',
+            `path=${out.htmlReport.path}`,
+            out.htmlReport.url ? `url=${out.htmlReport.url}` : null,
+            `only=${out.htmlReport.only || 'discovery'}`,
+            `ok=${out.htmlReport.ok === true}`,
+          ].filter(Boolean).join(' • '),
+          evidence: {
+            reportPath: out.htmlReport.path,
+            reportUrl: out.htmlReport.url || null,
+            reportOnly: out.htmlReport.only || 'discovery',
+            exitCode: out.htmlReport.exitCode ?? null,
+          },
+          sourceEngine: 'vigolium',
+          moduleId: 'vigolium-html-report',
+        }, null);
+      }
       logVigoliumFindingsSummary(log, out.findings, {
-        label: `Vigolium DAST — ${out.target} (${out.strategy})`,
+        label: `Vigolium DAST — ${out.target} (${out.strategy}, ${out.binarySource || 'auto'})`,
       });
     }
   } catch (e) {

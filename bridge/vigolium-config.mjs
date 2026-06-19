@@ -9,6 +9,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const ENGINE_MODES = new Set(['node', 'go', 'both']);
 const STRATEGIES = new Set(['lite', 'balanced', 'deep']);
 const PATH_LOOKUP_TIMEOUT_MS = 3_000;
+const TRUTHY = new Set(['1', 'true', 'yes', 'y', 'on']);
 
 /** Raiz do monorepo (onde vive vigolium/). */
 export function ghostreconRoot() {
@@ -79,6 +80,68 @@ export function resolveVigoliumAuthFiles(ctx = {}) {
     .filter(Boolean);
 }
 
+function splitLooseList(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  return raw
+    .split(/[\n|,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function truthy(value) {
+  if (typeof value === 'boolean') return value;
+  return TRUTHY.has(String(value || '').trim().toLowerCase());
+}
+
+export function shouldPreferVigoliumPath(ctx = {}) {
+  return Boolean(
+    ctx.vigoliumPreferPath === true ||
+      ctx.kaliMode === true ||
+      truthy(process.env.GHOSTRECON_VIGOLIUM_PREFER_PATH) ||
+      truthy(process.env.GHOSTRECON_VIGOLIUM_PATH_MODE),
+  );
+}
+
+export function resolveVigoliumInputFile(ctx = {}) {
+  const raw = String(ctx.vigoliumInputFile || process.env.GHOSTRECON_VIGOLIUM_INPUT_FILE || '').trim();
+  return raw || null;
+}
+
+export function resolveVigoliumInputType(ctx = {}) {
+  const raw = String(ctx.vigoliumInputType || process.env.GHOSTRECON_VIGOLIUM_INPUT_TYPE || '').trim();
+  return raw || null;
+}
+
+export function resolveVigoliumOnly(ctx = {}) {
+  const raw = String(ctx.vigoliumOnly || process.env.GHOSTRECON_VIGOLIUM_ONLY || '').trim();
+  return raw || null;
+}
+
+export function resolveVigoliumAuthEntries(ctx = {}) {
+  const fromCtx = Array.isArray(ctx.vigoliumAuthEntries) ? ctx.vigoliumAuthEntries : [];
+  const entries = fromCtx.length
+    ? fromCtx
+    : [
+        ...splitLooseList(ctx.vigoliumAuth),
+        ...splitLooseList(process.env.GHOSTRECON_VIGOLIUM_AUTHS || process.env.GHOSTRECON_VIGOLIUM_AUTH),
+      ];
+  return entries.map(String).map((s) => s.trim()).filter(Boolean);
+}
+
+export function shouldWriteVigoliumHtmlReport(ctx = {}) {
+  return Boolean(ctx.vigoliumHtmlReport === true || truthy(process.env.GHOSTRECON_VIGOLIUM_HTML_REPORT));
+}
+
+export function resolveVigoliumReportOnly(ctx = {}) {
+  const raw = String(ctx.vigoliumReportOnly || process.env.GHOSTRECON_VIGOLIUM_REPORT_ONLY || '').trim();
+  return raw || 'discovery';
+}
+
+export function shouldUseVigoliumCodex(ctx = {}) {
+  return Boolean(ctx.vigoliumUseCodex === true || truthy(process.env.GHOSTRECON_VIGOLIUM_USE_CODEX));
+}
+
 export function vigoliumTimeoutMs() {
   const n = Number(process.env.GHOSTRECON_VIGOLIUM_TIMEOUT_MS);
   if (Number.isFinite(n) && n > 0) return Math.min(n, 3_600_000);
@@ -123,10 +186,7 @@ export function vigoliumBinaryCandidates(root = ghostreconRoot()) {
   return [...new Set(list.filter(Boolean))];
 }
 
-export async function resolveVigoliumBinary(root = ghostreconRoot()) {
-  for (const p of vigoliumBinaryCandidates(root)) {
-    if (fileExecutable(p)) return { bin: p, source: 'path' };
-  }
+export async function resolvePathVigoliumBinary() {
   const which = await new Promise((resolve) => {
     const finder = process.platform === 'win32' ? 'where' : 'which';
     const p = spawn(finder, ['vigolium'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -154,7 +214,27 @@ export async function resolveVigoliumBinary(root = ghostreconRoot()) {
       }
     });
   });
-  if (which && fileExecutable(which)) return { bin: which, source: 'which' };
+  if (which && fileExecutable(which)) return { bin: which, source: 'path' };
+  return { bin: null, source: null };
+}
+
+export async function resolveVigoliumBinary(root = ghostreconRoot(), opts = {}) {
+  const candidates = vigoliumBinaryCandidates(root);
+  const envBin = String(process.env.GHOSTRECON_VIGOLIUM_BIN || '').trim();
+  if (envBin) {
+    for (const p of withExecutableVariants(envBin)) {
+      if (fileExecutable(p)) return { bin: p, source: 'env' };
+    }
+  }
+  if (opts.preferPath) {
+    const pathBin = await resolvePathVigoliumBinary();
+    if (pathBin.bin) return pathBin;
+  }
+  for (const p of candidates) {
+    if (fileExecutable(p)) return { bin: p, source: p.includes(`${path.sep}engines${path.sep}`) ? 'engine' : 'local' };
+  }
+  const pathBin = await resolvePathVigoliumBinary();
+  if (pathBin.bin) return pathBin;
   return { bin: null, source: null };
 }
 

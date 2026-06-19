@@ -35,6 +35,14 @@ const SPEC = [
   { name: 'vigolium-modules', type: 'csv', default: [] },
   { name: 'vigolium-module-tag', type: 'repeat', default: [] },
   { name: 'vigolium-auth-file', type: 'repeat', default: [] },
+  { name: 'vigolium-auth', type: 'repeat', default: [] },
+  { name: 'vigolium-input-file', type: 'string' },
+  { name: 'vigolium-input-type', type: 'string' },
+  { name: 'vigolium-only', type: 'string' },
+  { name: 'vigolium-html-report', type: 'bool', default: false },
+  { name: 'vigolium-report-only', type: 'string' },
+  { name: 'vigolium-prefer-path', type: 'bool', default: false },
+  { name: 'vigolium-use-codex', type: 'bool', default: false },
   { name: 'vigolium-source', type: 'string' },
   { name: 'vigolium-agent', type: 'string' },
   { name: 'vigolium-audit-mode', type: 'string' },
@@ -182,6 +190,14 @@ export async function runCommand(argv) {
   if (opts['vigolium-modules']?.length) body.vigoliumModules = opts['vigolium-modules'];
   if (opts['vigolium-module-tag']?.length) body.vigoliumModuleTags = opts['vigolium-module-tag'].map(String);
   if (opts['vigolium-auth-file']?.length) body.vigoliumAuthFiles = opts['vigolium-auth-file'].map(String);
+  if (opts['vigolium-auth']?.length) body.vigoliumAuthEntries = opts['vigolium-auth'].map(String);
+  if (opts['vigolium-input-file']) body.vigoliumInputFile = String(opts['vigolium-input-file']).trim();
+  if (opts['vigolium-input-type']) body.vigoliumInputType = String(opts['vigolium-input-type']).trim();
+  if (opts['vigolium-only']) body.vigoliumOnly = String(opts['vigolium-only']).trim();
+  if (opts['vigolium-html-report']) body.vigoliumHtmlReport = true;
+  if (opts['vigolium-report-only']) body.vigoliumReportOnly = String(opts['vigolium-report-only']).trim();
+  if (opts['vigolium-prefer-path']) body.vigoliumPreferPath = true;
+  if (opts['vigolium-use-codex']) body.vigoliumUseCodex = true;
   if (opts['vigolium-source']) body.vigoliumSource = String(opts['vigolium-source']).trim();
   if (opts['vigolium-agent']) body.vigoliumAgent = String(opts['vigolium-agent']).trim().toLowerCase();
   if (opts['vigolium-audit-mode']) body.vigoliumAuditMode = String(opts['vigolium-audit-mode']).trim().toLowerCase();
@@ -321,6 +337,14 @@ Opções principais:
   --vigolium-modules CSV                  Filtro -m do Vigolium.
   --vigolium-module-tag TAG               Filtro --module-tag do Vigolium (repetivel).
   --vigolium-auth-file FILE               YAML/JSON de sessao Vigolium (repetivel).
+  --vigolium-auth ROLE:KIND:VALUE         Auth inline do Vigolium (repetivel), ex.: admin:Cookie:sid=abc.
+  --vigolium-input-file FILE              Entrada -T (ex.: openapi.yaml).
+  --vigolium-input-type TYPE              Entrada -I (ex.: openapi).
+  --vigolium-only NAME                    Passa --only para o scan JSONL.
+  --vigolium-html-report                  Gera report HTML Vigolium em .runtime/vigolium-reports.
+  --vigolium-report-only NAME             --only do report HTML (default: discovery).
+  --vigolium-prefer-path                  Prefere vigolium do PATH antes do fallback local.
+  --vigolium-use-codex                    Usa provider Codex/OAuth para agent IA (requer plano/login).
   --vigolium-source PATH                  Caminho do repo para audit/swarm.
   --vigolium-agent MODE                   query | audit | swarm | autopilot.
   --vigolium-audit-mode MODE              lite | balanced | deep.

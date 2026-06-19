@@ -10,6 +10,34 @@ import { resolveVigoliumServerConfig } from './vigolium-server-client.mjs';
 
 const VERSION_TIMEOUT_MS = 3_000;
 
+function resolveCommandPath(cmd) {
+  return new Promise((resolve) => {
+    const finder = process.platform === 'win32' ? 'where' : 'which';
+    const p = spawn(finder, [cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch {}
+      finish(null);
+    }, 1_500);
+    p.stdout?.on('data', (d) => {
+      out += String(d);
+    });
+    p.on('error', () => finish(null));
+    p.on('close', (code) => {
+      if (code !== 0) return finish(null);
+      const first = out.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+      finish(first || null);
+    });
+  });
+}
+
 function countModuleDirs(root) {
   const counts = {};
   for (const kind of ['active', 'passive']) {
@@ -32,7 +60,10 @@ function countModuleDirs(root) {
  */
 export async function getVigoliumCapabilities(opts = {}) {
   const root = opts.ghostRoot || ghostreconRoot();
-  const { bin, source } = await resolveVigoliumBinary(root);
+  const [{ bin, source }, codexBin] = await Promise.all([
+    resolveVigoliumBinary(root),
+    resolveCommandPath('codex'),
+  ]);
   const moduleCounts = countModuleDirs(root);
   const serverCfg = resolveVigoliumServerConfig();
   const base = {
@@ -45,6 +76,11 @@ export async function getVigoliumCapabilities(opts = {}) {
     strategies: ['lite', 'balanced', 'deep'],
     agents: ['query', 'audit', 'swarm', 'autopilot'],
     repoPath: `${root}/vigolium`,
+    codex: {
+      installed: Boolean(codexBin),
+      binary: codexBin,
+      note: 'Necessario para Vigolium agent com provider Codex/OAuth; requer login e plano habilitado.',
+    },
     server: {
       configured: serverCfg.configured,
       baseUrl: serverCfg.baseUrl || null,
@@ -57,7 +93,7 @@ export async function getVigoliumCapabilities(opts = {}) {
       ...base,
       ok: false,
       version: null,
-      message: 'Binário não encontrado — instale vigolium ou compile em vigolium/ (make build)',
+      message: 'Binário não encontrado — instale vigolium no PATH ou rode scripts/install-vigolium-engine.sh no Kali/Linux',
     };
   }
 
