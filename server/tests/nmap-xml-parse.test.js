@@ -27,6 +27,7 @@ test('parseNmapXml: service com <cpe> (formato típico -sV)', () => {
   assert.equal(rows[0].port, '80');
   assert.equal(rows[0].name, 'http');
   assert.equal(rows[0].product, 'nginx');
+  assert.deepEqual(rows[0].cpes, ['cpe:/a:nginx:nginx:1.18.0']);
   assert.equal(rows[1].port, '3306');
   assert.equal(rows[1].name, 'mysql');
   assert.match(rows[1].searchBlob, /MySQL/);

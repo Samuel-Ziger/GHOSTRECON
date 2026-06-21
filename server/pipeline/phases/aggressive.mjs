@@ -213,6 +213,8 @@ export async function runAggressivePhase(s) {
         const runKaliDirsearch = Boolean(modules.includes('kali_dirsearch'));
         const runKaliNmapAggressive = Boolean(modules.includes('kali_nmap_aggressive'));
         const runKaliNmapUdp = Boolean(modules.includes('kali_nmap_udp'));
+        const runNmapCveMatch = Boolean(modules.includes('nmap_cve_match'));
+        const runNmapBackportReview = Boolean(modules.includes('nmap_backport_review'));
         const runMysql3306Intel = Boolean(modules.includes('mysql_3306_intel'));
         const runKaliProxychains = Boolean(modules.includes('kali_proxychains'));
 
@@ -231,6 +233,8 @@ export async function runAggressivePhase(s) {
           runDirsearch: runKaliDirsearch,
           runNmapAggressive: runKaliNmapAggressive,
           runNmapUdp: runKaliNmapUdp,
+          runNmapCveMatch,
+          runNmapBackportReview,
           runMysql3306Intel: runMysql3306Intel,
           useProxychains: runKaliProxychains,
           auth,

@@ -1840,7 +1840,7 @@
   .pipe-phase-steps {
     display: flex;
     align-items: center;
-    gap: 3px;
+    gap: 4px;
     flex-wrap: nowrap;
   }
 
@@ -1856,14 +1856,15 @@
   }
 
   .pipe-node {
-    padding: 4px 9px;
+    padding: 4px 7px;
     border: 1px solid var(--border);
     background: var(--bg3);
     font-family: var(--mono);
-    font-size: 9px;
+    font-size: 8.5px;
     color: var(--text-dim);
     letter-spacing: 0.8px;
     white-space: nowrap;
+    line-height: 1;
     transition: border-color 0.2s, color 0.2s, background 0.2s, box-shadow 0.2s;
     position: relative;
     overflow: hidden;
@@ -1915,6 +1916,14 @@
 
   .pipe-node.done::after {
     content: ' ✓';
+  }
+
+  .pipe-node.active[data-detail]::after {
+    content: ' ' attr(data-detail);
+    color: var(--text-dim);
+    font-size: 8px;
+    letter-spacing: 0;
+    opacity: 0.9;
   }
 
   .pipe-node.skip {
@@ -2438,6 +2447,10 @@
   .type-tech { background: rgba(180,100,255,0.1); color: #c87aff; border: 1px solid rgba(180,100,255,0.3); }
   .type-nmap { background: rgba(100,200,255,0.1); color: #66ccff; border: 1px solid rgba(100,200,255,0.35); }
   .type-exploit { background: rgba(255,80,120,0.15); color: #ff6b9d; border: 1px solid rgba(255,80,120,0.4); }
+  .type-cve, .type-cve_match, .type-cve_candidate { background: rgba(255,70,70,0.14); color: #ff8a8a; border: 1px solid rgba(255,70,70,0.38); }
+  .type-cve_backport_context { background: rgba(220,180,100,0.12); color: #e8c47a; border: 1px solid rgba(220,180,100,0.35); }
+  .type-http3 { background: rgba(80,190,255,0.12); color: #76d7ff; border: 1px solid rgba(80,190,255,0.35); }
+  .type-panel { background: rgba(255,180,80,0.12); color: #ffbf75; border: 1px solid rgba(255,180,80,0.35); }
   .type-nuclei { background: rgba(255,140,0,0.12); color: #ffaa55; border: 1px solid rgba(255,140,0,0.35); }
   .type-wpscan { background: rgba(130,180,255,0.10); color: #7aaeff; border: 1px solid rgba(130,180,255,0.35); }
   .type-dalfox { background: rgba(255,90,120,0.12); color: #ff7aa0; border: 1px solid rgba(255,90,120,0.35); }
@@ -2534,6 +2547,22 @@
   .finding-provenance-text strong {
     color: var(--text-bright);
     font-weight: 600;
+  }
+
+  .finding-risk {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-left: 2px solid rgba(255, 204, 102, 0.5);
+    background: rgba(255, 204, 102, 0.055);
+    border-radius: 0 4px 4px 0;
+    color: var(--text-dim);
+    font-size: 10px;
+    line-height: 1.45;
+  }
+
+  .finding-risk strong {
+    color: var(--accent3);
+    font-weight: 700;
   }
 
   .finding-actions {
@@ -2690,6 +2719,15 @@
     color: var(--accent);
     text-align: right;
     margin-top: 4px;
+  }
+
+  .progress-detail {
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    line-height: 1.35;
+    word-break: break-word;
   }
 
   /* Scrollbar base */
@@ -2982,7 +3020,7 @@
       </div>
 
       <div class="toggle-row">
-        <span class="toggle-label" title="As pesquisas «exploit pra …» do nmap (modo Kali) abrem sempre, mesmo com isto desligado.">Abrir dorks (Google)</span>
+        <span class="toggle-label" title="As pesquisas Exploit-DB por produto/versão do nmap (modo Kali) abrem sempre, mesmo com isto desligado.">Abrir dorks (Google)</span>
         <label class="toggle">
           <input type="checkbox" id="autoDorks">
           <div class="toggle-track"><div class="toggle-thumb"></div></div>
@@ -2998,6 +3036,11 @@
           <input type="checkbox" id="fullPresetToggle" aria-label="Preset Full — aplicar módulos e IA">
           <div class="toggle-track"><div class="toggle-thumb"></div></div>
         </label>
+      </div>
+
+      <div class="toggle-row" style="align-items:center;gap:10px">
+        <span class="toggle-label" title="Ativa um conjunto leve e inteligente: headers, HTTP/3, CVE passiva, paineis comuns, Wayback, DNS, risco e Nmap CVE se Kali estiver ligado. Desliga fuzzers pesados.">Smart rapido</span>
+        <button type="button" class="sqlmap-help-btn" onclick="applySmartFastPreset()">aplicar</button>
       </div>
 
       <div class="toggle-row">
@@ -3108,6 +3151,7 @@
       <div class="progress-wrap" id="progressWrap" style="display:none">
         <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
         <div class="progress-pct" id="progressPct">0%</div>
+        <div class="progress-detail" id="progressDetail">Aguardando inicio.</div>
       </div>
 
       <div class="hub-actions-wrap">
@@ -3512,6 +3556,9 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="curl_probe"><div class="checkbox-box"></div><span class="checkbox-text">Curl probe (métodos/auth/CORS/diff)</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item" title="Analisa Set-Cookie coletado no probe: Secure, HttpOnly, SameSite, Domain e expiracao. Passivo."><input type="checkbox" class="mod" value="cookie_session_audit"><div class="checkbox-box"></div><span class="checkbox-text">Cookie/session audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Analisa formularios HTML ja coletados: POST/PUT/PATCH/DELETE sem token CSRF visivel e acoes sensiveis via GET. Passivo."><input type="checkbox" class="mod" value="csrf_flow_audit"><div class="checkbox-box"></div><span class="checkbox-text">CSRF flow audit</span><span class="tag tag-med">PASS</span></label>
+        <label class="checkbox-item" title="Inventario passivo de HTTP/3/QUIC por Alt-Svc h3 e evidencias Nmap/UDP 443."><input type="checkbox" class="mod" value="http3_quic_surface" checked><div class="checkbox-box"></div><span class="checkbox-text">HTTP/3 / QUIC surface</span><span class="tag tag-med">PASS</span></label>
+        <label class="checkbox-item" title="Checagem passiva da CVE-2026-42530: cruza banner nginx 1.31.0-1.31.1 com evidencia HTTP/3/QUIC em Alt-Svc. Nao envia payload de exploit."><input type="checkbox" class="mod" value="nginx_http3_cve_2026_42530" checked><div class="checkbox-box"></div><span class="checkbox-text">NGINX HTTP/3 CVE-2026-42530</span><span class="tag tag-high">CVE</span></label>
+        <label class="checkbox-item" title="GET leve em poucos paths comuns (/admin, /dashboard, /actuator, /metrics etc.) para detectar painéis expostos. Nao faz brute force nem login."><input type="checkbox" class="mod" value="panel_exposure_audit"><div class="checkbox-box"></div><span class="checkbox-text">Panel exposure audit</span><span class="tag tag-med">NET</span></label>
         <label class="checkbox-item" title="Descobre service workers registrados e paths comuns; revisa scope, Cache API, importScripts e padroes sensiveis. Passivo."><input type="checkbox" class="mod" value="service_worker_audit"><div class="checkbox-box"></div><span class="checkbox-text">Service Worker audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item" title="Após cada GET do probe: cabeçalhos suspeitos (stack, debug, proxy) e bloco sugerido para /etc/hosts quando houver vhost nos headers.">
@@ -3596,6 +3643,18 @@
         <label class="checkbox-item" title="Extrai WebSockets de HTML/JS/URLs e prioriza ws://, token em query e paths sensiveis. Passivo."><input type="checkbox" class="mod" value="websocket_recon"><div class="checkbox-box"></div><span class="checkbox-text">WebSocket recon</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="graphql_probe" id="modGraphqlProbe"><div class="checkbox-box"></div><span class="checkbox-text">GraphQL — introspecção mínima (1 POST)</span><span class="tag tag-high">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="micro_exploit"><div class="checkbox-box"></div><span class="checkbox-text">Micro-exploit XSS (pós-verify)</span><span class="tag tag-high">ACT</span></label>
+        <label class="checkbox-item" title="So com Modo Kali apos Nmap: consulta NVD/OSV por produto/versao/CPE detectados e cria candidatos CVE. Pode demorar por rate limit externo.">
+          <input type="checkbox" class="mod" value="nmap_cve_match" id="modNmapCveMatch">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Nmap CVE match (NVD/OSV)</span>
+          <span class="tag tag-high">CVE</span>
+        </label>
+        <label class="checkbox-item" title="So com Modo Kali apos Nmap: alerta quando a versao vem de pacote Debian/Ubuntu/RHEL/etc., evitando falso positivo por backport.">
+          <input type="checkbox" class="mod" value="nmap_backport_review" id="modNmapBackportReview" checked>
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Nmap backport review</span>
+          <span class="tag tag-med">PASS</span>
+        </label>
         <label
           class="checkbox-item"
           title="GET a shell.php, c99.php, cmd.php?cmd=id — só marca se a resposta parecer saída de `id` (uid=/gid=). Muitos falsos positivos possíveis; só em alvo autorizado."
@@ -3809,6 +3868,12 @@
         <div class="module-group-title">// IA · relatórios (cloud + LM Studio)</div>
         <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Ao marcar <strong>Confirmo envio</strong> abre-se um diálogo: podes aceitar <strong>OpenRouter</strong> (pode haver cobrança; modelo por defeito <code>google/gemma-4-31b-it</code>), recusar OpenRouter (só Gemini → Claude → LM) ou activar <strong>somente OpenRouter</strong> (saltar Gemini — útil se a API grátis falhar). Com a confirmação activa: ao terminar <em>cada</em> recon, o servidor envia o JSON pela cascata escolhida e grava <code>relatorio</code> + <code>proximos_passos</code> em Markdown. Sem confirmação, não há chamadas cloud. <code>GHOSTRECON_AI_AUTO=0</code> no <code>.env</code> desliga a geração automática no servidor mesmo com a caixa marcada.</p>
         <div id="aiKeysLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">APIs IA: a carregar…</div>
+        <label class="checkbox-item" title="Adiciona explicacao curta em cada finding: risco, confianca, proximo passo seguro e falso positivo comum. Nao chama IA.">
+          <input type="checkbox" class="mod" value="risk_explainer" checked>
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Risk explainer nos achados</span>
+          <span class="tag tag-med">LOCAL</span>
+        </label>
         <label class="checkbox-item">
           <input type="checkbox" id="modAiReports">
           <div class="checkbox-box"></div>
@@ -4093,7 +4158,8 @@
           <button class="export-btn" onclick="void openReportePageWithSubset('high')" title="Abre Reporte só com achados HIGH">Reporte · high</button>
           <button class="export-btn" onclick="void openReportePageWithSubset('validated')" title="Abre Reporte só com achados já validados na base">Reporte · validados</button>
           <button class="export-btn" onclick="exportPlatformBundle()">⬇ Plataforma</button>
-          <button class="export-btn" onclick="exportMarkdown()">⬇ MD</button>
+          <button class="export-btn" onclick="exportMarkdown('technical')">⬇ MD técnico</button>
+          <button class="export-btn" onclick="exportMarkdown('bounty')">⬇ MD bounty</button>
           <button class="export-btn" onclick="exportTXT()">⬇ TXT</button>
         </div>
       </div>
@@ -4158,7 +4224,7 @@ let lastPipelineBundle = null;
 /** Último snapshot de cobertura emitido pelo pipeline (NDJSON `recon_coverage`). */
 window.__lastReconCoverage = null;
 let dorkUrlQueue = [];
-/** Fila de Google «exploit pra …» (nmap): ignora o toggle «Abrir dorks». */
+/** Fila Google Exploit-DB por versao nmap: ignora o toggle Abrir dorks. */
 let forcedDorkUrlQueue = [];
 let csrfToken = '';
 /** Reporte ao vivo (mesmo BroadcastChannel que o Ghostmap): throttle + flush imediato em rescore/done */
@@ -4763,28 +4829,236 @@ async function ensureCsrfToken(force = false) {
 /** Nomes emitidos pelo servidor → nó visual na barra */
 const PIPE_UI_ALIASES = {
   vigolium_engine: 'vigolium_dast',
-  vigolium_audit: 'vigolium_agent',
 };
 
-const PIPE_RESET_ORDER = [
-  'input', 'subdomains', 'dns_enrichment', 'rdap',
-  'alive', 'surface',
-  'urls', 'params', 'js', 'dorks', 'secrets',
-  'vigolium_dast', 'verify', 'webshell_probe', 'sqlmap', 'kali',
-  'assets', 'vigolium_agent',
-  'score', 'shannon', 'pentestgpt',
+const PIPE_PHASES = [
+  {
+    label: '01 RECON',
+    phase: 'recon',
+    nodes: [
+      ['input', 'INPUT', 'Target, scope, OPSEC and engagement checks'],
+      ['lovable_fingerprint', 'LOVABLE', 'Lovable/Supabase fingerprint'],
+      ['supabase_audit', 'SUPA', 'Supabase RLS/Auth/Storage audit'],
+      ['firebase_audit', 'FIREBASE', 'Firebase RTDB/Firestore/Storage audit'],
+      ['subdomains', 'SUBS', 'crt.sh, VirusTotal, subfinder, amass'],
+      ['ct_monitor', 'CT', 'Certificate Transparency monitor'],
+      ['origin_discovery', 'ORIGIN', 'Origin discovery behind CDN/WAF'],
+      ['dns_enrichment', 'DNS', 'TXT/MX/SPF/DMARC enrichment'],
+      ['email_security_deep', 'EMAIL', 'SPF/DMARC/DKIM/BIMI/MTA-STS/TLS-RPT'],
+      ['rdap', 'RDAP', 'WHOIS/RDAP registration'],
+    ],
+  },
+  {
+    label: '02 SURFACE',
+    phase: 'surface',
+    nodes: [
+      ['alive', 'ALIVE', 'HTTP probe over http/https for discovered hosts'],
+      ['wafw00f', 'WAF', 'WAF fingerprint with wafw00f'],
+      ['security_headers', 'HDR/TLS', 'Security headers and TLS certificate checks'],
+      ['header_intel', 'HDR INTEL', 'Suspicious response headers and vhost hints'],
+      ['cookie_session_audit', 'COOKIE', 'Cookie/session flags audit'],
+      ['csrf_flow_audit', 'CSRF', 'CSRF flow audit from collected forms'],
+      ['http3_quic_surface', 'HTTP3', 'HTTP/3 and QUIC surface inventory'],
+      ['nginx_http3_cve_2026_42530', 'CVE-42530', 'NGINX HTTP/3 CVE-2026-42530 passive check'],
+      ['panel_exposure_audit', 'PANELS', 'Common admin/status panel exposure checks'],
+      ['cors_audit', 'CORS', 'Active CORS misconfiguration audit'],
+      ['jwt_jwks_audit', 'JWKS', 'JWKS/OIDC key audit'],
+      ['service_worker_audit', 'SW', 'Service worker and cache surface audit'],
+      ['robots_sitemap', 'ROBOTS', 'robots.txt and sitemap discovery'],
+      ['wellknown_security_txt', 'SEC.TXT', '.well-known/security.txt'],
+      ['wellknown_openid', 'OIDC', '.well-known/openid-configuration'],
+      ['surface', 'SURFACE', 'Surface aggregation checkpoint'],
+      ['shodan', 'SHODAN', 'Shodan IP lookup'],
+      ['openapi_specs', 'OPENAPI', 'OpenAPI/Swagger harvest'],
+      ['api_contract_diff', 'API DIFF', 'API contract snapshot diff'],
+    ],
+  },
+  {
+    label: '03 CONTENT',
+    phase: 'content',
+    nodes: [
+      ['urls', 'URLS', 'Wayback, Common Crawl, gau, waybackurls, Katana'],
+      ['graphql_probe', 'GQL MIN', 'Minimal GraphQL introspection probe'],
+      ['graphql_recon', 'GQL REC', 'GraphQL recon module'],
+      ['params', 'PARAMS', 'Parameter extraction and scoring'],
+      ['hpp_param_pollution', 'HPP', 'HTTP parameter pollution audit'],
+      ['js', 'JS', 'JavaScript fetch and endpoint extraction'],
+      ['client_auth_audit', 'AUTH JS', 'Client-side auth audit'],
+      ['client_surface_audit', 'SURF JS', 'Client-side surface audit'],
+      ['js_intel', 'JS INTEL', 'JS token and endpoint intelligence'],
+      ['websocket_recon', 'WS', 'WebSocket recon'],
+      ['dom_clobbering_audit', 'DOM', 'DOM clobbering audit'],
+      ['dorks', 'DORKS', 'Google dorks'],
+      ['google_cse', 'CSE', 'Google Custom Search URLs'],
+      ['secrets', 'SECRETS', 'Secrets/leaks collection'],
+      ['github', 'GITHUB', 'GitHub code/repo search and local clone'],
+      ['pastebin', 'PASTE', 'Pastebin leak hints'],
+      ['secret_validation', 'TOKENS', 'Token/secret validation'],
+      ['secrets_context_ranker', 'RANK', 'Secrets context ranker'],
+    ],
+  },
+  {
+    label: '04 ATTACK',
+    phase: 'attack',
+    group: 'attack',
+    nodes: [
+      ['vigolium_dast', 'VIG DAST', 'Vigolium DAST Go engine'],
+      ['verify', 'VERIFY', 'Heuristic verify and micro-exploit variants'],
+      ['webshell_probe', 'WEBSHELL', 'Webshell heuristic probe'],
+      ['sqlmap', 'SQLMAP', 'SQLmap runner'],
+      ['curl_probe', 'CURL', 'Curl methods/auth/CORS diff probe'],
+      ['authz_matrix', 'AUTHZ', 'Authorization matrix'],
+      ['jwt_lab', 'JWT LAB', 'JWT lab'],
+      ['dom_xss_verify', 'DOM XSS', 'DOM XSS verification'],
+      ['payload_mutator', 'MUTATOR', 'Payload mutator'],
+      ['race_harness', 'RACE', 'Race condition harness'],
+      ['oob_collaborator', 'OOB', 'OOB collaborator payloads'],
+      ['cred_spray', 'SPRAY', 'Credential spray planner'],
+      ['kali', 'KALI', 'Kali active scan umbrella'],
+      ['nmap', 'NMAP', 'Nmap TCP scan'],
+      ['nmap_udp', 'UDP', 'Nmap UDP scan'],
+      ['nmap_cve_match', 'NMAP CVE', 'Nmap product/version CVE matching'],
+      ['nmap_backport_review', 'BACKPORT', 'Linux distro backport context review'],
+      ['whois', 'WHOIS', 'WHOIS tool'],
+      ['ffuf', 'FFUF', 'ffuf directory fuzzing'],
+      ['dirsearch', 'DIRS', 'dirsearch recursive discovery'],
+      ['nuclei', 'NUCLEI', 'Nuclei general scan'],
+      ['nuclei_xss', 'NUC XSS', 'Nuclei XSS templates'],
+      ['nuclei_sqli', 'NUC SQLI', 'Nuclei SQLi templates'],
+      ['wpscan', 'WPSCAN', 'WPScan'],
+      ['dalfox', 'DALFOX', 'Dalfox XSS scan'],
+      ['xss_vibes', 'XSS VIBES', 'xss_vibes scanner'],
+    ],
+  },
+  {
+    label: '05 ASSETS',
+    phase: 'explore',
+    nodes: [
+      ['assets', 'ASSETS', 'Asset discovery and takeover candidates'],
+      ['cloud_bruteforce', 'CLOUD', 'Cloud bucket brute force'],
+      ['navegation', 'NAV', 'Navegation/Tor/OpenVPN playbook'],
+      ['vigolium_agent', 'VIG AGENT', 'Vigolium agent umbrella', 'agent'],
+      ['vigolium_audit', 'VIG AUDIT', 'Vigolium code audit', 'agent'],
+      ['vigolium_swarm', 'VIG SWARM', 'Vigolium swarm agent', 'agent'],
+    ],
+  },
+  {
+    label: '06 REPORT',
+    phase: 'report',
+    group: 'report',
+    nodes: [
+      ['score', 'SCORE', 'Score v2, dedupe, chaining'],
+      ['risk_explainer', 'RISK', 'Finding risk explanations'],
+      ['shannon', 'SHANNON', 'Shannon white-box'],
+      ['pentestgpt', 'PENTESTGPT', 'PentestGPT HTTP validation'],
+    ],
+  },
 ];
+
+const PIPE_RESET_ORDER = [...new Set(PIPE_PHASES.flatMap((p) => p.nodes.map((n) => n[0])))];
+
+function renderDetailedPipelineBar() {
+  const bar = document.getElementById('pipelineBar');
+  if (!bar || bar.dataset.rendered === 'detailed') return;
+  bar.textContent = '';
+  for (const phase of PIPE_PHASES) {
+    const phaseEl = document.createElement('div');
+    phaseEl.className = 'pipe-phase';
+    phaseEl.dataset.phase = phase.phase;
+
+    const label = document.createElement('span');
+    label.className = 'pipe-phase-label';
+    label.textContent = phase.label;
+    phaseEl.appendChild(label);
+
+    const steps = document.createElement('div');
+    steps.className = 'pipe-phase-steps';
+    for (const nodeDef of phase.nodes) {
+      const [id, text, title, nodeGroup] = nodeDef;
+      const step = document.createElement('div');
+      step.className = 'pipe-step';
+      const node = document.createElement('div');
+      node.className = 'pipe-node';
+      node.id = `pipe-${id}`;
+      node.textContent = text;
+      node.dataset.baseLabel = text;
+      if (title) node.title = title;
+      const group = nodeGroup || phase.group || '';
+      if (group) node.dataset.pipeGroup = group;
+      step.appendChild(node);
+      steps.appendChild(step);
+    }
+    phaseEl.appendChild(steps);
+    bar.appendChild(phaseEl);
+  }
+  bar.dataset.rendered = 'detailed';
+}
+
+renderDetailedPipelineBar();
+
+const PIPE_LABELS = new Map(PIPE_PHASES.flatMap((p) => p.nodes.map((n) => [n[0], n[1]])));
+let runStartedAtMs = 0;
+let currentPipeName = '';
+let currentPipeDetail = '';
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function updateProgressDetail(extra = '') {
+  const el = document.getElementById('progressDetail');
+  if (!el) return;
+  const elapsed = runStartedAtMs ? formatElapsed(performance.now() - runStartedAtMs) : '0:00';
+  const label = PIPE_LABELS.get(currentPipeName) || currentPipeName || 'idle';
+  const detail = extra || currentPipeDetail || '';
+  el.textContent = `Atual: ${label} - ${detail || 'processando'} - decorrido ${elapsed}`;
+}
 
 function setPipe(name, state) {
   const id = PIPE_UI_ALIASES[name] || name;
   const el = document.getElementById(`pipe-${id}`);
   if (!el) return;
   el.className = state ? `pipe-node ${state}` : 'pipe-node';
+  if (state !== 'active') delete el.dataset.detail;
+  if (state === 'active') {
+    currentPipeName = id;
+    currentPipeDetail = '';
+    updateProgressDetail();
+  } else if (currentPipeName === id && state === 'done') {
+    updateProgressDetail('concluido');
+  }
+}
+
+function setPipeDetail(name, detail) {
+  const id = PIPE_UI_ALIASES[name] || name;
+  const el = document.getElementById(`pipe-${id}`);
+  if (!el) return;
+  const current = Number(detail?.current);
+  const total = Number(detail?.total);
+  if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+    el.dataset.detail = `${current}/${total}`;
+    currentPipeDetail = `${current}/${total}${detail?.label ? ` - ${String(detail.label).slice(0, 80)}` : ''}`;
+  } else if (detail?.text) {
+    el.dataset.detail = String(detail.text).slice(0, 16);
+    currentPipeDetail = String(detail.text).slice(0, 100);
+  } else if (detail?.label) {
+    currentPipeDetail = String(detail.label).slice(0, 100);
+  }
+  if (detail?.label) {
+    const base = el.dataset.baseLabel || el.textContent || id;
+    el.title = `${base}: ${detail.label}`;
+  }
+  currentPipeName = id;
+  updateProgressDetail();
 }
 
 function setProgress(pct) {
   document.getElementById('progressFill').style.width = pct + '%';
   document.getElementById('progressPct').textContent = pct + '%';
+  updateProgressDetail();
 }
 
 function updateStat(key, val) {
@@ -4933,6 +5207,18 @@ function renderFinding(f) {
     meta.className = 'finding-meta';
     meta.textContent = f.meta;
     card.appendChild(meta);
+  }
+
+  if (f.risk && (f.risk.why || f.risk.next || f.risk.falsePositive)) {
+    const risk = document.createElement('div');
+    risk.className = 'finding-risk';
+    const parts = [];
+    if (f.risk.confidence) parts.push(`<strong>Conf.</strong> ${escapeHtml(f.risk.confidence)}`);
+    if (f.risk.why) parts.push(`<strong>Risco</strong> ${escapeHtml(f.risk.why)}`);
+    if (f.risk.next) parts.push(`<strong>Prox.</strong> ${escapeHtml(f.risk.next)}`);
+    if (f.risk.falsePositive) parts.push(`<strong>FP comum</strong> ${escapeHtml(f.risk.falsePositive)}`);
+    risk.innerHTML = parts.join('<br>');
+    card.appendChild(risk);
   }
 
   if (f.owasp && f.owasp.length) {
@@ -5341,6 +5627,7 @@ findingsSearchChipsEl?.addEventListener('click', (ev) => {
 });
 
 function resetPipelineVisual() {
+  renderDetailedPipelineBar();
   PIPE_RESET_ORDER.forEach((n) => setPipe(n, ''));
 }
 
@@ -6159,6 +6446,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         } catch (_) {}
       }
       if (ev.type === 'progress') setProgress(ev.pct);
+      if (ev.type === 'pipe_detail') setPipeDetail(ev.name, ev);
       if (ev.type === 'pipe') {
         setPipe(ev.name, ev.state);
         mitreLivePost({
@@ -6268,6 +6556,12 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         addLog(`Delta HOT: ${ev.hotAddedCount} novidade(s) crítica(s) vs baseline #${ev.baselineRunId}`, 'warn');
         for (const s of (ev.sample || []).slice(0, 6)) {
           addLog(`HOT ${String(s.type || '?').toUpperCase()}: ${String(s.value || '').slice(0, 120)}`, 'warn');
+        }
+      }
+      if (ev.type === 'delta_summary') {
+        addLog(`Delta runs: +${ev.addedCount || 0} novo(s), -${ev.removedCount || 0} removido(s) vs baseline #${ev.baselineRunId}`, (ev.addedCount || 0) ? 'info' : 'success');
+        for (const s of (ev.addedSample || []).slice(0, 4)) {
+          addLog(`NOVO ${String(s.type || '?').toUpperCase()}: ${String(s.value || '').slice(0, 120)}`, 'info');
         }
       }
       if (ev.type === 'project_secret_peers' && Array.isArray(ev.duplicates) && ev.duplicates.length) {
@@ -6445,13 +6739,20 @@ async function startRecon() {
   btn.textContent = '⏳ EXECUTANDO...';
   btn.classList.add('running');
   document.getElementById('progressWrap').style.display = 'block';
+  runStartedAtMs = performance.now();
+  currentPipeName = 'input';
+  currentPipeDetail = 'iniciando';
+  updateProgressDetail();
   document.getElementById('statusText').textContent =
     targets.length > 1 ? `FILA 1/${targets.length} · ${targets[0]}` : 'RECON ATIVO';
 
   const exact = document.getElementById('exactMatch').checked;
   const selectedMods = [...document.querySelectorAll('.mod:checked')].map(x => x.value);
   if (!validateVigoliumGuardrailsBeforeRun(selectedMods)) {
-    finishOk();
+    btn.textContent = '▶ RUN RECON';
+    btn.classList.remove('running');
+    document.getElementById('statusText').textContent = 'PRONTO';
+    isRunning = false;
     return;
   }
   const aiReportsEnabled = Boolean(document.getElementById('modAiReports')?.checked);
@@ -6474,6 +6775,8 @@ async function startRecon() {
     btn.classList.remove('running');
     document.getElementById('statusText').textContent =
       batchTargetsSnapshot.length > 1 ? 'FILA CONCLUÍDA' : 'RECON COMPLETO';
+    currentPipeDetail = 'concluido';
+    updateProgressDetail();
     isRunning = false;
   };
 
@@ -6483,6 +6786,8 @@ async function startRecon() {
     btn.textContent = '▶ RUN RECON';
     btn.classList.remove('running');
     document.getElementById('statusText').textContent = 'ERRO';
+    currentPipeDetail = 'erro';
+    updateProgressDetail();
     isRunning = false;
   };
 
@@ -6900,6 +7205,7 @@ function mapFindingForJsonExport(f) {
     provenance: f.provenance && (f.provenance.how || f.provenance.relation)
       ? { how: f.provenance.how || '', relation: f.provenance.relation || '' }
       : undefined,
+    risk: f.risk || undefined,
     verification,
     owasp: Array.isArray(f.owasp) && f.owasp.length ? f.owasp : undefined,
     mitre: Array.isArray(f.mitre) && f.mitre.length ? f.mitre : undefined,
@@ -6977,7 +7283,7 @@ function exportPlatformBundle() {
   download(name, JSON.stringify(out, null, 2), 'application/json');
 }
 
-function exportMarkdown() {
+function exportMarkdown(mode = 'technical') {
   const high = findings.filter((f) => f.prio === 'high');
   const reproUrls = [
     ...new Set(findings.filter((f) => f.url).map((f) => f.url)),
@@ -6991,7 +7297,30 @@ function exportMarkdown() {
   const alvoLinha = multi
     ? `**Fila (${batchTargetsSnapshot.length} alvos):** ${batchTargetsSnapshot.join(', ')}`
     : `**Alvo:** ${targetDomain}`;
-  let md = `# GHOSTRECON — relatório bug bounty\n\n${alvoLinha}\n\n**Data (ISO):** ${new Date().toISOString()}\n\n`;
+  if (mode === 'bounty') {
+    const bountyFindings = findings
+      .filter((f) => f.prio === 'high' || f.prio === 'med')
+      .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
+      .slice(0, 12);
+    let bounty = `# Bug bounty report - ${targetDomain}\n\n${alvoLinha}\n\n**Generated:** ${new Date().toISOString()}\n\n`;
+    bounty += `## Summary\n\nFound ${bountyFindings.length} prioritized issue(s). Reproduction guidance below is intentionally safe/manual.\n\n`;
+    for (const f of bountyFindings) {
+      bounty += `## [${String(f.prio).toUpperCase()}] ${String(f.value || '').replace(/\n/g, ' ')}\n\n`;
+      bounty += `- Type: ${f.type}\n`;
+      if (f.url) bounty += `- URL: ${f.url}\n`;
+      if (f.meta) bounty += `- Evidence: ${String(f.meta).replace(/\n/g, ' ')}\n`;
+      if (f.risk?.why) bounty += `- Impact: ${String(f.risk.why).replace(/\n/g, ' ')}\n`;
+      if (f.risk?.next) bounty += `- Safe validation: ${String(f.risk.next).replace(/\n/g, ' ')}\n`;
+      if (f.risk?.falsePositive) bounty += `- False-positive note: ${String(f.risk.falsePositive).replace(/\n/g, ' ')}\n`;
+      bounty += '\n';
+    }
+    const bountyName = multi
+      ? `ghostrecon_bounty_fila_${batchTargetsSnapshot.length}_${Date.now()}.md`
+      : `ghostrecon_bounty_${targetDomain}_${Date.now()}.md`;
+    download(bountyName, bounty, 'text/markdown');
+    return;
+  }
+  let md = `# GHOSTRECON — relatório técnico\n\n${alvoLinha}\n\n**Data (ISO):** ${new Date().toISOString()}\n\n`;
   md += `## Resumo\n| Métrica | Valor |\n|---|---|\n`;
   md += `| Subdomínios | ${stats.subs} |\n| Endpoints | ${stats.endpoints} |\n| Parâmetros | ${stats.params} |\n| Secrets | ${stats.secrets} |\n| Dorks | ${stats.dorks} |\n| Prioridade alta (UI) | ${stats.high} |\n\n`;
   if (high.length) {
@@ -6999,6 +7328,8 @@ function exportMarkdown() {
     high.forEach((f) => {
       md += `- **${f.type}** — \`${String(f.value).replace(/`/g, "'")}\`\n`;
       if (f.meta) md += `  - _${String(f.meta).replace(/_/g, '\\_')}_\n`;
+      if (f.risk?.why) md += `  - Risco: ${String(f.risk.why).replace(/\n/g, ' ')}\n`;
+      if (f.risk?.next) md += `  - Proximo passo seguro: ${String(f.risk.next).replace(/\n/g, ' ')}\n`;
       if (f.url) md += `  - URL: ${f.url}\n`;
       if (f.provenance?.how) md += `  - Como: ${String(f.provenance.how).replace(/\n/g, ' ')}\n`;
       if (f.provenance?.relation) md += `  - Relação ao alvo: ${String(f.provenance.relation).replace(/\n/g, ' ')}\n`;
@@ -7016,6 +7347,8 @@ function exportMarkdown() {
     md += `## ${type.toUpperCase()}\n`;
     items.forEach((f) => {
       md += `- **[${f.prio.toUpperCase()}]** \`${String(f.value).replace(/`/g, "'")}\`${f.meta ? ` — ${String(f.meta).replace(/`/g, "'")}` : ''}\n`;
+      if (f.risk?.why) md += `  - Risco: ${String(f.risk.why).replace(/\n/g, ' ')}\n`;
+      if (f.risk?.next) md += `  - Proximo passo seguro: ${String(f.risk.next).replace(/\n/g, ' ')}\n`;
       if (f.provenance?.how) md += `  - Como: ${String(f.provenance.how).replace(/\*\*/g, '').replace(/\n/g, ' ')}\n`;
       if (f.provenance?.relation) md += `  - Relação: ${String(f.provenance.relation).replace(/\*\*/g, '').replace(/\n/g, ' ')}\n`;
     });
@@ -7040,6 +7373,8 @@ function exportTXT() {
     txt += `--- ALTO RISCO ---\n`;
     high.forEach((f) => {
       txt += `[${f.type}] ${f.value}\n  ${f.meta || ''}\n  ${f.url || ''}\n`;
+      if (f.risk?.why) txt += `  Risco: ${f.risk.why}\n`;
+      if (f.risk?.next) txt += `  Proximo passo seguro: ${f.risk.next}\n`;
       if (f.provenance?.how) txt += `  Como: ${f.provenance.how.replace(/\*\*/g, '')}\n`;
       if (f.provenance?.relation) txt += `  Relação ao alvo: ${f.provenance.relation.replace(/\*\*/g, '')}\n`;
       txt += '\n';
@@ -7055,6 +7390,8 @@ function exportTXT() {
   txt += `--- TODOS OS ACHADOS ---\n`;
   findings.forEach((f) => {
     txt += `[${f.prio.toUpperCase()}] [${f.type}] ${f.value}\n  → ${f.meta || ''}\n`;
+    if (f.risk?.why) txt += `  Risco: ${f.risk.why}\n`;
+    if (f.risk?.next) txt += `  Proximo passo seguro: ${f.risk.next}\n`;
     if (f.provenance?.how) txt += `  Como: ${f.provenance.how.replace(/\*\*/g, '')}\n`;
     if (f.provenance?.relation) txt += `  Relação ao alvo: ${f.provenance.relation.replace(/\*\*/g, '')}\n`;
   });
@@ -7404,6 +7741,58 @@ function showModuleDetailForCheckbox(input) {
   panel.classList.add('module-detail-panel-visible');
   panel.hidden = false;
   window.__ghostreconSelectedModule = input.value;
+}
+
+function applySmartFastPreset() {
+  const wanted = new Set([
+    'subdomains',
+    'wayback',
+    'rdap',
+    'dns_enrichment',
+    'security_headers',
+    'header_intel',
+    'robots_sitemap',
+    'http3_quic_surface',
+    'nginx_http3_cve_2026_42530',
+    'panel_exposure_audit',
+    'cookie_session_audit',
+    'csrf_flow_audit',
+    'jwt_jwks_audit',
+    'openapi_specs',
+    'api_contract_diff',
+    'nmap_cve_match',
+    'nmap_backport_review',
+    'mysql_3306_intel',
+    'risk_explainer',
+  ]);
+  const heavyOff = new Set([
+    'kali_ffuf',
+    'kali_dirsearch',
+    'kali_nuclei',
+    'kali_nmap_aggressive',
+    'kali_nmap_udp',
+    'sqlmap',
+    'verify_sqli_deep',
+    'micro_exploit',
+    'webshell_probe',
+    'shannon_whitebox',
+    'pentestgpt_validate',
+    'vigolium_dast',
+    'vigolium_audit',
+    'vigolium_swarm',
+  ]);
+  document.querySelectorAll('input.mod[type="checkbox"]').forEach((cb) => {
+    if (heavyOff.has(cb.value)) cb.checked = false;
+    else cb.checked = wanted.has(cb.value);
+  });
+  const prof = document.getElementById('reconProfileSelect');
+  if (prof) prof.value = 'quick';
+  const ai = document.getElementById('modAiReports');
+  if (ai) ai.checked = false;
+  const full = document.getElementById('fullPresetToggle');
+  if (full) full.checked = false;
+  syncAiModeUi();
+  addLog('Preset Smart rapido aplicado: foco em sinal alto, CVE/Nmap leve e sem fuzzers pesados.', 'info');
 }
 
 const FULL_MODULES_EXCLUDE = new Set([

@@ -41,6 +41,7 @@ function cloneFindingForSnapshot(f) {
     attackTier: f.attackTier,
     bountyProbability: f.bountyProbability,
     priorityWhy: Array.isArray(f.priorityWhy) ? f.priorityWhy.slice(0, 80) : f.priorityWhy,
+    risk: f.risk,
     provenance: f.provenance,
     owasp: Array.isArray(f.owasp) ? f.owasp : undefined,
     mitre: Array.isArray(f.mitre) ? f.mitre : undefined,

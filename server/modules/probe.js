@@ -23,6 +23,7 @@ export function snapshotSecurityHeaders(headers) {
     crossOriginOpenerPolicy: get('cross-origin-opener-policy'),
     crossOriginEmbedderPolicy: get('cross-origin-embedder-policy'),
     server: get('server'),
+    altSvc: get('alt-svc'),
     setCookieSample: [],
   };
   if (typeof headers.getSetCookie === 'function') {

@@ -3,6 +3,9 @@ const MODULE_ALIASES = new Map([
   ['cookie-session-audit', 'cookie_session_audit'],
   ['csrf-flow-audit', 'csrf_flow_audit'],
   ['jwt-jwks-audit', 'jwt_jwks_audit'],
+  ['http3-quic-surface', 'http3_quic_surface'],
+  ['nginx-http3-cve-2026-42530', 'nginx_http3_cve_2026_42530'],
+  ['panel-exposure-audit', 'panel_exposure_audit'],
   ['service-worker-audit', 'service_worker_audit'],
   ['api-contract-diff', 'api_contract_diff'],
   ['websocket-recon', 'websocket_recon'],
@@ -10,6 +13,7 @@ const MODULE_ALIASES = new Map([
   ['dom-clobbering-audit', 'dom_clobbering_audit'],
   ['email-security-deep', 'email_security_deep'],
   ['secrets-context-ranker', 'secrets_context_ranker'],
+  ['risk-explainer', 'risk_explainer'],
 ]);
 
 /**

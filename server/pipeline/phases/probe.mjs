@@ -143,21 +143,53 @@ export async function runProbePhase(s) {
       urlsToProbe.push(`https://${hl}/`, `http://${hl}/`);
     }
     log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
+    emit({
+      type: 'pipe_detail',
+      name: 'alive',
+      current: 0,
+      total: urlsToProbe.length,
+      label: `${hostsToProbe.length} host(s), ${urlsToProbe.length} URL(s)`,
+    });
+
+    let completedAliveProbes = 0;
+    const emitAliveProgress = (url) => {
+      completedAliveProbes += 1;
+      const total = Math.max(1, urlsToProbe.length);
+      const pct = Math.min(39, 28 + Math.floor((completedAliveProbes / total) * 11));
+      progress(pct);
+      emit({
+        type: 'pipe_detail',
+        name: 'alive',
+        current: completedAliveProbes,
+        total: urlsToProbe.length,
+        label: url,
+        pct,
+      });
+    };
 
     s.probeResults = await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
-      const r = await probeHttp(u, { auth, modules, identityCtrl });
+      let r;
+      try {
+        r = await probeHttp(u, { auth, modules, identityCtrl });
+      } catch (e) {
+        r = { ok: false, url: u, error: e?.message || String(e) };
+      } finally {
+        emitAliveProgress(u);
+      }
       return { u, r };
     });
 
     const seenTech = new Set();
     const seenHtmlCommentIntel = new Set();
+    const runWafFingerprint = modules.includes('wafw00f') || runtimeProfile.name !== 'quick';
+    pipe('wafw00f', runWafFingerprint ? 'active' : 'skip');
     for (const { r } of s.probeResults) {
       if (!r.ok) continue;
       const host = new URL(r.url).hostname;
       if (r.status > 0 && r.status < 500) {
         log(`ALIVE ${r.url} → ${r.status} ${r.title ? `"${r.title.slice(0, 60)}"` : ''}`, 'success');
         // WAFW00F (fase 2 – opcional, melhor em quick<= off; standard/deep só se ferramenta existir)
-        if (modules.includes('wafw00f') || runtimeProfile.name !== 'quick') {
+        if (runWafFingerprint) {
           try {
             const wf = await wafw00fFingerprint(host);
             if (wf?.waf) {
@@ -214,6 +246,7 @@ export async function runProbePhase(s) {
         }
       }
     }
+    if (runWafFingerprint) pipe('wafw00f', 'done');
 
     {
       let surfaceN = 0;
@@ -268,6 +301,7 @@ export async function runProbePhase(s) {
     await dispatchRegistryModule(s, 'csrf_flow_audit');
 
     if (modules.includes('security_headers')) {
+      pipe('security_headers', 'active');
       const seenHeaderGapHosts = new Set();
       for (const { r } of s.probeResults) {
         if (!r.ok || !r.securityHeaders) continue;
@@ -327,6 +361,9 @@ export async function runProbePhase(s) {
           }
         }
       }
+      pipe('security_headers', 'done');
+    } else {
+      pipe('security_headers', 'skip');
     }
 
     if (modules.includes('cors_audit')) {
@@ -348,9 +385,12 @@ export async function runProbePhase(s) {
         log(`CORS audit: ${e?.message || e}`, 'warn');
       }
       pipe('cors_audit', 'done');
+    } else {
+      pipe('cors_audit', 'skip');
     }
 
     if (modules.includes('header_intel')) {
+      pipe('header_intel', 'active');
       for (const { r } of s.probeResults) {
         if (!r.ok || !r.responseHeadersFlat?.length) continue;
         if (r.status <= 0 || r.status >= 500) continue;
@@ -383,7 +423,13 @@ export async function runProbePhase(s) {
           );
         }
       }
+      pipe('header_intel', 'done');
+    } else {
+      pipe('header_intel', 'skip');
     }
+
+    await dispatchRegistryModule(s, 'http3_quic_surface');
+    await dispatchRegistryModule(s, 'nginx_http3_cve_2026_42530');
 
     s.originByHost = new Map();
     for (const { r } of s.probeResults) {
@@ -405,6 +451,7 @@ export async function runProbePhase(s) {
 
     const activeOrigins = [...s.originByHost.values()].map((v) => v.origin);
 
+    await dispatchRegistryModule(s, 'panel_exposure_audit');
     await dispatchRegistryModule(s, 'jwt_jwks_audit');
     await dispatchRegistryModule(s, 'service_worker_audit');
 
@@ -444,6 +491,7 @@ export async function runProbePhase(s) {
         });
       }
       if (modules.includes('robots_sitemap')) {
+        pipe('robots_sitemap', 'active');
         const bases = [...s.originByHost.values()].map((v) => v.origin);
         log(`robots.txt / sitemap (${bases.length} origem(ns))...`, 'info');
         await mapPool(bases, limits.surfaceConcurrency, async (baseOrigin) => {
@@ -484,12 +532,17 @@ export async function runProbePhase(s) {
             );
           }
         });
+        pipe('robots_sitemap', 'done');
+      } else {
+        pipe('robots_sitemap', 'skip');
       }
 
       // ── /.well-known (security.txt + OIDC discovery) ──
       if (runWellKnown) {
         const origins = [...s.originByHost.values()].map((v) => v.origin).slice(0, limits.wellKnownMaxHosts);
         if (origins.length) log(`/.well-known (${origins.length} origem(ns))...`, 'info');
+        pipe('wellknown_security_txt', modules.includes('wellknown_security_txt') ? 'active' : 'skip');
+        pipe('wellknown_openid', modules.includes('wellknown_openid') ? 'active' : 'skip');
 
         await mapPool(origins, limits.wellKnownConcurrency, async (baseOrigin) => {
           if (modules.includes('wellknown_security_txt')) {
@@ -555,16 +608,25 @@ export async function runProbePhase(s) {
             }
           }
         });
+        if (modules.includes('wellknown_security_txt')) pipe('wellknown_security_txt', 'done');
+        if (modules.includes('wellknown_openid')) pipe('wellknown_openid', 'done');
+      } else {
+        pipe('wellknown_security_txt', 'skip');
+        pipe('wellknown_openid', 'skip');
       }
       pipe('surface', 'done');
     } else {
       emit({ type: 'pipe', name: 'surface', state: 'skip' });
+      pipe('robots_sitemap', 'skip');
+      pipe('wellknown_security_txt', 'skip');
+      pipe('wellknown_openid', 'skip');
     }
 
     pipe('alive', 'done');
     progress(40);
 
     if (modules.includes('shodan')) {
+      pipe('shodan', 'active');
       const sk = process.env.SHODAN_API_KEY?.trim();
       if (!sk) {
         log('Shodan: define SHODAN_API_KEY para lookup passivo (api.shodan.io)', 'warn');
@@ -615,9 +677,13 @@ export async function runProbePhase(s) {
           log(`Shodan: ${e.message}`, 'warn');
         }
       }
+      pipe('shodan', 'done');
+    } else {
+      pipe('shodan', 'skip');
     }
 
     if (modules.includes('openapi_specs')) {
+      pipe('openapi_specs', 'active');
       log('OpenAPI/Swagger: a procurar specs em paths comuns…', 'info');
       try {
         const specRows = await harvestOpenApiFromOrigins(activeOrigins, domain, outOfScopeList, modules, log);
@@ -627,6 +693,9 @@ export async function runProbePhase(s) {
       } catch (e) {
         log(`OpenAPI harvest: ${e.message}`, 'warn');
       }
+      pipe('openapi_specs', 'done');
+    } else {
+      pipe('openapi_specs', 'skip');
     }
 
     await dispatchRegistryModule(s, 'api_contract_diff');

@@ -1,6 +1,9 @@
 import { auditCookieSession } from './cookie-session-audit.mjs';
 import { auditCsrfFlows } from './csrf-flow-audit.mjs';
+import { auditHttp3QuicSurface } from './http3-quic-surface.mjs';
 import { runJwtJwksAudit } from './jwt-jwks-audit.mjs';
+import { auditNginxHttp3Cve202642530 } from './nginx-http3-cve-2026-42530.mjs';
+import { runPanelExposureAudit } from './panel-exposure-audit.mjs';
 import { runServiceWorkerAudit } from './service-worker-audit.mjs';
 import {
   findPreviousApiContractSnapshots,
@@ -60,6 +63,46 @@ export const moduleRunners = {
       logOk: findings.length
         ? `JWT/JWKS audit: ${findings.length} achado(s)`
         : 'JWT/JWKS audit: sem JWKS suspeito nas origens vivas',
+      logLevel: findings.length ? 'warn' : 'info',
+    };
+  },
+
+  async http3_quic_surface(s) {
+    const findings = auditHttp3QuicSurface({
+      probeResults: s.probeResults,
+      nmapFindings: (s.findings || []).filter((f) => f.type === 'nmap'),
+    });
+    return {
+      findings,
+      logOk: findings.length
+        ? `HTTP/3/QUIC surface: ${findings.length} exposicao(oes)`
+        : 'HTTP/3/QUIC surface: sem Alt-Svc h3 observado',
+      logLevel: findings.length ? 'info' : 'info',
+    };
+  },
+
+  async nginx_http3_cve_2026_42530(s) {
+    const findings = auditNginxHttp3Cve202642530({
+      probeResults: s.probeResults,
+    });
+    return {
+      findings,
+      logOk: findings.length
+        ? `NGINX HTTP/3 ${findings.length} achado(s)/candidato(s) para CVE-2026-42530`
+        : 'NGINX HTTP/3 CVE-2026-42530: sem versao vulneravel confirmada',
+      logLevel: findings.some((f) => f.prio === 'high') ? 'warn' : 'info',
+    };
+  },
+
+  async panel_exposure_audit(s) {
+    const findings = await runPanelExposureAudit({
+      origins: activeOriginsFromState(s),
+      modules: s.modules,
+      log: s.log,
+    });
+    return {
+      findings,
+      logOk: findings.length ? `Panel exposure: ${findings.length} achado(s)` : 'Panel exposure: sem painéis comuns expostos',
       logLevel: findings.length ? 'warn' : 'info',
     };
   },

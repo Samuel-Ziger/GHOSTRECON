@@ -24,6 +24,7 @@ import {
 } from '../../modules/ai-dual-report.js';
 import { applyOwaspTagsToFindings } from '../../modules/owasp-top10.js';
 import { applyMitreTagsToFindings } from '../../modules/mitre-recon.js';
+import { applyRiskExplanations } from '../../modules/risk-explainer.mjs';
 import { serializeFindingsForRunSnapshot } from '../../modules/finding-serialize.js';
 import { saveRun, listRuns, storageLabel } from '../../modules/db.js';
 import { attachRunToEngagement } from '../../modules/engagement.mjs';
@@ -384,6 +385,14 @@ export async function runFinalizePhase(ctx) {
 
     applyOwaspTagsToFindings(findings);
     applyMitreTagsToFindings(findings);
+    if (modules.includes('risk_explainer')) {
+      pipe('risk_explainer', 'active');
+      const risk = applyRiskExplanations(findings);
+      log(`Risk explainer: contexto adicionado a ${risk.changed} achado(s)`, 'info');
+      pipe('risk_explainer', 'done');
+    } else {
+      emit({ type: 'pipe', name: 'risk_explainer', state: 'skip' });
+    }
     emit({ type: 'findings_rescore', findings: [...findings] });
     log('OWASP Top 10 (2025): etiquetas heurísticas aplicadas a cada achado', 'info');
     log('MITRE ATT&CK (recon): mapa fixo aplicado quando recon-bundle.json existe', 'info');
@@ -460,6 +469,19 @@ export async function runFinalizePhase(ctx) {
         if (prev) {
           const diff = await compareRuns(prev.id, runId);
           if (!diff.error) {
+            emit({
+              type: 'delta_summary',
+              baselineRunId: prev.id,
+              newerRunId: runId,
+              addedCount: diff.addedCount,
+              removedCount: diff.removedCount,
+              addedSample: diff.added.slice(0, 8).map((x) => ({
+                type: x.type,
+                prio: x.prio,
+                value: String(x.value || '').slice(0, 180),
+              })),
+            });
+            log(`Delta runs: +${diff.addedCount} novo(s), -${diff.removedCount} removido(s) vs run #${prev.id}`, diff.addedCount ? 'info' : 'success');
             const hotAdded = diff.added.filter((x) => {
               const t = String(x.type || '').toLowerCase();
               const v = String(x.value || '').toLowerCase();

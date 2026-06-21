@@ -5,6 +5,8 @@ import { tmpdir } from 'os';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { limits } from '../config.js';
+import { sevToPrio, sevToScore } from '../lib/severity.mjs';
+import { enrichFromTechStrings } from './cve-enrichment.js';
 import {
   runWpscanJson,
   extractWpscanFindings,
@@ -291,6 +293,9 @@ export function parseNmapXml(xml) {
       const product = getAttr(attrs, 'product');
       const version = getAttr(attrs, 'version');
       const extrainfo = getAttr(attrs, 'extrainfo');
+      const cpes = [...block.matchAll(/<cpe>([^<]+)<\/cpe>/g)]
+        .map((x) => String(x[1] || '').trim())
+        .filter(Boolean);
       const searchBlob = [product, version, name, extrainfo].filter(Boolean).join(' ').trim();
       rows.push({
         host: hostLabel,
@@ -300,6 +305,7 @@ export function parseNmapXml(xml) {
         product,
         version,
         extrainfo,
+        cpes,
         searchBlob,
       });
     }
@@ -406,9 +412,115 @@ async function searchExploitDbOne(query, log) {
   }
 }
 
+function cleanExploitDbQuery(value) {
+  return String(value || '')
+    .replace(/["'`]/g, ' ')
+    .replace(/[^\w.+:/ -]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+}
+
+function normalizeNmapVersion(version) {
+  const raw = String(version || '').trim();
+  if (!raw || !/\d/.test(raw)) return '';
+  const m = raw.match(/^v?(\d+(?:\.\d+){0,4}(?:p\d+)?(?:[a-z]\d*)?)/i);
+  return cleanExploitDbQuery((m && m[1]) || raw.split(/\s+/)[0]);
+}
+
+function majorMinorVersion(version) {
+  const v = normalizeNmapVersion(version);
+  const m = v.match(/^(\d+\.\d+)/);
+  return m ? m[1] : '';
+}
+
+function cpeToken(value) {
+  const s = String(value || '').replace(/\\:/g, ':').replace(/_/g, ' ').replace(/\+/g, ' ');
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+function parseCpe(cpe) {
+  const raw = String(cpe || '').trim();
+  if (raw.startsWith('cpe:/')) {
+    const parts = raw.slice(5).split(':');
+    return {
+      part: parts[0] || '',
+      vendor: cpeToken(parts[1] || ''),
+      product: cpeToken(parts[2] || ''),
+      version: cpeToken(parts[3] || ''),
+    };
+  }
+  if (raw.startsWith('cpe:2.3:')) {
+    const parts = raw.split(':');
+    return {
+      part: parts[2] || '',
+      vendor: cpeToken(parts[3] || ''),
+      product: cpeToken(parts[4] || ''),
+      version: cpeToken(parts[5] || ''),
+    };
+  }
+  return null;
+}
+
+function addUniqueQuery(out, query) {
+  const q = cleanExploitDbQuery(query);
+  if (q.length < 3 || !/\d/.test(q)) return;
+  const key = q.toLowerCase();
+  if (!out.some((x) => x.toLowerCase() === key)) out.push(q);
+}
+
+export function buildExploitDbQueries(row, { max = 5 } = {}) {
+  const out = [];
+  const product = cleanExploitDbQuery(row?.product || '');
+  const service = cleanExploitDbQuery(row?.name || '');
+  const ver = normalizeNmapVersion(row?.version);
+  const majorMinor = majorMinorVersion(row?.version);
+  const products = [];
+  const cpeRows = [];
+  if (product) products.push(product);
+
+  for (const cpe of row?.cpes || []) {
+    const p = parseCpe(cpe);
+    if (!p) continue;
+    const cpeProduct = cleanExploitDbQuery(p.product);
+    const cpeVendor = cleanExploitDbQuery(p.vendor);
+    const cpeVersion = normalizeNmapVersion(p.version);
+    if (cpeProduct && !products.some((x) => x.toLowerCase() === cpeProduct.toLowerCase())) {
+      products.push(cpeProduct);
+    }
+    if (cpeProduct && cpeVersion) cpeRows.push({ vendor: cpeVendor, product: cpeProduct, version: cpeVersion });
+  }
+
+  for (const p of products) {
+    if (ver) addUniqueQuery(out, `${p} ${ver}`);
+    if (majorMinor && majorMinor !== ver) addUniqueQuery(out, `${p} ${majorMinor}`);
+  }
+  for (const p of cpeRows) {
+    if (p.vendor && p.vendor.toLowerCase() !== p.product.toLowerCase()) {
+      addUniqueQuery(out, `${p.vendor} ${p.product} ${p.version}`);
+    }
+    addUniqueQuery(out, `${p.product} ${p.version}`);
+  }
+  if (!products.length && service && ver && !/^(?:http|https|ssl|tcpwrapped|unknown)$/i.test(service)) {
+    addUniqueQuery(out, `${service} ${ver}`);
+  }
+  if (!out.length && row?.searchBlob) addUniqueQuery(out, row.searchBlob);
+  return out.slice(0, Math.max(1, max));
+}
+
 function exploitTitle(row) {
   if (typeof row === 'string') return row;
   return row.Title || row.title || row.Path || row['EDB-ID'] || row.EDB_ID || JSON.stringify(row).slice(0, 120);
+}
+
+function exploitKey(row) {
+  const id = row?.['EDB-ID'] || row?.EDB_ID || row?.id || row?.['edb-id'];
+  if (id) return `edb:${id}`;
+  return cleanExploitDbQuery(exploitTitle(row)).toLowerCase();
 }
 
 function exploitUrl(row) {
@@ -417,28 +529,147 @@ function exploitUrl(row) {
   return row.url || '';
 }
 
+function isHttp3NmapRow(row) {
+  const blob = [row?.proto, row?.port, row?.name, row?.product, row?.version, row?.extrainfo, row?.searchBlob]
+    .filter(Boolean)
+    .join(' ');
+  return /\b(?:quic|http3|http\/3|h3)\b/i.test(blob) || (String(row?.proto).toLowerCase() === 'udp' && String(row?.port) === '443');
+}
+
 /**
- * Query Google sugerida após versão nmap (contexto Exploit-DB), ex.: «exploit pra ssh 9.1».
+ * Query Google sugerida após versão nmap, focada no Exploit-DB.
  * @param {{ name?: string, product?: string, version?: string }} row
  * @returns {string|null}
  */
 export function buildExploitVersionGoogleQuery(row) {
-  const ver = String(row?.version || '').trim();
-  if (!ver || !/\d/.test(ver)) return null;
-  const name = String(row?.name || '').trim().toLowerCase();
-  const product = String(row?.product || '').trim();
-  let short = name.replace(/[^a-z0-9._-]/gi, '');
-  if (!short && product) {
-    short = product
-      .split(/\s+/)[0]
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]/gi, '');
+  const [query] = buildExploitDbQueries(row, { max: 1 });
+  if (!query || !/\d/.test(query)) return null;
+  return `site:exploit-db.com/exploits ${query} exploit`.replace(/\s+/g, ' ').trim();
+}
+
+async function searchExploitDbForNmapRow(row, { log, seenQueries, maxQueries = 18 }) {
+  const queries = buildExploitDbQueries(row, {
+    max: Math.max(1, Math.min(6, Number(process.env.GHOSTRECON_SEARCHSPLOIT_QUERIES_PER_SERVICE || 3))),
+  });
+  const usedQueries = [];
+  const hitsByKey = new Map();
+  for (const q of queries) {
+    if (seenQueries.size >= maxQueries) break;
+    const key = q.toLowerCase().slice(0, 100);
+    if (seenQueries.has(key)) continue;
+    seenQueries.add(key);
+    usedQueries.push(q);
+    const hits = await searchExploitDbOne(q, log);
+    for (const hit of hits) {
+      const hk = exploitKey(hit);
+      if (!hitsByKey.has(hk)) hitsByKey.set(hk, hit);
+    }
+    if (hitsByKey.size >= 4) break;
   }
-  if (!short || short.length > 48) return null;
-  const m = ver.match(/^([\d.]+(?:p\d+)?(?:[a-z]+\d*)?)/i);
-  const verNorm = (m && m[1]) || ver.split(/\s+/)[0].slice(0, 20);
-  if (!verNorm) return null;
-  return `exploit pra ${short} ${verNorm}`.replace(/\s+/g, ' ').trim();
+  return { queries: usedQueries, hits: [...hitsByKey.values()] };
+}
+
+export function buildNmapCveTechStrings(rows, { max = 8 } = {}) {
+  const out = [];
+  const add = (product, version) => {
+    const p = cleanExploitDbQuery(product);
+    const v = normalizeNmapVersion(version);
+    if (!p || !v) return;
+    const text = `${p}/${v}`;
+    if (!out.some((x) => x.toLowerCase() === text.toLowerCase())) out.push(text);
+  };
+  for (const row of rows || []) {
+    add(row?.product, row?.version);
+    for (const cpe of row?.cpes || []) {
+      const p = parseCpe(cpe);
+      if (p?.product && p?.version) add(p.product, p.version);
+    }
+    if (out.length >= max) break;
+  }
+  return out.slice(0, Math.max(1, max));
+}
+
+function cveFindingFromEnrichment(row) {
+  const sev = row.severity || 'medium';
+  const score = Math.max(sevToScore(sev), Number(row.cvss) >= 9 ? 95 : 0);
+  const prio = sevToPrio(sev);
+  const ev = row.evidence || {};
+  const meta = [
+    'source=nmap_cve_match',
+    `product=${ev.product || ''}`,
+    `version=${ev.version || ''}`,
+    `confidence=${ev.confidence || 'observed'}`,
+    ev.source ? `db=${ev.source}` : null,
+    ev.advisoryUrl ? `advisory=${ev.advisoryUrl}` : null,
+    ev.exploitPublic ? 'exploit_public=true' : null,
+    'safe_check=public_cve_lookup',
+    'backport_note=confirmar pacote real antes de reportar',
+  ]
+    .filter(Boolean)
+    .join(' - ');
+  return {
+    type: 'cve_match',
+    prio,
+    score,
+    value: row.title || `${ev.product || 'produto'} ${ev.version || ''} -> ${row.cve}`,
+    meta,
+    cve: row.cve,
+    cvss: row.cvss ?? null,
+    url: ev.advisoryUrl || undefined,
+    owasp: 'A06:2021',
+    mitre: 'T1190',
+  };
+}
+
+async function runNmapCveMatchForRows(rows, { log, addFinding }) {
+  const max = Math.max(1, Math.min(20, Number(process.env.GHOSTRECON_NMAP_CVE_MAX_SERVICES || 6)));
+  const techStrings = buildNmapCveTechStrings(rows, { max });
+  if (!techStrings.length) {
+    log('Nmap CVE match: sem produto/versao utilizavel', 'info');
+    return [];
+  }
+  log(`Nmap CVE match: consultando ${techStrings.length} produto(s)/versao(oes)`, 'info');
+  const findings = await enrichFromTechStrings(techStrings, {
+    source: 'nmap',
+    useNvd: String(process.env.GHOSTRECON_NMAP_CVE_USE_NVD || '1') !== '0',
+    useOsv: String(process.env.GHOSTRECON_NMAP_CVE_USE_OSV || '1') !== '0',
+    checkExploits: String(process.env.GHOSTRECON_NMAP_CVE_CHECK_EXPLOITS || '0') === '1',
+    maxPerProduct: Math.max(1, Math.min(8, Number(process.env.GHOSTRECON_NMAP_CVE_MAX_PER_PRODUCT || 3))),
+    apiKey: process.env.NVD_API_KEY || process.env.GHOSTRECON_NVD_API_KEY || '',
+  });
+  const out = findings.map(cveFindingFromEnrichment);
+  for (const f of out) addFinding(f, null);
+  log(out.length ? `Nmap CVE match: ${out.length} CVE(s) candidata(s)` : 'Nmap CVE match: sem CVE retornada', out.length ? 'warn' : 'info');
+  return out;
+}
+
+export function buildNmapBackportReviewFindings(rows) {
+  const out = [];
+  const seen = new Set();
+  const distroRe = /\b(?:debian|ubuntu|red hat|redhat|rhel|centos|rocky|alma|amazon linux|amzn|suse|opensuse|freebsd|oracle linux|el\d)\b/i;
+  const productRe = /\b(?:apache|httpd|nginx|openssh|openssl|php|tomcat|mariadb|mysql|postgresql|bind|postfix|dovecot)\b/i;
+  for (const row of rows || []) {
+    const blob = [row?.product, row?.version, row?.extrainfo, row?.searchBlob, ...(row?.cpes || [])].filter(Boolean).join(' ');
+    if (!distroRe.test(blob) || !productRe.test(blob)) continue;
+    const key = `${row.host}:${row.port}:${row.product}:${row.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      type: 'cve_backport_context',
+      prio: 'low',
+      score: 32,
+      value: `Possivel pacote com backport: ${row.proto}/${row.port} ${row.product || row.name || '?'} ${row.version || ''}`,
+      meta: [
+        'source=nmap_backport_review',
+        `host=${row.host}`,
+        `service=${row.name || ''}`,
+        `evidence=${blob.slice(0, 180)}`,
+        'note=distribuicoes Linux podem corrigir CVEs mantendo versao upstream antiga',
+      ].join(' - '),
+      url: null,
+    });
+  }
+  return out;
 }
 
 async function runFfuf200(baseUrl, log, execOpts = {}) {
@@ -1046,6 +1277,7 @@ async function ingestNmapScanRows(rows, ctx) {
     seenQueries,
     seenExploitGoogle,
     exploitGoogleMax,
+    searchsploitMax = 18,
     ftpChecked,
     smbChecked,
     rpcChecked,
@@ -1072,6 +1304,16 @@ async function ingestNmapScanRows(rows, ctx) {
       meta,
       url,
     });
+    if (isHttp3NmapRow(row)) {
+      addFinding({
+        type: 'http3',
+        prio: 'low',
+        score: 38,
+        value: `HTTP/3 / QUIC surface via Nmap: ${line}`,
+        meta: `source=nmap - evidence=${metaBase} - note=revisar UDP/443, CDN e stack QUIC`,
+        url,
+      });
+    }
 
     const exploitGq = buildExploitVersionGoogleQuery(row);
     if (exploitGq && typeof emit === 'function' && seenExploitGoogle.size < exploitGoogleMax) {
@@ -1250,11 +1492,13 @@ async function ingestNmapScanRows(rows, ctx) {
       }
     }
 
-    if (cap.tools.searchsploit && row.searchBlob && seenQueries.size < 12) {
-      const key = row.searchBlob.toLowerCase().slice(0, 60);
-      if (seenQueries.has(key)) continue;
-      seenQueries.add(key);
-      const hits = await searchExploitDbOne(row.searchBlob, log);
+    if (cap.tools.searchsploit && seenQueries.size < searchsploitMax) {
+      const { queries, hits } = await searchExploitDbForNmapRow(row, {
+        log,
+        seenQueries,
+        maxQueries: searchsploitMax,
+      });
+      const queryLabel = queries.length ? queries.join(' | ') : row.searchBlob || row.name || 'nmap';
       for (const hit of hits.slice(0, 4)) {
         const title = exploitTitle(hit);
         addFinding({
@@ -1262,11 +1506,11 @@ async function ingestNmapScanRows(rows, ctx) {
           prio: 'high',
           score: 82,
           value: title,
-          meta: `Exploit-DB / searchsploit — ref. a «${row.searchBlob.slice(0, 50)}»`,
+          meta: `Exploit-DB / searchsploit - nmap=${row.name || '?'} ${row.product || ''} ${row.version || ''} - queries="${queryLabel.slice(0, 120)}"`,
           url: exploitUrl(hit) || undefined,
         });
       }
-      if (hits.length) log(`searchsploit: ${hits.length} entrada(s) para «${row.searchBlob.slice(0, 40)}…»`, 'find');
+      if (hits.length) log(`searchsploit: ${hits.length} entrada(s) para ${queryLabel.slice(0, 80)}`, 'find');
     }
   }
   for (const row of rows) {
@@ -1364,10 +1608,12 @@ export async function runKaliAggressiveScan({
    */
   runNmapUdp = false,
   /** Módulo UI `mysql_3306_intel`: após nmap TCP, achados `intel` com comandos de referência se 3306/tcp aberto. */
+  runNmapCveMatch = false,
+  runNmapBackportReview = false,
   runMysql3306Intel = false,
   /** Cookie / headers do recon (dalfox `--cookie`, xss_vibes `-H`). */
   auth = null,
-  /** NDJSON: eventos `dork` para fila de Google (pesquisas «exploit pra …» por versão nmap). */
+  /** NDJSON: eventos `dork` para fila de Google (Exploit-DB por produto/versão nmap). */
   emit = null,
   /** Módulo UI `kali_proxychains`: encadeia scanners Kali via proxychains-ng. */
   useProxychains = false,
@@ -1409,6 +1655,10 @@ export async function runKaliAggressiveScan({
     1,
     Math.min(60, Number(process.env.GHOSTRECON_EXPLOIT_GOOGLE_MAX_QUERIES || 25)),
   );
+  const searchsploitMax = Math.max(
+    1,
+    Math.min(80, Number(process.env.GHOSTRECON_SEARCHSPLOIT_MAX_QUERIES || 18)),
+  );
   const ftpChecked = new Set();
   const smbChecked = new Set();
   const rpcChecked = new Set();
@@ -1426,6 +1676,7 @@ export async function runKaliAggressiveScan({
         seenQueries,
         seenExploitGoogle,
         exploitGoogleMax,
+        searchsploitMax,
         ftpChecked,
         smbChecked,
         rpcChecked,
@@ -1434,6 +1685,27 @@ export async function runKaliAggressiveScan({
         execOpts,
       };
       await ingestNmapScanRows(tcpNmapRows, { ...ingestCtx, scanKind: 'tcp' });
+      if (runNmapBackportReview && tcpNmapRows.length) {
+        pipeTool('nmap_backport_review', 'active');
+        const backports = buildNmapBackportReviewFindings(tcpNmapRows);
+        for (const f of backports) addFinding(f, null);
+        if (backports.length) log(`Nmap backport review: ${backports.length} contexto(s) de distro/backport`, 'info');
+        pipeTool('nmap_backport_review', 'done');
+      } else {
+        pipeTool('nmap_backport_review', 'skip');
+      }
+      if (runNmapCveMatch && tcpNmapRows.length) {
+        pipeTool('nmap_cve_match', 'active');
+        try {
+          await runNmapCveMatchForRows(tcpNmapRows, { log, addFinding });
+        } catch (e) {
+          log(`Nmap CVE match: ${e?.message || e}`, 'warn');
+        } finally {
+          pipeTool('nmap_cve_match', 'done');
+        }
+      } else {
+        pipeTool('nmap_cve_match', 'skip');
+      }
       if (runMysql3306Intel && tcpNmapRows.length) {
         const mysqlHints = buildMysql3306IntelFindings(tcpNmapRows);
         if (mysqlHints.length) {
@@ -1463,11 +1735,20 @@ export async function runKaliAggressiveScan({
           seenQueries,
           seenExploitGoogle,
           exploitGoogleMax,
+          searchsploitMax,
           ftpChecked,
+          smbChecked,
+          rpcChecked,
           baseUrlsForFfuf,
           domain,
+          execOpts,
           scanKind: 'udp',
         });
+        if (runNmapBackportReview && udpRows.length) {
+          const backports = buildNmapBackportReviewFindings(udpRows);
+          for (const f of backports) addFinding(f, null);
+          if (backports.length) log(`Nmap UDP backport review: ${backports.length} contexto(s)`, 'info');
+        }
       } catch (e) {
         log(`nmap UDP: ${e.message}`, 'error');
       } finally {
@@ -1479,6 +1760,8 @@ export async function runKaliAggressiveScan({
   } else {
     pipeTool('nmap', 'skip');
     pipeTool('nmap_udp', 'skip');
+    pipeTool('nmap_cve_match', 'skip');
+    pipeTool('nmap_backport_review', 'skip');
   }
 
   // ── WHOIS (Kali) ──

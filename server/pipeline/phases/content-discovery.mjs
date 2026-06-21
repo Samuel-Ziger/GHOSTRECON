@@ -211,6 +211,7 @@ export async function runContentDiscoveryPhase(s) {
     urlCorpus = urlCorpus.filter((u) => urlInReconScope(u, domain, outOfScopeList));
 
     if (modules.includes('graphql_probe')) {
+      pipe('graphql_probe', 'active');
       const gqlUrls = [...new Set(urlCorpus.filter((u) => /graphql/i.test(u)))].slice(0, 10);
       if (!gqlUrls.length) {
         log(
@@ -225,12 +226,16 @@ export async function runContentDiscoveryPhase(s) {
           log(`GraphQL probe: ${e.message}`, 'warn');
         }
       }
+      pipe('graphql_probe', 'done');
+    } else {
+      pipe('graphql_probe', 'skip');
     }
 
     if (modules.includes('graphql_recon')) {
       const gqlUrls = [...new Set(urlCorpus.filter((u) => /graphql/i.test(u)))].slice(0, 8);
       if (!gqlUrls.length) {
         log('GraphQL recon: sem endpoints com "graphql" no corpus', 'info');
+        pipe('graphql_recon', 'skip');
       } else {
         pipe('graphql_recon', 'active');
         try {
@@ -269,6 +274,8 @@ export async function runContentDiscoveryPhase(s) {
         }
         pipe('graphql_recon', 'done');
       }
+    } else {
+      pipe('graphql_recon', 'skip');
     }
 
     const waybackSet = new Set(waybackUrls);
@@ -413,6 +420,9 @@ export async function runContentDiscoveryPhase(s) {
 
     // ── JS ANALYSIS ─────────────────────────────
     pipe('js', 'active');
+    pipe('client_auth_audit', modules.includes('client_auth_audit') ? 'active' : 'skip');
+    pipe('client_surface_audit', modules.includes('client_surface_audit') ? 'active' : 'skip');
+    pipe('js_intel', modules.includes('js_intel') ? 'active' : 'skip');
     const jsList = extractJsUrls(urlCorpus.length ? urlCorpus : [], 120).slice(0, limits.maxJsFetch);
     log(`Analisando ${jsList.length} arquivos JS (passivo)...`, 'info');
     const clientAuthResults = [];
@@ -567,6 +577,9 @@ export async function runContentDiscoveryPhase(s) {
       .map(({ r }) => (r?.ok && r.htmlSample ? { url: r.url, body: r.htmlSample } : null))
       .filter(Boolean);
     s._jsAuditBodies = jsAuditBodies;
+    if (modules.includes('client_auth_audit')) pipe('client_auth_audit', 'done');
+    if (modules.includes('client_surface_audit')) pipe('client_surface_audit', 'done');
+    if (modules.includes('js_intel')) pipe('js_intel', 'done');
     await dispatchRegistryModule(s, 'websocket_recon');
     await dispatchRegistryModule(s, 'dom_clobbering_audit');
     pipe('js', 'done');
@@ -599,6 +612,7 @@ export async function runContentDiscoveryPhase(s) {
     log(`${dorks.length} dorks gerados (abertura no browser com fila configurável)`, 'success');
 
     if (modules.includes('google_cse')) {
+      pipe('google_cse', 'active');
       const gKey = process.env.GOOGLE_CSE_KEY;
       const gCx = process.env.GOOGLE_CSE_CX;
       if (!gKey || !gCx) {
@@ -650,6 +664,9 @@ export async function runContentDiscoveryPhase(s) {
         }
         log(`${seenG.size} URL(s) no alvo descoberta(s) via Google CSE`, seenG.size ? 'success' : 'info');
       }
+      pipe('google_cse', 'done');
+    } else {
+      pipe('google_cse', 'skip');
     }
 
     pipe('dorks', 'done');
@@ -678,6 +695,7 @@ export async function runContentDiscoveryPhase(s) {
     };
 
     if (modules.includes('github')) {
+      pipe('github', 'active');
       log('GitHub Code Search (API pública, rate limit)...', 'info');
       const gh = await githubCodeSearch(domain, process.env.GITHUB_TOKEN);
       if (gh.ok && gh.items?.length) {
@@ -782,7 +800,9 @@ export async function runContentDiscoveryPhase(s) {
       } else {
         log(ghRepos.note || 'GitHub Repo Search sem resultados (e sem repos manuais válidos)', 'info');
       }
+      pipe('github', 'done');
     } else if (manualGithubRepos.length && modules.includes('shannon_whitebox')) {
+      pipe('github', 'active');
       const cloneCfg = githubCloneConfig();
       if (!cloneCfg.enabled) {
         log('Repos GitHub manuais: clone local desativado — define GHOSTRECON_GITHUB_CLONE_ENABLED=1.', 'warn');
@@ -814,16 +834,24 @@ export async function runContentDiscoveryPhase(s) {
           log(`Clone local GitHub (manual): ${e.message}`, 'warn');
         }
       }
+      pipe('github', 'done');
     } else if (manualGithubRepos.length) {
+      pipe('github', 'skip');
       log(
         'Repos GitHub na caixa manual ignorados: activa «GitHub leaks» ou «Shannon white-box» para clonar.',
         'info',
       );
+    } else {
+      pipe('github', 'skip');
     }
+    if (!modules.includes('pastebin')) pipe('pastebin', 'skip');
     if (modules.includes('pastebin')) {
+      pipe('pastebin', 'active');
+      pipe('pastebin', 'done');
       log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
     }
     // Validação activa de tokens/secrets (fase 3)
+    pipe('secret_validation', 'active');
     try {
       const sv = await validateSecretFindings(findings, log);
       for (const row of sv) {
@@ -873,6 +901,7 @@ export async function runContentDiscoveryPhase(s) {
     } catch (e) {
       log(`Secret validation: ${e.message}`, 'warn');
     }
+    pipe('secret_validation', 'done');
     pipe('secrets', 'done');
 
     await dispatchRegistryModule(s, 'secrets_context_ranker');
