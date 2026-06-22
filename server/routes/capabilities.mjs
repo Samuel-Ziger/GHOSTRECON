@@ -4,6 +4,7 @@ import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
 import { getPentestGptCapabilities } from '../modules/pentestgpt-capabilities.js';
 import { listModuleManifests } from '../modules/module-registry.mjs';
 import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs';
+import { githubCapabilities } from '../modules/github-token.mjs';
 
 export function registerCapabilitiesRoutes(app, { ROOT }) {
   app.get('/api/capabilities', async (_req, res) => {
@@ -37,6 +38,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
       res.json({
         ...cap,
         ai: aiKeysConfigured(),
+        github: githubCapabilities(),
         modules: listModuleManifests(),
         shannon,
         pentestgpt,
@@ -48,6 +50,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         message: e.message,
         tools: {},
         ai: aiKeysConfigured(),
+        github: githubCapabilities(),
         modules: listModuleManifests(),
         shannon: null,
         pentestgpt: null,

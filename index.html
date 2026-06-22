@@ -3792,7 +3792,7 @@
           <span class="tag tag-high">CODEX</span>
         </label>
         <p class="gh-hint" style="font-size:9px;margin:4px 0 8px">Codex depende de login/plano Codex/OpenAI; instalar wrapper/CLI nao desbloqueia acesso.</p>
-        <label class="checkbox-item" title="273 modulos DAST nativos (XSS, SQLi, OAST, ...). Corre apos content-discovery.">
+        <label class="checkbox-item" title="273 modulos DAST nativos (XSS, SQLi, OAST, ...). Corre apos content-discovery com perfil VPS: stateless, scope strict, HTML+SQLite inline.">
           <input type="checkbox" class="mod" value="vigolium_dast" id="modVigoliumDast">
           <div class="checkbox-box"></div>
           <span class="checkbox-text">Vigolium DAST (motor Go)</span>
@@ -3854,8 +3854,8 @@
             <input id="vigoliumReportOnlyInput" class="domain-input" type="text" placeholder="discovery" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
           </div>
         </div>
-        <label class="checkbox-item" title="Roda um segundo vigolium scan com --format html -o report.html e anexa o caminho ao run.">
-          <input type="checkbox" id="vigoliumHtmlReportToggle">
+        <label class="checkbox-item" title="Roda vigolium scan com --format html,sqlite,jsonl no mesmo passo (perfil VPS). Abre o HTML numa nova aba ao terminar.">
+          <input type="checkbox" id="vigoliumHtmlReportToggle" checked>
           <div class="checkbox-box"></div>
           <span class="checkbox-text">Gerar report HTML Vigolium</span>
           <span class="tag tag-med">HTML</span>
@@ -6556,7 +6556,10 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         const w = window.open(u, '_blank', 'noopener,noreferrer');
         if (!w && !window.__shannonTemporalPopupWarned) {
           window.__shannonTemporalPopupWarned = true;
-          addLog('Popup bloqueado — copia o URL do log acima para abrir a Temporal Web UI (Shannon).', 'warn');
+          const hint = ev.source === 'vigolium'
+            ? 'Popup bloqueado — permite popups ou abre o relatório Vigolium pela rota /api/vigolium/reports/'
+            : 'Popup bloqueado — copia o URL do log acima para abrir a Temporal Web UI (Shannon).';
+          addLog(hint, 'warn');
         }
       }
       if (ev.type === 'intel' && ev.line) {
@@ -8187,9 +8190,13 @@ async function fetchKaliCapabilities() {
     const aiEl = document.getElementById('aiKeysLine');
     if (aiEl) {
       const a = window.__aiKeys;
+      const gh = c.github || {};
+      const ghTxt = gh.token_configured
+        ? `GitHub PAT ✓ (${gh.token_preview || 'ok'})`
+        : 'GitHub PAT ✗ — GITHUB_TOKEN no .env (clone pede user/senha)';
       const cloudOk = Boolean(a.claude || a.gemini || a.openrouter);
-      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · OpenRouter ${a.openrouter ? '✓' : '✗'} · Claude ${a.claude ? '✓' : '✗'} · LM Studio ${a.lmstudio ? '✓' : '✗'}${cloudOk ? '' : ' (sem cloud)'} — .env: GEMINI / OPENROUTER / ANTHROPIC e opcional LM Studio`;
-      aiEl.style.color = (a.both || a.lmstudio) ? 'var(--accent2)' : 'var(--accent4)';
+      aiEl.textContent = `APIs: Gemini ${a.gemini ? '✓' : '✗'} · OpenRouter ${a.openrouter ? '✓' : '✗'} · Claude ${a.claude ? '✓' : '✗'} · LM Studio ${a.lmstudio ? '✓' : '✗'} · ${ghTxt}${cloudOk ? '' : ' (sem cloud)'} — .env: GEMINI / OPENROUTER / ANTHROPIC / GITHUB_TOKEN`;
+      aiEl.style.color = (a.both || a.lmstudio || gh.token_configured) ? 'var(--accent2)' : 'var(--accent4)';
     }
     if (c.kali) {
       window.__kaliScanAvailable = true;

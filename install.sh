@@ -144,6 +144,63 @@ set_env_key_if_missing() {
   fi
 }
 
+# Substitui ou adiciona chave=valor no .env (valor sem aspas; evite # no token).
+set_env_key() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  touch "$file"
+  if grep -Eq "^${key}=" "$file"; then
+    local tmp
+    tmp="$(mktemp)"
+    grep -Ev "^${key}=" "$file" >"$tmp" || true
+    printf '%s=%s\n' "$key" "$value" >>"$tmp"
+    mv "$tmp" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$file"
+  fi
+}
+
+env_key_is_empty() {
+  local file="$1"
+  local key="$2"
+  [ -f "$file" ] || return 0
+  local line val
+  line="$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 || true)"
+  [ -z "$line" ] && return 0
+  val="${line#*=}"
+  val="$(printf '%s' "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  [ -z "$val" ]
+}
+
+# PAT GitHub: Code Search API + git clone não-interativo durante recon.
+prompt_github_token() {
+  [ "${ASSUME_DEFAULTS:-0}" -eq 1 ] && return 0
+  [ -t 0 ] || return 0
+  local env_file="$ROOT_DIR/.env"
+  [ -f "$env_file" ] || return 0
+  env_key_is_empty "$env_file" "GITHUB_TOKEN" || return 0
+
+  printf '\n'
+  log "GitHub Personal Access Token (GITHUB_TOKEN)"
+  log "  Usado em: GitHub Code Search + git clone de repos candidatos (sem pedir user/senha no terminal)."
+  log "  Crie em: https://github.com/settings/tokens"
+  log "  Scopes: public_repo (repos publicos) ou repo (inclui privados)."
+  local token=""
+  printf '[GHOSTRECON] Colar GITHUB_TOKEN (Enter para pular): '
+  if ! read -rs token </dev/tty 2>/dev/null; then
+    token=""
+  fi
+  printf '\n'
+  token="$(printf '%s' "$token" | tr -d '[:space:]')"
+  if [ -n "$token" ]; then
+    set_env_key "$env_file" "GITHUB_TOKEN" "$token"
+    log "GITHUB_TOKEN gravado em .env (reinicie npm start apos o install)."
+  else
+    log "GITHUB_TOKEN nao definido — clone/API GitHub podem falhar ou pedir credenciais."
+  fi
+}
+
 run_sudo() {
   if [ "${EUID:-$(id -u)}" -eq 0 ]; then
     "$@"
@@ -310,6 +367,7 @@ setup_env_file() {
     set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_LMSTUDIO_MODEL" "ghost"
     set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_LMSTUDIO_API_KEY" "lm-studio"
   fi
+  prompt_github_token
 }
 
 prepare_ghost_local() {
@@ -545,6 +603,7 @@ Notas:
   - Abra um novo terminal para garantir o PATH atualizado no bash/zsh.
   - Se o Docker foi instalado agora, talvez precise relogar para o grupo docker surtir efeito.
   - O arquivo .env foi copiado do exemplo se nao existia; preencha as chaves/API keys antes de usar tudo.
+  - GITHUB_TOKEN (PAT): perguntado no install interativo; necessario para git clone sem prompt e GitHub Code Search.
   - PentestGPT e Shannon podem exigir configuracoes adicionais e credenciais proprias.
   - Modo interativo: em TTY pergunta por Docker, Shannon e PentestGPT em qualquer perfil; use -y para pular perguntas.
 

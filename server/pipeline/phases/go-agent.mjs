@@ -32,6 +32,10 @@ export async function runGoAgentPhase(s) {
   }
 
   s.vigoliumSource = resolveVigoliumSource(s);
+  if (agentMode === 'audit' && !s.vigoliumSource && Array.isArray(s.githubClonedItems) && s.githubClonedItems.length) {
+    s.vigoliumSource = s.githubClonedItems[0].local_path;
+    log(`vigolium_audit: usando clone GitHub ${s.vigoliumSource}`, 'info');
+  }
   if (agentMode === 'audit' && !s.vigoliumSource) {
     log('vigolium_audit: indique caminho do código (vigoliumSource na UI ou GHOSTRECON_VIGOLIUM_SOURCE)', 'warn');
     pipe('vigolium_audit', 'skip');

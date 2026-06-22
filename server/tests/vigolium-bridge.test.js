@@ -185,9 +185,11 @@ else fs.writeFileSync(out, payload, 'utf8');
       const out = await runVigoliumScan({
         ROOT: tmp,
         domain: 'example.com',
+        modules: ['vigolium_dast'],
         kaliMode: true,
         vigoliumPreferPath: true,
         vigoliumStrategy: 'deep',
+        vigoliumVpsProfile: false,
         vigoliumHtmlReport: true,
         vigoliumReportOnly: 'discovery',
       }, { log: () => {} });

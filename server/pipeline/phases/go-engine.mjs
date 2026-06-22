@@ -30,7 +30,7 @@ export async function runGoEnginePhase(s) {
   progress(83);
 
   try {
-    const out = await runVigoliumScan(s, { log });
+    const out = await runVigoliumScan(s, { log, emit: s.emit });
     if (out.skipped) {
       log(`Vigolium: ${out.reason}`, 'warn');
       pipe('vigolium_engine', 'skip');

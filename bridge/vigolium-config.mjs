@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  shouldUseVigoliumVpsProfile,
+  vigoliumVpsDefaultStrategy,
+} from './vigolium-vps-profile.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -36,12 +40,17 @@ export function shouldRunGoEngine(engineMode, modules = []) {
 
 export function resolveVigoliumStrategy(ctx = {}) {
   const raw = String(
-    ctx.vigoliumStrategy || ctx.strategy || process.env.GHOSTRECON_VIGOLIUM_STRATEGY || 'lite',
+    ctx.vigoliumStrategy || ctx.strategy || process.env.GHOSTRECON_VIGOLIUM_STRATEGY || '',
   )
     .trim()
     .toLowerCase();
-  return STRATEGIES.has(raw) ? raw : 'lite';
+  if (STRATEGIES.has(raw)) return raw;
+  const vpsDefault = vigoliumVpsDefaultStrategy(ctx);
+  if (vpsDefault && STRATEGIES.has(vpsDefault)) return vpsDefault;
+  return 'lite';
 }
+
+export { shouldUseVigoliumVpsProfile, shouldSkipVigoliumExternalHarvest } from './vigolium-vps-profile.mjs';
 
 export function resolveVigoliumModuleFilter(ctx = {}) {
   const fromCtx = Array.isArray(ctx.vigoliumModules) ? ctx.vigoliumModules : [];
@@ -130,7 +139,10 @@ export function resolveVigoliumAuthEntries(ctx = {}) {
 }
 
 export function shouldWriteVigoliumHtmlReport(ctx = {}) {
-  return Boolean(ctx.vigoliumHtmlReport === true || truthy(process.env.GHOSTRECON_VIGOLIUM_HTML_REPORT));
+  if (ctx.vigoliumHtmlReport === true) return true;
+  if (ctx.vigoliumHtmlReport === false) return false;
+  if (shouldUseVigoliumVpsProfile(ctx)) return true;
+  return truthy(process.env.GHOSTRECON_VIGOLIUM_HTML_REPORT);
 }
 
 export function resolveVigoliumReportOnly(ctx = {}) {

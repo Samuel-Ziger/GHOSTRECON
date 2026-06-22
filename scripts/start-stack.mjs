@@ -12,6 +12,9 @@ import { getVigoliumCapabilities } from '../bridge/vigolium-capabilities.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+
+// Garante .env no processo pai (stack) — a API também carrega em server/load-env.js
+await import('../server/load-env.js');
 const API_PORT = Number(process.env.PORT || 3847);
 const API_URL = process.env.GHOSTRECON_API_URL || `http://127.0.0.1:${API_PORT}`;
 

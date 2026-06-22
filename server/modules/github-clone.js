@@ -1,6 +1,10 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
+import {
+  githubTokenPreview,
+  resolveGithubToken,
+} from './github-token.mjs';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_MONTH_MS = 30 * ONE_DAY_MS;
@@ -76,10 +80,60 @@ async function ensureDir(p) {
   return p;
 }
 
-function runGitClone(cloneUrl, targetDir, timeoutMs) {
+/** PAT usado na API GitHub e em `git clone` (GITHUB_TOKEN ou GH_TOKEN). */
+export function githubCloneAuthToken() {
+  const t = resolveGithubToken();
+  return t || null;
+}
+
+/** Injeta PAT em URLs github.com para clone não-interativo (repos privados / rate limit). */
+export function withGithubAuthCloneUrl(cloneUrl, token = githubCloneAuthToken()) {
+  const raw = String(cloneUrl || '').trim();
+  if (!raw || !token) return raw;
+  try {
+    const u = new URL(raw);
+    if (!/^github\.com$/i.test(u.hostname)) return raw;
+    if (u.username || u.password) return raw;
+    u.username = 'x-access-token';
+    u.password = token;
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/** Remove credenciais de URLs/mensagens antes de logar ou devolver erro. */
+export function redactGitCloneSecret(text) {
+  return String(text || '')
+    .replace(/x-access-token:[^@\s]+@/gi, 'x-access-token:***@')
+    .replace(/https:\/\/[^@\s]+@github\.com/gi, 'https://***@github.com');
+}
+
+function gitCloneEnv() {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'Never',
+  };
+}
+
+function runGitClone(cloneUrl, targetDir, timeoutMs, { token = githubCloneAuthToken() } = {}) {
+  const authUrl = withGithubAuthCloneUrl(cloneUrl, token);
   return new Promise((resolve, reject) => {
-    const args = ['clone', '--depth', '1', '--filter=blob:none', '--no-tags', cloneUrl, targetDir];
-    const child = spawn('git', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const args = [
+      '-c',
+      'credential.helper=',
+      '-c',
+      'credential.useHttpPath=false',
+      'clone',
+      '--depth',
+      '1',
+      '--filter=blob:none',
+      '--no-tags',
+      authUrl,
+      targetDir,
+    ];
+    const child = spawn('git', args, { stdio: ['ignore', 'pipe', 'pipe'], env: gitCloneEnv() });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
@@ -99,7 +153,17 @@ function runGitClone(cloneUrl, targetDir, timeoutMs) {
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) resolve({ ok: true, stdout, stderr });
-      else reject(new Error(`git clone falhou (${code}): ${(stderr || stdout || '').slice(0, 400)}`));
+      else {
+        const mixed = redactGitCloneSecret((stderr || stdout || '').slice(0, 400));
+        let msg = `git clone falhou (${code}): ${mixed}`;
+        if (
+          !token &&
+          /authentication failed|could not read username|terminal prompts disabled|403|401/i.test(mixed)
+        ) {
+          msg += ' — define GITHUB_TOKEN no .env (PAT com scope repo) e reinicia o servidor';
+        }
+        reject(new Error(msg));
+      }
     });
   });
 }
@@ -162,6 +226,18 @@ export async function cloneGithubReposForTarget({ targetDomain, repos, log = nul
   const selected = Array.isArray(repos) ? repos.slice(0, cfg.maxRepos) : [];
   const cloned = [];
   const failed = [];
+  const authToken = githubCloneAuthToken();
+
+  if (typeof log === 'function' && selected.length) {
+    if (authToken) {
+      log(`Clone GitHub: PAT carregado (${githubTokenPreview(authToken)}) — git clone sem prompt`, 'info');
+    } else {
+      log(
+        'Clone GitHub: GITHUB_TOKEN ausente no processo Node — git pode pedir user/senha no terminal e travar o recon. Confira .env e reinicie npm start.',
+        'warn',
+      );
+    }
+  }
 
   for (const repo of selected) {
     const fullName = String(repo.full_name || '').trim();

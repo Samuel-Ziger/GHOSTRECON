@@ -1,10 +1,12 @@
 import { UA } from '../config.js';
+import { resolveGithubToken } from './github-token.mjs';
 
 /**
  * Busca passiva na API pública do GitHub (rate limit baixo sem token).
  */
 function trimToken(raw) {
-  if (raw == null || typeof raw !== 'string') return '';
+  if (raw == null) return resolveGithubToken();
+  if (typeof raw !== 'string') return '';
   let t = raw.trim();
   if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
     t = t.slice(1, -1).trim();
