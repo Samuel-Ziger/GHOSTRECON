@@ -3672,6 +3672,19 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="passwords" checked><div class="checkbox-box"></div><span class="checkbox-text">Passwords & credentials</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="sensitive" checked><div class="checkbox-box"></div><span class="checkbox-text">Sensitive exposure</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item" title="Reclassifica secrets encontrados por contexto: tipo do token, URL de origem, GitHub, sourcemap, prod/test. Passivo."><input type="checkbox" class="mod" value="secrets_context_ranker"><div class="checkbox-box"></div><span class="checkbox-text">Secrets context ranker</span><span class="tag tag-med">PASS</span></label>
+        <label class="checkbox-item" title="So com Modo Kali + python + informationdiscloure.py na raiz. Faz probes ativos de headers, arquivos sensiveis, listing, comentarios e metadados; nao executa invasao.">
+          <input type="checkbox" class="mod" value="info_disclosure_hunter" id="modInfoDisclosureHunter">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">InfoHunter disclosure</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <label class="checkbox-item" title="Opcional do InfoHunter: habilita o modulo errors, que induz respostas de erro com payloads simples. Use apenas em alvo autorizado.">
+          <input type="checkbox" class="mod" value="info_disclosure_errors" id="modInfoDisclosureErrors">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">InfoHunter verbose errors</span>
+          <span class="tag tag-high">ACT</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Usa o script local <code>informationdiscloure.py</code>. O modo normal pula <code>errors</code>; marque a caixa de errors somente quando quiser esse probe mais intrusivo.</p>
         <label class="checkbox-item" title="Só com Modo Kali + ffuf no PATH. Muitas threads e pedidos — pico de CPU/rede; pode contribuir para crash do separador do browser se o sistema ficar sem margem.">
           <input type="checkbox" class="mod" value="kali_ffuf" id="modKaliFfuf">
           <div class="checkbox-box"></div>
@@ -4920,6 +4933,8 @@ const PIPE_PHASES = [
       ['nmap_cve_match', 'NMAP CVE', 'Nmap product/version CVE matching'],
       ['nmap_backport_review', 'BACKPORT', 'Linux distro backport context review'],
       ['whois', 'WHOIS', 'WHOIS tool'],
+      ['info_disclosure_hunter', 'INFO DISC', 'InfoHunter BR information disclosure scan'],
+      ['info_disclosure_errors', 'ERR DISC', 'InfoHunter verbose error induction module'],
       ['ffuf', 'FFUF', 'ffuf directory fuzzing'],
       ['dirsearch', 'DIRS', 'dirsearch recursive discovery'],
       ['nuclei', 'NUCLEI', 'Nuclei general scan'],
@@ -6277,7 +6292,7 @@ async function runVigoliumKaliHealthcheck() {
     const tools = c.tools || {};
     const vig = c.vigolium || {};
     const codex = vig.codex || {};
-    const names = ['nmap', 'nuclei', 'ffuf', 'dirsearch', 'sqlmap', 'dalfox', 'tor', 'proxychains'];
+    const names = ['nmap', 'nuclei', 'ffuf', 'dirsearch', 'sqlmap', 'dalfox', 'info_disclosure_hunter', 'tor', 'proxychains'];
     const toolItems = names.map((name) => vigoliumHealthItem(name, Boolean(tools[name]), 'PATH'));
     const missing = names.filter((name) => !tools[name]);
     const distro = c.qualifyDistro ? 'Kali/force habilitado' : 'fora do Kali';
@@ -7771,6 +7786,7 @@ function applySmartFastPreset() {
     'kali_nuclei',
     'kali_nmap_aggressive',
     'kali_nmap_udp',
+    'info_disclosure_errors',
     'sqlmap',
     'verify_sqli_deep',
     'micro_exploit',
@@ -7804,6 +7820,7 @@ const FULL_MODULES_EXCLUDE = new Set([
   'kali_proxychains',
   'kali_nmap_aggressive',
   'kali_nmap_udp',
+  'info_disclosure_errors',
   'webshell_probe',
   'out_of_scope',
 ]);
@@ -8159,6 +8176,7 @@ async function fetchKaliCapabilities() {
       `searchsploit:${t.searchsploit ? '✓' : '✗'}`,
       `dalfox:${t.dalfox ? '✓' : '✗'}`,
       `sqlmap:${t.sqlmap ? '✓' : '✗'}`,
+      `infohunter:${t.info_disclosure_hunter ? '✓' : '✗'}`,
       `xss_vibes:${t.xss_vibes ? '✓' : '✗'}`,
     ];
     if (line) {
@@ -8834,6 +8852,8 @@ function closeXssHelpModal() {
         <dd>Categoria de dorks focada em credenciais e passwords em texto.</dd>
         <dt>Sensitive exposure</dt>
         <dd>Dorks para dados sensíveis genéricos (PII, interno, etc.).</dd>
+        <dt>InfoHunter disclosure</dt>
+        <dd>Executa o script local <code>informationdiscloure.py</code> no <strong>Modo Kali</strong> e importa o JSON como findings <code>info_disclosure</code>. O módulo normal checa headers, arquivos sensíveis, listing, comentários e metadados; <strong>InfoHunter verbose errors</strong> habilita separadamente a indução de erros.</dd>
         <dt>Ffuf (Kali) — HTTP 200</dt>
         <dd>Fuzz de directorias/ficheiros com <strong>ffuf</strong> (wordlist comum, só código 200). Só com <strong>Modo Kali</strong> e esta caixa; desmarcada por defeito — é intensivo (muitas ligações) e pode stressar RAM/CPU e o separador do browser.</dd>
         <dt>Nuclei (Kali)</dt>

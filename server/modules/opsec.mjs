@@ -65,6 +65,7 @@ export const INTRUSIVE_MODULES = new Set([
   'sqlmap', 'nuclei', 'nuclei-aggressive', 'wpscan', 'ffuf', 'feroxbuster',
   'dirsearch', 'gobuster', 'nmap-aggressive', 'nmap-port-scan', 'nikto',
   'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe', 'kali-active',
+  'info_disclosure_hunter', 'info-disclosure-hunter', 'info_disclosure_errors', 'info-disclosure-errors',
   'naabu-active', 'masscan',
   'vigolium-dast', 'vigolium_dast', 'vigolium-swarm', 'vigolium_swarm',
   'vigolium-audit', 'vigolium_audit', 'vigolium-agent', 'vigolium_agent',

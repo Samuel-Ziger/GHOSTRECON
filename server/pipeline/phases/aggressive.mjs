@@ -217,6 +217,8 @@ export async function runAggressivePhase(s) {
         const runNmapBackportReview = Boolean(modules.includes('nmap_backport_review'));
         const runMysql3306Intel = Boolean(modules.includes('mysql_3306_intel'));
         const runKaliProxychains = Boolean(modules.includes('kali_proxychains'));
+        const runInfoDisclosureErrors = Boolean(modules.includes('info_disclosure_errors'));
+        const runInfoDisclosureHunter = Boolean(modules.includes('info_disclosure_hunter') || runInfoDisclosureErrors);
 
         await runKaliAggressiveScan({
           domain,
@@ -236,6 +238,8 @@ export async function runAggressivePhase(s) {
           runNmapCveMatch,
           runNmapBackportReview,
           runMysql3306Intel: runMysql3306Intel,
+          runInfoDisclosureHunter,
+          runInfoDisclosureErrors,
           useProxychains: runKaliProxychains,
           auth,
           emit,

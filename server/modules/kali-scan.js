@@ -29,6 +29,9 @@ const WORDLISTS = [
 const XSS_VIBES_DIR = join(process.cwd(), 'Xss', 'xss_vibes');
 const XSS_VIBES_MAIN = join(XSS_VIBES_DIR, 'main.py');
 const XSS_VIBES_PAYLOADS = join(XSS_VIBES_DIR, 'payloads.json');
+const INFO_DISCLOSURE_SCRIPT = join(process.cwd(), 'informationdiscloure.py');
+const INFO_DISCLOSURE_SAFE_MODULES = ['headers', 'files', 'listing', 'comments', 'metadata'];
+const INFO_DISCLOSURE_ERROR_MODULE = 'errors';
 const TOOL_STDOUT_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDOUT_MAX_BYTES', 16 * 1024 * 1024, {
   max: 128 * 1024 * 1024,
 });
@@ -140,6 +143,7 @@ export async function getKaliCapabilities() {
     tor: await pathWhich('tor'),
     python3,
     python,
+    info_disclosure_hunter: (python3 || python) && fs.existsSync(INFO_DISCLOSURE_SCRIPT),
     xss_vibes: (python3 || python) && fs.existsSync(XSS_VIBES_MAIN) && fs.existsSync(XSS_VIBES_PAYLOADS),
   };
 
@@ -1581,6 +1585,166 @@ function nucleiEvidenceMeta({ tid, sev, extra }) {
   return parts.filter(Boolean).join(' • ');
 }
 
+function clampInt(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function clipText(value, max = 260) {
+  const s = String(value || '').replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function normalizedHttpUrl(value) {
+  const s = String(value || '').trim();
+  if (!/^https?:\/\//i.test(s)) return null;
+  try {
+    return new URL(s).href;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeInfoDisclosureSeverity(value) {
+  const sev = String(value || '').trim().toUpperCase();
+  if (sev === 'CRITICAL' || sev === 'HIGH' || sev === 'MEDIUM' || sev === 'LOW' || sev === 'INFO') return sev;
+  if (sev === 'MED' || sev === 'MODERATE') return 'MEDIUM';
+  if (sev === 'INFORMATIONAL') return 'INFO';
+  return 'INFO';
+}
+
+function infoDisclosurePrio(sev) {
+  return sev === 'CRITICAL' || sev === 'HIGH' ? 'high' : sev === 'MEDIUM' ? 'med' : 'low';
+}
+
+function infoDisclosureScore(sev) {
+  if (sev === 'CRITICAL') return 96;
+  if (sev === 'HIGH') return 86;
+  if (sev === 'MEDIUM') return 62;
+  if (sev === 'LOW') return 36;
+  return 20;
+}
+
+export function infoDisclosureModulesForRun({ includeErrors = false } = {}) {
+  const modules = [...INFO_DISCLOSURE_SAFE_MODULES];
+  if (includeErrors) modules.push(INFO_DISCLOSURE_ERROR_MODULE);
+  return modules;
+}
+
+export function infoDisclosureFindingFromRow(row, { targetUrl = null } = {}) {
+  if (!row || typeof row !== 'object') return null;
+  const sev = normalizeInfoDisclosureSeverity(row.severidade);
+  const moduleName = clipText(row.modulo || 'unknown', 80) || 'unknown';
+  const title = clipText(row.titulo || `Information disclosure (${moduleName})`, 180);
+  const evidence = clipText(row.evidencia || '', 260);
+  const url = normalizedHttpUrl(row.url) || normalizedHttpUrl(targetUrl);
+  const meta = [
+    'scanner=infohunter_br',
+    `module=${moduleName}`,
+    `severity=${sev}`,
+    'confidence=active_disclosure_probe',
+    evidence ? `evidence=${evidence}` : null,
+  ]
+    .filter(Boolean)
+    .join(' - ');
+  return {
+    type: 'info_disclosure',
+    prio: infoDisclosurePrio(sev),
+    score: infoDisclosureScore(sev),
+    value: title,
+    meta,
+    url,
+    owasp: 'A05:2021',
+    mitre: 'T1592',
+  };
+}
+
+export function mapInfoDisclosureJsonToFindings(json, { targetUrl = null, limit = 300 } = {}) {
+  const rows = Array.isArray(json?.achados) ? json.achados : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const finding = infoDisclosureFindingFromRow(row, { targetUrl });
+    if (!finding) continue;
+    const key = [finding.type, finding.value, finding.url || '', finding.meta].join('\u0001');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(finding);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+async function executeInfoDisclosureHunter({ targetUrl, cap, log, includeErrors = false, execOpts = {} }) {
+  const pyCmd = cap?.tools?.python3 ? 'python3' : cap?.tools?.python ? 'python' : null;
+  if (!pyCmd) return { ok: false, findings: [], error: 'python3/python nao encontrado no PATH' };
+  if (!fs.existsSync(INFO_DISCLOSURE_SCRIPT)) {
+    return { ok: false, findings: [], error: `script nao encontrado: ${INFO_DISCLOSURE_SCRIPT}` };
+  }
+  const target = normalizedHttpUrl(targetUrl) || String(targetUrl || '').trim();
+  if (!target) return { ok: false, findings: [], error: 'alvo vazio' };
+
+  const dir = await mkdtemp(join(tmpdir(), 'ghid-'));
+  const outBase = join(dir, 'info-disclosure');
+  const outJson = `${outBase}.json`;
+  const modules = infoDisclosureModulesForRun({ includeErrors });
+  const threads = clampInt(process.env.GHOSTRECON_INFO_DISCLOSURE_THREADS, 8, 1, 30);
+  const requestTimeoutSec = clampInt(process.env.GHOSTRECON_INFO_DISCLOSURE_TIMEOUT_SEC, 8, 2, 30);
+  const runTimeoutMs = clampInt(process.env.GHOSTRECON_INFO_DISCLOSURE_RUN_TIMEOUT_MS, 240000, 30000, 1800000);
+  const args = [
+    INFO_DISCLOSURE_SCRIPT,
+    target,
+    '--no-color',
+    '--format',
+    'json',
+    '-o',
+    outBase,
+    '-m',
+    modules.join(','),
+    '-t',
+    String(threads),
+    '--timeout',
+    String(requestTimeoutSec),
+  ];
+
+  if (typeof log === 'function') {
+    log(
+      `[InfoHunter] ${target} - modulos=${modules.join(',')} threads=${threads} timeout=${requestTimeoutSec}s`,
+      'info',
+    );
+  }
+
+  try {
+    const proc = await runProc(pyCmd, args, runTimeoutMs, { cwd: process.cwd() }, execOpts);
+    const mixed = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
+    if (proc.code !== 0 && typeof log === 'function') {
+      log(`[InfoHunter] terminou com codigo ${proc.code}: ${clipText(mixed, 360)}`, 'warn');
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(await readFile(outJson, 'utf8'));
+    } catch (e) {
+      const depHint = /ModuleNotFoundError|No module named/i.test(mixed)
+        ? ' (dependencias Python: requests/colorama)'
+        : '';
+      return {
+        ok: false,
+        findings: [],
+        error: `saida JSON nao encontrada ou invalida${depHint}: ${e.message}`,
+        stdout: mixed.slice(0, 6000),
+      };
+    }
+    const findings = mapInfoDisclosureJsonToFindings(parsed, { targetUrl: target });
+    return { ok: true, findings, stdout: mixed.slice(0, 6000), meta: parsed?.meta || null };
+  } catch (e) {
+    return { ok: false, findings: [], error: String(e?.message || e) };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 export async function runKaliAggressiveScan({
   domain,
   subdomainsAlive,
@@ -1597,6 +1761,8 @@ export async function runKaliAggressiveScan({
   runFfuf = false,
   /** Só corre dirsearch se o módulo UI `kali_dirsearch` estiver activo (e modo Kali no servidor). */
   runDirsearch = false,
+  runInfoDisclosureHunter = false,
+  runInfoDisclosureErrors = false,
   /**
    * Módulo UI `kali_nmap_aggressive`: nmap com `-A -sV -p-` (todas as portas) — muito lento;
    * substitui o perfil normal desta fase. Ver `GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS` e timeout.
@@ -1815,6 +1981,45 @@ export async function runKaliAggressiveScan({
     pipeTool('whois', 'done');
   } else {
     pipeTool('whois', 'skip');
+  }
+
+  if (runInfoDisclosureHunter && cap.tools.info_disclosure_hunter) {
+    pipeTool('info_disclosure_hunter', 'active');
+    if (runInfoDisclosureErrors) pipeTool('info_disclosure_errors', 'active');
+    else pipeTool('info_disclosure_errors', 'skip');
+    log('=== InfoHunter BR (information disclosure) ===', 'section');
+    const uniqTargets = [...new Set(baseUrlsForFfuf)].slice(0, 2);
+    try {
+      for (const targetUrl of uniqTargets) {
+        const result = await executeInfoDisclosureHunter({
+          targetUrl,
+          cap,
+          log,
+          includeErrors: runInfoDisclosureErrors,
+          execOpts,
+        });
+        if (!result.ok) {
+          log(`[InfoHunter] ${targetUrl}: ${result.error || 'falha desconhecida'}`, 'warn');
+          continue;
+        }
+        for (const finding of result.findings) addFinding(finding, null);
+        log(
+          `[InfoHunter] ${targetUrl} -> ${result.findings.length} achado(s) de disclosure`,
+          result.findings.length ? 'warn' : 'info',
+        );
+      }
+    } finally {
+      pipeTool('info_disclosure_hunter', 'done');
+      if (runInfoDisclosureErrors) pipeTool('info_disclosure_errors', 'done');
+    }
+  } else {
+    pipeTool('info_disclosure_hunter', 'skip');
+    pipeTool('info_disclosure_errors', 'skip');
+    if (!runInfoDisclosureHunter && cap.tools.info_disclosure_hunter) {
+      log('InfoHunter: omitido - ativa o modulo "InfoHunter disclosure" em Sensitive Data (so com Modo Kali).', 'info');
+    } else if (runInfoDisclosureHunter && !cap.tools.info_disclosure_hunter) {
+      log('InfoHunter indisponivel: precisa de python3/python e informationdiscloure.py na raiz do projeto.', 'info');
+    }
   }
 
   const addDirectoryFinding = (entry, source) => {
