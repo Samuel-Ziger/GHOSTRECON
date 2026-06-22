@@ -29,7 +29,7 @@ const WORDLISTS = [
 const XSS_VIBES_DIR = join(process.cwd(), 'Xss', 'xss_vibes');
 const XSS_VIBES_MAIN = join(XSS_VIBES_DIR, 'main.py');
 const XSS_VIBES_PAYLOADS = join(XSS_VIBES_DIR, 'payloads.json');
-const INFO_DISCLOSURE_SCRIPT = join(process.cwd(), 'informationdiscloure.py');
+const INFO_DISCLOSURE_SCRIPT = join(process.cwd(), 'tools/info-disclosure/information_disclosure.py');
 const INFO_DISCLOSURE_SAFE_MODULES = ['headers', 'files', 'listing', 'comments', 'metadata'];
 const INFO_DISCLOSURE_ERROR_MODULE = 'errors';
 const TOOL_STDOUT_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDOUT_MAX_BYTES', 16 * 1024 * 1024, {
@@ -2018,7 +2018,7 @@ export async function runKaliAggressiveScan({
     if (!runInfoDisclosureHunter && cap.tools.info_disclosure_hunter) {
       log('InfoHunter: omitido - ativa o modulo "InfoHunter disclosure" em Sensitive Data (so com Modo Kali).', 'info');
     } else if (runInfoDisclosureHunter && !cap.tools.info_disclosure_hunter) {
-      log('InfoHunter indisponivel: precisa de python3/python e informationdiscloure.py na raiz do projeto.', 'info');
+      log('InfoHunter indisponivel: precisa de python3/python e tools/info-disclosure/information_disclosure.py.', 'info');
     }
   }
 

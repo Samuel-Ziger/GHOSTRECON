@@ -63,7 +63,7 @@ import { monitorCt, classifyNewSubs } from '../../modules/ct-monitor.mjs';
 import { buildVerificationPlan } from '../../modules/dom-xss-verify.mjs';
 import { probeGraphqlEndpoint } from '../../modules/graphql-recon.mjs';
 import { jsBundleToFindings } from '../../modules/js-intel.mjs';
-import { analyzeJwt } from '../../modules/jwt-lab.mjs';
+import { runJwtLabPipeline } from '../../modules/jwt-forge-br.mjs';
 import { buildOobPayloads } from '../../modules/oob-collaborator.mjs';
 import { detectOriginCandidates, originDiscoveryToFindings, resolveSubsForOrigin } from '../../modules/origin-discovery.mjs';
 import { mutatePayload } from '../../modules/payload-mutator.mjs';
@@ -400,30 +400,7 @@ export async function runValidationPhase(s) {
     if (modules.includes('jwt_lab')) {
       pipe('jwt_lab', 'active');
       try {
-        const candidates = [];
-        if (auth?.cookie) candidates.push(...String(auth.cookie).split(/[;,\s]+/).filter((x) => x.split('.').length === 3));
-        for (const v of Object.values(auth?.headers || {})) {
-          const s = String(v || '');
-          const m = s.match(/([A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/);
-          if (m?.[1]) candidates.push(m[1]);
-        }
-        const seen = new Set();
-        for (const tok of candidates) {
-          if (seen.has(tok)) continue;
-          seen.add(tok);
-          const r = analyzeJwt(tok);
-          if (!r.ok) continue;
-          for (const f of r.findings || []) {
-            addFinding({
-              type: 'intel',
-              prio: sevToPrio(f.severity),
-              score: sevToScore(f.severity),
-              value: `JWT lab: ${f.issue}`,
-              meta: f.detail,
-            });
-          }
-        }
-        log(`JWT lab: ${seen.size} token(s) analisado(s)`, 'info');
+        await runJwtLabPipeline(s);
       } catch (e) {
         log(`JWT lab: ${e.message}`, 'warn');
       }

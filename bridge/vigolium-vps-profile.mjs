@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 /**
- * Perfil operacional alinhado ao vigolium.sh da VPS:
+ * Perfil operacional alinhado ao scripts/vigolium/vigolium.sh da VPS:
  * -S stateless, scope-origin strict, skip external-harvest, deep, html+sqlite+jsonl inline.
  * Sem Discord nem relatório IA (fica para o finalize do GhostRecon).
  */

@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY *.html ./
+COPY public ./public
 COPY bin ./bin
 COPY docs ./docs
 COPY mitre-attack ./mitre-attack

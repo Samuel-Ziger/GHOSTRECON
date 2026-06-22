@@ -201,21 +201,20 @@ GHOSTRECON/
 │     ├─ backend/main.py                # FastAPI (chat/memory/ingest/codescan)
 │     └─ frontend/index.html            # Ghost Intelligence GUI
 ├─ playbooks/                           # api-first, wordpress, cloud-takeover, etc.
-├─ tools/Navegation/                    # configurador Tor (torrc + proxychains)
+├─ public/                              # cockpit e painéis HTML (index, reporte, cortex…)
+│  └─ legacy/                           # redirects anotacao.html, history.html
+├─ mitre-attack/                        # recon-bundle.json (npm run mitre:extract)
+├─ scripts/vigolium/                     # vigolium.sh (batch VPS)
+├─ tools/
+│  ├─ jwt-forge-br/main.py               # JWTForge BR (auditoria JWT)
+│  ├─ info-disclosure/                   # InfoHunter (modo Kali)
+│  └─ Navegation/                        # configurador Tor (torrc + proxychains)
+├─ docs/case-studies/                    # PoCs e relatórios avulsos
 ├─ Xss/xss_vibes/                       # scanner auxiliar Python
 ├─ supabase/                            # schema e migrations (project_id=gosthrecon)
 ├─ docs/
 │  ├─ AUTH-RBAC.md                      # matriz role × scope
 │  └─ TOR.md                            # rota Tor + ControlPort + isolation
-├─ index.html                           # cockpit operacional principal
-├─ mitre-map.html                       # GhostMap (MITRE/OWASP)
-├─ cortex.html                          # Cortex (KB validada)
-├─ reporte.html                         # Reporter (validação manual → handoff)
-├─ anotacao.html                        # redirect → /anotacao/ghostrecon/import
-├─ history.html                         # HTTP History (inspector)
-├─ post-exploitation.html               # Pós-exploração
-├─ tor-validator.html                   # Tor Validator
-├─ como-usar.html                       # guia de uso UI
 ├─ install.sh                           # instalador por perfil
 ├─ Dockerfile                           # imagem mínima da API
 └─ .env.example                         # configuração completa documentada

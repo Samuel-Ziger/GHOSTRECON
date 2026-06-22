@@ -53,6 +53,7 @@ passwords.txt
 subdomains.txt
 brute.py
 gerado.py
+notes.txt
 
 # Clones locais em IAs/ (instruções em IAs/README.md)
 IAs/shannon/
@@ -72,7 +73,7 @@ ghost-local-v5/ghost-local/ghost.log
 ghost-local-v5/hexstrike-ai/hexstrike.log
 
 # Vigolium — fonte temporária (apagar após build → engines/vigolium)
-vigolium/
+/vigolium/
 
 # Vigolium engine (Go) — artefactos de build
 vigolium/bin/

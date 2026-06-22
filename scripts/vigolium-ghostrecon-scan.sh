@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GhostRecon — scan Vigolium isolado (perfil VPS / vigolium.sh sem Discord nem IA).
+# GhostRecon — scan Vigolium isolado (perfil VPS / scripts/vigolium/vigolium.sh sem Discord nem IA).
 #
 # Uso:
 #   ./scripts/vigolium-ghostrecon-scan.sh https://alvo.com /caminho/saida-base

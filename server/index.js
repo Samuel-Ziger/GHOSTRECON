@@ -121,6 +121,7 @@ const AUTH_ALLOWLIST = [
   /^\/index\.html$/,
   /^\/(?:favicon\.ico|robots\.txt)$/,
   /^\/(?:assets|public|static)\//,
+  /^\/mitre-attack\//,
   /^\/[^\/]+\.(?:html|css|js|map|svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf)$/,
   /^\/anotacao(?:\/|$)/, // GhostTrace (UI de anotações via proxy)
   /^\/ghostmap(?:\/|$)/, // GhostMap (HTTP History + grafo via proxy)
