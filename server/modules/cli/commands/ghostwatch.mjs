@@ -252,6 +252,14 @@ async function runGhostwatch(argv, { forceOnce = false } = {}) {
     return 2;
   }
   opts.once = forceOnce || Boolean(opts.once);
+  if (opts.target) {
+    const parsed = parseReconTarget(opts.target);
+    if (!parsed.ok) {
+      process.stderr.write(`ghostwatch run: ${parsed.message || 'target invalido'}\n`);
+      return 2;
+    }
+    opts.target = parsed.target;
+  }
 
   const intervalMs = parseDuration(opts.interval);
   const stateDir = opts['state-dir'];
@@ -504,7 +512,7 @@ export function selectGhostwatchTargets({ latestRuns, watchlist = {}, onlyTarget
       .filter((x) => x?.enabled === false)
       .map((x) => String(x.target || '').toLowerCase()),
   );
-  const only = String(onlyTarget || '').trim().toLowerCase();
+  const only = normalizeTargetForGhostwatch(onlyTarget);
   const seen = new Set();
 
   for (const [target, run] of latestRuns || new Map()) {
@@ -524,6 +532,13 @@ export function selectGhostwatchTargets({ latestRuns, watchlist = {}, onlyTarget
   out.sort((a, b) => a.target.localeCompare(b.target));
   const n = Number(maxTargets || 0);
   return n > 0 ? out.slice(0, n) : out;
+}
+
+export function normalizeTargetForGhostwatch(target) {
+  const raw = String(target || '').trim();
+  if (!raw) return '';
+  const parsed = parseReconTarget(raw);
+  return (parsed.ok ? parsed.target : raw).toLowerCase();
 }
 
 export function normalizeDiffForGhostwatch(diff) {

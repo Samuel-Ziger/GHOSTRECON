@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildGhostwatchAlertPayload,
   latestRunsByTarget,
+  normalizeTargetForGhostwatch,
   normalizeDiffForGhostwatch,
   resolveOutOfScope,
   sanitizeGhostwatchModules,
@@ -34,6 +35,22 @@ test('ghostwatch: selectGhostwatchTargets skips disabled watchlist entries', () 
     },
   });
   assert.deepEqual(targets.map((x) => x.target), ['a.example.com', 'c.example.com']);
+});
+
+test('ghostwatch: selectGhostwatchTargets accepts URL in onlyTarget', () => {
+  const latest = latestRunsByTarget([{ id: 10, target: 'nenlucosmeticos.com' }]);
+  const targets = selectGhostwatchTargets({
+    latestRuns: latest,
+    watchlist: {
+      'nenlucosmeticos.com': { target: 'nenlucosmeticos.com', enabled: true },
+    },
+    onlyTarget: 'https://nenlucosmeticos.com/',
+  });
+  assert.deepEqual(targets.map((x) => x.target), ['nenlucosmeticos.com']);
+});
+
+test('ghostwatch: normalizeTargetForGhostwatch normalizes URLs', () => {
+  assert.equal(normalizeTargetForGhostwatch('https://NenluCosmeticos.com/'), 'nenlucosmeticos.com');
 });
 
 test('ghostwatch: normalizeDiffForGhostwatch maps prio/value to diff-engine fields', () => {
