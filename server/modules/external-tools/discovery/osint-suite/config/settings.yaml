@@ -1,0 +1,47 @@
+# OSINT Suite — Configurações
+# Preencha as API keys que você possui.
+# Módulos sem key funcionam em modo degradado (fontes públicas apenas).
+
+# ── GitHub ────────────────────────────────────────────────────────────
+# Obtenha em: https://github.com/settings/tokens (scope: read:org, public_repo)
+github_token: ""
+
+# ── Shodan ────────────────────────────────────────────────────────────
+# Obtenha em: https://account.shodan.io/
+shodan_api_key: ""
+
+# ── VirusTotal ────────────────────────────────────────────────────────
+# Obtenha em: https://www.virustotal.com/gui/my-apikey
+virustotal_key: ""
+
+# ── AbuseIPDB ─────────────────────────────────────────────────────────
+# Obtenha em: https://www.abuseipdb.com/account/api
+abuseipdb_key: ""
+
+# ── AlienVault OTX ───────────────────────────────────────────────────
+# Obtenha em: https://otx.alienvault.com/api
+otx_api_key: ""
+
+# ── WiGLE ────────────────────────────────────────────────────────────
+# Obtenha em: https://wigle.net/account (API Name + API Token)
+wigle_api_name:  ""
+wigle_api_token: ""
+
+# ── HaveIBeenPwned ───────────────────────────────────────────────────
+# Obtenha em: https://haveibeenpwned.com/API/Key (pago, ~$3.50/mês)
+hibp_api_key: ""
+
+# ── Censys ───────────────────────────────────────────────────────────
+# Obtenha em: https://search.censys.io/account/api
+censys_api_id:     ""
+censys_api_secret: ""
+
+# ── Telegram (alertas opcionais) ─────────────────────────────────────
+telegram_bot_token: ""
+telegram_chat_id:   ""
+
+# ── Comportamento ────────────────────────────────────────────────────
+request_delay:  1.5    # segundos entre requisições (respeita rate-limit)
+max_retries:    3
+timeout:        15
+output_dir:     "reports/"

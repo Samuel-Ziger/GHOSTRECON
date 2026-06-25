@@ -3,6 +3,7 @@ import { aiKeysConfigured } from '../modules/ai-dual-report.js';
 import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
 import { getPentestGptCapabilities } from '../modules/pentestgpt-capabilities.js';
 import { listModuleManifests } from '../modules/module-registry.mjs';
+import { listExternalToolPacks } from '../modules/external-tools/catalog.mjs';
 import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs';
 import { githubCapabilities } from '../modules/github-token.mjs';
 
@@ -40,6 +41,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         ai: aiKeysConfigured(),
         github: githubCapabilities(),
         modules: listModuleManifests(),
+        externalTools: listExternalToolPacks(),
         shannon,
         pentestgpt,
         vigolium,
@@ -52,6 +54,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         ai: aiKeysConfigured(),
         github: githubCapabilities(),
         modules: listModuleManifests(),
+        externalTools: listExternalToolPacks(),
         shannon: null,
         pentestgpt: null,
         vigolium: null,

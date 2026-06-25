@@ -1,0 +1,4 @@
+# DorkForge BR — dependências
+# Apenas uma dependência externa: colorama (cores no terminal, multiplataforma).
+# Todo o resto usa exclusivamente a biblioteca padrão do Python (stdlib).
+colorama>=0.4.6

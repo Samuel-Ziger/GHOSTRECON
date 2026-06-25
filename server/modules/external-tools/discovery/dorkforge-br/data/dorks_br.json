@@ -1,0 +1,89 @@
+{
+  "_descricao": "Módulo de Google Dorks focado no contexto brasileiro (.gov.br, .edu.br, .com.br, CPF/CNPJ, portais de transparência). Uso EXCLUSIVO para testes autorizados, OSINT e fins educacionais. Veja o aviso legal no README.",
+  "categorias": [
+    {
+      "nome": "[BR] Documentos governamentais expostos",
+      "descricao": "Documentos confidenciais ou internos hospedados em domínios .gov.br.",
+      "dorks": [
+        { "titulo": "PDF gov confidencial", "dork": "site:gov.br filetype:pdf intext:\"confidencial\"", "descricao": "PDFs em domínios governamentais marcados como confidenciais." },
+        { "titulo": "Index of em gov.br", "dork": "site:*.gov.br intitle:\"index of\"", "descricao": "Listagens de diretório em sites do governo." },
+        { "titulo": "Documento de uso interno gov", "dork": "site:gov.br filetype:doc intext:\"uso interno\"", "descricao": "Documentos Word de uso interno em sites .gov.br." },
+        { "titulo": "Planilha gov com dados", "dork": "site:*.gov.br filetype:xlsx intext:\"dados pessoais\"", "descricao": "Planilhas governamentais com dados pessoais." },
+        { "titulo": "Ata/ofício restrito", "dork": "site:gov.br filetype:pdf intext:\"acesso restrito\"", "descricao": "Documentos governamentais de acesso restrito." }
+      ]
+    },
+    {
+      "nome": "[BR] Vazamento de CPF",
+      "descricao": "Planilhas e arquivos brasileiros que podem expor números de CPF.",
+      "dorks": [
+        { "titulo": "CPF em XLS", "dork": "site:*.br filetype:xls intext:\"CPF\"", "descricao": "Planilhas .xls em domínios brasileiros contendo CPF." },
+        { "titulo": "CPF + nome em CSV", "dork": "site:*.br filetype:csv intext:\"CPF\" intext:\"nome\"", "descricao": "Arquivos CSV com CPF associado a nomes." },
+        { "titulo": "CPF em XLSX", "dork": "site:*.br filetype:xlsx intext:\"CPF\"", "descricao": "Planilhas .xlsx brasileiras com CPF." },
+        { "titulo": "CPF em PDF", "dork": "site:*.br filetype:pdf intext:\"CPF\" intext:\"RG\"", "descricao": "PDFs contendo CPF e RG juntos." },
+        { "titulo": "Lista de CPFs", "dork": "site:*.br filetype:txt intext:\"CPF\" intext:\"nascimento\"", "descricao": "Arquivos de texto com CPF e data de nascimento." }
+      ]
+    },
+    {
+      "nome": "[BR] Vazamento de CNPJ",
+      "descricao": "Arquivos brasileiros que podem expor CNPJ e dados empresariais.",
+      "dorks": [
+        { "titulo": "CNPJ em XLSX", "dork": "site:*.br filetype:xlsx intext:\"CNPJ\"", "descricao": "Planilhas .xlsx com CNPJ." },
+        { "titulo": "CNPJ + razão social", "dork": "site:*.br filetype:csv intext:\"CNPJ\" intext:\"razão social\"", "descricao": "CSV com CNPJ e razão social." },
+        { "titulo": "CNPJ em PDF", "dork": "site:*.br filetype:pdf intext:\"CNPJ\" intext:\"inscrição estadual\"", "descricao": "Documentos com CNPJ e inscrição estadual." },
+        { "titulo": "Notas fiscais", "dork": "site:*.br filetype:xml intext:\"nfeProc\"", "descricao": "Arquivos XML de notas fiscais eletrônicas." }
+      ]
+    },
+    {
+      "nome": "[BR] Portais de transparência mal configurados",
+      "descricao": "Dados de portais de transparência expostos além do esperado.",
+      "dorks": [
+        { "titulo": "Transparência XLS", "dork": "inurl:transparencia filetype:xls site:gov.br", "descricao": "Planilhas de transparência em sites do governo." },
+        { "titulo": "Folha de pagamento", "dork": "site:gov.br filetype:xlsx intext:\"salário\" intext:\"servidor\"", "descricao": "Planilhas com remuneração de servidores." },
+        { "titulo": "Licitações em planilha", "dork": "site:gov.br inurl:licitacao filetype:xls", "descricao": "Planilhas de licitações." },
+        { "titulo": "Empenhos/despesas", "dork": "inurl:transparencia site:gov.br filetype:csv intext:\"empenho\"", "descricao": "Arquivos CSV de empenhos e despesas." }
+      ]
+    },
+    {
+      "nome": "[BR] Domínios educacionais (.edu.br)",
+      "descricao": "Arquivos e dados expostos em instituições de ensino brasileiras.",
+      "dorks": [
+        { "titulo": "Backups em edu.br", "dork": "site:*.edu.br intitle:\"index of\" backup", "descricao": "Diretórios de backup em domínios educacionais." },
+        { "titulo": "Matrícula em PDF", "dork": "site:*.edu.br filetype:pdf intext:\"matrícula\"", "descricao": "Documentos de matrícula em PDF." },
+        { "titulo": "Notas de alunos", "dork": "site:*.edu.br filetype:xls intext:\"nota\" intext:\"aluno\"", "descricao": "Planilhas com notas de alunos." },
+        { "titulo": "Login acadêmico", "dork": "site:*.edu.br inurl:login intitle:\"sistema acadêmico\"", "descricao": "Portais de sistemas acadêmicos." },
+        { "titulo": "Index of em edu.br", "dork": "site:*.edu.br intitle:\"index of\" \"/uploads\"", "descricao": "Pastas de upload listadas em domínios .edu.br." }
+      ]
+    },
+    {
+      "nome": "[BR] Documentos pessoais (.br)",
+      "descricao": "Documentos contendo dados pessoais (RG, CPF, comprovantes) em sites .br.",
+      "dorks": [
+        { "titulo": "RG + CPF em PDF", "dork": "site:*.br intext:\"RG\" intext:\"CPF\" filetype:pdf", "descricao": "PDFs contendo RG e CPF." },
+        { "titulo": "Comprovante de residência", "dork": "site:*.br filetype:pdf intext:\"comprovante de residência\"", "descricao": "Comprovantes de residência expostos." },
+        { "titulo": "Currículos com dados", "dork": "site:*.br filetype:pdf intext:\"currículo\" intext:\"CPF\"", "descricao": "Currículos contendo CPF." },
+        { "titulo": "Termo de consentimento LGPD", "dork": "site:*.br filetype:pdf intext:\"titular dos dados\"", "descricao": "Documentos relacionados a dados de titulares (LGPD)." }
+      ]
+    },
+    {
+      "nome": "[BR] Sistemas e painéis governamentais",
+      "descricao": "Painéis administrativos e telas de login em domínios .gov.br.",
+      "dorks": [
+        { "titulo": "Admin em gov.br", "dork": "inurl:admin site:gov.br", "descricao": "Caminhos administrativos em sites do governo." },
+        { "titulo": "Login em gov.br", "dork": "intitle:login site:*.gov.br", "descricao": "Telas de login em domínios governamentais." },
+        { "titulo": "Painel municipal", "dork": "site:*.gov.br intitle:\"painel\" inurl:admin", "descricao": "Painéis administrativos de prefeituras/órgãos." },
+        { "titulo": "phpMyAdmin gov", "dork": "site:gov.br intitle:phpMyAdmin", "descricao": "Instâncias de phpMyAdmin em sites .gov.br." },
+        { "titulo": "Webmail gov", "dork": "site:gov.br inurl:webmail intitle:login", "descricao": "Portais de webmail governamentais." }
+      ]
+    },
+    {
+      "nome": "[BR] Bancos de dados e backups (.br)",
+      "descricao": "Dumps SQL e backups hospedados em domínios brasileiros.",
+      "dorks": [
+        { "titulo": "Dump SQL .br", "dork": "site:*.br filetype:sql intext:\"INSERT INTO\"", "descricao": "Dumps SQL em domínios brasileiros." },
+        { "titulo": "Backup .bak .br", "dork": "site:*.br ext:bak", "descricao": "Arquivos de backup .bak em sites .br." },
+        { "titulo": "Config .env .br", "dork": "site:*.br filetype:env \"DB_PASSWORD\"", "descricao": "Arquivos .env com credenciais em domínios brasileiros." },
+        { "titulo": "Backup compactado", "dork": "site:*.br intitle:\"index of\" \"backup.zip\"", "descricao": "Backups compactados expostos." }
+      ]
+    }
+  ]
+}
