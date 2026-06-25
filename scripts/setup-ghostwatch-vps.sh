@@ -36,6 +36,53 @@ for arg in "$@"; do
   esac
 done
 
+env_value() {
+  local key="$1"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    return 0
+  fi
+  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2-
+}
+
+append_env_if_missing() {
+  local key="$1"
+  local value="$2"
+  touch "$ENV_FILE"
+  if ! grep -Eq "^${key}=" "$ENV_FILE"; then
+    printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
+  fi
+}
+
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local tmp
+  touch "$ENV_FILE"
+  tmp="$(mktemp)"
+  grep -Ev "^${key}=" "$ENV_FILE" >"$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
+
+generate_api_key() {
+  "$NODE_BIN" -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+}
+
+first_auth_api_key() {
+  local preferred
+  preferred="$(env_value AUTH_API_KEYS | tr '|' '\n' | awk -F: '$2 == "red" || $2 == "admin" { print $1; exit }')"
+  if [[ -n "$preferred" ]]; then
+    printf '%s' "$preferred"
+    return 0
+  fi
+  env_value AUTH_API_KEYS | tr '|' '\n' | awk -F: 'NF >= 2 { print $1; exit }'
+}
+
+auth_api_keys_contains() {
+  local key="$1"
+  env_value AUTH_API_KEYS | tr '|' '\n' | awk -F: -v k="$key" '$1 == k { found=1 } END { exit found ? 0 : 1 }'
+}
+
 if [[ -z "$NODE_BIN" ]]; then
   if command -v apt-get >/dev/null 2>&1; then
     echo "[ghostwatch-setup] node nao encontrado; instalando nodejs npm via apt-get..."
@@ -75,6 +122,8 @@ if [[ -z "$NPM_BIN" ]]; then
   exit 2
 fi
 
+ENV_FILE="$ROOT/.env"
+
 if [[ "$(id -u)" -eq 0 ]]; then
   SUDO=()
 else
@@ -94,7 +143,29 @@ if [[ -d /usr/local/bin ]]; then
   echo "[ghostwatch-setup] comando global: /usr/local/bin/ghostrecon"
 fi
 
-ENV_FILE="$ROOT/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+  touch "$ENV_FILE"
+  chmod 600 "$ENV_FILE" || true
+  echo "[ghostwatch-setup] .env criado em $ENV_FILE"
+fi
+
+GHOSTWATCH_API_KEY="$(env_value GHOSTRECON_API_KEY)"
+if [[ -z "$GHOSTWATCH_API_KEY" ]]; then
+  GHOSTWATCH_API_KEY="$(first_auth_api_key)"
+fi
+if [[ -z "$GHOSTWATCH_API_KEY" ]]; then
+  GHOSTWATCH_API_KEY="$(generate_api_key)"
+  echo "[ghostwatch-setup] chave API local gerada para GhostWatch"
+fi
+append_env_if_missing "GHOSTRECON_API_KEY" "$GHOSTWATCH_API_KEY"
+if ! auth_api_keys_contains "$GHOSTWATCH_API_KEY"; then
+  if [[ -n "$(env_value AUTH_API_KEYS)" ]]; then
+    set_env_value "AUTH_API_KEYS" "$(env_value AUTH_API_KEYS)|${GHOSTWATCH_API_KEY}:red:ghostwatch-local"
+  else
+    append_env_if_missing "AUTH_API_KEYS" "${GHOSTWATCH_API_KEY}:red:ghostwatch-local"
+  fi
+fi
+append_env_if_missing "AUTH_MODE" "apikey"
 echo "[ghostwatch-setup] usando env do GHOSTRECON: $ENV_FILE"
 
 API_SERVICE="/etc/systemd/system/${UNIT_PREFIX}-api.service"
@@ -153,7 +224,8 @@ WantedBy=timers.target
 EOF
 
 "${SUDO[@]}" systemctl daemon-reload
-"${SUDO[@]}" systemctl enable --now "${UNIT_PREFIX}-api.service"
+"${SUDO[@]}" systemctl enable "${UNIT_PREFIX}-api.service"
+"${SUDO[@]}" systemctl restart "${UNIT_PREFIX}-api.service"
 "${SUDO[@]}" systemctl enable --now "${UNIT_PREFIX}-ghostwatch.timer"
 
 echo "[ghostwatch-setup] pronto"
