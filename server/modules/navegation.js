@@ -90,11 +90,19 @@ export async function ensureUserTorStack(rootDir, opts = {}) {
     };
   }
 
-  const child = spawn('tor', ['-f', torrcPath], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
+  let child = null;
+  try {
+    child = spawn('tor', ['-f', torrcPath], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.once('error', () => {
+      /* Tor is optional in tests and user-mode setup can report a clean failure. */
+    });
+    child.unref();
+  } catch {
+    /* Tor missing or not spawnable; the port check below will return ok=false. */
+  }
 
   const waitMs = Math.max(500, Number(opts.bootstrapWaitMs || 2500));
   await sleep(waitMs);

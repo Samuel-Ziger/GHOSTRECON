@@ -131,10 +131,12 @@ export class GhostClient {
     return this._csrf;
   }
 
-  async listRuns() {
-    const res = await this._fetch('/api/runs', { timeoutMs: 10_000 });
+  async listRuns({ limit = 50 } = {}) {
+    const qs = Number.isFinite(Number(limit)) ? `?limit=${encodeURIComponent(Number(limit))}` : '';
+    const res = await this._fetch(`/api/runs${qs}`, { timeoutMs: 10_000 });
     if (!res.ok) throw new Error(`/api/runs HTTP ${res.statusCode}`);
-    return JSON.parse(res.body);
+    const body = JSON.parse(res.body);
+    return Array.isArray(body) ? body : Array.isArray(body?.runs) ? body.runs : [];
   }
 
   async getRun(id) {

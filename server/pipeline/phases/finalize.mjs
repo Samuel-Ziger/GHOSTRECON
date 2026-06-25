@@ -47,6 +47,7 @@ export async function runFinalizePhase(ctx) {
     kaliMode,
     auth,
     bountyCtx,
+    outOfScopeList = [],
     findings,
     stats,
     addFinding,
@@ -398,11 +399,15 @@ export async function runFinalizePhase(ctx) {
     log('MITRE ATT&CK (recon): mapa fixo aplicado quando recon-bundle.json existe', 'info');
 
     const findingsSnapshotJson = serializeFindingsForRunSnapshot(findings);
+    const statsForSave = {
+      ...stats,
+      outOfScope: Array.isArray(outOfScopeList) ? [...outOfScopeList] : [],
+    };
     const saved = await saveRun({
       target: domain,
       exactMatch,
       modules: modulesForDb,
-      stats: { ...stats },
+      stats: statsForSave,
       findings,
       correlation: corr,
       localProjectName: String(projectNameRaw || '').trim(),

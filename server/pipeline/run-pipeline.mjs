@@ -36,6 +36,7 @@ export async function runPipeline(ctx) {
     kaliMode: s.kaliMode,
     auth: s.auth,
     bountyCtx: s.bountyCtx,
+    outOfScopeList: s.outOfScopeList,
     findings: s.findings,
     stats: s.stats,
     addFinding: s.addFinding,

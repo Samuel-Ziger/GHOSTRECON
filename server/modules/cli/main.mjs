@@ -2,6 +2,7 @@
  * Ponto de entrada da CLI ghostrecon. Despacha subcomandos.
  */
 
+import '../../load-env.js';
 import { runCommand } from './commands/run.mjs';
 import { runsCommand } from './commands/runs.mjs';
 import { playbooksCommand } from './commands/playbooks.mjs';
@@ -16,6 +17,7 @@ import { teamCommand } from './commands/team.mjs';
 import { replayCommand } from './commands/replay.mjs';
 import { obsidianCommand } from './commands/obsidian.mjs';
 import { phishInfraCommand } from './commands/phish-infra.mjs';
+import { ghostwatchCommand } from './commands/ghostwatch.mjs';
 
 const VERSION = '1.1.0-cli';
 
@@ -133,6 +135,8 @@ export async function cliMain(argv) {
       return obsidianCommand(rest);
     case 'phish-infra':
       return phishInfraCommand(rest);
+    case 'ghostwatch':
+      return ghostwatchCommand(rest);
     default:
       process.stderr.write(`ghostrecon: comando desconhecido "${cmd}"\n${HELP}`);
       return 2;

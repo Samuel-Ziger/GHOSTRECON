@@ -89,7 +89,7 @@ export function createPipelineState(ctx) {
 
   const outOfScopeFromEnv = parseOutOfScopeEnv(process.env.GHOSTRECON_OUT_OF_SCOPE);
   let outOfScopeList = [...outOfScopeFromEnv];
-  if (modules.includes('out_of_scope') && outOfScopeClientRaw != null && outOfScopeClientRaw !== '') {
+  if (outOfScopeClientRaw != null && outOfScopeClientRaw !== '') {
     const fromUi = parseOutOfScopeClientInput(outOfScopeClientRaw);
     outOfScopeList = mergeOutOfScopeLists(outOfScopeFromEnv, fromUi);
   }
