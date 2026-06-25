@@ -8,12 +8,18 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { parseArgs, parseDuration } from '../args.mjs';
 import { GhostClient, GLOBAL_OPTS } from '../client.mjs';
 import { resolvePlaybook } from '../../playbooks/loader.mjs';
 import { summarizeDiff, shouldAlert } from '../../diff-engine.mjs';
 import { postAlert } from '../../alerting.mjs';
 import { parseReconTarget } from '../../recon-target.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..', '..', '..', '..');
+const SYNC_SCRIPT = path.join(ROOT, 'server', 'scripts', 'sync-sqlite-to-postgres.mjs');
 
 const DEFAULT_STATE_DIR = '.ghostrecon-ghostwatch';
 const DEFAULT_PLAYBOOK = process.env.GHOSTWATCH_PLAYBOOK || 'full-recon';
@@ -62,6 +68,13 @@ const REGISTER_SPEC = [
   { name: 'out-of-scope', type: 'csv', default: [] },
 ];
 
+const SYNC_SPEC = [
+  { name: 'limit', type: 'int', default: 200 },
+  { name: 'dry-run', type: 'bool', default: false },
+  { name: 'sqlite', type: 'string' },
+  { name: 'help', type: 'bool', default: false, alias: 'h' },
+];
+
 const RUN_SPEC = [
   ...COMMON_SPEC,
   { name: 'modules', type: 'csv', default: [] },
@@ -87,7 +100,7 @@ export async function ghostwatchCommand(argv) {
   const sub = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'run';
   const rest = sub === argv[0] ? argv.slice(1) : argv;
 
-  if (sub === 'help' || rest.includes('--help') || rest.includes('-h')) {
+  if (sub === 'help' || ((rest.includes('--help') || rest.includes('-h')) && sub !== 'sync-vps' && sub !== 'sync')) {
     printHelp();
     return 0;
   }
@@ -102,6 +115,9 @@ export async function ghostwatchCommand(argv) {
       return setEnabledCommand(rest, true);
     case 'list':
       return listCommand(rest);
+    case 'sync-vps':
+    case 'sync':
+      return syncVpsCommand(rest);
     case 'run':
     case 'once':
       return runGhostwatch(rest, { forceOnce: sub === 'once' });
@@ -110,6 +126,25 @@ export async function ghostwatchCommand(argv) {
       printHelp();
       return 2;
   }
+}
+
+async function syncVpsCommand(argv) {
+  let opts;
+  try {
+    ({ opts } = parseArgs(argv, SYNC_SPEC));
+  } catch (e) {
+    process.stderr.write(`ghostwatch sync-vps: ${e.message}\n`);
+    return 2;
+  }
+  if (opts.help) {
+    printSyncHelp();
+    return 0;
+  }
+
+  const args = [SYNC_SCRIPT, '--limit', String(opts.limit)];
+  if (opts['dry-run']) args.push('--dry-run');
+  if (opts.sqlite) args.push('--sqlite', String(opts.sqlite));
+  return spawnInherit(process.execPath, args, { cwd: ROOT });
 }
 
 async function registerCommand(argv) {
@@ -598,12 +633,29 @@ function writeSweepSummary(sweep) {
   }
 }
 
+function spawnInherit(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, {
+      stdio: 'inherit',
+      env: { ...process.env },
+      cwd: opts.cwd || process.cwd(),
+      shell: false,
+    });
+    child.on('error', (e) => {
+      process.stderr.write(`ghostwatch sync-vps: ${e.message}\n`);
+      resolve(3);
+    });
+    child.on('exit', (code) => resolve(typeof code === 'number' ? code : 1));
+  });
+}
+
 function printHelp() {
   process.stdout.write(`ghostrecon ghostwatch - modo sentinela para VPS.
 
 Comandos:
   ghostwatch run [opcoes]       Roda todos os alvos conhecidos, um por vez.
   ghostwatch once [opcoes]      Alias de run --once.
+  ghostwatch sync-vps           Envia runs SQLite pendentes para Postgres/VPS.
   ghostwatch register -t alvo   Adiciona/ajusta alvo na watchlist local da VPS.
   ghostwatch disable -t alvo    Desabilita alvo.
   ghostwatch enable -t alvo     Habilita alvo.
@@ -628,5 +680,22 @@ Opcoes de run:
   --dry-run                     Mostra o plano sem rodar recon.
   --interval 12h                Usado apenas sem --once.
   --start-server                Auto-inicia API local se necessario.
+`);
+}
+
+function printSyncHelp() {
+  process.stdout.write(`ghostrecon ghostwatch sync-vps
+
+Atalho para server/scripts/sync-sqlite-to-postgres.mjs.
+
+Requer no .env:
+  GHOSTRECON_SYNC_DATABASE_URL=postgresql://...
+ou:
+  DATABASE_URL=postgresql://...
+
+Opcoes:
+  --limit N       Quantidade maxima de runs pendentes. Default: 200.
+  --sqlite FILE   SQLite local especifico.
+  --dry-run       Mostra o que seria enviado.
 `);
 }

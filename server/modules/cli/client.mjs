@@ -133,14 +133,14 @@ export class GhostClient {
 
   async listRuns({ limit = 50 } = {}) {
     const qs = Number.isFinite(Number(limit)) ? `?limit=${encodeURIComponent(Number(limit))}` : '';
-    const res = await this._fetch(`/api/runs${qs}`, { timeoutMs: 10_000 });
+    const res = await this._fetch(`/api/runs${qs}`, { timeoutMs: 10_000, auth: true });
     if (!res.ok) throw new Error(`/api/runs HTTP ${res.statusCode}`);
     const body = JSON.parse(res.body);
     return Array.isArray(body) ? body : Array.isArray(body?.runs) ? body.runs : [];
   }
 
   async getRun(id) {
-    const res = await this._fetch(`/api/runs/${encodeURIComponent(id)}`, { timeoutMs: 15_000 });
+    const res = await this._fetch(`/api/runs/${encodeURIComponent(id)}`, { timeoutMs: 15_000, auth: true });
     if (!res.ok) throw new Error(`/api/runs/${id} HTTP ${res.statusCode}`);
     return JSON.parse(res.body);
   }
@@ -148,7 +148,7 @@ export class GhostClient {
   async diffRuns(baselineId, newerId) {
     const res = await this._fetch(
       `/api/runs/${encodeURIComponent(newerId)}/diff/${encodeURIComponent(baselineId)}`,
-      { timeoutMs: 20_000 },
+      { timeoutMs: 20_000, auth: true },
     );
     if (!res.ok) throw new Error(`diff HTTP ${res.statusCode}`);
     return JSON.parse(res.body);
