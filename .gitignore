@@ -81,4 +81,8 @@ engines/vigolium
 engines/*.exe
 vigolium/**/node_modules/
 vigolium/platform/**/node_modules/
-vigolium/.vigolium/
+# GhostCommand (Android)
+apps/GhostCommand/.gradle/
+apps/GhostCommand/**/build/
+apps/GhostCommand/*.apk
+apps/GhostCommand/local.properties

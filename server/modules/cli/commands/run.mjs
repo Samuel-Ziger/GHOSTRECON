@@ -9,6 +9,7 @@ import { GhostClient, GLOBAL_OPTS } from '../client.mjs';
 import { resolvePlaybook } from '../../playbooks/loader.mjs';
 import { getEngagement, preRunChecklist } from '../../engagement.mjs';
 import { gateModules, applyWatermarkHeaders, expandIntrusiveRunModules } from '../../opsec.mjs';
+import { parseReconTarget } from '../../recon-target.js';
 
 const SPEC = [
   ...GLOBAL_OPTS,
@@ -61,6 +62,13 @@ export async function runCommand(argv) {
     printHelp();
     return 0;
   }
+
+  const parsedTarget = parseReconTarget(opts.target);
+  if (!parsedTarget.ok) {
+    process.stderr.write(`run: ${parsedTarget.message || 'target invalido'}\n`);
+    return 2;
+  }
+  opts.target = parsedTarget.target;
 
   const verbose = Boolean(opts.verbose);
   const quiet = Boolean(opts.quiet);
@@ -241,7 +249,7 @@ export async function runCommand(argv) {
   if (!runId) {
     try {
       const runs = await client.listRuns();
-      const mine = (runs || []).find((r) => String(r.target) === String(opts.target));
+      const mine = (runs || []).find((r) => String(r.target || '').toLowerCase() === String(opts.target).toLowerCase());
       if (mine) runId = mine.id;
     } catch { /* ignore */ }
   }

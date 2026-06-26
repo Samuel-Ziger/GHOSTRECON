@@ -4,6 +4,7 @@
 
 import { parseArgs } from '../args.mjs';
 import { GhostClient, GLOBAL_OPTS } from '../client.mjs';
+import { parseReconTarget } from '../../recon-target.js';
 
 const SPEC = [
   ...GLOBAL_OPTS,
@@ -38,7 +39,12 @@ export async function runsCommand(argv) {
   }
 
   if (opts.target) {
-    const t = String(opts.target).toLowerCase();
+    const parsedTarget = parseReconTarget(opts.target);
+    if (!parsedTarget.ok) {
+      process.stderr.write(`runs: ${parsedTarget.message || 'target invalido'}\n`);
+      return 2;
+    }
+    const t = parsedTarget.target.toLowerCase();
     runs = (runs || []).filter((r) => String(r.target || '').toLowerCase() === t);
   }
   if (opts.limit && Array.isArray(runs)) runs = runs.slice(0, opts.limit);
