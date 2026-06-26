@@ -52,6 +52,28 @@ node server/scripts/ghostcommand-gate.mjs open manual
 node server/scripts/ghostcommand-gate.mjs close manual
 ```
 
+## App Setup
+
+Generate a one-line setup token on the VPS and paste it into the app:
+
+```bash
+node server/scripts/ghostcommand-mobile-config.mjs http://IP_DA_VPS:3847
+```
+
+It prints:
+
+```text
+GHOSTCOMMAND_CONFIG=...
+```
+
+Open GhostCommand, paste that line into `Cole GHOSTCOMMAND_CONFIG`, tap
+`Importar configuracao`, then `Salvar configuracao`. After saving, the app hides
+the VPS/API key fields and keeps only the target command screen. Use `Editar` to
+change the saved config later.
+
+For direct IP testing, the app allows HTTP cleartext traffic. For production,
+prefer HTTPS through a reverse proxy or private tunnel.
+
 ## API Smoke Test
 
 Run this from the allowed IP/VPN path:
