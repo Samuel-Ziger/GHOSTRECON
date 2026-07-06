@@ -1,950 +1,618 @@
 # GHOSTRECON
 
-Framework local de **OSINT, recon, validação e priorização** para bug bounty e pentest autorizado, com pipeline em streaming, UI operacional, CLI headless e camada de IA (cloud + local).
+GHOSTRECON e uma plataforma local para recon, OSINT, validacao tecnica e organizacao de achados em bug bounty ou pentest autorizado. O projeto junta um servidor Node/Express, uma UI operacional em HTML, pipeline em streaming NDJSON, modulos de seguranca, paineis de analise, integracoes com IA, GhostTrace, GhostMap, GhostDesk, Vigolium e HexStrike.
 
-> Localhost-first, single-process, NDJSON streaming. Sem cloud obrigatório. Sem ferramentas externas obrigatórias além de Node 20+ — o resto é opcional e descoberto automaticamente em `/api/capabilities`.
+> Local-first por desenho. A stack foi pensada para rodar no computador do operador, em `127.0.0.1`, com cloud opcional apenas quando o usuario configura chaves de API.
 
----
+## Aviso De Uso
 
-## Sumário
+Use somente em alvos onde voce tem autorizacao explicita. O GHOSTRECON possui muitos modulos passivos, mas tambem pode acionar ferramentas ativas quando o operador habilita modos como Kali, Vigolium, sqlmap, nuclei, ffuf, navegacao, proxy, Tor ou validacoes especificas. O projeto tem gates de OPSEC, CSRF, auth e rate limit, mas a responsabilidade final de escopo e permissao e do operador.
 
-1. [O que é esta ferramenta](#o-que-é-esta-ferramenta)
-2. [O que ele faz na prática](#o-que-ele-faz-na-prática)
-3. [Componentes principais](#componentes-principais)
-4. [Como usar em poucos minutos](#como-usar-em-poucos-minutos)
-5. [Arquitetura](#arquitetura)
-6. [Estrutura do repositório](#estrutura-do-repositório)
-7. [Fluxo de execução ponta a ponta](#fluxo-de-execução-ponta-a-ponta)
-8. [Camadas funcionais do pipeline](#camadas-funcionais-do-pipeline)
-9. [Painéis HTML](#painéis-html)
-10. [API HTTP](#api-http)
-11. [Auth + RBAC (P0)](#auth--rbac-p0)
-12. [Roteamento Tor (anti-leak)](#roteamento-tor-anti-leak)
-13. [Proxy capture / MITM](#proxy-capture--mitm)
-14. [Ghost local (FastAPI)](#ghost-local-fastapi)
-15. [GhostTrace — anotações e relatório](#ghosttrace--anotações-e-relatório)
-16. [Persistência](#persistência)
-17. [IA em cascata e fallback](#ia-em-cascata-e-fallback)
-18. [CLI headless (`ghostrecon`)](#cli-headless-ghostrecon)
-19. [Scheduler, diff e alertas new-only](#scheduler-diff-e-alertas-new-only)
-20. [Playbooks](#playbooks)
-21. [Engagements, OPSEC e Purple Team](#engagements-opsec-e-purple-team)
-22. [Multi-operador (team locks + audit trail)](#multi-operador-team-locks--audit-trail)
-23. [Evidências ricas com Playwright](#evidências-ricas-com-playwright)
-24. [CVE enrichment (versão → exploit)](#cve-enrichment-versão--exploit)
-25. [Inbound webhooks (hub)](#inbound-webhooks-hub)
-26. [Projects (multi-alvo)](#projects-multi-alvo)
-27. [Workflow export (Linear/Jira/GitHub/Markdown)](#workflow-export-linearjiragithubmarkdown)
-28. [Instalação por perfil](#instalação-por-perfil)
-29. [Scripts NPM](#scripts-npm)
-30. [Testes automatizados](#testes-automatizados)
-31. [Docker](#docker)
-32. [Variáveis de ambiente](#variáveis-de-ambiente)
-33. [Proxychains-ng + rotação de IP](#proxychains-ng--rotação-de-ip)
-34. [Troubleshooting rápido](#troubleshooting-rápido)
-35. [Limites e uso responsável](#limites-e-uso-responsável)
+## Status Atual Do Projeto
 
----
+O repositorio esta organizado como uma stack local completa:
 
-## O que é esta ferramenta
+- API principal Node/Express em `server/index.js`.
+- UI principal em `public/index.html`.
+- Pipeline modular em `server/pipeline/`.
+- Modulos e integracoes em `server/modules/`, `server/routes/`, `server/integrations/` e `server/auto-agent/`.
+- CLI em `bin/ghostrecon.mjs`.
+- IA local em `ghost-local-v5/ghost-local`.
+- GhostTrace em `GhostTrace/`.
+- GhostMap em `ghostmap/`.
+- GhostDesk em `GhostDesk/`.
+- HexStrike em `IAs/hexstrike-ai`.
+- Playbooks em `playbooks/`.
+- Ferramentas auxiliares em `tools/`, `engines/`, `bridge/`, `apps/` e `scripts/`.
 
-O `GHOSTRECON` é uma central de investigação de superfície de ataque. Em vez de executar dezenas de ferramentas separadas e depois tentar juntar tudo manualmente, ele organiza todo o ciclo em um fluxo único: **descobrir ativos, encontrar sinais de falha, validar o que realmente importa, priorizar por risco e transformar isso em inteligência acionável**.
+## Sumario
 
-Em termos simples: você aponta um alvo autorizado e a stack devolve **visibilidade**, **contexto**, **prioridade** e **material pronto para decisão técnica**.
+- [Inicio Rapido](#inicio-rapido)
+- [URLs Locais](#urls-locais)
+- [Como Usar Na UI](#como-usar-na-ui)
+- [Modo Auto](#modo-auto)
+- [HexStrike](#hexstrike)
+- [Arquitetura](#arquitetura)
+- [Estrutura Do Repositorio](#estrutura-do-repositorio)
+- [Pipeline Principal](#pipeline-principal)
+- [Modulos E Capacidades](#modulos-e-capacidades)
+- [APIs Principais](#apis-principais)
+- [CLI](#cli)
+- [Variaveis De Ambiente](#variaveis-de-ambiente)
+- [Scripts NPM](#scripts-npm)
+- [Testes](#testes)
+- [Troubleshooting](#troubleshooting)
+- [Documentos Relacionados](#documentos-relacionados)
 
----
+## Inicio Rapido
 
-## O que ele faz na prática
+Requisitos principais:
 
-- Mapeia a superfície digital (subdomínios, URLs históricas, headers, DNS, metadados, certificados).
-- Procura sinais relevantes (possíveis XSS/SQLi/LFI/SSRF/IDOR/Open-redirect, leaks, exposição de serviços, JWT, GraphQL).
-- Cruza dados e reduz ruído (dedupe semântico, score, tags **OWASP Top 10** + **MITRE ATT&CK**).
-- Separa o que é apenas ruído do que merece tempo do analista (priorização v2 com bounty-context).
-- Captura **evidência rica** (screenshot + DOM + headers + console) por finding com Playwright.
-- Cruza versões com **OSV / NVD / ExploitDB / Nuclei templates**.
-- Ajuda a transformar achados em narrativa técnica (reportes, anotações, relatórios IA, narrative attack-graph, purple-team).
-- Roda em modo **passivo**, **stealth** ou **aggressive** com gating OPSEC explícito.
+- Node.js 20 ou superior.
+- npm.
+- Bash para scripts auxiliares.
+- Python 3 para `ghost-local-v5`, HexStrike e algumas ferramentas opcionais.
+- Ferramentas externas opcionais: `nmap`, `ffuf`, `nuclei`, `sqlmap`, `subfinder`, `amass`, `katana`, `httpx`, `proxychains4`, Tor, Playwright browsers etc.
 
----
-
-## Componentes principais
-
-### 1) `GHOSTRECON` (núcleo)
-Motor principal: recebe o alvo, executa os módulos de recon, transmite o progresso ao vivo (NDJSON) e salva o resultado para comparações futuras (diff between runs).
-
-### 2) `GhostMap`
-Painel visual de risco/tática: mostra o que foi encontrado com leitura orientada por **MITRE/OWASP** para facilitar entendimento rápido.
-
-### 3) `Cortex`
-"Cérebro" da operação. Organiza conhecimento validado em categorias, liga achados por fingerprint e transforma descobertas em base reutilizável.
-
-### 4) `Reporter`
-Área de validação manual. Aqui o analista marca o que realmente confirmou, reduz ruído e gera material de reporte com foco no que importa.
-
-### 5) `GhostTrace` (área de **Anotações**)
-Plataforma operacional de documentação ofensiva integrada ao GHOSTRECON (Next.js + FastAPI opcional). Substitui o fluxo monolítico de `anotacao.html`: recebe o pacote do **Reporter** (findings + validações manuais), importa para um projeto, e permite documentar vulnerabilidades com editor TipTap, timeline, attack chain, evidências e export **DOCX**.
-
-- UI: `/anotacao` (proxy da API Node → Next.js na porta `3010`)
-- Handoff: `POST /api/anotacao-handoff` + `sessionStorage` (mesmo contrato do Reporte)
-- Código: `GhostTrace/` · docs em `GhostTrace/README.md` e `GhostTrace/docs/ARCHITECTURE.md`
-
-### 6) `Ghost Intelligence` (`ghost-local-v5`)
-Camada de IA local (FastAPI + Ollama + ChromaDB + SQLite) para chat, memória, ingestão de runs e análise guiada. Expõe um endpoint **OpenAI-compatible** local em `/v1/chat/completions`.
-
-### 7) `HTTP History`, `Post-Exploitation`, `Tor Validator`
-Painéis auxiliares para inspecionar tráfego (proxy MITM), planejar pós-exploração e validar a saída pela rede Tor antes de rodar.
-
----
-
-## Como usar em poucos minutos
+Instalacao base:
 
 ```bash
 npm install
-cd GhostTrace && npm install && cd ..
-cp .env.example .env       # ajuste AUTH_API_KEYS (ou AUTH_DISABLE=1 em dev)
-npm start                  # Ghost local (:8000) + API Node (:3847)
+cp .env.example .env
+npm start
 ```
 
-**Anotações (GhostTrace)** — terminal separado:
+Para rodar apenas a API Node, sem subir a stack auxiliar:
 
 ```bash
-npm run start:anotacao     # Next.js em :3010 com basePath /anotacao
+npm run start:minimal
 ```
 
-Ou API FastAPI do GhostTrace (sync de projetos na UI):
+Para rodar a API diretamente:
 
 ```bash
-cd GhostTrace/backend
+npm run start:api
+```
+
+Em desenvolvimento local sem autenticar as rotas privilegiadas:
+
+```bash
+AUTH_DISABLE=1 npm run start:minimal
+```
+
+No Windows/PowerShell:
+
+```powershell
+$env:AUTH_DISABLE="1"
+npm run start:minimal
+```
+
+## URLs Locais
+
+Por padrao:
+
+| Servico | URL | Funcao |
+| --- | --- | --- |
+| GHOSTRECON Cockpit | `http://127.0.0.1:3847/` | UI principal de recon |
+| API Node | `http://127.0.0.1:3847/api/*` | Rotas do backend |
+| Reporte | `http://127.0.0.1:3847/reporte.html` | Validacao manual e handoff |
+| Cortex | `http://127.0.0.1:3847/cortex.html` | Base de conhecimento |
+| GhostMap | `http://127.0.0.1:3847/ghostmap/ghostrecon` | Mapa visual MITRE/OWASP |
+| History | `http://127.0.0.1:3847/vigolium-workbench.html` | Workbench, HTTP records e agente |
+| Post-Exploitation | `http://127.0.0.1:3847/post-exploitation.html` | Planejamento pos-exploracao |
+| Tor Validator | `http://127.0.0.1:3847/tor-validator.html` | Validacao de rota Tor |
+| Ghost local | `http://127.0.0.1:8000/gui/` | IA local, memoria e chat |
+| GhostTrace | `http://127.0.0.1:3847/anotacao/` | Anotacoes e relatorio |
+| HexStrike | `http://127.0.0.1:8888` | Servidor HexStrike, se iniciado |
+
+## Como Usar Na UI
+
+Fluxo normal:
+
+1. Abra `http://127.0.0.1:3847/`.
+2. Preencha o alvo em `Target`.
+3. Escolha perfil `quick`, `standard` ou `deep`.
+4. Marque os modulos desejados.
+5. Clique em `RUN RECON`.
+6. Acompanhe o terminal e os cards em tempo real.
+7. Abra `Ghostmap`, `Reporte`, `Cortex` ou `Vigolium` quando quiser investigar melhor.
+
+Fluxo com validacao manual:
+
+```text
+RUN RECON
+  -> findings na UI
+  -> Reporte
+  -> validacao manual
+  -> Anotacao / GhostTrace
+  -> relatorio e evidencias
+```
+
+Fluxo com Modo Auto:
+
+```text
+AUTO MODE
+  -> escolher IA(s)
+  -> escolher modelo OpenRouter, se aplicavel
+  -> incluir HexStrike/deep passive
+  -> backend monta plano
+  -> pipeline executa
+  -> avaliacao final aparece no terminal
+```
+
+## Modo Auto
+
+O Modo Auto fica na UI principal ao lado do `RUN RECON`, no botao `AUTO MODE`.
+
+Ele chama:
+
+```text
+POST /api/recon/auto/stream
+```
+
+O objetivo e permitir que uma ou mais IAs atuem como comandantes do recon. A primeira fase ja implementada faz um planner conservador local, detecta provedores disponiveis, monta catalogo de ferramentas, escolhe modulos e chama o pipeline normal do GHOSTRECON.
+
+Comandantes suportados no contrato atual:
+
+- `codex`
+- `claude_code`
+- `cursor`
+- `openrouter`
+- `skynet`
+- `local_model`
+
+OpenRouter permite escolher o modelo pelo popup. A lista atual vem de `server/auto-agent/provider-detector.mjs`:
+
+- `anthropic/claude-3.7-sonnet`
+- `openai/gpt-4.1`
+- `google/gemini-2.5-pro`
+- `x-ai/grok-4`
+- `deepseek/deepseek-r1`
+- `z-ai/glm-4.5`
+- `qwen/qwen3-coder`
+- `meta-llama/llama-4-maverick`
+
+Arquivos principais:
+
+- `server/auto-agent/provider-detector.mjs`
+- `server/auto-agent/tool-catalog.mjs`
+- `server/auto-agent/planner.mjs`
+- `server/auto-agent/orchestrator.mjs`
+- `server/routes/auto-recon.mjs`
+- `public/index.html`
+- `MODO-AUTO-GHOSTRECON.md`
+
+O documento detalhado da visao, papeis por combinacao de IA e fases futuras fica em:
+
+```text
+MODO-AUTO-GHOSTRECON.md
+```
+
+## HexStrike
+
+A pasta `IAs/hexstrike-ai` contem o HexStrike AI MCP. O GHOSTRECON integra HexStrike de forma conservadora nesta fase:
+
+- Detecta se a pasta existe.
+- Detecta `hexstrike_server.py`, `hexstrike_mcp.py` e `requirements.txt`.
+- Tenta telemetria no servidor HTTP.
+- Exibe status em `/api/capabilities`.
+- Permite o modulo `hexstrike_orchestrator`.
+- Usa endpoints de inteligencia permitidos para importar findings informacionais.
+- Nao executa comandos arbitrarios pelo GHOSTRECON.
+
+Arquivos principais:
+
+- `server/integrations/hexstrike-client.mjs`
+- `server/modules/hexstrike-capabilities.mjs`
+- `server/modules/hexstrike-orchestrator.mjs`
+- `server/tests/hexstrike-capabilities.test.js`
+- `server/tests/hexstrike-orchestrator.test.js`
+
+Variaveis uteis:
+
+```bash
+GHOSTRECON_HEXSTRIKE_URL=http://127.0.0.1:8888
+GHOSTRECON_HEXSTRIKE_HOME=IAs/hexstrike-ai
+GHOSTRECON_HEXSTRIKE_TIMEOUT_MS=60000
+GHOSTRECON_HEXSTRIKE_HEALTH_DEEP=0
+```
+
+Instalacao manual do HexStrike:
+
+```bash
+cd IAs/hexstrike-ai
+python3 -m venv hexstrike-env
+source hexstrike-env/bin/activate
 pip install -r requirements.txt
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
+python3 hexstrike_server.py --port 8888
 ```
 
-Depois:
+No Windows, ative o venv conforme seu shell:
 
-| URL | O quê |
-|-----|--------|
-| <http://127.0.0.1:3847/> | Cockpit recon (UI principal) |
-| <http://127.0.0.1:3847/reporte.html> | Reporter — validação manual |
-| <http://127.0.0.1:3847/anotacao/ghostrecon/import> | **GhostTrace** — importar pacote do Reporte |
-| <http://127.0.0.1:8000/gui/> | Ghost Intelligence (chat/IA local) |
-| <http://127.0.0.1:8787/health> | GhostTrace API (opcional, sync SQLite) |
-
-Fluxo típico: recon → **Reporte** (validar achados) → botão **ANOTAÇÃO** → importar projeto no GhostTrace → documentar vulns / relatório DOCX.
-
-Sem `AUTH_API_KEYS` a API responde 401 nas rotas privilegiadas. Em dev local: `AUTH_DISABLE=1` no `.env` (só loopback). `X-Forwarded-For` e confiado apenas com `GHOSTRECON_TRUST_PROXY=1`. Veja [Auth + RBAC](#auth--rbac-p0).
-
-Variáveis úteis para anotações:
-
-```bash
-GHOSTTRACE_PROXY=1          # proxy /anotacao → :3010 (default ligado)
-GHOSTTRACE_PORT=3010
-AUTH_DISABLE=1              # dev apenas
+```powershell
+cd IAs\hexstrike-ai
+py -3 -m venv hexstrike-env
+.\hexstrike-env\Scripts\Activate.ps1
+pip install -r requirements.txt
+python hexstrike_server.py --port 8888
 ```
-
----
 
 ## Arquitetura
 
 ```text
-┌──────────────────────────┐     handoff      ┌──────────────────────────┐
-│ Painéis HTML (:3847)     │ ───────────────► │ GhostTrace (:3010)       │
-│ index · GhostMap · Cortex│   /anotacao      │ Next.js · vulns · DOCX   │
-│ reporte · history · tor  │   (proxy)        │ sync opcional → :8787    │
-└──────────┬───────────────┘                  └──────────────────────────┘
-           │ POST /api/recon/stream (NDJSON)
-           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ API Node / Express (server/index.js) — default :3847               │
-│ AUTH+RBAC · CSRF · Tor strict · proxy MITM · ghosttrace-proxy.mjs  │
-│ runPipeline(): recon → validate → kali → correlate → IA → webhook  │
-└────────┬─────────────────┬─────────────────┬────────────────┬──────┘
-         ▼                 ▼                 ▼                ▼
-   SQLite/Postgres    Webhooks/Inbound   IA cloud         Ferramentas Kali
-   /Supabase          (HMAC)             Gemini/OpenRouter  nmap, nuclei…
+Usuario
+  -> public/index.html
+     -> API Node/Express :3847
+        -> rotas /api/*
+        -> runPipeline()
+        -> modulos GHOSTRECON
+        -> registry modular
+        -> SQLite/Postgres/Supabase
+        -> IA cloud/local opcional
+        -> HexStrike/Vigolium/Kali opcionais
+        -> NDJSON para UI
 
-┌──────────────────────────┐                ┌──────────────────────────┐
-│ Ghost Intelligence       │                │ GhostTrace API (opc.)    │
-│ ghost-local-v5 :8000     │                │ FastAPI :8787 · SQLite   │
-│ Ollama · Chroma · /v1/…  │                │ PUT /projects/{id}/sync  │
-└──────────────────────────┘                └──────────────────────────┘
+Servicos auxiliares:
+  ghost-local-v5 :8000
+  GhostTrace     :3010 via /anotacao
+  GhostMap       :3020 via proxy
+  GhostDesk      :5173 via proxy
+  HexStrike      :8888 quando iniciado
 ```
 
----
+Principais camadas:
 
-## Estrutura do repositório
+- `server/index.js`: entrada da API.
+- `server/app/register-routes.mjs`: registra rotas.
+- `server/routes/`: endpoints HTTP.
+- `server/pipeline/run-pipeline.mjs`: entrada do pipeline.
+- `server/pipeline/phases/`: fases do recon.
+- `server/modules/`: modulos, integrações, storage e validadores.
+- `server/modules/module-registry.mjs`: registry de modulos refatorados.
+- `server/auto-agent/`: Modo Auto.
+- `server/integrations/`: clientes externos, como HexStrike.
+- `public/`: paineis HTML.
+
+## Estrutura Do Repositorio
 
 ```text
 GHOSTRECON/
-├─ server/
-│  ├─ index.js                          # entrypoint Node/Express (~4400 linhas)
-│  ├─ config.js                         # rate-limits, limites por módulo
-│  ├─ load-env.js                       # bootstrap dotenv
-│  ├─ modules/                          # 120+ módulos (recon, IA, db, correlação, RT)
-│  │  ├─ ghosttrace-proxy.mjs           # proxy /anotacao → GhostTrace Next.js
-│  │  ├─ cli/                           # parser + commands da CLI headless
-│  │  └─ playbooks/                     # loader de playbooks JSON/YAML
-│  ├─ scripts/                          # MITRE bundle, PentestGPT bridge, smoke IA
-│  └─ tests/                            # 60+ testes (node --test)
-├─ bin/ghostrecon.mjs                   # binário da CLI (npx ghostrecon)
-├─ scripts/
-│  ├─ start-stack.sh                    # Ghost local + API Node
-│  ├─ start-anotacao.sh                 # GhostTrace Next.js (:3010, basePath /anotacao)
-│  └─ start-stack-with-anotacao.sh      # stack completa + anotações
-├─ GhostTrace/                          # área de anotações (Next.js + FastAPI opcional)
-│  ├─ src/                              # App Router, features, lib/ghostrecon/
-│  ├─ backend/                          # FastAPI sync (:8787)
-│  ├─ docs/                             # ARCHITECTURE.md, REPORT_TEMPLATE.md
-│  └─ scripts/windows|kali/             # instaladores GhostTrace
-├─ ghost-local-v5/
-│  ├─ start
-│  └─ ghost-local/
-│     ├─ backend/main.py                # FastAPI (chat/memory/ingest/codescan)
-│     └─ frontend/index.html            # Ghost Intelligence GUI
-├─ playbooks/                           # api-first, wordpress, cloud-takeover, etc.
-├─ public/                              # cockpit e painéis HTML (index, reporte, cortex…)
-│  └─ legacy/                           # redirects anotacao.html, history.html
-├─ mitre-attack/                        # recon-bundle.json (npm run mitre:extract)
-├─ scripts/vigolium/                     # vigolium.sh (batch VPS)
-├─ tools/
-│  ├─ jwt-forge-br/main.py               # JWTForge BR (auditoria JWT)
-│  ├─ info-disclosure/                   # InfoHunter (modo Kali)
-│  └─ Navegation/                        # configurador Tor (torrc + proxychains)
-├─ docs/case-studies/                    # PoCs e relatórios avulsos
-├─ Xss/xss_vibes/                       # scanner auxiliar Python
-├─ supabase/                            # schema e migrations (project_id=gosthrecon)
-├─ docs/
-│  ├─ AUTH-RBAC.md                      # matriz role × scope
-│  └─ TOR.md                            # rota Tor + ControlPort + isolation
-├─ install.sh                           # instalador por perfil
-├─ Dockerfile                           # imagem mínima da API
-└─ .env.example                         # configuração completa documentada
+  server/                  API, rotas, modulos, pipeline e testes
+  public/                  UI principal e paineis HTML
+  bin/                     CLI ghostrecon
+  scripts/                 start stack, instaladores e utilitarios
+  bridge/                  bridge Vigolium e capacidades externas
+  engines/                 motores locais opcionais
+  ghost-local-v5/          IA local FastAPI, memoria e chat
+  GhostTrace/              anotacoes e relatorio
+  ghostmap/                mapa visual e frontend dedicado
+  GhostDesk/               desktop/workbench auxiliar
+  apps/                    apps experimentais/auxiliares
+  IAs/                     agentes locais, HexStrike, Shannon/PentestGPT quando instalados
+  playbooks/               playbooks de recon e checklist
+  tools/                   ferramentas auxiliares
+  docs/                    documentacao tecnica
+  data/                    dados locais
+  logs/                    logs locais
+  .env.example             configuracao documentada
 ```
 
----
+## Pipeline Principal
 
-## Fluxo de execução ponta a ponta
+O pipeline normal e exposto por:
 
-1. `npm start` executa `scripts/start-stack.mjs` (`npm run start:bash` mantém o script Bash antigo).
-2. O script tenta subir o **Ghost local** em `:8000` e valida `/health`.
-3. Em seguida, sobe a API Node (`server/index.js`) em `:3847` (default `HOST=127.0.0.1`).
-4. A UI (`index.html`) faz `GET /api/csrf-token` e dispara `POST /api/recon/stream` recebendo **NDJSON**.
-5. `runPipeline()` orquestra as fases:
-   - normalização de alvo/escopo + carregamento de engagement;
-   - **OPSEC gate** (recusa módulos intrusivos sem autorização explícita);
-   - enumeração de superfície;
-   - extração e enriquecimento (DNS/RDAP/TLS/Wayback/CommonCrawl/Archive Tools);
-   - validações de evidência (XSS/SQLi/LFI/Redirect/IDOR/SSRF/Race);
-   - módulo Kali opcional (gateado por capabilities + role `red`);
-   - correlação/priorização (score + dedupe semântico + OWASP/MITRE);
-   - persistência + diff fingerprint vs baseline;
-   - **IA em cascata** (cloud + local) gerando relatório + próximos passos;
-   - webhook (Discord/Slack/JSON) e sync para Ghost KB.
-6. Cliente recebe os eventos `kind=` ao vivo (`progress`, `finding`, `module_done`, `summary`, `done`, `error`).
-
----
-
-## Camadas funcionais do pipeline
-
-### Recon / enumeração passiva
-- `crtsh`, `virustotal`, `wayback`, `commoncrawl`, `archive-tools`
-- `rdap`, `dns-enrichment`, `wellknown` (security.txt, openid-configuration)
-- `tls-cert`, `security-headers`, `header-intel`, `robots-sitemap`
-- `tech` (fingerprint), `tech-versions`, `lovable-fingerprint`
-- `openapi-harvest` + `graphql-recon`
-- `js-crawler` (Katana), `js-analyzer`, `js-intel`
-
-### Leak / código
-- `github` code/repo search, `github-clone` (clones efêmeros), `github-manual-repos`
-- `secrets` + `secret-validation` (com `secret-project-peers` para correlação cross-projeto)
-- `dorks`, `google-cse`
-
-### Validação / evidência
-- `verify` (sinais SQLi/LFI/XSS/redirect/SSRF/IDOR), `dom-xss-verify`, `browser-xss-verify` (Playwright)
-- `webshell-probe`, `ftp-anon-write-probe`, `mysql-config-correlation`, `mysql-nmap-intel`
-- `sqlmap-runner`, `payload-mutator`, `oob-collaborator` (DNS/HTTP OOB)
-- `cve-enrichment` (OSV + NVD + ExploitDB + Nuclei templates)
-
-### Modo Kali (intrusivo, opcional)
-- `nmap`, `ffuf`, `dirsearch`, `nuclei`, `dalfox`, `xss_vibes`, `whois`
-- `subfinder`, `amass`, `wpscan`, `sqlmap`, `wafw00f`
-- Profundidade depende do perfil (`standard | stealth | aggressive`) e ferramentas no PATH.
-
-### Correlação / priorização
-- `correlation`, `prioritization` v2 (com bounty-context), `scoring`
-- `semantic-dedupe`, `chaining` (cadeias entre findings)
-- `owasp-top10`, `mitre-recon` (tags ATT&CK)
-- `recheck-high` (recheck HTTP rápido em achados HIGH)
-
-### Red Team / OPSEC
-- `engagement`, `opsec` (gating de módulos), `team-concurrency` (locks)
-- `attack-narrative`, `purple-team`, `replay-tabletop`
-- `phishing-infra`, `cred-spray`, `cloud-bruteforce`
-- `authz-matrix`, `jwt-lab`, `race-harness`, `origin-discovery`
-
-### Anonimato / saída
-- `tor-control` (NEWNYM/GETINFO via ControlPort)
-- `tor-strict` (anti-leak central, força proxychains nas tools)
-- `socks5-dispatcher` (undici Agent SOCKS5 com isolation por target)
-- `identity-controller`, `identity-surface`
-- `proxy-capture` (MITM nativo)
-
----
-
-## Painéis HTML
-
-| Arquivo | Painel | Função |
-|---------|--------|--------|
-| `index.html` | Cockpit | Configuração de run, stream ao vivo, filtros, export |
-| `mitre-map.html` | **GhostMap** | Visualização MITRE/OWASP com feed ao vivo |
-| `cortex.html` | **Cortex** | Base de conhecimento de findings validados |
-| `reporte.html` | **Reporter** | Checklist manual + consolidação de validações |
-| `anotacao.html` | Anotações (redirect) | Redireciona para **GhostTrace** em `/anotacao` |
-| `/anotacao/*` | **GhostTrace** | Documentação de vulns, timeline, attack chain, relatório DOCX |
-| `history.html` | HTTP History (redirect) | Redireciona para **GhostMap** em `/ghostmap/history` |
-| `/ghostmap/history` | **GhostMap · HTTP History** | Inspector HTTP (ex-`history.html`) + aba **Grafo** (ReactFlow) |
-| `/ghostmap/ghostrecon` | **GhostMap · MITRE Hub** | Mapa MITRE ao vivo (`mitre-live.html`) |
-| `post-exploitation.html` | Pós-exploração | Planejamento de pós-exploração |
-| `tor-validator.html` | Tor Validator | Valida saída pela rede Tor antes do run |
-| `como-usar.html` | Guia | Manual de uso da UI |
-
----
-
-## API HTTP
-
-> CSRF protege rotas mutantes. Pegue o token em `GET /api/csrf-token` e envie `X-CSRF-Token: <token>`. Auth: ver [Auth + RBAC](#auth--rbac-p0).
-
-### Recon / runtime
-- `POST /api/recon/stream` — pipeline streaming NDJSON
-- `GET  /api/csrf-token`
-- `GET  /api/health`
-- `GET  /api/capabilities` — quais ferramentas Kali e IAs estão disponíveis
-- `POST /api/tool-path-refresh` (admin)
-- `GET  /api/searchsploit` — busca local exploit-db
-- `GET  /api/history/recon` — histórico HTTP capturado
-
-### Runs / diff / intel
-- `GET  /api/runs`
-- `GET  /api/runs/:id`
-- `GET  /api/runs/:newerId/diff/:baselineId`
-- `GET  /api/runs/:newerId/diff-summary/:baselineId?minSeverity=&onlyNew=1`
-- `GET  /api/runs/:id/narrative` — attack-narrative gerada do run
-- `GET  /api/runs/:id/purple` — relatório Purple Team
-- `GET  /api/intel/:target`
-- `GET  /api/project-secret-peers?project=...`
-
-### Cortex / validação manual
-- `GET  /api/brain/categories`
-- `POST /api/brain/categories` (CSRF, `brain.write`)
-- `POST /api/brain/categories/:id/description` (CSRF, `brain.write`)
-- `POST /api/brain/link` (CSRF, `brain.write`)
-- `GET  /api/brain/category/:id`
-- `GET  /api/manual-validations/:target`
-- `POST /api/manual-validations` (CSRF, `validation.write`)
-- `POST /api/manual-validations/ai-report`
-- `POST /api/manual-validations/annotations-ai`
-
-### Anotações
-- `GET  /api/anotacao-handoff/:id`
-- `POST /api/anotacao-handoff` (CSRF, `notes.write`)
-
-### Integrações IA
-- `POST /api/ai-reports` (CSRF, `ai.run`) — gera relatório dual (Gemini → OpenRouter → Claude → LM Studio/Ghost)
-- `POST /api/pentestgpt-ping` (CSRF, `ai.run`)
-- `POST /api/shannon/prep` (CSRF, `shannon.run`)
-- `GET  /api/ai/lmstudio-check`
-
-### Engagements / OPSEC / Team
-- `GET  /api/engagements`, `GET /api/engagements/:id`
-- `POST /api/engagements`, `POST /api/engagements/:id/close`, `POST /api/engagements/checklist`
-- `POST /api/opsec/gate` (admin)
-- `GET  /api/team/locks`, `GET /api/team/trail`
-- `POST /api/team/lock`, `POST /api/team/unlock`, `POST /api/team/force-unlock` (admin)
-
-### Playbooks / Projects / CVE / Evidence
-- `GET  /api/playbooks`, `GET /api/playbooks/:name`
-- `GET  /api/projects`, `GET /api/projects/:name`
-- `POST /api/projects` (CSRF), `DELETE /api/projects/:name` (admin)
-- `POST /api/cve/enrich` (CSRF, `cve.enrich`)
-- `POST /api/evidence/capture/:runId` (CSRF, `evidence.capture`)
-
-### Tor / Tunnel / Proxy
-- `GET  /api/tunnel/status`, `GET /api/tunnel/validate`, `GET /api/tunnel/health`
-- `GET  /api/tunnel/strict-check`, `GET /api/tunnel/telemetry/:runId`
-- `POST /api/tunnel/enable` (admin), `POST /api/tunnel/disable` (admin)
-- `POST /api/tunnel/newnym` (`recon.run`)
-- `GET  /api/proxy/status`, `POST /api/proxy/start`, `POST /api/proxy/stop`, `POST /api/proxy/mitm`
-- `GET  /api/proxy/ca.crt` — baixa o root CA do proxy MITM
-
-### Inbound webhooks (auth própria por HMAC)
-- `POST /api/inbound/:source` — eventos de Subfinder/Amass/Nuclei/custom
-- `GET  /api/inbound/:source/:target` — leitura (Bearer token)
-
----
-
-## Auth + RBAC (P0)
-
-A API usa **API keys** por padrão. JWT (HS256/RS256) é alternativa para SSO/OIDC. Audit log NDJSON 1 ficheiro/dia em `./logs`.
-
-```bash
-# 1. Gerar uma API key forte
-node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-
-# 2. Configurar no .env
-AUTH_MODE=apikey
-AUTH_API_KEYS=<key>:red:laptop|<outra>:admin:ci-runner
-
-# 3. Chamar a API
-curl -H "Authorization: Bearer <key>" -H "X-CSRF-Token: <csrf>" \
-     -X POST http://127.0.0.1:3847/api/recon/stream \
-     -d '{"domain":"example.com","modules":["dns","probe"]}'
+```text
+POST /api/recon/stream
 ```
 
-**Roles**:
+Ele retorna NDJSON, permitindo que a UI mostre progresso e findings em tempo real.
 
-| Role | Inclui |
-|------|--------|
-| `viewer` | `recon.read` |
-| `operator` | viewer + `recon.run`, `brain.write`, `notes.write`, `validation.write`, `evidence.capture`, `cve.enrich` |
-| `red` | operator + `recon.intrusive`, `ai.run`, `shannon.run`, `project.write`, `engagement.write`, `team.lock` |
-| `admin` | `*` (wildcard, inclui ações destrutivas) |
+Fases principais:
 
-`recon.intrusive` é exigido automaticamente quando o body inclui `kaliMode=true`, `opsecProfile='aggressive'`, ou módulos como `kali_*`, `sqlmap`, `cloud_bruteforce`, `cred_spray`, `shannon_whitebox`.
+1. Normalizacao do alvo e escopo.
+2. Auth, CSRF, rate limit e OPSEC gate.
+3. Discovery e fingerprint.
+4. Coleta passiva: DNS, RDAP, crt.sh, Wayback, CommonCrawl, headers, TLS, robots, sitemap.
+5. Superficie web: URLs, parametros, JS, endpoints, OpenAPI, GraphQL.
+6. Validacoes e auditorias: headers, CORS, cookies, CSRF, JWT/JWKS, WebSocket, HTTP/3, service worker, DOM, secrets.
+7. Modulos opcionais: Kali, Vigolium, sqlmap, Nuclei, ffuf, WPScan, Navegation/Tor.
+8. Correlacao, dedupe, scoring, OWASP, MITRE e priorizacao.
+9. Persistencia local/remota.
+10. IA opcional e relatorios.
+11. Webhooks, history, Reporte, GhostMap e Cortex.
 
-`AUTH_DISABLE=1` faz bypass **só em loopback** (127.0.0.1/::1). Detalhes completos em `docs/AUTH-RBAC.md`.
+## Modulos E Capacidades
 
----
+`GET /api/capabilities` devolve o estado de:
 
-## Roteamento Tor (anti-leak)
+- Kali/tools externos.
+- IA configurada.
+- GitHub token.
+- Registry de modulos.
+- Tool packs externos.
+- Shannon.
+- PentestGPT.
+- HexStrike.
+- Vigolium.
 
-Quando programa exige anonimato, todo o pipeline pode sair via Tor com **circuit isolado por target** (IsolateSOCKSAuth). O playbook `tools/Navegation/navegation.{sh,py}` configura `/etc/tor/torrc` automaticamente.
+Alguns modulos importantes:
 
-```bash
-# .env
-GHOSTRECON_TOR_REQUIRED=1                      # aborta se tunnel falhar
-GHOSTRECON_PROXY_POOL=socks5h://127.0.0.1:9050
-GHOSTRECON_TOR_ISOLATE=1                       # user/pass único por run/target
-GHOSTRECON_TOR_STRICT=1                        # liga proxychains4 em TODAS as tools externas
+- `cookie_session_audit`
+- `csrf_flow_audit`
+- `jwt_jwks_audit`
+- `http3_quic_surface`
+- `nginx_http3_cve_2026_42530`
+- `panel_exposure_audit`
+- `service_worker_audit`
+- `api_contract_diff`
+- `websocket_recon`
+- `hpp_param_pollution`
+- `hexstrike_orchestrator`
+- `dom_clobbering_audit`
+- `email_security_deep`
+- `secrets_context_ranker`
+- `risk_explainer`
+- `vigolium_dast`
+- `vigolium_audit`
+- `vigolium_swarm`
+
+O registry atual fica em:
+
+```text
+server/modules/module-registry.mjs
+server/modules/module-registry-runners.mjs
+server/modules/module-ids.mjs
 ```
 
-Modo **strict** (anti-leak central):
-- Locka Node DNS para `127.0.0.1:5353` (DNSPort do Tor).
-- Escreve `proxychains.conf` efémero com `strict_chain` + `proxy_dns`.
-- Wraps automáticos para `nmap`, `sqlmap`, `curl`, `dig`, `ffuf`, `nuclei`, `dirsearch`, `dalfox`, `whois`, `wpscan`.
-- `refuse_to_run` se `proxychains4`, ControlPort, DNSPort ou SOCKS faltarem.
-- Header hygiene Tor Browser-like nos `fetch`s do Node.
+## APIs Principais
 
-Endpoints de saúde: `/api/tunnel/status`, `/api/tunnel/validate`, `/api/tunnel/strict-check`, `/api/tunnel/telemetry/:runId`.
-Detalhes completos em `docs/TOR.md`.
+| Rota | Funcao |
+| --- | --- |
+| `GET /api/csrf-token` | Emite token CSRF |
+| `GET /api/setup/auto-auth` | Ajuda setup local de API key |
+| `POST /api/recon/stream` | Recon normal em NDJSON |
+| `POST /api/recon/auto/stream` | Modo Auto em NDJSON |
+| `GET /api/capabilities` | Capacidades locais |
+| `GET /api/runs` | Historico de runs |
+| `GET /api/runs/:id` | Detalhes de uma run |
+| `GET /api/brain/*` | Cortex / memoria |
+| `POST /api/manual-validations` | Validacoes manuais |
+| `POST /api/anotacao-handoff` | Handoff para GhostTrace |
+| `GET /api/tunnel/status` | Status proxy/Tor |
+| `POST /api/ai-reports` | Relatorios IA |
+| `GET /api/vigolium/*` | Rotas Vigolium |
+| `POST /api/ghostcommand/*` | GhostCommand |
 
----
+## CLI
 
-## Proxy capture / MITM
+O binario fica em:
 
-Proxy nativo (default `:8080`) captura todo o tráfego do pipeline e dos browsers configurados, exposto no painel `history.html`.
-
-```bash
-# .env
-GHOSTRECON_PROXY_CAPTURE_PORT=8080
-GHOSTRECON_PROXY_MITM=1
+```text
+bin/ghostrecon.mjs
 ```
 
-Baixe o root CA: `GET /api/proxy/ca.crt` e instale no browser/sistema.
-Controle via `POST /api/proxy/start | /api/proxy/stop | /api/proxy/mitm`.
-
----
-
-## Ghost local (FastAPI)
-
-`ghost-local-v5/ghost-local/backend/main.py` expõe (em `:8000`):
-
-- `POST /chat/stream` — chat streaming via Ollama
-- `POST /v1/chat/completions` — endpoint **OpenAI-compatible** (cascata GHOSTRECON usa esse como fallback final)
-- `GET  /v1/models`
-- `GET|POST /memory/*` — KB local (ChromaDB) com teach/feedback/search/export
-- `POST /ghostrecon/ingest/{run,findings,sqlite,ndjson}` — ingestão nativa
-- `POST /ghostrecon/analyze` — análise guiada
-- `GET  /ghostrecon/{runs,runs/{id},findings/{id}}`
-- `POST /codescan/{repo,file,snippet,disasm}`, `GET /codescan/rules`
-- `GET  /hexstrike/{status,health}`, `POST /hexstrike/relay` — bridge para HexStrike AI
-- `POST /sessions/save`, `GET /sessions[/{id}]`
-- `GET  /gui/` — Ghost Intelligence (frontend)
-
----
-
-## GhostTrace — anotações e relatório
-
-O **GhostTrace** vive em `GhostTrace/` e é servido pelo GHOSTRECON em **`/anotacao`** (proxy reverso para Next.js na porta `3010`). Documentação detalhada: [`GhostTrace/README.md`](GhostTrace/README.md).
-
-### Fluxo Reporte → GhostTrace
-
-1. No **Reporter** (`reporte.html`), valide achados e clique **ANOTAÇÃO**.
-2. O cliente envia `POST /api/anotacao-handoff` com `{ target, findings, manualValidations }` (e fallback `sessionStorage`).
-3. Abre `/anotacao/ghostrecon/import` — wizard de importação.
-4. Cria um **projeto** com vulns para achados já validados; os restantes ficam na bandeja **GHOSTRECON** na lista de vulnerabilidades.
-5. Edite com TipTap, timeline, attack chain, evidências; exporte **DOCX** ou JSON (`ReportShape`).
-
-### Três processos (dev local)
-
-| Processo | Comando | Porta |
-|----------|---------|-------|
-| API GHOSTRECON | `npm run start:api` ou `npm start` | `3847` |
-| GhostTrace UI | `npm run start:anotacao` | `3010` (URL pública: `/anotacao` na API) |
-| GhostTrace API | `cd GhostTrace/backend && uvicorn app.main:app --port 8787` | `8787` |
-
-A UI funciona **sem** a API `:8787` (dados em `localStorage` via Zustand). Com a API, projetos sincronizam para `backend/ghosttrace.db` (SQLite).
-
-### Integração no código GHOSTRECON
-
-- `server/modules/ghosttrace-proxy.mjs` — proxy HTTP `/anotacao` → Next.js
-- `GhostTrace/src/lib/ghostrecon/` — handoff, import de findings, templates Supabase, cliente da API GHOSTRECON
-- Allowlist auth: rotas `/anotacao/*` públicas para carregar a UI no browser
-
----
-
-## Persistência
-
-Camadas suportadas (auto-detectadas):
-
-| Camada | Quando | Como configurar |
-|--------|--------|-----------------|
-| **SQLite local** (default) | Sem `DATABASE_URL` nem `SUPABASE_*` | `data/bugbounty.db` (criado automático). Override via `GHOSTRECON_DB`. |
-| **Postgres direto** | Quer Postgres self-hosted ou Supabase via DB | `DATABASE_URL=postgresql://...` |
-| **Supabase API** | Sem expor Postgres direto | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (ou anon/publishable) |
-
-Para VPS sem Supabase, aplique o schema Postgres puro em `docs/vps-postgres-schema.sql`:
+Uso via npm:
 
 ```bash
-psql "$DATABASE_URL" -f docs/vps-postgres-schema.sql
+npm run cli -- --help
 ```
 
-Fluxo recomendado quando o GhostRecon roda somente local:
+Ou diretamente:
 
 ```bash
-# terminal 1: abre tunel para o Postgres privado da VPS
-ssh -N -L 15432:127.0.0.1:5432 usuario@SUA_VPS
+node bin/ghostrecon.mjs --help
+```
 
-# .env local do GhostRecon
-DATABASE_URL=postgresql://ghostrecon_writer:SENHA@127.0.0.1:15432/ghostworkflow
-GHOSTRECON_REMOTE_FALLBACK_SQLITE=1
+A CLI usa os helpers em:
 
-# terminal 2: roda local, grava na VPS pelo tunel
+```text
+server/modules/cli/
+```
+
+## Variaveis De Ambiente
+
+Copie `.env.example` para `.env` e ajuste o que precisar.
+
+Essenciais:
+
+```bash
+PORT=3847
+HOST=127.0.0.1
+AUTH_DISABLE=1
+```
+
+Auth local:
+
+```bash
+AUTH_API_KEYS=nome:chave:admin
+GHOSTRECON_TRUST_PROXY=0
+```
+
+IA:
+
+```bash
+GEMINI_API_KEY=
+OPENROUTER_API_KEY=
+ANTHROPIC_API_KEY=
+GHOSTRECON_OPENROUTER_MODEL=
+GHOSTRECON_LMSTUDIO_BASE_URL=http://127.0.0.1:8000/v1
+GHOSTRECON_LMSTUDIO_MODEL=ghost
+```
+
+Modo Auto:
+
+```bash
+GHOSTRECON_SKYNET_URL=http://127.0.0.1:8000
+GHOSTRECON_OPENROUTER_AUTO_MODEL=anthropic/claude-3.7-sonnet
+GHOSTRECON_AUTO_ALLOW_UNCONFIGURED=0
+```
+
+HexStrike:
+
+```bash
+GHOSTRECON_HEXSTRIKE_URL=http://127.0.0.1:8888
+GHOSTRECON_HEXSTRIKE_HOME=IAs/hexstrike-ai
+GHOSTRECON_HEXSTRIKE_TIMEOUT_MS=60000
+```
+
+Stack:
+
+```bash
+GHOSTRECON_STACK_VIGOLIUM=1
+GHOSTRECON_STACK_GHOST=1
+GHOSTRECON_STACK_GHOSTTRACE=1
+GHOSTRECON_STACK_GHOSTMAP=1
+GHOSTRECON_STACK_GHOSTDESK=1
+```
+
+Para desligar servicos pesados:
+
+```bash
+GHOSTRECON_STACK_VIGOLIUM=0
+GHOSTRECON_STACK_GHOST=0
+GHOSTRECON_STACK_GHOSTTRACE=0
+GHOSTRECON_STACK_GHOSTMAP=0
+GHOSTRECON_STACK_GHOSTDESK=0
 npm start
 ```
 
-Se o tunel/VPS cair, o run e salvo em SQLite local (`data/bugbounty.db` ou `GHOSTRECON_DB`). Depois de reabrir o tunel, sincronize os runs pendentes:
-
-```bash
-npm run db:vps:sync
-# preview sem gravar:
-npm run db:vps:sync -- --dry-run
-```
-
-No WorkFlowVPS da VPS, aponte `ASM_DATABASE_URL` para esse mesmo database e habilite `source_postgres.enabled=true` no `config.yaml`; se usar usuario separado de leitura, defina `GHOSTRECON_SOURCE_DATABASE_URL`.
-
-Schema/migrations Supabase continuam em `supabase/migrations/`. Aplicar:
-
-```bash
-npm run db:link            # liga ao projeto (project_id=gosthrecon)
-npm run db:push            # aplica migrations
-npm run db:migration:new   # cria nova migration
-```
-
-Snapshots completos de findings podem ser salvos em `runs.findings_json` (Postgres requer `ALTER TABLE runs ADD COLUMN findings_json jsonb;`). Limite: `GHOSTRECON_FINDINGS_SNAPSHOT_MAX_BYTES`.
-
----
-
-## IA em cascata e fallback
-
-Fluxo de relatório IA (`runDualAiReports`):
-
-1. **Gemini** (`GEMINI_API_KEY` ou `GOOGLE_AI_API_KEY`) — modelo via `GHOSTRECON_GEMINI_MODEL`.
-2. **OpenRouter** (`OPENROUTER_API_KEY`) — slug em `GHOSTRECON_OPENROUTER_MODEL`.
-3. **Claude direto** (`ANTHROPIC_API_KEY`) — só se OpenRouter vazio.
-4. **LM Studio / Ghost local** (`GHOSTRECON_LMSTUDIO_*`) — fallback final OpenAI-compatible.
-
-Retentativas configuráveis (`*_MAX_RETRIES`, respeita `Retry-After`/backoff). Espera fixa entre tentativas: `GHOSTRECON_AI_FALLBACK_WAIT_SEC`.
-
----
-
-## CLI headless (`ghostrecon`)
-
-Toda a pipeline é acessível em modo headless pela CLI, sem necessidade de UI. Útil para CI/CD, cron jobs e integração com outros stacks. A CLI reaproveita 100% do pipeline via `/api/recon/stream` (HTTP+NDJSON), sem forkar lógica.
-
-```bash
-# Após npm install
-npx ghostrecon run --target example.com --modules crtsh,http,github --output run.json
-npx ghostrecon run --target api.example.com --playbook api-first
-npx ghostrecon runs --target example.com --limit 10
-npx ghostrecon diff --baseline 12 --newer 18 --format summary
-npx ghostrecon playbooks
-npx ghostrecon playbooks --show api-first
-npx ghostrecon export --run 42 --to github --repo myorg/myrepo --severity high
-npx ghostrecon projects --add --name acme --description "Acme bounty program"
-npx ghostrecon projects --name acme --scope-add "*.acme.com"
-npx ghostrecon schedule --target api.acme.com --interval 6h --only-new
-npx ghostrecon engagement --create --target acme.com --scope "*.acme.com"
-npx ghostrecon narrative --run 42
-npx ghostrecon purple --run 42
-npx ghostrecon team --lock acme.com
-npx ghostrecon chains --run 42
-npx ghostrecon obsidian --run 42 --vault ~/vault
-npx ghostrecon oob --domain example.com
-npx ghostrecon phish-infra --target acme.com
-npx ghostrecon replay --run 42
-```
-
-### Comandos disponíveis
-
-| Comando | Função |
-|---------|--------|
-| `run` | Roda recon completo (alvo + módulos/playbook) |
-| `runs` | Lista runs por target |
-| `diff` | Compara dois runs (full ou summary) |
-| `schedule` | Recon periódico com alerta new-only |
-| `playbooks` | Lista/inspeciona playbooks |
-| `projects` | CRUD de projetos multi-alvo |
-| `engagement` | Cria/encerra engagement (escopo + checklist) |
-| `narrative` | Gera attack-narrative do run |
-| `purple` | Exporta relatório Purple Team |
-| `team` | Lock/unlock + audit trail multi-operador |
-| `chains` | Encadeamento entre findings |
-| `obsidian` | Exporta findings como notas Obsidian |
-| `oob` | Gera payloads OOB (DNS/HTTP collaborator) |
-| `phish-infra` | Mapeia infra de phishing relacionada ao alvo |
-| `replay` | Replay tabletop de um run |
-| `export` | GitHub Issues / Linear / Jira / Markdown |
-
-### Principais opções de `run`
-
-| Opção | Descrição |
-|-------|-----------|
-| `--target` | Domínio alvo (obrigatório) |
-| `--modules` | CSV de módulos (ex.: `crtsh,http,github`) |
-| `--playbook` | Perfil pré-configurado (ver `playbooks/`) |
-| `--profile` | `standard` · `stealth` · `aggressive` |
-| `--output FILE` | Grava JSON agregado final |
-| `--format` | `json` · `ndjson` · `summary` |
-| `--exact-match` | Subs apenas do alvo exato |
-| `--kali` | Módulos Kali (requer ferramentas locais + role `red`) |
-| `--auth-header K=V` | Repetível — headers extras |
-| `--auth-cookie` | Cookie bruto para requests autenticadas |
-| `--project NAME` | Atribui o run a um projeto |
-| `--start-server` | Auto-spawn do API em background |
-| `--timeout SEC` | Timeout global (default 1800) |
-
-A CLI usa CSRF token automaticamente e faz auto-start do server local se `--start-server` for passado (ou erra com mensagem clara caso contrário). Auth via `GHOSTRECON_API_KEY` ou `Authorization` header.
-
----
-
-## Scheduler, diff e alertas new-only
-
-O subcomando `schedule` roda recons periódicos e, usando `compareRuns` + o diff-engine interno, alerta **apenas quando há findings novos** (dedupe por fingerprint SHA-1 dos achados). Evita ruído de "mesmo alerta todo dia".
-
-```bash
-ghostrecon schedule \
-  --target api.example.com \
-  --interval 6h \
-  --playbook api-first \
-  --webhook https://discord.com/api/webhooks/XXXXX/YYYYY \
-  --min-severity high \
-  --only-new
-```
-
-- Estado persistido em `.ghostrecon-schedule/<target>.json` (última runId, fingerprints vistos, histórico).
-- Suporta Discord (embeds nativos), Slack (`text` mrkdwn) e webhook genérico.
-- `--once` roda uma única iteração (útil em cron externo). `--max-runs N` limita o número total de iterações.
-- Interval aceita `30s`, `15m`, `6h`, `2d`.
-
-Endpoint equivalente: `GET /api/runs/:newerId/diff-summary/:baselineId?minSeverity=medium&onlyNew=1`.
-
----
-
-## Playbooks
-
-Playbooks são ficheiros JSON (ou YAML minimalista) em `playbooks/` que pré-selecionam módulos e perfil de pipeline para cenários comuns.
-
-| Nome | Uso |
-|------|-----|
-| `api-first` | Superfície API (OpenAPI, GraphQL, params) |
-| `wordpress` | WordPress — wpscan, temas, plugins, xmlrpc |
-| `cloud-takeover` | CNAMEs órfãos em S3/Azure/GitHub Pages |
-| `subdomain-hunt` | Enumeração agressiva (crtsh + VT + amass + subfinder) |
-| `secrets-leak` | GitHub code search, wayback, dorks, JS crawl |
-| `quick-triage` | Primeiro passo rápido (~60s) |
-| `lovable-hunt` | Caça em apps Lovable.dev |
-| `lowcode-hunt` | No-code/low-code (Bubble, Glide, etc.) |
-
-Ver `playbooks/README.md` para formato completo. Aponte `GHOSTRECON_PLAYBOOKS_DIR` para diretórios extras (suporta múltiplos paths separados por `:` POSIX ou `;` Windows).
-
----
-
-## Engagements, OPSEC e Purple Team
-
-**Engagement** = container de uma autorização: escopo, janela, contato técnico, checklist pré-run, watermark.
-
-```bash
-ghostrecon engagement --create --name acme-2026 --target acme.com \
-  --scope "*.acme.com,api.acme.io" --window "2026-05-01..2026-05-31" \
-  --owner "alice@acme.com"
-```
-
-**OPSEC gate** (`/api/opsec/gate` + `gateModules()`) recusa módulos intrusivos sem o profile certo:
-
-| Profile | Módulos permitidos |
-|---------|--------------------|
-| `passive` | apenas leitura externa (CT, wayback, RDAP) |
-| `standard` | passivo + probes leves |
-| `stealth` | standard + jitter, UA rotativo, sem brute |
-| `aggressive` | tudo (requer role `red` + engagement aberto) |
-
-**Attack-narrative** (`/api/runs/:id/narrative`) traduz findings para uma narrativa de ataque encadeada (kill-chain). **Purple-team** (`/api/runs/:id/purple`) gera relatório com mitigations sugeridas + detection rules.
-
-`POST /api/engagements/checklist` retorna o pre-run checklist (auth, escopo, OOB collaborator, Tor, etc.) — **bloqueante** se faltar item crítico.
-
----
-
-## Multi-operador (team locks + audit trail)
-
-Quando vários operadores partilham a mesma instância:
-
-```bash
-ghostrecon team --lock acme.com --owner alice --reason "scan ativo 14:00-16:00"
-ghostrecon team --unlock acme.com
-ghostrecon team --trail acme.com
-```
-
-- `GET /api/team/locks` — locks ativos
-- `GET /api/team/trail?target=...` — audit trail
-- `POST /api/team/lock | /unlock` (`team.lock` scope)
-- `POST /api/team/force-unlock` (admin)
-
-Tentativa de iniciar `recon/stream` num target com lock alheio → **409 Conflict** com mensagem clara.
-
----
-
-## Evidências ricas com Playwright
-
-O módulo `server/modules/evidence-capture.js` captura, por finding, screenshot PNG + DOM snippet + response headers + console logs via Playwright headless.
-
-```http
-POST /api/evidence/capture/:runId
-{
-  "minSeverity": "medium",
-  "maxCaptures": 25,
-  "fullPage": false
-}
-```
-
-Saída persistida em `.ghostrecon-evidence/<runId>/f<idx>_<slug>.{png,html,json}`. Os findings recebem `evidence.captures = { screenshot, dom, meta }` — referenciados diretamente pelo Reporter e pelo export de Markdown/HackerOne.
-
-Requer: `npm install playwright && npx playwright install chromium`.
-
----
-
-## CVE enrichment (versão → exploit)
-
-Cruza tech strings (de `tech-versions.js`, banners ou version-page) com:
-
-- **OSV.dev** (sem API key)
-- **NVD 2.0** (com ou sem API key)
-- **ExploitDB search** (heurístico, opcional)
-- **Nuclei templates** locais (se `GHOSTRECON_NUCLEI_TEMPLATES_DIR` definido)
-
-Severidade derivada do CVSS. **Banners são degradados em 1 step** (falsos positivos comuns — servidores mentem versão). Findings têm campos `cve`, `cvss`, `exploitPublic`, `exploitSources`.
-
-```http
-POST /api/cve/enrich
-{
-  "techStrings": ["nginx/1.18.0", "openssl/1.1.1k"],
-  "source": "banner",
-  "checkExploits": true
-}
-```
-
----
-
-## Inbound webhooks (hub)
-
-Ferramentas externas (subfinder, amass, nuclei, dnsx, cron scripts) podem enviar eventos para o GHOSTRECON, que os armazena por target para merge no próximo recon.
-
-```bash
-# .env
-GHOSTRECON_INBOUND_KEYS=subfinder:key1,nuclei:key2
-
-# Envio
-BODY='{"template-id":"cve-2021-44228","matched-at":"https://api.example.com/","info":{"severity":"critical","name":"Log4Shell"}}'
-SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "key2" | awk '{print $2}')
-curl -X POST http://127.0.0.1:3847/api/inbound/nuclei \
-  -H "x-ghostrecon-signature: sha256=$SIG" \
-  -H "content-type: application/json" \
-  -d "$BODY"
-```
-
-Auto-detecta payloads Subfinder/Amass/Nuclei. Leitura via `GET /api/inbound/:source/:target` (Bearer token = chave da source).
-
----
-
-## Projects (multi-alvo)
-
-Agrupa runs por programa/cliente — reduz context switching quando você caça em vários programas simultaneamente.
-
-```bash
-ghostrecon projects --add --name acme --description "Acme bounty"
-ghostrecon projects --name acme --scope-add "*.acme.com" --scope-add "api.acme.io"
-ghostrecon projects --show acme
-ghostrecon run --target api.acme.com --project acme --playbook api-first
-```
-
-Storage local em `.ghostrecon-projects/projects.json` (zero dependências extras de DB).
-
----
-
-## Workflow export (Linear/Jira/GitHub/Markdown)
-
-Exporta findings de um run como issues em:
-
-- **GitHub Issues** — `--to github --repo owner/name --github-token $GITHUB_TOKEN`
-- **Linear** — `--to linear --linear-team TEAM_ID --linear-token $LINEAR_API_KEY`
-- **Jira Cloud** — `--to jira --jira-url $BASE --jira-project KEY --jira-user me@ex.com --jira-token $JIRA_TOKEN`
-- **Markdown** — `--to markdown --output out.md` (HackerOne/Bugcrowd-ready)
-- **Obsidian** — `ghostrecon obsidian --run X --vault ~/vault`
-
-Cada issue carrega: título com severidade, body reprodutível (evidence, OWASP, MITRE, CVE), labels/priorities mapeadas da severidade, link para o Reporter (se `GHOSTRECON_REPORTER_BASE` definido). Use `--dry-run` para preview sem POST.
-
----
-
-## Instalação por perfil
-
-```bash
-bash install.sh --profile minimal     # base Node
-bash install.sh --profile passive     # + stack passiva
-bash install.sh --profile full        # + Kali, IA local e extras
-bash install.sh -y --skip-shannon     # CI / não-interativo
-```
-
-Flags: `--skip-docker`, `--skip-shannon`, `--skip-pentestgpt`, `--skip-playwright`, `--skip-supabase`, `--skip-ghost-local`, `-y` (assume defaults).
-
-IAs externas opcionais (`Shannon` em `IAs/shannon/`, `PentestGPT` em `IAs/PentestGPT/`) são clonadas pelo instalador. Detalhes em `IAs/README.md`.
-
----
-
 ## Scripts NPM
 
-| Script | Função |
-|--------|--------|
-| `npm start` | Sobe Ghost local + API Node |
-| `npm run start:api` | Só API Node |
-| `npm run start:ghost` | Só Ghost local FastAPI |
-| `npm run start:anotacao` | GhostTrace Next.js (`:3010`, proxy em `/anotacao`) |
-| `npm run start:ghostmap` | GhostMap Next.js (`:3020`, proxy em `/ghostmap`) |
-| `npm run start:stack+anotacao` | Stack completa + GhostTrace (Linux/WSL) |
-| `npm run dev` | API com `node --watch` |
-| `npm test` | Roda todos os testes (`server/tests/*.test.js`) |
-| `npm run test:cli` | Subset de testes da CLI |
-| `npm run test:ai` | Smoke test das chaves IA configuradas |
-| `npm run cli` | Atalho para `bin/ghostrecon.mjs` |
-| `npm run mitre:extract` | Regenera bundle MITRE de `mitre-attack/cti/` |
-| `npm run pentestgpt-bridge` | Sobe ponte OpenRouter→PentestGPT em `:8765` |
-| `npm run db:link` | `supabase link` (project_id=gosthrecon) |
-| `npm run db:push` | `supabase db push` |
-| `npm run db:migration:new` | `supabase migration new` |
+| Script | Funcao |
+| --- | --- |
+| `npm start` | Sobe stack local completa |
+| `npm run start:minimal` | Sobe apenas API Node |
+| `npm run start:api` | Sobe `server/index.js` |
+| `npm run dev` | API em watch mode |
+| `npm test` | Roda todos os testes Node |
+| `npm run test:cli` | Testes da CLI |
+| `npm run cli -- --help` | CLI |
+| `npm run start:ghost` | Ghost local |
+| `npm run start:anotacao` | GhostTrace |
+| `npm run start:ghostmap` | GhostMap |
+| `npm run start:ghostdesk` | GhostDesk |
+| `npm run test:ai` | Smoke de APIs IA |
+| `npm run mitre:extract` | Gera bundle MITRE |
+| `npm run pentestgpt-bridge` | Bridge PentestGPT via OpenRouter |
+| `npm run engine:install` | Instala motor Vigolium |
+| `npm run engine:build` | Build do motor Vigolium |
 
----
+## Docker E Instalador
 
-## Testes automatizados
-
-63 ficheiros de teste em `server/tests/*.test.js`, rodados com **`node --test`** (sem framework externo).
-
-```bash
-npm test
-npm run test:cli           # apenas testes da CLI (cli-args, cli-ndjson)
-```
-
-Cobertura inclui: parser CLI, NDJSON streaming, diff-engine fingerprint, playbooks loader, CVE enrichment, inbound webhooks, projects CRUD, workflow export, payload mutator, JWT lab, race harness, OOB collaborator, Tor strict tunnel, identity controller, attack-narrative, purple-team, engagement, OPSEC, team-concurrency, authz-matrix, semantic-dedupe, owasp/mitre tagging, e mais.
-
----
-
-## Docker
+Existe um `Dockerfile` na raiz para imagem minima da API:
 
 ```bash
 docker build -t ghostrecon .
-docker run --rm -p 3847:3847 \
-  -e AUTH_API_KEYS=$KEY:admin:docker \
-  -v $(pwd)/data:/app/data \
-  ghostrecon
+docker run --rm -p 3847:3847 -e AUTH_DISABLE=1 ghostrecon
 ```
 
-Imagem da API com painéis HTML, playbooks e bundle MITRE. Ferramentas Kali externas e Ghost local continuam fora da imagem — para isso use a stack completa via `npm start`.
-
----
-
-## Variáveis de ambiente
-
-Veja `.env.example` para a lista completa **comentada**. Categorias principais:
-
-- **Básico**: `PORT`, `HOST`, `GHOSTRECON_DB`
-- **GhostTrace**: `GHOSTTRACE_PROXY`, `GHOSTTRACE_PORT`, `GHOSTTRACE_HOST`, `GHOSTTRACE_STRIP_PREFIX`
-- **DB**: `DATABASE_URL` ou `SUPABASE_URL` + chaves; fallback/sync: `GHOSTRECON_REMOTE_FALLBACK_SQLITE`, `GHOSTRECON_SYNC_DATABASE_URL`, `GHOSTRECON_SYNC_SQLITE`
-- **Auth**: `AUTH_MODE`, `AUTH_API_KEYS`, `AUTH_API_KEYS_FILE`, `AUTH_JWT_*`, `AUTH_DISABLE`, `AUTH_AUDIT_DIR`
-- **CSRF / RL**: `GHOSTRECON_RL_MAX`, `GHOSTRECON_RL_WINDOW_MS`
-- **IA cloud**: `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, modelos e retries
-- **IA local**: `GHOSTRECON_LMSTUDIO_*`, `GHOSTRECON_GHOST_*`, `GHOSTRECON_AI_AUTO`
-- **APIs recon**: `VIRUSTOTAL_API_KEY`, `GITHUB_TOKEN`, `WPSCAN_API_TOKEN`
-- **Tor**: `GHOSTRECON_TOR_REQUIRED`, `GHOSTRECON_TOR_STRICT`, `GHOSTRECON_TOR_ISOLATE`, `GHOSTRECON_TOR_*`
-- **Proxy/MITM**: `GHOSTRECON_PROXY_POOL`, `GHOSTRECON_PROXY_ROTATION`, `GHOSTRECON_PROXYCHAINS_*`, `GHOSTRECON_PROXY_CAPTURE_PORT`, `GHOSTRECON_PROXY_MITM`
-- **CLI / scheduler**: `GHOSTRECON_SERVER`, `GHOSTRECON_API_KEY`, `GHOSTRECON_PLAYBOOKS_DIR`, `GHOSTRECON_PROJECTS_DIR`, `GHOSTRECON_INBOUND_DIR`, `GHOSTRECON_INBOUND_KEYS`, `GHOSTRECON_NUCLEI_TEMPLATES_DIR`, `GHOSTRECON_REPORTER_BASE`
-- **Kali tooling**: `GHOSTRECON_FFUF_THREADS`, `GHOSTRECON_DIRSEARCH_*`, `GHOSTRECON_FTP_*`, `GHOSTRECON_EXPLOIT_GOOGLE_MAX_QUERIES`, `GHOSTRECON_WPSCAN_*`, `GHOSTRECON_XSS_VIBES_*`
-- **Webhooks**: `GHOSTRECON_WEBHOOK_URL`, `GHOSTRECON_WEBHOOK_DELTA_FULL`, `GHOSTRECON_WEBHOOK_DELTA_MAX_FINDINGS`
-- **Shannon / PentestGPT**: `GHOSTRECON_SHANNON_*`, `GHOSTRECON_PENTESTGPT_*`
-- **Export**: `GITHUB_TOKEN`, `LINEAR_API_KEY`, `JIRA_USER`, `JIRA_TOKEN`
-
----
-
-## Proxychains-ng + rotação de IP
-
-`proxychains-ng` é uma opção dedicada da UI via módulo `kali_proxychains` (separada da rotação de identidade/proxy pool). Quando marcado no run, os scanners do modo Kali rodam por `proxychains-ng` (chains SOCKS/HTTP/Tor).
+O script `install.sh` tambem existe para setups por perfil. Use com cuidado, porque ele pode instalar dependencias de sistema e ferramentas externas conforme o perfil escolhido.
 
 ```bash
-# .env
-GHOSTRECON_PROXYCHAINS=1
-GHOSTRECON_PROXYCHAINS_BIN=proxychains4
-GHOSTRECON_PROXYCHAINS_CONF=/etc/proxychains4.conf
-GHOSTRECON_PROXYCHAINS_QUIET=1
-GHOSTRECON_PROXYCHAINS_SKIP=nmap        # CSV: ferramentas a excluir do chain
+bash install.sh --help
 ```
 
-Com isso, ferramentas como `nmap`, `nuclei`, `ffuf`, `dirsearch`, `dalfox`, `whois`, `sqlmap` e `wpscan` passam a ser executadas via `proxychains4`. O modo Tor strict (`GHOSTRECON_TOR_STRICT=1`) ativa isso automaticamente com config endurecida (`strict_chain` + `proxy_dns`).
+## Testes
 
----
+Todos os testes:
 
-## Troubleshooting rápido
+```bash
+npm test
+```
 
-| Sintoma | Ação |
-|---------|------|
-| Porta ocupada | Ajuste `PORT` no `.env` ou mate o processo (`lsof -i :3847`) |
-| `403 CSRF` em mutações | Pegue token em `GET /api/csrf-token` e envie `X-CSRF-Token` |
-| `401 Unauthorized` | Configure `AUTH_API_KEYS` ou use `Authorization: Bearer <key>` |
-| Modo Kali com módulos faltando | Verifique `GET /api/capabilities` e `npm run start:api` com `PATH` correto |
-| IA falhando | `npm run test:ai` e cheque cota/Retry-After do provider |
-| Ghost local offline | Veja `ghost-local-v5/ghost-local/ghost.log`; `start.sh` standalone |
-| Anotações 503 / offline | `npm run start:anotacao` + API Node com `GHOSTTRACE_PROXY=1` |
-| GhostTrace API offline | `cd GhostTrace/backend && pip install -r requirements.txt && uvicorn app.main:app --port 8787` |
-| Status «API offline» na UI GhostTrace | Confirme `NEXT_PUBLIC_API_URL=http://127.0.0.1:8787` em `GhostTrace/.env.local` |
-| Tor não valida | `GET /api/tunnel/strict-check` e `tor-validator.html` no browser |
-| DB falhando | Valide `DATABASE_URL`/tunel SSH; se usou fallback SQLite, reabra o tunel e rode `npm run db:vps:sync` |
-| Audit log não aparece | `AUTH_AUDIT_DIR` e permissão de escrita; `AUTH_AUDIT_DISABLE=1` desliga ficheiro |
+Testes focados no Modo Auto e HexStrike:
 
----
+```bash
+node --test server/tests/auto-agent.test.js server/tests/hexstrike-capabilities.test.js server/tests/hexstrike-orchestrator.test.js
+```
 
-## Limites e uso responsável
+Smoke de import do servidor sem abrir porta:
 
-- **Use somente em ambientes com autorização explícita** (contrato, programa de bounty ou escopo formal).
-- Módulos do **Kali mode** podem ser intrusivos — exigem role `red` + engagement aberto + `recon.intrusive` scope.
-- A stack depende de **APIs externas** (Gemini, OpenRouter, OSV, NVD, GitHub Code Search, etc.) e respeita seus rate-limits.
-- Higiene de dados locais: `.env`, `clone/`, `escopo/`, `pocs/`, `.ghostrecon-evidence/`, `data/*.db` não vão para Git (já no `.gitignore`).
-- Respeite a legislação local, políticas do alvo e regras de disclosure.
-- O modo `AUTH_DISABLE=1` é **só para loopback** em dev. Nunca exponha o servidor sem auth. Só habilite `GHOSTRECON_TRUST_PROXY=1` atrás de proxy local/confiável.
+```bash
+GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js').then(()=>console.log('node app ok'))"
+```
 
----
+No PowerShell:
 
-> GHOSTRECON é uma ferramenta para **profissionais autorizados**. O uso indevido é responsabilidade exclusiva do operador.
+```powershell
+$env:GHOSTRECON_NO_HTTP_LISTEN="1"
+node -e "import('./server/index.js').then(()=>console.log('node app ok'))"
+```
+
+Observacao: `package.json` exige Node `>=20 <27`. Com Node 18 alguns testes ainda podem rodar, mas dependencias como Supabase avisam que Node 18 esta deprecado.
+
+## Troubleshooting
+
+### A UI abriu, mas as rotas retornam 401
+
+Configure `AUTH_API_KEYS` ou use `AUTH_DISABLE=1` apenas localmente.
+
+### O botao AUTO MODE nao aparece
+
+Recarregue a UI principal com cache limpo:
+
+```text
+Ctrl+F5
+```
+
+O botao fica na pagina principal `public/index.html`, ao lado de `RUN RECON`.
+
+### HexStrike aparece offline
+
+Confirme se o servidor HexStrike esta no ar:
+
+```bash
+curl http://127.0.0.1:8888/api/telemetry
+```
+
+Ou inicie manualmente:
+
+```bash
+cd IAs/hexstrike-ai
+python3 hexstrike_server.py --port 8888
+```
+
+### npm start tenta subir muita coisa
+
+Use:
+
+```bash
+npm run start:minimal
+```
+
+Ou desligue partes:
+
+```bash
+GHOSTRECON_STACK_GHOST=0 GHOSTRECON_STACK_GHOSTTRACE=0 npm start
+```
+
+### Ferramentas Kali nao aparecem
+
+Rode `GET /api/capabilities` e confira se as ferramentas existem no `PATH`. Em ambientes Windows, muitas delas dependem de WSL/Kali.
+
+### CSRF invalido
+
+A UI deve buscar `GET /api/csrf-token` antes de `POST /api/recon/stream` ou `/api/recon/auto/stream`. Se estiver testando manualmente, envie `X-CSRF-Token`.
+
+### Tor strict bloqueou a run
+
+Veja `docs/TOR.md`. O modo strict exige pre-requisitos como SOCKS, ControlPort, DNSPort, `proxychains4` e validacao anti-leak.
+
+## Documentos Relacionados
+
+- `MODO-AUTO-GHOSTRECON.md`: arquitetura detalhada do Modo Auto.
+- `FUSAO-VIGOLIUM.md`: fusao e papel do Vigolium.
+- `ANALISE-PROJETO.md`: analise geral antiga do projeto.
+- `REFATORACAO.md`: notas de refatoracao.
+- `docs/AUTH-RBAC.md`: auth, roles e scopes.
+- `docs/TOR.md`: Tor, strict mode e anti-leak.
+- `docs/MODULE-CONTRACT.md`: contrato de modulos.
+- `GhostTrace/README.md`: area de anotacoes.
+- `ghostmap/README.md`: GhostMap.
+- `IAs/README.md`: agentes locais.
+- `IAs/hexstrike-ai/README.md`: README upstream do HexStrike.
+- `playbooks/README.md`: playbooks.
+
+## Licenca E Notas
+
+Veja `NOTICE` e os READMEs das ferramentas integradas. Algumas pastas podem conter projetos externos ou engines opcionais com licencas proprias.
