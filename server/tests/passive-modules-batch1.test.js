@@ -106,6 +106,7 @@ test('module registry lista modulos passivos implementados', () => {
     'csrf_flow_audit',
     'dom_clobbering_audit',
     'email_security_deep',
+    'hexstrike_orchestrator',
     'hpp_param_pollution',
     'http3_quic_surface',
     'jwt_jwks_audit',

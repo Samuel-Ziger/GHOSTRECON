@@ -3,7 +3,17 @@
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-HEX_DIR="$REPO_ROOT/hexstrike-ai"
+GHOSTRECON_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
+HEX_DIR="${GHOSTRECON_HEXSTRIKE_HOME:-}"
+if [ -z "$HEX_DIR" ]; then
+  if [ -f "$REPO_ROOT/hexstrike-ai/hexstrike_server.py" ]; then
+    HEX_DIR="$REPO_ROOT/hexstrike-ai"
+  elif [ -f "$GHOSTRECON_ROOT/IAs/hexstrike-ai/hexstrike_server.py" ]; then
+    HEX_DIR="$GHOSTRECON_ROOT/IAs/hexstrike-ai"
+  else
+    HEX_DIR="$REPO_ROOT/hexstrike-ai"
+  fi
+fi
 
 PORT="${PORT:-8000}"
 HOST="${HOST:-${GHOST_HOST:-127.0.0.1}}"

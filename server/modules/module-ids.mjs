@@ -12,6 +12,7 @@ const MODULE_ALIASES = new Map([
   ['hpp-param-pollution', 'hpp_param_pollution'],
   ['dom-clobbering-audit', 'dom_clobbering_audit'],
   ['email-security-deep', 'email_security_deep'],
+  ['hexstrike-orchestrator', 'hexstrike_orchestrator'],
   ['secrets-context-ranker', 'secrets_context_ranker'],
   ['risk-explainer', 'risk_explainer'],
 ]);

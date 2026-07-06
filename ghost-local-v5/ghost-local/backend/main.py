@@ -37,6 +37,8 @@ def _csv_env(name: str, default: str) -> list[str]:
 
 GHOST_API_KEY = os.getenv("GHOST_API_KEY", os.getenv("GHOST_LOCAL_API_KEY", "")).strip()
 GHOST_ALLOW_REMOTE = os.getenv("GHOST_ALLOW_REMOTE", "0").strip().lower() in ("1", "true", "yes", "on")
+GHOSTRECON_API_URL = os.getenv("GHOSTRECON_API_URL", "http://127.0.0.1:3847").rstrip("/")
+GHOSTRECON_API_KEY = os.getenv("GHOSTRECON_API_KEY", os.getenv("GHOSTRECON_NODE_API_KEY", "")).strip()
 GHOST_CORS_ORIGINS = _csv_env(
     "GHOST_CORS_ORIGINS",
     "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:3847,http://localhost:3847",
@@ -248,6 +250,22 @@ class HexstrikeRelayBody(BaseModel):
     path:    str
     payload: Dict[str, Any] = Field(default_factory=dict)
     timeout: float = Field(120.0, ge=5.0, le=600.0)
+
+class GhostReconAutoRequest(BaseModel):
+    domain: str = Field(..., min_length=1, max_length=300)
+    mode: str = Field("balanced", pattern="^(quick|balanced|deep)$")
+    commanders: List[str] = Field(default_factory=list)
+    openrouterModel: Optional[str] = None
+    includeHexstrike: bool = True
+    includeDeepPassive: Optional[bool] = None
+    modules: List[str] = Field(default_factory=list)
+    profile: Optional[str] = None
+    opsecProfile: str = "standard"
+    confirmActive: bool = False
+    autoAiReports: bool = False
+    outOfScope: Optional[Any] = None
+    projectName: Optional[str] = None
+    bountyContext: Optional[Dict[str, Any]] = None
 
 # ─── OpenAI-compat (para cascata GHOSTRECON) ───
 class OAIMessage(BaseModel):
@@ -780,6 +798,60 @@ async def get_run(run_id: str):
 @app.get("/ghostrecon/findings/{run_id}")
 async def get_findings(run_id: str, severity: Optional[str] = None):
     return grecon.get_findings(run_id, severity)
+
+async def _ghostrecon_headers(client: httpx.AsyncClient) -> Dict[str, str]:
+    headers: Dict[str, str] = {"Accept": "application/x-ndjson,application/json"}
+    api_key = GHOSTRECON_API_KEY
+    if not api_key:
+        try:
+            r = await client.get(f"{GHOSTRECON_API_URL}/api/setup/auto-auth", timeout=5)
+            if r.is_success:
+                api_key = str((r.json() or {}).get("apiKey") or "").strip()
+        except Exception:
+            api_key = ""
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        csrf = await client.get(f"{GHOSTRECON_API_URL}/api/csrf-token", headers=headers, timeout=5)
+        if csrf.is_success:
+            token = str((csrf.json() or {}).get("token") or "").strip()
+            if token:
+                headers["X-CSRF-Token"] = token
+    except Exception:
+        pass
+    return headers
+
+@app.post("/ghostrecon/auto/stream")
+async def ghostrecon_auto_stream(req: GhostReconAutoRequest):
+    """
+    Proxy local para POST /api/recon/auto/stream do GHOSTRECON Node.
+    A UI do GHOST fala com a mesma origem (:8000); este endpoint cuida de CSRF/API key.
+    """
+    payload = req.dict()
+
+    async def generate():
+        async with httpx.AsyncClient(timeout=None) as client:
+            headers = await _ghostrecon_headers(client)
+            headers["Content-Type"] = "application/json"
+            try:
+                async with client.stream(
+                    "POST",
+                    f"{GHOSTRECON_API_URL}/api/recon/auto/stream",
+                    json=payload,
+                    headers=headers,
+                    timeout=None,
+                ) as r:
+                    if r.status_code >= 400:
+                        raw = (await r.aread()).decode(errors="replace")[:3000]
+                        yield json.dumps({"type": "error", "message": f"GHOSTRECON HTTP {r.status_code}: {raw}"}) + "\n"
+                        return
+                    async for line in r.aiter_lines():
+                        if line.strip():
+                            yield line + "\n"
+            except Exception as e:
+                yield json.dumps({"type": "error", "message": f"GHOSTRECON auto indisponivel em {GHOSTRECON_API_URL}: {e}"}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 # ─────────────────────────────────────────────────────
 #  MEMÓRIA

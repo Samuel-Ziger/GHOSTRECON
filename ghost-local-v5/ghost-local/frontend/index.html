@@ -242,6 +242,24 @@ textarea::placeholder{color:var(--t2)}
 .gr-btn{padding:7px 14px;background:transparent;border:1px solid rgba(255,171,64,.3);color:var(--amber);font-family:var(--font);font-size:10px;letter-spacing:1.5px;cursor:pointer;transition:all .15s}
 .gr-btn:hover{background:rgba(255,171,64,.07)}
 .gr-btn.act{background:rgba(255,171,64,.1);border-color:var(--amber)}
+.gr-btn.auto{border-color:rgba(0,255,136,.4);color:var(--green2);background:rgba(0,255,136,.06)}
+.gr-btn.auto:hover{background:rgba(0,255,136,.1)}
+.auto-card{border:1px solid rgba(0,255,136,.22);background:rgba(0,255,136,.035);padding:14px;display:flex;flex-direction:column;gap:10px}
+.auto-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.auto-choice{border:1px solid var(--border);background:rgba(0,0,0,.28);padding:9px;cursor:pointer;transition:all .15s;min-height:58px}
+.auto-choice:hover{border-color:rgba(0,255,136,.25)}
+.auto-choice.act{border-color:var(--green2);background:rgba(0,255,136,.08)}
+.auto-choice-title{font-size:10px;color:var(--text);letter-spacing:1px;margin-bottom:3px}
+.auto-choice-desc{font-size:9px;color:var(--t2);line-height:1.35}
+.auto-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:1500;display:flex;align-items:center;justify-content:center;padding:18px}
+.auto-modal{width:min(760px,94vw);max-height:min(760px,92vh);overflow-y:auto;background:#071018;border:1px solid rgba(0,255,136,.35);box-shadow:0 0 30px rgba(0,255,136,.08);padding:18px;display:flex;flex-direction:column;gap:14px}
+.auto-modal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.auto-modal-title{font-family:var(--fd);font-size:13px;color:var(--green2);letter-spacing:2px}
+.auto-modal-sub{font-size:10px;color:var(--t2);line-height:1.45;margin-top:5px}
+.auto-close{background:transparent;border:1px solid var(--border);color:var(--t2);font-family:var(--font);font-size:12px;padding:4px 8px;cursor:pointer}
+.auto-close:hover{border-color:var(--red);color:var(--red)}
+.auto-events{background:rgba(0,0,0,.38);border:1px solid rgba(0,255,136,.16);padding:10px;font-family:var(--font);font-size:10px;line-height:1.55;color:var(--text);max-height:260px;overflow:auto;white-space:pre-wrap}
+.auto-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(0,255,136,.22);background:rgba(0,255,136,.06);color:var(--green2);padding:3px 7px;font-size:9px;letter-spacing:1px}
 .gr-ingest{background:rgba(0,0,0,.4);border:1px solid var(--border);padding:14px}
 .gr-result{background:rgba(0,0,0,.3);border:1px solid rgba(0,212,255,.18);padding:12px;font-size:11px;line-height:1.7;white-space:pre-wrap;max-height:min(400px,38vh);overflow-y:auto;color:var(--text)}
 
@@ -534,12 +552,97 @@ textarea::placeholder{color:var(--t2)}
           <div style="font-size:10px;color:var(--t2);margin-top:4px">Ingira runs, analise findings, correlacione vulnerabilidades</div>
         </div>
         <div class="gr-actions">
+          <button class="gr-btn auto" @click="openAutoModal">AUTO</button>
           <button class="gr-btn" @click="loadRuns">↻ ATUALIZAR</button>
           <button class="gr-btn" @click="grTab='ingest'" :class="{act:grTab==='ingest'}">⊕ INGERIR</button>
           <button class="gr-btn" @click="grTab='runs'" :class="{act:grTab==='runs'}">◈ RUNS</button>
           <button class="gr-btn" @click="grTab='analyze'" :class="{act:grTab==='analyze'}">⚡ ANALISAR</button>
         </div>
       </div>
+
+      <div class="auto-card">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+          <div>
+            <div style="font-size:10px;color:var(--green2);letter-spacing:1.5px">MODO AUTO</div>
+            <div style="font-size:10px;color:var(--t2);margin-top:3px">
+              Planner automático + pipeline GHOSTRECON. Escolha a IA comandante antes de iniciar.
+            </div>
+          </div>
+          <button class="gr-btn auto" @click="openAutoModal" :disabled="auto.running">
+            {{auto.running ? 'AUTO RODANDO...' : 'ATIVAR AUTO'}}
+          </button>
+        </div>
+        <div v-if="auto.lastPlan" style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="auto-pill">MODO {{auto.lastPlan.mode}}</span>
+          <span class="auto-pill">{{auto.lastPlan.modules?.length||0}} MODULOS</span>
+          <span class="auto-pill" v-if="auto.lastPlan.commanders?.roles">LIDER {{auto.lastPlan.commanders.roles.leader}}</span>
+        </div>
+      </div>
+
+      <div v-if="auto.showModal" class="auto-modal-bg" @click.self="closeAutoModal">
+        <div class="auto-modal">
+          <div class="auto-modal-head">
+            <div>
+              <div class="auto-modal-title">MODO AUTO</div>
+              <div class="auto-modal-sub">
+                Escolha quais IAs vão entrar como comandantes. Se OpenRouter estiver marcado, escolha também o modelo.
+              </div>
+            </div>
+            <button class="auto-close" @click="closeAutoModal" :disabled="auto.running">X</button>
+          </div>
+
+          <div class="fg">
+            <label class="fl">ALVO AUTORIZADO</label>
+            <input class="fi" v-model="auto.domain" placeholder="alvo.autorizado.com"/>
+          </div>
+
+          <div class="fg">
+            <label class="fl">MODO</label>
+            <div class="cchips">
+              <button v-for="m in autoModes" :key="m.v" class="cchip" :class="{act:auto.mode===m.v}" @click="auto.mode=m.v">
+                {{m.l}}
+              </button>
+            </div>
+          </div>
+
+          <div class="fg">
+            <label class="fl">IAS COMANDANTES</label>
+            <div class="auto-grid">
+              <div v-for="c in autoCommanders" :key="c.v" class="auto-choice" :class="{act:auto.commanders.includes(c.v)}" @click="toggleAutoCommander(c.v)">
+                <div class="auto-choice-title">{{c.l}}</div>
+                <div class="auto-choice-desc">{{c.d}}</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="auto.commanders.includes('openrouter')" class="fg">
+            <label class="fl">MODELO OPENROUTER</label>
+            <select class="fi s" v-model="auto.openrouterModel">
+              <option v-for="m in openrouterModels" :key="m" :value="m">{{m}}</option>
+            </select>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px">
+            <label class="auto-choice" :class="{act:auto.includeHexstrike}" @click="auto.includeHexstrike=!auto.includeHexstrike">
+              <div class="auto-choice-title">HexStrike Intelligence</div>
+              <div class="auto-choice-desc">Inclui hexstrike_orchestrator quando disponível.</div>
+            </label>
+            <label class="auto-choice" :class="{act:auto.includeDeepPassive}" @click="auto.includeDeepPassive=!auto.includeDeepPassive">
+              <div class="auto-choice-title">Deep Passive</div>
+              <div class="auto-choice-desc">Adiciona módulos passivos extras no plano.</div>
+            </label>
+          </div>
+
+          <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+            <button class="gr-btn" @click="closeAutoModal" :disabled="auto.running">CANCELAR</button>
+            <button class="gr-btn auto" @click="startAutoRecon" :disabled="auto.running || !auto.domain.trim() || !auto.commanders.length">
+              {{auto.running ? 'EXECUTANDO...' : 'INICIAR AUTO'}}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="auto.events.length" class="auto-events">{{auto.events.join('\n')}}</div>
 
       <!-- INGEST -->
       <div v-if="grTab==='ingest'" class="gr-ingest">
@@ -970,6 +1073,35 @@ setup() {
                 {v:'ctf',l:'CTF'},{v:'personal',l:'PESSOAL'},{v:'general',l:'GERAL'}];
 
   const gr = reactive({dbPath:'',runJson:'',ndjson:'',result:'',analyzeRunId:'',mode:'full',analysis:''});
+  const auto = reactive({
+    showModal:false, running:false, domain:'', mode:'balanced',
+    commanders:['skynet'], openrouterModel:'anthropic/claude-3.7-sonnet',
+    includeHexstrike:true, includeDeepPassive:false,
+    events:[], lastPlan:null, lastEvaluation:null,
+  });
+  const autoModes = [
+    {v:'quick',l:'RAPIDO'},
+    {v:'balanced',l:'BALANCEADO'},
+    {v:'deep',l:'PROFUNDO'},
+  ];
+  const autoCommanders = [
+    {v:'codex',l:'CODEX',d:'Integra modulos, testa e organiza o arsenal.'},
+    {v:'claude_code',l:'CLAUDE CODE',d:'Planejamento profundo, modulo novo e revisao.'},
+    {v:'cursor',l:'CURSOR',d:'Fluxo IDE/human-in-loop com MCP quando disponivel.'},
+    {v:'skynet',l:'SKYNET',d:'IA local privada como lider quando estiver online.'},
+    {v:'local_model',l:'MODELO LOCAL',d:'Fallback offline via LM Studio/Ollama.'},
+    {v:'openrouter',l:'OPENROUTER',d:'Modelos cloud para revisar ou liderar planejamento.'},
+  ];
+  const openrouterModels = [
+    'anthropic/claude-3.7-sonnet',
+    'openai/gpt-4.1',
+    'google/gemini-2.5-pro',
+    'x-ai/grok-4',
+    'deepseek/deepseek-r1',
+    'z-ai/glm-4.5',
+    'qwen/qwen3-coder',
+    'meta-llama/llama-4-maverick',
+  ];
 
   const tf = reactive({topic:'',content:'',cat:'pentest',tags:''});
 
@@ -1255,6 +1387,73 @@ setup() {
     grAnalyzing.value=false;
   };
 
+  const openAutoModal = () => {
+    auto.showModal = true;
+    if (!auto.commanders.length) auto.commanders = ['skynet'];
+  };
+  const closeAutoModal = () => {
+    if (auto.running) return;
+    auto.showModal = false;
+  };
+  const toggleAutoCommander = (id) => {
+    const i = auto.commanders.indexOf(id);
+    if (i >= 0) auto.commanders.splice(i, 1);
+    else auto.commanders.push(id);
+  };
+  const summarizeAutoEvent = (d) => {
+    if (!d || typeof d !== 'object') return '';
+    if (d.type === 'auto_meta') return `auto: request ${d.requestRunId || ''} modo=${d.mode || auto.mode}`;
+    if (d.type === 'auto_providers') return `providers: ${(d.commanders || []).join(', ') || 'fallback local'}`;
+    if (d.type === 'auto_catalog') return `catalogo: ${d.modules?.length || 0} modulos | hex=${d.hexstrike?.installed ? (d.hexstrike.reachable ? 'online' : 'instalado/offline') : 'ausente'}`;
+    if (d.type === 'auto_plan') return `plano: ${d.plan?.modules?.length || 0} modulos | lider=${d.plan?.commanders?.roles?.leader || 'ghostrecon'}`;
+    if (d.type === 'auto_step') return `step ${d.step}: ${d.status}`;
+    if (d.type === 'auto_evaluation') return `avaliacao: findings=${d.evaluation?.findings || 0} high=${d.evaluation?.highSignals || 0} ok=${d.evaluation?.ok}`;
+    if (d.type === 'finding') return `finding: ${d.finding?.type || d.type || '?'} ${d.finding?.value || ''}`.slice(0, 180);
+    if (d.type === 'log') return `log: ${d.msg || d.message || ''}`.slice(0, 180);
+    if (d.type === 'error') return `erro: ${d.message || d.msg || JSON.stringify(d).slice(0, 120)}`;
+    if (d.type === 'done') return 'pipeline: done';
+    return `${d.type || 'evento'}: ${JSON.stringify(d).slice(0, 160)}`;
+  };
+  const startAutoRecon = async () => {
+    if (!auto.domain.trim()) return toast('Informe o alvo autorizado','warn');
+    if (!auto.commanders.length) return toast('Escolha pelo menos uma IA','warn');
+    auto.running = true;
+    auto.showModal = false;
+    auto.events = [];
+    auto.lastPlan = null;
+    auto.lastEvaluation = null;
+    try {
+      const body = {
+        domain: auto.domain.trim(),
+        mode: auto.mode,
+        commanders: [...auto.commanders],
+        openrouterModel: auto.commanders.includes('openrouter') ? auto.openrouterModel : null,
+        includeHexstrike: auto.includeHexstrike,
+        includeDeepPassive: auto.includeDeepPassive,
+      };
+      const res = await fetch(`${API}/ghostrecon/auto/stream`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`);
+      await parseNDJSONStream(res.body.getReader(), (d) => {
+        if (d.type === 'auto_plan') auto.lastPlan = d.plan;
+        if (d.type === 'auto_evaluation') auto.lastEvaluation = d.evaluation;
+        const line = summarizeAutoEvent(d);
+        if (line) auto.events.push(line);
+        if (auto.events.length > 220) auto.events.splice(0, auto.events.length - 220);
+      });
+      toast(`AUTO finalizado: ${auto.lastEvaluation?.findings || 0} findings`);
+      loadRuns(); loadStats();
+    } catch(e) {
+      auto.events.push(`erro: ${String(e.message || e)}`);
+      toast(String(e.message || e),'err');
+    } finally {
+      auto.running = false;
+    }
+  };
+
   // ── Utils ──
   const loadStats = async () => {
     try { const r=await fetch(`${API}/stats`); st.value=await r.json(); } catch {}
@@ -1474,12 +1673,14 @@ setup() {
     cats,tf,bJson,tmsg,terr,twarn,
     allMem,filtMem,memCats,ms,mc,
     runs,selRun,runFindings,runDomain,gr,grAnalyzing,
+    auto,autoModes,autoCommanders,openrouterModels,
     cs,csModes,asmModes,
     chatArea,bottom,iel,
     send,stopStr,fbGood,fbBad,
     saveSess,loadSess,newSess,delSess,
     loadAllMem,filterMem,delMem,teach,batchTeach,
     loadRuns,selectRun,ingestSQLite,ingestRun,ingestNDJSON,analyzeRun,
+    openAutoModal,closeAutoModal,toggleAutoCommander,startAutoRecon,
     exportMem,clearChat,setInput,ar,render,
     scanRepo,stopScan,scanSnippet,submitSnippet,submitDisasm,
     mi,installModels,

@@ -3,6 +3,7 @@ import { registerNewApiRoutes } from '../modules/api-extensions.js';
 import { registerGhostDeskRoutes } from '../modules/ghostdesk.mjs';
 import { registerSetupRoutes } from '../routes/setup.mjs';
 import { registerReconStreamRoutes } from '../routes/recon-stream.mjs';
+import { registerAutoReconRoutes } from '../routes/auto-recon.mjs';
 import { registerProxyTunnelRoutes } from '../routes/proxy-tunnel.mjs';
 import { registerMiscRoutes } from '../routes/misc.mjs';
 import { registerCapabilitiesRoutes } from '../routes/capabilities.mjs';
@@ -46,6 +47,12 @@ export function registerAllRoutes(app, deps) {
     allowReconRequest,
     ROOT,
     httpHistory,
+  });
+  registerAutoReconRoutes(app, {
+    runPipeline,
+    validateCsrfToken,
+    allowReconRequest,
+    ROOT,
   });
 
   registerProxyTunnelRoutes(app, { validateCsrfToken, ghostProxy, ROOT });

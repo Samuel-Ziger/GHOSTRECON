@@ -111,6 +111,7 @@ import {
   snapshotTelemetry as torSnapshotTelemetry,
 } from '../../modules/tor-strict.js';
 import { newnym as torNewnym } from '../../modules/tor-control.js';
+import { dispatchRegistryModule } from '../dispatcher.mjs';
 
 import path from 'path';
 import { ROOT, firstIpv4FromDnsRecords, sleep } from '../pipeline-shared.mjs';
@@ -516,6 +517,8 @@ export async function runValidationPhase(s) {
       }
       pipe('cred_spray', 'done');
     }
+
+    await dispatchRegistryModule(s, 'hexstrike_orchestrator');
 
 
 }

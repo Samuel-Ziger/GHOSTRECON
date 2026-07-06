@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "hexstrike-ai": {
+      "command": "python",
+      "args": [
+        "C:\\Users\\Ziger\\Documents\\GHOSTRECON\\IAs\\hexstrike-ai\\hexstrike_mcp.py",
+        "--server",
+        "http://127.0.0.1:8888"
+      ],
+      "description": "HexStrike AI local MCP for authorized GHOSTRECON workflows",
+      "timeout": 300,
+      "disabled": false
+    }
+  }
+}

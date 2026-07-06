@@ -13,6 +13,7 @@ import { runWebSocketRecon } from './websocket-recon.mjs';
 import { auditHppParamPollution } from './hpp-param-pollution.mjs';
 import { runDomClobberingAudit } from './dom-clobbering-audit.mjs';
 import { runEmailSecurityDeep } from './email-security-deep.mjs';
+import { runHexstrikeOrchestrator } from './hexstrike-orchestrator.mjs';
 import { rankSecretFindings } from './secrets-context-ranker.mjs';
 import { getRunById, listRuns } from './db.js';
 
@@ -200,6 +201,16 @@ export const moduleRunners = {
         : 'Email security deep: sem achados relevantes',
       logLevel: emailFindings.length ? 'warn' : 'info',
     };
+  },
+
+  async hexstrike_orchestrator(s) {
+    return runHexstrikeOrchestrator({
+      target: s.domain,
+      domain: s.domain,
+      objective: process.env.GHOSTRECON_HEXSTRIKE_OBJECTIVE || 'comprehensive',
+      timeoutMs: Number(process.env.GHOSTRECON_HEXSTRIKE_TIMEOUT_MS || 60_000),
+      log: s.log,
+    });
   },
 
   async secrets_context_ranker(s) {

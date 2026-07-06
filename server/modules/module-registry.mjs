@@ -4,6 +4,7 @@ import { moduleManifest as csrfFlowAudit } from './csrf-flow-audit.mjs';
 import { moduleManifest as domClobberingAudit } from './dom-clobbering-audit.mjs';
 import { moduleManifest as emailSecurityDeep } from './email-security-deep.mjs';
 import { moduleManifest as hppParamPollution } from './hpp-param-pollution.mjs';
+import { moduleManifest as hexstrikeOrchestrator } from './hexstrike-orchestrator.mjs';
 import { moduleManifest as http3QuicSurface } from './http3-quic-surface.mjs';
 import { moduleManifest as jwtJwksAudit } from './jwt-jwks-audit.mjs';
 import { moduleManifest as nginxHttp3Cve202642530 } from './nginx-http3-cve-2026-42530.mjs';
@@ -29,6 +30,7 @@ export const moduleManifests = [
   apiContractDiff,
   websocketRecon,
   hppParamPollution,
+  hexstrikeOrchestrator,
   domClobberingAudit,
   emailSecurityDeep,
   secretsContextRanker,

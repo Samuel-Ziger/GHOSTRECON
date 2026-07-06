@@ -2,6 +2,7 @@ import { getKaliCapabilities } from '../modules/kali-scan.js';
 import { aiKeysConfigured } from '../modules/ai-dual-report.js';
 import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
 import { getPentestGptCapabilities } from '../modules/pentestgpt-capabilities.js';
+import { getHexstrikeCapabilities } from '../modules/hexstrike-capabilities.mjs';
 import { listModuleManifests } from '../modules/module-registry.mjs';
 import { listExternalToolPacks } from '../modules/external-tools/catalog.mjs';
 import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs';
@@ -30,6 +31,23 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
           http: { configured: false, preview: '' },
         };
       }
+      let hexstrike = null;
+      try {
+        hexstrike = await getHexstrikeCapabilities({ ghostRoot: ROOT });
+      } catch (e) {
+        hexstrike = {
+          ok: false,
+          installed: false,
+          reachable: false,
+          home: '',
+          baseUrl: '',
+          checks: {},
+          message: e?.message || String(e),
+          http: { configured: false, telemetry: false, healthDeepEnabled: false, health: null },
+          mcp: { installed: false, commandHint: '' },
+          prepHints: {},
+        };
+      }
       let vigolium = null;
       try {
         vigolium = await getVigoliumCapabilities({ ghostRoot: ROOT });
@@ -44,6 +62,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         externalTools: listExternalToolPacks(),
         shannon,
         pentestgpt,
+        hexstrike,
         vigolium,
       });
     } catch (e) {
@@ -57,6 +76,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         externalTools: listExternalToolPacks(),
         shannon: null,
         pentestgpt: null,
+        hexstrike: null,
         vigolium: null,
       });
     }

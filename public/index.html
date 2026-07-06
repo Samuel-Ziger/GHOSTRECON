@@ -469,6 +469,158 @@
     animation: btnPulse 1s ease-in-out infinite;
   }
 
+  .auto-run-btn {
+    border-color: var(--accent2);
+    color: var(--accent2);
+  }
+
+  .auto-run-btn::before {
+    background: linear-gradient(90deg, transparent, rgba(0,255,136,0.16), transparent);
+  }
+
+  .auto-run-btn:hover {
+    background: rgba(0,255,136,0.08);
+    box-shadow: 0 0 18px rgba(0,255,136,0.22);
+  }
+
+  .auto-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9500;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(0,0,0,0.72);
+    backdrop-filter: blur(8px);
+  }
+
+  .auto-modal {
+    width: min(780px, 100%);
+    max-height: min(86vh, 820px);
+    overflow: auto;
+    border: 1px solid var(--accent2);
+    background: var(--bg);
+    box-shadow: 0 0 34px rgba(0,255,136,0.16);
+  }
+
+  .auto-modal-head,
+  .auto-modal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .auto-modal-foot {
+    border-top: 1px solid var(--border);
+    border-bottom: 0;
+  }
+
+  .auto-modal-title {
+    font-family: var(--display);
+    font-size: 14px;
+    color: var(--accent2);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .auto-modal-body {
+    padding: 16px;
+    display: grid;
+    gap: 14px;
+  }
+
+  .auto-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 10px;
+  }
+
+  .auto-choice {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    cursor: pointer;
+    min-height: 74px;
+  }
+
+  .auto-choice input {
+    margin-top: 2px;
+  }
+
+  .auto-choice strong {
+    display: block;
+    font-family: var(--display);
+    font-size: 11px;
+    color: var(--text-bright);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .auto-choice span {
+    display: block;
+    margin-top: 4px;
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--text-dim);
+  }
+
+  .auto-field {
+    display: grid;
+    gap: 6px;
+  }
+
+  .auto-field label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  .auto-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .auto-secondary-btn,
+  .auto-primary-btn {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text);
+    font-family: var(--display);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .auto-primary-btn {
+    border-color: var(--accent2);
+    color: var(--accent2);
+  }
+
+  .auto-primary-btn:disabled,
+  .auto-secondary-btn:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  .auto-hint {
+    margin: 0;
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.45;
+  }
+
   .mitre-map-btn {
     width: 100%;
     min-height: 54px;
@@ -3154,9 +3306,74 @@
         <div class="progress-detail" id="progressDetail">Aguardando inicio.</div>
       </div>
 
+      <div class="auto-modal-backdrop" id="autoModeModal" role="dialog" aria-modal="true" aria-labelledby="autoModeTitle">
+        <div class="auto-modal">
+          <div class="auto-modal-head">
+            <div>
+              <div class="auto-modal-title" id="autoModeTitle">Modo Auto</div>
+              <p class="auto-hint">Escolha as IAs comandantes. Se houver so uma, ela faz tudo; se houver varias, o backend divide os papeis.</p>
+            </div>
+            <button type="button" class="auto-secondary-btn" onclick="closeAutoModeModal()">Fechar</button>
+          </div>
+          <div class="auto-modal-body">
+            <div class="auto-field">
+              <label for="autoTargetInput">Target</label>
+              <input id="autoTargetInput" class="domain-input" type="text" placeholder="exemplo.com ou https://alvo" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="auto-grid">
+              <div class="auto-field">
+                <label for="autoModeSelect">Perfil</label>
+                <select id="autoModeSelect" class="domain-input">
+                  <option value="quick">quick</option>
+                  <option value="balanced" selected>balanced</option>
+                  <option value="deep">deep</option>
+                </select>
+              </div>
+              <div class="auto-field">
+                <label for="autoOpenrouterModelSelect">OpenRouter model</label>
+                <select id="autoOpenrouterModelSelect" class="domain-input">
+                  <option value="anthropic/claude-3.7-sonnet">anthropic/claude-3.7-sonnet</option>
+                  <option value="openai/gpt-4.1">openai/gpt-4.1</option>
+                  <option value="google/gemini-2.5-pro">google/gemini-2.5-pro</option>
+                  <option value="x-ai/grok-4">x-ai/grok-4</option>
+                  <option value="deepseek/deepseek-r1">deepseek/deepseek-r1</option>
+                  <option value="z-ai/glm-4.5">z-ai/glm-4.5</option>
+                  <option value="qwen/qwen3-coder">qwen/qwen3-coder</option>
+                  <option value="meta-llama/llama-4-maverick">meta-llama/llama-4-maverick</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="auto-grid" id="autoCommanderGrid">
+              <label class="auto-choice"><input type="checkbox" class="auto-commander" value="codex"><div><strong>Codex</strong><span>Planeja, decide modulo novo e coordena o arsenal.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" class="auto-commander" value="claude_code"><div><strong>Claude Code</strong><span>Implementa modulo novo e refina codigo.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" class="auto-commander" value="cursor"><div><strong>Cursor</strong><span>Apoio de edicao, revisao e iteracao no workspace.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" class="auto-commander" value="openrouter"><div><strong>OpenRouter</strong><span>Modelo escolhido compete/revisa decisoes e modulos.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" class="auto-commander" value="skynet"><div><strong>Skynet</strong><span>IA local futura; entra como comandante quando existir runner.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" class="auto-commander" value="local_model"><div><strong>Modelo local</strong><span>Fallback local, ex.: GLM, LM Studio ou runner offline.</span></div></label>
+            </div>
+
+            <div class="auto-grid">
+              <label class="auto-choice"><input type="checkbox" id="autoHexstrikeToggle" checked><div><strong>HexStrike</strong><span>Permite usar capacidades e MCP/bridge HexStrike no plano.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoDeepPassiveToggle" checked><div><strong>Deep passive</strong><span>Inclui catalogo passivo profundo antes de sugerir ativo.</span></div></label>
+            </div>
+
+            <p class="auto-hint" id="autoModeStatus">Pronto para iniciar o agente automatico local.</p>
+          </div>
+          <div class="auto-modal-foot">
+            <p class="auto-hint">Este modo chama /api/recon/auto/stream e registra plano, revisao e eventos no terminal.</p>
+            <div class="auto-actions">
+              <button type="button" class="auto-secondary-btn" onclick="closeAutoModeModal()">Cancelar</button>
+              <button type="button" class="auto-primary-btn" id="autoStartBtn" onclick="startAutoModeRecon()">Iniciar Auto</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="hub-actions-wrap">
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         <button class="run-btn" id="runBtn" onclick="startRecon()">▶ RUN RECON</button>
+        <button class="run-btn auto-run-btn" id="autoRunBtn" type="button" onclick="openAutoModeModal()">AUTO MODE</button>
         <button
           type="button"
           class="mitre-map-btn"
@@ -4838,8 +5055,213 @@ async function ensureCsrfToken(force = false) {
   return csrfToken;
 }
 
+function selectedAutoCommanders() {
+  return [...document.querySelectorAll('.auto-commander:checked')]
+    .map((x) => String(x.value || '').trim())
+    .filter(Boolean);
+}
+
+function syncAutoOpenrouterUi() {
+  const hasOpenrouter = selectedAutoCommanders().includes('openrouter');
+  const sel = document.getElementById('autoOpenrouterModelSelect');
+  if (sel) {
+    sel.disabled = !hasOpenrouter;
+    sel.style.opacity = hasOpenrouter ? '1' : '0.55';
+  }
+}
+
+function openAutoModeModal() {
+  const modal = document.getElementById('autoModeModal');
+  const target = document.getElementById('autoTargetInput');
+  const mainTarget = document.getElementById('domainInput')?.value || '';
+  if (target && !target.value.trim()) target.value = mainTarget.trim();
+  const profile = getReconProfile();
+  const mode = document.getElementById('autoModeSelect');
+  if (mode) mode.value = profile === 'deep' ? 'deep' : profile === 'quick' ? 'quick' : 'balanced';
+  const status = document.getElementById('autoModeStatus');
+  if (status) status.textContent = 'Escolha uma ou mais IAs comandantes para iniciar.';
+  syncAutoOpenrouterUi();
+  if (modal) modal.style.display = 'flex';
+  setTimeout(() => target?.focus(), 0);
+}
+
+function closeAutoModeModal() {
+  const modal = document.getElementById('autoModeModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function summarizeAutoEvent(ev) {
+  if (!ev || typeof ev !== 'object') return null;
+  if (ev.type === 'auto_meta') {
+    const commanders = Array.isArray(ev.commanders) && ev.commanders.length ? ev.commanders.join(', ') : 'ghostrecon';
+    return { msg: `AUTO: sessao ${ev.requestRunId || '?'} | modo ${ev.mode || 'balanced'} | comandantes: ${commanders}`, level: 'section' };
+  }
+  if (ev.type === 'auto_providers') {
+    const providers = Array.isArray(ev.providers) ? ev.providers : [];
+    const ready = providers
+      .filter((p) => p.selected || p.configured || p.reachable || p.installed)
+      .map((p) => `${p.id}${p.selected ? '*' : ''}`);
+    return { msg: `AUTO providers: ${ready.join(', ') || 'nenhum detectado'}`, level: ready.length ? 'info' : 'warn' };
+  }
+  if (ev.type === 'auto_catalog') {
+    const count = Array.isArray(ev.modules) ? ev.modules.length : 0;
+    const hx = ev.hexstrike
+      ? ` | HexStrike instalado=${ev.hexstrike.installed ? 'sim' : 'nao'} online=${ev.hexstrike.reachable ? 'sim' : 'nao'}`
+      : '';
+    return { msg: `AUTO catalogo: ${count} modulo(s) disponiveis${hx}`, level: 'info' };
+  }
+  if (ev.type === 'auto_plan' && ev.plan) {
+    window.__ghostreconLastAutoPlan = ev.plan;
+    const roles = ev.plan.commanders?.roles || {};
+    const modules = Array.isArray(ev.plan.modules) ? ev.plan.modules : [];
+    return {
+      msg: `AUTO plano: lider=${roles.leader || '-'} implementa=${roles.implementer || '-'} revisa=${roles.reviewer || '-'} | modulos=${modules.join(', ') || '(nenhum)'}`,
+      level: 'success',
+    };
+  }
+  if (ev.type === 'auto_step') {
+    const level = ev.status === 'blocked' ? 'warn' : ev.status === 'done' ? 'success' : 'info';
+    return { msg: `AUTO etapa ${ev.step || '?'}: ${ev.status || '?'}`, level };
+  }
+  if (ev.type === 'auto_evaluation' && ev.evaluation) {
+    window.__ghostreconLastAutoEvaluation = ev.evaluation;
+    return {
+      msg: `AUTO avaliacao: ok=${ev.evaluation.ok ? 'sim' : 'nao'} | findings=${ev.evaluation.findings || 0} | high=${ev.evaluation.highSignals || 0} | next=${ev.evaluation.next || '-'}`,
+      level: ev.evaluation.ok ? 'success' : 'warn',
+    };
+  }
+  return null;
+}
+
+async function startAutoModeRecon() {
+  if (isRunning) return;
+
+  const targetEl = document.getElementById('autoTargetInput');
+  const target = (targetEl?.value || document.getElementById('domainInput')?.value || '').trim();
+  const key = ghostreconNormalizeTargetKey(target);
+  if (!target || !key) {
+    const msg = 'AUTO: alvo invalido. Use dominio, URL http(s) ou IP.';
+    const st = document.getElementById('autoModeStatus');
+    if (st) st.textContent = msg;
+    addLog(msg, 'error');
+    return;
+  }
+
+  const commanders = selectedAutoCommanders();
+  if (!commanders.length) {
+    const msg = 'AUTO: selecione pelo menos uma IA comandante.';
+    const st = document.getElementById('autoModeStatus');
+    if (st) st.textContent = msg;
+    addLog(msg, 'warn');
+    return;
+  }
+
+  const autoBtn = document.getElementById('autoRunBtn');
+  const startBtn = document.getElementById('autoStartBtn');
+  const runBtn = document.getElementById('runBtn');
+  const status = document.getElementById('autoModeStatus');
+  const previousAutoText = autoBtn?.textContent || 'AUTO MODE';
+
+  isRunning = true;
+  logStarted = false;
+  findings = [];
+  targetDomain = target;
+  lastPipelineBundle = null;
+  window.__lastReconCoverage = null;
+  document.getElementById('domainInput').value = target;
+  document.getElementById('findingsList').innerHTML = '';
+  Object.keys(stats).forEach((k) => {
+    stats[k] = 0;
+    updateStat(k, 0);
+  });
+  const fsIn = document.getElementById('findingsSearchInput');
+  if (fsIn) fsIn.value = '';
+  findingsSearchQuery = '';
+  syncFindingsSearchChipsUi();
+  document.getElementById('findCount').textContent = '0 de 0 achados';
+  resetPipelineVisual();
+  document.getElementById('progressWrap').style.display = 'block';
+  runStartedAtMs = performance.now();
+  currentPipeName = 'input';
+  currentPipeDetail = 'auto';
+  updateProgressDetail();
+  document.getElementById('statusText').textContent = 'AUTO ATIVO';
+  if (autoBtn) {
+    autoBtn.textContent = 'AUTO RODANDO...';
+    autoBtn.classList.add('running');
+  }
+  if (runBtn) runBtn.disabled = true;
+  if (startBtn) startBtn.disabled = true;
+  if (status) status.textContent = 'Modo Auto em execucao...';
+  closeAutoModeModal();
+
+  const finish = (ok, msg = '') => {
+    closeMitreLive();
+    if (autoBtn) {
+      autoBtn.textContent = previousAutoText;
+      autoBtn.classList.remove('running');
+    }
+    if (runBtn) runBtn.disabled = false;
+    if (startBtn) startBtn.disabled = false;
+    document.getElementById('statusText').textContent = ok ? 'AUTO COMPLETO' : 'ERRO';
+    currentPipeDetail = ok ? 'auto concluido' : 'auto erro';
+    updateProgressDetail();
+    isRunning = false;
+    if (msg) addLog(msg, ok ? 'success' : 'error');
+  };
+
+  try {
+    addLog(`AUTO: iniciando agente para ${target}`, 'section');
+    addLog(`AUTO comandantes: ${commanders.join(', ')}`, 'info');
+    const token = await ensureCsrfToken();
+    const authConfig = getOptionalAuthConfig();
+    const fetchHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
+    if (authConfig?.ghostreconApiKey) {
+      fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+    }
+    const body = {
+      domain: target,
+      mode: document.getElementById('autoModeSelect')?.value || 'balanced',
+      commanders,
+      includeHexstrike: document.getElementById('autoHexstrikeToggle')?.checked !== false,
+      includeDeepPassive: document.getElementById('autoDeepPassiveToggle')?.checked !== false,
+      auth: authConfig,
+    };
+    if (commanders.includes('openrouter')) {
+      body.openrouterModel = document.getElementById('autoOpenrouterModelSelect')?.value || '';
+    }
+
+    const res = await fetch(apiUrl('/api/recon/auto/stream'), {
+      method: 'POST',
+      headers: fetchHeaders,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      finish(false, `AUTO: HTTP ${res.status} - confira se o servidor esta rodando e autenticado.`);
+      return;
+    }
+    const ok = await consumeReconStreamFromResponse(res, 0, null, null);
+    finish(ok, ok ? 'AUTO: execucao concluida.' : 'AUTO: pipeline terminou com erro.');
+  } catch (e) {
+    finish(false, `AUTO: ${e?.message || e}`);
+  }
+}
+
 // ─── PIPELINE CONTROL ────────────────────────────────────
 /** Nomes emitidos pelo servidor → nó visual na barra */
+document.addEventListener('change', (e) => {
+  if (e.target?.classList?.contains('auto-commander')) syncAutoOpenrouterUi();
+});
+
+document.addEventListener('click', (e) => {
+  const modal = document.getElementById('autoModeModal');
+  if (modal && e.target === modal) closeAutoModeModal();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeAutoModeModal();
+});
+
 const PIPE_UI_ALIASES = {
   vigolium_engine: 'vigolium_dast',
 };
@@ -6450,6 +6872,9 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       if (!line) continue;
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
+
+      const autoSummary = summarizeAutoEvent(ev);
+      if (autoSummary) addLog(autoSummary.msg, autoSummary.level || 'info');
 
       if (ev.type === 'shannon_cli' && ev.line != null) addLogShannonCliLine(ev.line);
       if (ev.type === 'log') addLog(ev.msg, ev.level || 'info');
