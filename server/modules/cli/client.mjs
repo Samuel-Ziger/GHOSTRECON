@@ -110,6 +110,31 @@ export class GhostClient {
     return { spawned: true, child };
   }
 
+  async health() {
+    return this.getJson('/api/health', { timeoutMs: 5000 });
+  }
+
+  async getJson(pathname, { timeoutMs = 10_000, auth = true } = {}) {
+    const res = await this._fetch(pathname, { timeoutMs, auth });
+    if (!res.ok) throw new Error(`${pathname} HTTP ${res.statusCode}: ${res.body.slice(0, 400)}`);
+    return JSON.parse(res.body || '{}');
+  }
+
+  async capabilities() {
+    return this.getJson('/api/capabilities', { timeoutMs: 30_000, auth: true });
+  }
+
+  async listPlaybooks() {
+    const body = await this.getJson('/api/playbooks', { timeoutMs: 10_000, auth: true });
+    return Array.isArray(body?.playbooks) ? body.playbooks : [];
+  }
+
+  async getIntel(target) {
+    const clean = String(target || '').trim();
+    if (!clean) throw new Error('target vazio');
+    return this.getJson(`/api/intel/${encodeURIComponent(clean)}`, { timeoutMs: 20_000, auth: true });
+  }
+
   async _waitForHealth(totalMs) {
     const start = Date.now();
     while (Date.now() - start < totalMs) {
@@ -159,8 +184,16 @@ export class GhostClient {
    * Returns { lines, lastEvent, elapsedMs }.
    */
   async streamRecon(body, onEvent, { timeoutMs = 1_800_000 } = {}) {
+    return this._streamNdjson('/api/recon/stream', body, onEvent, { timeoutMs });
+  }
+
+  async streamAutoRecon(body, onEvent, { timeoutMs = 1_800_000 } = {}) {
+    return this._streamNdjson('/api/recon/auto/stream', body, onEvent, { timeoutMs });
+  }
+
+  async _streamNdjson(pathname, body, onEvent, { timeoutMs = 1_800_000 } = {}) {
     const csrf = await this.getCsrfToken();
-    const url = new URL(`${this.baseUrl}/api/recon/stream`);
+    const url = new URL(`${this.baseUrl}${pathname}`);
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
 
     return new Promise((resolve, reject) => {

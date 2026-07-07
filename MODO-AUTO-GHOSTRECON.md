@@ -10,6 +10,36 @@ Criar um modo `auto` onde o operador escolhe uma ou mais IAs comandantes. A IA e
 
 O GHOSTRECON continua sendo o orquestrador local, dono de OPSEC, escopo, logs, pipeline, findings, persistencia e validacao. As IAs sao os comandantes/analistas. HexStrike, Kali, Vigolium e os modulos GHOSTRECON sao as ferramentas operacionais.
 
+## Memoria RAG em Markdown
+
+O Modo Auto deve manter uma memoria local em Markdown para reduzir repeticao de contexto entre IAs e permitir leitura humana no Obsidian.
+
+Local padrao:
+
+```text
+data/auto-rag/
+  README.md
+  decisions/
+    2026-...-target-plan-auto-....md
+    2026-...-target-evaluation-auto-....md
+```
+
+Cada decisao relevante gera um novo `.md` com frontmatter, target, requestRunId, comandantes, modulos, plano, avaliacao e estatisticas de eventos. O planner carrega memorias recentes e injeta resumo em `plan.memory`.
+
+Variaveis:
+
+```bash
+GHOSTRECON_AUTO_RAG_ENABLED=1
+GHOSTRECON_AUTO_RAG_DIR=data/auto-rag
+```
+
+MCP relacionado:
+
+- `ghostrecon_auto_rag_list`
+- `ghostrecon_auto_rag_read`
+- `ghostrecon://auto-rag/index`
+- `ghostrecon://auto-rag/decisions/{file.md}`
+
 ## Principio central
 
 Separar claramente:
@@ -1074,7 +1104,7 @@ Implementado em 2026-07-05:
 - `server/auto-agent/tool-catalog.mjs`: monta catalogo inicial de modulos GHOSTRECON + HexStrike intelligence.
 - `server/auto-agent/planner.mjs`: cria plano conservador, sem modulos intrusivos por padrao.
 - `server/auto-agent/orchestrator.mjs`: executa `observe -> plan -> act -> evaluate` chamando `runPipeline`.
-- `server/routes/auto-recon.mjs`: expõe `POST /api/recon/auto/stream` em NDJSON.
+- `server/routes/auto-recon.mjs`: expoe `POST /api/recon/auto/stream` em NDJSON.
 - `.env.example`: adiciona variaveis de Modo Auto / HexStrike.
 
 ### Fase 2 - Equipe de comandantes

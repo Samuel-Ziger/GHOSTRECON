@@ -1,13 +1,27 @@
 {
   "mcpServers": {
+    "ghostrecon": {
+      "command": "node",
+      "args": [
+        "mcp/ghostrecon-mcp.mjs"
+      ],
+      "env": {
+        "GHOSTRECON_URL": "http://127.0.0.1:3847",
+        "GHOSTRECON_MCP_AUTOSTART": "1",
+        "GHOSTRECON_MCP_MAX_TEXT_CHARS": "120000"
+      },
+      "description": "GHOSTRECON local MCP: recon, Auto Mode, runs, intel, capabilities and OPSEC-aware orchestration",
+      "timeout": 600,
+      "disabled": false
+    },
     "hexstrike-ai": {
       "command": "python",
       "args": [
-        "C:\\Users\\Ziger\\Documents\\GHOSTRECON\\IAs\\hexstrike-ai\\hexstrike_mcp.py",
+        "IAs/hexstrike-ai/hexstrike_mcp.py",
         "--server",
         "http://127.0.0.1:8888"
       ],
-      "description": "HexStrike AI local MCP for authorized GHOSTRECON workflows",
+      "description": "HexStrike AI local MCP for authorized offensive tooling",
       "timeout": 300,
       "disabled": false
     }

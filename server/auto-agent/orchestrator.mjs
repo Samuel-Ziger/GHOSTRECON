@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { detectAutoProviders } from './provider-detector.mjs';
 import { buildAutoToolCatalog } from './tool-catalog.mjs';
 import { createAutoPlan, evaluateAutoRun } from './planner.mjs';
+import { loadAutoRagContext, writeAutoDecisionMarkdown } from './rag-memory.mjs';
 import { expandIntrusiveRunModules, gateModules } from '../modules/opsec.mjs';
 
 function sendSafe(emit, obj) {
@@ -54,6 +55,18 @@ export async function runAutoRecon({
   };
 
   captureEmit({ type: 'auto_meta', requestRunId, mode: req.mode, commanders: req.commanders });
+  const ragContext = await loadAutoRagContext({ root: ROOT, env }).catch((e) => ({
+    dir: '',
+    items: [],
+    error: e?.message || String(e),
+  }));
+  captureEmit({
+    type: 'auto_rag',
+    phase: 'loaded',
+    dir: ragContext.dir || '',
+    items: Array.isArray(ragContext.items) ? ragContext.items.length : 0,
+    error: ragContext.error || null,
+  });
   const providers = await detectAutoProviders({ selected: req.commanders, env, fetchImpl, execFileImpl });
   captureEmit({ type: 'auto_providers', ...providers });
 
@@ -81,8 +94,31 @@ export async function runAutoRecon({
     openrouterModel: req.openrouterModel,
     includeHexstrike: req.includeHexstrike,
     includeDeepPassive: req.includeDeepPassive,
+    ragContext,
   });
   captureEmit({ type: 'auto_plan', plan });
+  const planMemory = await writeAutoDecisionMarkdown({
+    root: ROOT,
+    env,
+    requestRunId,
+    target: req.target,
+    kind: 'plan',
+    title: `Auto plan - ${req.target}`,
+    summary: 'Modo Auto selected commanders, modules and execution policy before running the pipeline.',
+    plan,
+    providers,
+    catalog: {
+      modules: catalog.modules.map((m) => ({ id: m.id, source: m.source, class: m.class, available: m.available !== false })),
+      hexstrike: catalog.hexstrike ? {
+        installed: Boolean(catalog.hexstrike.installed),
+        reachable: Boolean(catalog.hexstrike.reachable),
+        baseUrl: catalog.hexstrike.baseUrl || null,
+      } : null,
+    },
+    events,
+    tags: ['plan', req.mode],
+  }).catch((e) => ({ error: e?.message || String(e) }));
+  captureEmit({ type: 'auto_rag', phase: 'plan_saved', memory: planMemory });
 
   const pipelineBody = {
     ...body,
@@ -116,5 +152,20 @@ export async function runAutoRecon({
 
   const evaluation = evaluateAutoRun({ events, plan });
   captureEmit({ type: 'auto_evaluation', evaluation });
+  const evalMemory = await writeAutoDecisionMarkdown({
+    root: ROOT,
+    env,
+    requestRunId,
+    target: req.target,
+    kind: 'evaluation',
+    title: `Auto evaluation - ${req.target}`,
+    summary: 'Modo Auto evaluation after running the GHOSTRECON pipeline.',
+    plan,
+    evaluation,
+    providers,
+    events,
+    tags: ['evaluation', evaluation.ok ? 'ok' : 'error'],
+  }).catch((e) => ({ error: e?.message || String(e) }));
+  captureEmit({ type: 'auto_rag', phase: 'evaluation_saved', memory: evalMemory });
   return { requestRunId, plan, evaluation, events };
 }

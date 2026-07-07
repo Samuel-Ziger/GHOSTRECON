@@ -31,6 +31,7 @@ O repositorio esta organizado como uma stack local completa:
 - [URLs Locais](#urls-locais)
 - [Como Usar Na UI](#como-usar-na-ui)
 - [Modo Auto](#modo-auto)
+- [MCP Para Cursor](#mcp-para-cursor)
 - [HexStrike](#hexstrike)
 - [Arquitetura](#arquitetura)
 - [Estrutura Do Repositorio](#estrutura-do-repositorio)
@@ -188,6 +189,88 @@ O documento detalhado da visao, papeis por combinacao de IA e fases futuras fica
 MODO-AUTO-GHOSTRECON.md
 ```
 
+## MCP Para Cursor
+
+O projeto agora inclui um servidor MCP local do GHOSTRECON em:
+
+```text
+mcp/ghostrecon-mcp.mjs
+```
+
+A configuracao do Cursor fica em:
+
+```text
+.cursor/mcp.json
+```
+
+Ela registra dois MCPs:
+
+- `ghostrecon`: orquestrador local que chama a API `http://127.0.0.1:3847`.
+- `hexstrike-ai`: MCP externo do HexStrike, apontando para `IAs/hexstrike-ai/hexstrike_mcp.py` e servidor `http://127.0.0.1:8888`.
+
+Tools expostas pelo MCP do GHOSTRECON:
+
+- `ghostrecon_health`
+- `ghostrecon_capabilities`
+- `ghostrecon_list_modules`
+- `ghostrecon_list_playbooks`
+- `ghostrecon_plan_recon`
+- `ghostrecon_run_recon`
+- `ghostrecon_plan_auto`
+- `ghostrecon_run_auto`
+- `ghostrecon_list_runs`
+- `ghostrecon_get_run`
+- `ghostrecon_diff_runs`
+- `ghostrecon_get_intel`
+- `ghostrecon_hexstrike_status`
+- `ghostrecon_hexstrike_intel`
+- `ghostrecon_auto_rag_list`
+- `ghostrecon_auto_rag_read`
+
+O MCP usa stdio e fala com a API do GHOSTRECON via HTTP, reaproveitando `server/modules/cli/client.mjs` para CSRF, auth e NDJSON. Por padrao no Cursor, `GHOSTRECON_MCP_AUTOSTART=1` tenta iniciar a API se ela nao estiver online. Para ambientes mais controlados, defina esse valor como `0` e rode `npm run start:minimal` antes de usar o Agent.
+
+Resources expostos:
+
+- `ghostrecon://capabilities`
+- `ghostrecon://playbooks`
+- `ghostrecon://runs/latest`
+- `ghostrecon://runs/{id}`
+- `ghostrecon://intel/{target}`
+- `ghostrecon://auto-rag/index`
+- `ghostrecon://auto-rag/decisions/{file.md}`
+
+Prompts expostos:
+
+- `ghostrecon-plan-recon`
+- `ghostrecon-triage-findings`
+- `ghostrecon-report-draft`
+- `ghostrecon-auto-gap-analysis`
+
+Por seguranca, `ghostrecon_run_recon` chama o mesmo guard OPSEC usado pelo backend antes de executar. Se houver modulo intrusivo, a tool retorna erro com o plano e exige `confirmActive=true`.
+
+### Auto RAG Em Markdown
+
+O Modo Auto grava decisoes em Markdown em:
+
+```text
+data/auto-rag/decisions/
+```
+
+Tambem gera um indice:
+
+```text
+data/auto-rag/README.md
+```
+
+Essa pasta pode ser aberta no Obsidian. Cada nova decisao/plano/avaliacao do Modo Auto vira um `.md` com frontmatter, modulos selecionados, papeis dos comandantes, estatisticas da run e JSON do plano/avaliacao. O proximo plano do Modo Auto carrega um resumo das memorias recentes e inclui esse contexto em `plan.memory`, reduzindo repeticao de contexto para as IAs.
+
+Variaveis:
+
+```bash
+GHOSTRECON_AUTO_RAG_ENABLED=1
+GHOSTRECON_AUTO_RAG_DIR=data/auto-rag
+```
+
 ## HexStrike
 
 A pasta `IAs/hexstrike-ai` contem o HexStrike AI MCP. O GHOSTRECON integra HexStrike de forma conservadora nesta fase:
@@ -267,7 +350,7 @@ Principais camadas:
 - `server/routes/`: endpoints HTTP.
 - `server/pipeline/run-pipeline.mjs`: entrada do pipeline.
 - `server/pipeline/phases/`: fases do recon.
-- `server/modules/`: modulos, integrações, storage e validadores.
+- `server/modules/`: modulos, integracoes, storage e validadores.
 - `server/modules/module-registry.mjs`: registry de modulos refatorados.
 - `server/auto-agent/`: Modo Auto.
 - `server/integrations/`: clientes externos, como HexStrike.

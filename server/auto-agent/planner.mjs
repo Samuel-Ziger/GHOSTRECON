@@ -48,6 +48,7 @@ export function createAutoPlan({
   openrouterModel = null,
   includeHexstrike = true,
   includeDeepPassive = null,
+  ragContext = null,
 } = {}) {
   const selectedMode = normalizeMode(mode);
   const requested = uniq(requestedModules);
@@ -105,6 +106,17 @@ export function createAutoPlan({
       intrusiveAllowed: false,
       moduleForge: 'disabled_in_phase_1',
       hexstrikeTools: 'intelligence_only',
+    },
+    memory: {
+      ragDir: ragContext?.dir || null,
+      recentDecisionCount: Array.isArray(ragContext?.items) ? ragContext.items.length : 0,
+      recentDecisions: Array.isArray(ragContext?.items)
+        ? ragContext.items.slice(0, 6).map((x) => ({
+          name: x.name,
+          title: x.title,
+          preview: String(x.preview || '').slice(0, 700),
+        }))
+        : [],
     },
   };
 }
