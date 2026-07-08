@@ -66,3 +66,35 @@ Error: connect ECONNREFUSED 127.0.0.1:3847
       at EnvironmentPluginContainer.transform (file:///home/client01/%C3%81rea%20de%20trabalho/Tools/GHOSTRECON/GhostDesk/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:42454:19)
       at async loadAndTransform (file:///home/client01/%C3%81rea%20de%20trabalho/Tools/GHOSTRECON/GhostDesk/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:35845:27)
       at async viteTransformMiddleware (file:///home/client01/%C3%81rea%20de%20trabalho/Tools/GHOSTRECON/GhostDesk/frontend/node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:37369:24)
+
+  VITE v6.4.3  ready in 352 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+
+  VITE v6.4.3  ready in 333 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+
+  VITE v6.4.3  ready in 579 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+
+  VITE v6.4.3  ready in 328 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+
+  VITE v6.4.3  ready in 437 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+
+  VITE v6.4.3  ready in 344 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+
+  VITE v6.4.3  ready in 526 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+
+  VITE v6.4.3  ready in 562 ms
+
+  ➜  Local:   http://127.0.0.1:5173/

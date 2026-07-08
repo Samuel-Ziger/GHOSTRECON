@@ -124,6 +124,13 @@ function evaluateMcpOpsec({ modules = [], profile = 'standard', confirmActive = 
   });
 }
 
+function autoModeToOpsecProfile(mode) {
+  const m = String(mode || 'balanced').toLowerCase();
+  if (m === 'quick') return 'passive';
+  if (m === 'deep') return 'aggressive';
+  return 'standard';
+}
+
 async function buildReconPlan(client, args = {}) {
   const target = String(args.target || '').trim();
   if (!target) throw new Error('target vazio');
@@ -774,7 +781,10 @@ async function callTool(name, args = {}) {
       includeDeepPassive: args.includeDeepPassive !== false,
       ragContext,
     });
-    const opsec = evaluateMcpOpsec({ modules: plan.modules, profile: plan.mode === 'quick' ? 'quick' : 'standard' });
+    const opsec = evaluateMcpOpsec({
+      modules: plan.modules,
+      profile: autoModeToOpsecProfile(plan.mode),
+    });
     return toolResult({
       ok: opsec.ok,
       target,
@@ -833,10 +843,8 @@ async function callTool(name, args = {}) {
 }
 
 function writeMessage(message) {
-  const json = JSON.stringify(message);
-  const payload = Buffer.from(json, 'utf8');
-  process.stdout.write(`Content-Length: ${payload.length}\r\n\r\n`);
-  process.stdout.write(payload);
+  // MCP stdio exige JSON-RPC delimitado por newline no stdout (nao Content-Length).
+  process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 async function handleRequest(message) {

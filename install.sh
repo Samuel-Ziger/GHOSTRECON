@@ -8,6 +8,7 @@ XSS_DIR="$ROOT_DIR/Xss/xss_vibes"
 PROFILE="full"
 INSTALL_SHANNON=1
 INSTALL_PENTESTGPT=1
+INSTALL_HEXSTRIKE=1
 INSTALL_PLAYWRIGHT=1
 INSTALL_DOCKER=1
 INSTALL_SUPABASE=1
@@ -16,6 +17,7 @@ INSTALL_GHOST_LOCAL=1
 CLI_DOCKER=0
 CLI_SHANNON=0
 CLI_PENTESTGPT=0
+CLI_HEXSTRIKE=0
 ASSUME_DEFAULTS=0
 
 log() { printf '[GHOSTRECON] %s\n' "$*"; }
@@ -81,6 +83,17 @@ prompt_optional_installs() {
       log "PentestGPT: pulado por escolha."
     fi
   fi
+
+  local hx_def="y"
+  case "$PROFILE" in minimal) hx_def="n" ;; esac
+  if [ "${CLI_HEXSTRIKE:-0}" -eq 0 ]; then
+    if prompt_yes_no "Preparar HexStrike AI (venv Python + MCP para Cursor)? (perfil: ${PROFILE})" "$hx_def"; then
+      INSTALL_HEXSTRIKE=1
+    else
+      INSTALL_HEXSTRIKE=0
+      log "HexStrike: pulado por escolha."
+    fi
+  fi
 }
 
 usage() {
@@ -97,6 +110,7 @@ Opcoes:
   --skip-ias          Nao clona/prepara Shannon nem PentestGPT (sem perguntar)
   --skip-shannon      Nao prepara Shannon (sem perguntar)
   --skip-pentestgpt   Nao prepara PentestGPT (sem perguntar)
+  --skip-hexstrike    Nao prepara HexStrike AI (venv/MCP)
   --skip-playwright   Nao instala Chromium do Playwright
   --skip-docker       Nao instala Docker (sem perguntar)
   --skip-supabase     Nao instala Supabase CLI global
@@ -114,7 +128,12 @@ EOF
 # Sem TTY: minimal/passive nao puxam IAs por padrao (comportamento classico).
 apply_profile_ia_defaults() {
   case "$PROFILE" in
-    minimal|passive)
+    minimal)
+      [ "${CLI_SHANNON:-0}" -eq 0 ] && INSTALL_SHANNON=0
+      [ "${CLI_PENTESTGPT:-0}" -eq 0 ] && INSTALL_PENTESTGPT=0
+      [ "${CLI_HEXSTRIKE:-0}" -eq 0 ] && INSTALL_HEXSTRIKE=0
+      ;;
+    passive)
       [ "${CLI_SHANNON:-0}" -eq 0 ] && INSTALL_SHANNON=0
       [ "${CLI_PENTESTGPT:-0}" -eq 0 ] && INSTALL_PENTESTGPT=0
       ;;
@@ -453,6 +472,103 @@ prepare_pentestgpt() {
   fi
 }
 
+hexstrike_venv_python() {
+  printf '%s' "$IAS_DIR/hexstrike-ai/hexstrike-env/bin/python3"
+}
+
+install_hexstrike_mcp_core() {
+  local vpy="$1"
+  log "Instalando dependencias MCP minimas do HexStrike (fastmcp + HTTP)"
+  "$vpy" -m pip install \
+    'fastmcp>=0.2.0,<1.0.0' \
+    'requests>=2.31.0,<3.0.0' \
+    'flask>=2.3.0,<4.0.0' \
+    'psutil>=5.9.0,<6.0.0' \
+    'beautifulsoup4>=4.12.0,<5.0.0' \
+    'aiohttp>=3.8.0,<4.0.0'
+}
+
+configure_cursor_mcp_hexstrike() {
+  local mcp_json="$ROOT_DIR/.cursor/mcp.json"
+  local vpy_rel="IAs/hexstrike-ai/hexstrike-env/bin/python3"
+  [ -f "$mcp_json" ] || return 0
+  if ! need_cmd python3; then
+    warn "python3 ausente; nao atualizei .cursor/mcp.json para HexStrike."
+    return 0
+  fi
+  MCP_JSON_FILE="$mcp_json" MCP_VENV_PYTHON="$vpy_rel" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["MCP_JSON_FILE"])
+venv_python = os.environ["MCP_VENV_PYTHON"]
+data = json.loads(path.read_text(encoding="utf-8"))
+servers = data.setdefault("mcpServers", {})
+hx = servers.setdefault("hexstrike-ai", {})
+hx["command"] = venv_python
+hx["args"] = [
+    "IAs/hexstrike-ai/hexstrike_mcp.py",
+    "--server",
+    "http://127.0.0.1:8888",
+]
+hx.setdefault("description", "HexStrike AI local MCP for authorized offensive tooling")
+hx.setdefault("timeout", 300)
+hx.setdefault("disabled", False)
+path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+print(f"[GHOSTRECON] .cursor/mcp.json: hexstrike-ai -> {venv_python}")
+PY
+}
+
+prepare_hexstrike() {
+  if [ "${INSTALL_HEXSTRIKE:-0}" -ne 1 ]; then
+    return
+  fi
+
+  local hex_dir="$IAS_DIR/hexstrike-ai"
+  local venv_dir="$hex_dir/hexstrike-env"
+  local vpy
+  vpy="$(hexstrike_venv_python)"
+
+  if [ ! -f "$hex_dir/hexstrike_mcp.py" ] || [ ! -f "$hex_dir/requirements.txt" ]; then
+    warn "HexStrike nao encontrado em $hex_dir; pulando."
+    return
+  fi
+
+  log "Preparando HexStrike AI (venv Python + MCP)"
+  if [ ! -x "$vpy" ]; then
+    python3 -m venv "$venv_dir"
+    vpy="$(hexstrike_venv_python)"
+  fi
+  [ -x "$vpy" ] || die "Falhou ao criar venv do HexStrike em $venv_dir"
+
+  "$vpy" -m pip install --upgrade pip wheel setuptools
+  if ! "$vpy" -m pip install -r "$hex_dir/requirements.txt"; then
+    warn "requirements.txt completo do HexStrike falhou; tentando pacotes MCP minimos."
+    install_hexstrike_mcp_core "$vpy"
+  fi
+
+  if ! "$vpy" -c "from mcp.server.fastmcp import FastMCP" 2>/dev/null; then
+    warn "fastmcp ainda ausente; reinstalando nucleo MCP."
+    install_hexstrike_mcp_core "$vpy"
+  fi
+
+  if ! "$vpy" -c "from mcp.server.fastmcp import FastMCP" 2>/dev/null; then
+    warn "HexStrike MCP nao ficou pronto (modulo mcp/fastmcp ausente)."
+    return
+  fi
+
+  configure_cursor_mcp_hexstrike
+
+  if [ -f "$ROOT_DIR/.env" ]; then
+    set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_HEXSTRIKE_URL" "http://127.0.0.1:8888"
+    set_env_key_if_missing "$ROOT_DIR/.env" "GHOSTRECON_HEXSTRIKE_TIMEOUT_MS" "60000"
+  fi
+
+  log "HexStrike MCP pronto: $vpy IAs/hexstrike-ai/hexstrike_mcp.py --server http://127.0.0.1:8888"
+  log "Servidor HTTP (opcional): cd IAs/hexstrike-ai && $vpy hexstrike_server.py --port 8888"
+}
+
 # CORRIGIDO: npm install -g supabase nao e suportado pela CLI do Supabase.
 # Agora baixa o .deb diretamente do GitHub releases.
 install_supabase_cli() {
@@ -506,6 +622,18 @@ verify_install() {
       printf '  [--] %s\n' "$c"
     fi
   done
+
+  local hx_py
+  hx_py="$(hexstrike_venv_python 2>/dev/null || true)"
+  if [ -n "$hx_py" ] && [ -x "$hx_py" ]; then
+    if "$hx_py" -c "from mcp.server.fastmcp import FastMCP" 2>/dev/null; then
+      printf '  [ok] hexstrike-mcp -> %s\n' "$hx_py"
+    else
+      printf '  [--] hexstrike-mcp (venv sem fastmcp)\n'
+    fi
+  else
+    printf '  [--] hexstrike-mcp (venv ausente)\n'
+  fi
 }
 
 while [ $# -gt 0 ]; do
@@ -518,8 +646,10 @@ while [ $# -gt 0 ]; do
     --skip-ias)
       INSTALL_SHANNON=0
       INSTALL_PENTESTGPT=0
+      INSTALL_HEXSTRIKE=0
       CLI_SHANNON=1
       CLI_PENTESTGPT=1
+      CLI_HEXSTRIKE=1
       ;;
     --skip-shannon)
       INSTALL_SHANNON=0
@@ -528,6 +658,10 @@ while [ $# -gt 0 ]; do
     --skip-pentestgpt)
       INSTALL_PENTESTGPT=0
       CLI_PENTESTGPT=1
+      ;;
+    --skip-hexstrike)
+      INSTALL_HEXSTRIKE=0
+      CLI_HEXSTRIKE=1
       ;;
     --skip-playwright)
       INSTALL_PLAYWRIGHT=0
@@ -586,6 +720,7 @@ fi
 
 prepare_shannon
 prepare_pentestgpt
+prepare_hexstrike
 
 if [ "$PROFILE" = "full" ]; then
   install_apt_security_tools
@@ -605,7 +740,9 @@ Notas:
   - O arquivo .env foi copiado do exemplo se nao existia; preencha as chaves/API keys antes de usar tudo.
   - GITHUB_TOKEN (PAT): perguntado no install interativo; necessario para git clone sem prompt e GitHub Code Search.
   - PentestGPT e Shannon podem exigir configuracoes adicionais e credenciais proprias.
-  - Modo interativo: em TTY pergunta por Docker, Shannon e PentestGPT em qualquer perfil; use -y para pular perguntas.
+  - HexStrike: venv em IAs/hexstrike-ai/hexstrike-env; .cursor/mcp.json aponta para o Python do venv.
+  - Servidor HexStrike (opcional): cd IAs/hexstrike-ai && ./hexstrike-env/bin/python3 hexstrike_server.py --port 8888
+  - Modo interativo: em TTY pergunta por Docker, Shannon, PentestGPT e HexStrike; use -y para pular perguntas.
 
 Comandos uteis:
   npm start

@@ -15,7 +15,7 @@
       "disabled": false
     },
     "hexstrike-ai": {
-      "command": "python",
+      "command": "IAs/hexstrike-ai/hexstrike-env/bin/python3",
       "args": [
         "IAs/hexstrike-ai/hexstrike_mcp.py",
         "--server",

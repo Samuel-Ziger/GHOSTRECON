@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Stack completo GHOSTRECON — `npm start`
- * Sobe: motor Vigolium, GHOST IA, GhostTrace, GhostMap, GhostDesk, API Node.
+ * Sobe: motor Vigolium, GHOST IA, GhostTrace, GhostMap, GhostDesk, HexStrike, API Node.
  * Desliga um serviço: GHOSTRECON_STACK_<NOME>=0 (ver .env.example).
  */
 import fs from 'node:fs';
@@ -42,6 +42,16 @@ const GHOSTDESK_HEALTH_URL =
   process.env.GHOSTDESK_HEALTH_URL || `http://127.0.0.1:${GHOSTDESK_PORT}/`;
 const GHOSTDESK_LOG_FILE = path.join(ROOT, 'GhostDesk', 'frontend', 'ghostdesk.log');
 
+const HEXSTRIKE_DIR = path.join(ROOT, 'IAs', 'hexstrike-ai');
+const HEXSTRIKE_SERVER = path.join(HEXSTRIKE_DIR, 'hexstrike_server.py');
+const HEXSTRIKE_VENV_PYTHON = path.join(HEXSTRIKE_DIR, 'hexstrike-env', 'bin', 'python3');
+const HEXSTRIKE_PORT = Number(process.env.GHOSTRECON_HEXSTRIKE_PORT || process.env.HEXSTRIKE_PORT || 8888);
+const HEXSTRIKE_BASE_URL = String(
+  process.env.GHOSTRECON_HEXSTRIKE_URL || process.env.GHOST_HEXSTRIKE_URL || `http://127.0.0.1:${HEXSTRIKE_PORT}`,
+).trim().replace(/\/+$/, '');
+const HEXSTRIKE_HEALTH_URL = `${HEXSTRIKE_BASE_URL}/health`;
+const HEXSTRIKE_LOG_FILE = path.join(HEXSTRIKE_DIR, 'hexstrike-server.log');
+
 const VIGOLIUM_INSTALL_SCRIPT = path.join(ROOT, 'scripts', 'install-vigolium-engine.sh');
 const VIGOLIUM_ENGINE_PATH = path.join(ROOT, 'engines', 'vigolium');
 const SERVER_ENTRY = path.join(ROOT, 'server', 'index.js');
@@ -56,7 +66,7 @@ function warn(msg) {
   process.stderr.write(`[STACK][WARN] ${msg}\n`);
 }
 
-/** @param {'VIGOLIUM'|'GHOST'|'GHOSTTRACE'|'GHOSTMAP'|'GHOSTDESK'|'API'} name */
+/** @param {'VIGOLIUM'|'GHOST'|'GHOSTTRACE'|'GHOSTMAP'|'GHOSTDESK'|'HEXSTRIKE'|'API'} name */
 function stackEnabled(name, defaultOn = true) {
   const key = `GHOSTRECON_STACK_${name}`;
   const v = String(process.env[key] ?? '').trim().toLowerCase();
@@ -122,6 +132,33 @@ function startDetachedBash(scriptPath, logFile, env = process.env) {
   const errFd = fs.openSync(logFile, 'a');
   const child = spawn('bash', [scriptPath], {
     cwd: ROOT,
+    detached: true,
+    env,
+    stdio: ['ignore', outFd, errFd],
+    windowsHide: true,
+  });
+  child.unref();
+  return child;
+}
+
+function resolveHexstrikePython() {
+  if (fs.existsSync(HEXSTRIKE_VENV_PYTHON)) {
+    try {
+      fs.accessSync(HEXSTRIKE_VENV_PYTHON, fs.constants.X_OK);
+      return HEXSTRIKE_VENV_PYTHON;
+    } catch {
+      // fall through
+    }
+  }
+  return null;
+}
+
+function startDetachedPython(pythonPath, scriptPath, logFile, { cwd = ROOT, args = [], env = process.env } = {}) {
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const outFd = fs.openSync(logFile, 'a');
+  const errFd = fs.openSync(logFile, 'a');
+  const child = spawn(pythonPath, [scriptPath, ...args], {
+    cwd,
     detached: true,
     env,
     stdio: ['ignore', outFd, errFd],
@@ -327,6 +364,55 @@ async function startGhostdeskIfNeeded() {
   }
 }
 
+async function startHexstrikeIfNeeded() {
+  if (!stackEnabled('HEXSTRIKE')) {
+    noteService('HexStrike', 'skip', 'GHOSTRECON_STACK_HEXSTRIKE=0');
+    return;
+  }
+  if (!fs.existsSync(HEXSTRIKE_SERVER)) {
+    warn(`HexStrike não encontrado em ${HEXSTRIKE_SERVER}`);
+    noteService('HexStrike', 'warn', 'server ausente');
+    return;
+  }
+  if (await healthOk(HEXSTRIKE_HEALTH_URL) || (await portInUse(HEXSTRIKE_PORT))) {
+    log(`HexStrike já está online em ${HEXSTRIKE_BASE_URL}`);
+    noteService('HexStrike', 'ok', HEXSTRIKE_BASE_URL);
+    if (!process.env.GHOSTRECON_HEXSTRIKE_URL) {
+      process.env.GHOSTRECON_HEXSTRIKE_URL = HEXSTRIKE_BASE_URL;
+    }
+    return;
+  }
+
+  const pythonPath = resolveHexstrikePython();
+  if (!pythonPath) {
+    warn('HexStrike venv ausente; corre ./install.sh (ou --profile minimal -y) para criar IAs/hexstrike-ai/hexstrike-env');
+    noteService('HexStrike', 'warn', 'venv ausente');
+    return;
+  }
+
+  log(`A iniciar HexStrike AI em ${HEXSTRIKE_BASE_URL}...`);
+  startDetachedPython(pythonPath, HEXSTRIKE_SERVER, HEXSTRIKE_LOG_FILE, {
+    cwd: HEXSTRIKE_DIR,
+    args: ['--port', String(HEXSTRIKE_PORT)],
+    env: {
+      ...process.env,
+      GHOSTRECON_HEXSTRIKE_URL: HEXSTRIKE_BASE_URL,
+    },
+  });
+  process.env.GHOSTRECON_HEXSTRIKE_URL = HEXSTRIKE_BASE_URL;
+
+  if (await waitForHealth(HEXSTRIKE_HEALTH_URL, 90)) {
+    log(`HexStrike online em ${HEXSTRIKE_BASE_URL}`);
+    noteService('HexStrike', 'ok', HEXSTRIKE_BASE_URL);
+  } else if (await portInUse(HEXSTRIKE_PORT)) {
+    log(`HexStrike a escutar na porta ${HEXSTRIKE_PORT} (health check pendente)`);
+    noteService('HexStrike', 'ok', `:${HEXSTRIKE_PORT}`);
+  } else {
+    warn(`HexStrike não respondeu; verifica ${HEXSTRIKE_LOG_FILE}`);
+    noteService('HexStrike', 'warn', 'timeout');
+  }
+}
+
 function printStackSummary() {
   log('── Stack GHOSTRECON ──');
   for (const row of stackStatus) {
@@ -339,6 +425,9 @@ function printStackSummary() {
   }
   if (stackEnabled('GHOSTMAP')) {
     log(`  ${'GhostMap'.padEnd(12)}   ${API_URL}/ghostmap/ghostrecon`);
+  }
+  if (stackEnabled('HEXSTRIKE')) {
+    log(`  ${'HexStrike'.padEnd(12)}   ${HEXSTRIKE_BASE_URL}`);
   }
   log('──────────────────────');
 }
@@ -371,4 +460,5 @@ await startGhostIfNeeded();
 await startGhosttraceIfNeeded();
 await startGhostmapIfNeeded();
 await startGhostdeskIfNeeded();
+await startHexstrikeIfNeeded();
 startApi();

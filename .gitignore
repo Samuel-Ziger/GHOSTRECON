@@ -71,6 +71,8 @@ ghost-local-v5/ghost-local/backend/__pycache__/
 ghost-local-v5/ghost-local/backend/ghost_data/
 ghost-local-v5/ghost-local/ghost.log
 ghost-local-v5/hexstrike-ai/hexstrike.log
+IAs/hexstrike-ai/hexstrike-env/
+IAs/hexstrike-ai/hexstrike-server.log
 
 # Vigolium — fonte temporária (apagar após build → engines/vigolium)
 /vigolium/
