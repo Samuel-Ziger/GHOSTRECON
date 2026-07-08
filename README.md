@@ -226,8 +226,11 @@ Tools expostas pelo MCP do GHOSTRECON:
 - `ghostrecon_hexstrike_intel`
 - `ghostrecon_auto_rag_list`
 - `ghostrecon_auto_rag_read`
+- `ghostrecon_auto_rag_search`
+- `ghostrecon_auto_rag_write_note`
+- `ghostrecon_auto_rag_write_lesson`
 
-O MCP usa stdio e fala com a API do GHOSTRECON via HTTP, reaproveitando `server/modules/cli/client.mjs` para CSRF, auth e NDJSON. Por padrao no Cursor, `GHOSTRECON_MCP_AUTOSTART=1` tenta iniciar a API se ela nao estiver online. Para ambientes mais controlados, defina esse valor como `0` e rode `npm run start:minimal` antes de usar o Agent.
+O MCP usa stdio e fala com a API do GHOSTRECON via HTTP, reaproveitando `server/modules/cli/client.mjs` para CSRF, auth e NDJSON. Por padrao no Cursor, `GHOSTRECON_MCP_AUTOSTART=1` tenta iniciar a API se ela nao estiver online. Se `GHOSTRECON_API_KEY` nao estiver definida, o cliente tenta obter a primeira chave local via `/api/setup/auto-auth` em loopback. Para ambientes mais controlados, defina `GHOSTRECON_MCP_AUTOSTART=0` e/ou `GHOSTRECON_AUTO_AUTH_FROM_SERVER=0`.
 
 Resources expostos:
 
@@ -237,7 +240,7 @@ Resources expostos:
 - `ghostrecon://runs/{id}`
 - `ghostrecon://intel/{target}`
 - `ghostrecon://auto-rag/index`
-- `ghostrecon://auto-rag/decisions/{file.md}`
+- `ghostrecon://auto-rag/{folder}/{file.md}`
 
 Prompts expostos:
 
@@ -253,7 +256,12 @@ Por seguranca, `ghostrecon_run_recon` chama o mesmo guard OPSEC usado pelo backe
 O Modo Auto grava decisoes em Markdown em:
 
 ```text
-data/auto-rag/decisions/
+data/auto-rag/
+  README.md
+  decisions/
+  lessons/
+  notes/
+  cursor-tasks/
 ```
 
 Tambem gera um indice:
@@ -262,7 +270,15 @@ Tambem gera um indice:
 data/auto-rag/README.md
 ```
 
-Essa pasta pode ser aberta no Obsidian. Cada nova decisao/plano/avaliacao do Modo Auto vira um `.md` com frontmatter, modulos selecionados, papeis dos comandantes, estatisticas da run e JSON do plano/avaliacao. O proximo plano do Modo Auto carrega um resumo das memorias recentes e inclui esse contexto em `plan.memory`, reduzindo repeticao de contexto para as IAs.
+Essa pasta pode ser aberta no Obsidian. Cada nova decisao/plano/avaliacao do Modo Auto vira um `.md` com frontmatter, modulos selecionados, papeis dos comandantes, estatisticas da run e JSON do plano/avaliacao. O proximo plano do Modo Auto carrega um resumo das memorias recentes e inclui esse contexto em `plan.memory`, reduzindo repeticao de contexto para as IAs. Para recuperar contexto sem carregar o vault inteiro, use `ghostrecon_auto_rag_search` com termos como target, modulo, tecnologia ou erro.
+
+Endpoints locais:
+
+- `GET /api/auto-rag/status`: status, contagem e memorias recentes.
+- `GET /api/auto-rag/search?q=termo`: busca simples em Markdown.
+- `POST /api/auto-rag/note`: cria nota ou lesson com CSRF e escopo `notes.write`.
+
+Quando o comandante `cursor` e selecionado, o Modo Auto cria um handoff em `data/auto-rag/cursor-tasks/` com alvo, plano, modulos e contexto RAG. Execucao real de Cursor/Agent fica desligada por padrao; a integracao atual e local, auditavel e human-in-loop.
 
 Variaveis:
 

@@ -22,9 +22,13 @@ data/auto-rag/
   decisions/
     2026-...-target-plan-auto-....md
     2026-...-target-evaluation-auto-....md
+  lessons/
+    2026-...-lesson-....md
+  notes/
+  cursor-tasks/
 ```
 
-Cada decisao relevante gera um novo `.md` com frontmatter, target, requestRunId, comandantes, modulos, plano, avaliacao e estatisticas de eventos. O planner carrega memorias recentes e injeta resumo em `plan.memory`.
+Cada decisao relevante gera um novo `.md` com frontmatter, target, requestRunId, comandantes, modulos, plano, avaliacao e estatisticas de eventos. Lessons registram problema, decisao e resultado para o agente nao repetir o mesmo raciocinio. O planner carrega memorias recentes e injeta resumo em `plan.memory`.
 
 Variaveis:
 
@@ -37,8 +41,19 @@ MCP relacionado:
 
 - `ghostrecon_auto_rag_list`
 - `ghostrecon_auto_rag_read`
+- `ghostrecon_auto_rag_search`
+- `ghostrecon_auto_rag_write_note`
+- `ghostrecon_auto_rag_write_lesson`
 - `ghostrecon://auto-rag/index`
-- `ghostrecon://auto-rag/decisions/{file.md}`
+- `ghostrecon://auto-rag/{folder}/{file.md}`
+
+API local relacionada:
+
+- `GET /api/auto-rag/status`
+- `GET /api/auto-rag/search?q=termo`
+- `POST /api/auto-rag/note`
+
+Quando Cursor for selecionado, o Auto Orchestrator grava uma tarefa em `data/auto-rag/cursor-tasks/`. Essa tarefa e um handoff seguro para o IDE/Agent com plano, modulos, papeis e contexto RAG. Execucao headless deve ficar atras de variavel de ambiente; o padrao e human-in-loop.
 
 ## Principio central
 

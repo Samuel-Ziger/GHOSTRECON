@@ -32,6 +32,46 @@ function codeJson(value) {
   return `\`\`\`json\n${JSON.stringify(value ?? null, null, 2)}\n\`\`\``;
 }
 
+const MEMORY_FOLDERS = Object.freeze({
+  decisions: 'decisions',
+  lessons: 'lessons',
+  notes: 'notes',
+  cursorTasks: 'cursor-tasks',
+});
+
+function clampLimit(value, fallback = 20, max = 200) {
+  return Math.max(1, Math.min(max, Number(value) || fallback));
+}
+
+function normalizeTags(tags) {
+  return [...new Set(['ghostrecon', 'auto-mode', ...(Array.isArray(tags) ? tags : [])]
+    .map((t) => String(t || '').trim())
+    .filter(Boolean))];
+}
+
+function stripFrontmatter(text) {
+  return String(text || '').replace(/^---[\s\S]*?---\s*/m, '').trim();
+}
+
+function folderForKind(kind = '') {
+  const k = String(kind || '').trim().toLowerCase();
+  if (['lesson', 'lessons'].includes(k)) return MEMORY_FOLDERS.lessons;
+  if (['note', 'notes'].includes(k)) return MEMORY_FOLDERS.notes;
+  if (['cursor', 'cursor-task', 'cursor_tasks', 'cursor-tasks'].includes(k)) return MEMORY_FOLDERS.cursorTasks;
+  return MEMORY_FOLDERS.decisions;
+}
+
+function safeMemoryRef(name) {
+  const raw = String(name || '').trim().replace(/\\/g, '/');
+  const parts = raw.split('/').filter(Boolean);
+  const file = path.basename(parts.pop() || '');
+  const folder = parts.length ? parts[parts.length - 1] : MEMORY_FOLDERS.decisions;
+  if (!file || !file.toLowerCase().endsWith('.md')) throw new Error('nome de memoria invalido');
+  const allowed = new Set(Object.values(MEMORY_FOLDERS));
+  if (!allowed.has(folder)) throw new Error('pasta de memoria invalida');
+  return { folder, file, ref: `${folder}/${file}` };
+}
+
 export function resolveAutoRagDir({ root = DEFAULT_ROOT, env = process.env } = {}) {
   const raw = String(env.GHOSTRECON_AUTO_RAG_DIR || '').trim();
   return raw ? path.resolve(raw) : path.join(root, 'data', 'auto-rag');
@@ -39,9 +79,12 @@ export function resolveAutoRagDir({ root = DEFAULT_ROOT, env = process.env } = {
 
 export async function ensureAutoRagDirs(opts = {}) {
   const base = resolveAutoRagDir(opts);
-  const decisions = path.join(base, 'decisions');
-  await fs.mkdir(decisions, { recursive: true });
-  return { base, decisions };
+  const dirs = { base };
+  for (const [key, folder] of Object.entries(MEMORY_FOLDERS)) {
+    dirs[key] = path.join(base, folder);
+    await fs.mkdir(dirs[key], { recursive: true });
+  }
+  return dirs;
 }
 
 export async function writeAutoDecisionMarkdown({
@@ -82,7 +125,7 @@ export async function writeAutoDecisionMarkdown({
     `target: ${yamlString(target)}`,
     `requestRunId: ${yamlString(requestRunId)}`,
     `created: ${yamlString(now.toISOString())}`,
-    `tags: [${['ghostrecon', 'auto-mode', ...tags].map((t) => yamlString(t)).join(', ')}]`,
+    `tags: [${normalizeTags(tags).map((t) => yamlString(t)).join(', ')}]`,
     '---',
   ].join('\n');
 
@@ -138,34 +181,176 @@ export async function writeAutoDecisionMarkdown({
   return { filePath, filename, baseDir: dirs.base };
 }
 
+export async function writeAutoRagNote({
+  root = DEFAULT_ROOT,
+  env = process.env,
+  kind = 'note',
+  title = '',
+  body = '',
+  target = '',
+  tags = [],
+  metadata = null,
+} = {}) {
+  if (/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_RAG_ENABLED || '1').trim())) {
+    return null;
+  }
+  const dirs = await ensureAutoRagDirs({ root, env });
+  const now = new Date();
+  const folder = folderForKind(kind);
+  const safeTitle = slug(title || kind, kind);
+  const filename = `${timestamp(now)}-${safeTitle}.md`;
+  const filePath = path.join(dirs[folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks' : folder], filename);
+  const frontmatter = [
+    '---',
+    `type: ${yamlString('ghostrecon-auto-memory')}`,
+    `kind: ${yamlString(kind)}`,
+    `target: ${yamlString(target)}`,
+    `created: ${yamlString(now.toISOString())}`,
+    `tags: [${normalizeTags([kind, ...tags]).map((t) => yamlString(t)).join(', ')}]`,
+    '---',
+  ].join('\n');
+  const text = [
+    frontmatter,
+    '',
+    `# ${title || `Auto ${kind}`}`,
+    '',
+    body || '_No body provided._',
+    '',
+    metadata ? '## Metadata' : '',
+    metadata ? codeJson(metadata) : '',
+  ].filter((line, idx, arr) => line !== '' || arr[idx - 1] !== '').join('\n');
+  await fs.writeFile(filePath, text, 'utf8');
+  await updateAutoRagIndex({ root, env });
+  return { filePath, filename, name: `${folder}/${filename}`, kind, baseDir: dirs.base };
+}
+
+export async function writeAutoLesson({
+  root = DEFAULT_ROOT,
+  env = process.env,
+  target = '',
+  problem = '',
+  decision = '',
+  outcome = '',
+  modules = [],
+  commanders = null,
+  confidence = '',
+  tags = [],
+  metadata = null,
+} = {}) {
+  const title = `Lesson - ${target || slug(problem, 'auto')}`;
+  const body = [
+    '## Problem',
+    '',
+    problem || '_Not provided._',
+    '',
+    '## Decision',
+    '',
+    decision || '_Not provided._',
+    '',
+    '## Outcome',
+    '',
+    outcome || '_Pending._',
+    '',
+    '## Modules',
+    '',
+    mdList(modules),
+    '',
+    '## Commanders',
+    '',
+    commanders ? codeJson(commanders) : '_Not provided._',
+    '',
+    '## Confidence',
+    '',
+    confidence || '_Not provided._',
+  ].join('\n');
+  return writeAutoRagNote({
+    root,
+    env,
+    kind: 'lesson',
+    title,
+    body,
+    target,
+    tags: ['lesson', ...tags],
+    metadata,
+  });
+}
+
 export async function listAutoRagMarkdown({ root = DEFAULT_ROOT, env = process.env, limit = 20 } = {}) {
   const dirs = await ensureAutoRagDirs({ root, env });
-  const entries = await fs.readdir(dirs.decisions, { withFileTypes: true }).catch(() => []);
-  const files = entries
-    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.md'))
-    .map((e) => e.name)
-    .sort()
-    .reverse()
-    .slice(0, Math.max(1, Math.min(200, Number(limit) || 20)));
-  return Promise.all(files.map(async (name) => {
-    const filePath = path.join(dirs.decisions, name);
-    const text = await fs.readFile(filePath, 'utf8').catch(() => '');
-    const firstHeading = /^#\s+(.+)$/m.exec(text)?.[1] || name;
+  const files = [];
+  for (const [key, folder] of Object.entries({
+    decisions: dirs.decisions,
+    lessons: dirs.lessons,
+    notes: dirs.notes,
+    'cursor-tasks': dirs.cursorTasks,
+  })) {
+    const entries = await fs.readdir(folder, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (e.isFile() && e.name.toLowerCase().endsWith('.md')) {
+        files.push({ folder: key, name: e.name, path: path.join(folder, e.name) });
+      }
+    }
+  }
+  const selected = files
+    .sort((a, b) => b.name.localeCompare(a.name))
+    .slice(0, clampLimit(limit, 20, 500));
+  return Promise.all(selected.map(async (item) => {
+    const text = await fs.readFile(item.path, 'utf8').catch(() => '');
+    const firstHeading = /^#\s+(.+)$/m.exec(text)?.[1] || item.name;
     return {
-      name,
-      path: filePath,
+      name: `${item.folder}/${item.name}`,
+      file: item.name,
+      folder: item.folder,
+      path: item.path,
       title: firstHeading,
-      preview: text.replace(/^---[\s\S]*?---\s*/m, '').trim().slice(0, 900),
+      preview: stripFrontmatter(text).slice(0, 900),
     };
   }));
 }
 
 export async function readAutoRagMarkdown(name, { root = DEFAULT_ROOT, env = process.env } = {}) {
   const dirs = await ensureAutoRagDirs({ root, env });
-  const safe = path.basename(String(name || ''));
-  if (!safe || !safe.endsWith('.md')) throw new Error('nome de memoria invalido');
-  const filePath = path.join(dirs.decisions, safe);
-  return { name: safe, path: filePath, text: await fs.readFile(filePath, 'utf8') };
+  const safe = safeMemoryRef(name);
+  const dirKey = safe.folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks' : safe.folder;
+  const filePath = path.join(dirs[dirKey], safe.file);
+  return { name: safe.ref, file: safe.file, folder: safe.folder, path: filePath, text: await fs.readFile(filePath, 'utf8') };
+}
+
+export async function searchAutoRagMarkdown({
+  query = '',
+  root = DEFAULT_ROOT,
+  env = process.env,
+  limit = 8,
+  scanLimit = 120,
+} = {}) {
+  const q = String(query || '').trim().toLowerCase();
+  const terms = q
+    .split(/[^a-z0-9._-]+/i)
+    .map((x) => x.trim().toLowerCase())
+    .filter((x) => x.length >= 2);
+  const items = await listAutoRagMarkdown({ root, env, limit: scanLimit });
+  if (!terms.length) return items.slice(0, clampLimit(limit, 8, 50));
+
+  const scored = [];
+  for (const item of items) {
+    const text = await fs.readFile(item.path, 'utf8').catch(() => '');
+    const hay = `${item.name}\n${item.title}\n${text}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      const matches = hay.split(term).length - 1;
+      score += matches * (item.title.toLowerCase().includes(term) ? 3 : 1);
+    }
+    if (score > 0) {
+      scored.push({
+        ...item,
+        score,
+        preview: stripFrontmatter(text).slice(0, 1400),
+      });
+    }
+  }
+  return scored
+    .sort((a, b) => b.score - a.score || b.name.localeCompare(a.name))
+    .slice(0, clampLimit(limit, 8, 50));
 }
 
 export async function loadAutoRagContext({ root = DEFAULT_ROOT, env = process.env, limit = 6 } = {}) {
@@ -174,6 +359,7 @@ export async function loadAutoRagContext({ root = DEFAULT_ROOT, env = process.en
     dir: resolveAutoRagDir({ root, env }),
     items: items.map((item) => ({
       name: item.name,
+      folder: item.folder,
       title: item.title,
       preview: item.preview,
     })),
@@ -184,17 +370,27 @@ export async function updateAutoRagIndex({ root = DEFAULT_ROOT, env = process.en
   const dirs = await ensureAutoRagDirs({ root, env });
   const items = await listAutoRagMarkdown({ root, env, limit: 200 });
   const indexPath = path.join(dirs.base, 'README.md');
+  const byFolder = new Map();
+  for (const item of items) {
+    if (!byFolder.has(item.folder)) byFolder.set(item.folder, []);
+    byFolder.get(item.folder).push(item);
+  }
+  const section = (folder, title) => [
+    `## ${title}`,
+    '',
+    ...(byFolder.get(folder) || []).map((item) => `- [[${item.name.replace(/\.md$/i, '')}]] - ${item.title}`),
+    '',
+  ];
   const text = [
     '# GHOSTRECON Auto RAG',
     '',
     'Markdown memory generated by GHOSTRECON Auto Mode. Open this folder as an Obsidian vault or add it to an existing vault.',
     '',
-    '## Decisions',
-    '',
-    ...items.map((item) => `- [[decisions/${item.name.replace(/\.md$/i, '')}]] - ${item.title}`),
-    '',
+    ...section('decisions', 'Decisions'),
+    ...section('lessons', 'Lessons'),
+    ...section('notes', 'Notes'),
+    ...section('cursor-tasks', 'Cursor Tasks'),
   ].join('\n');
   await fs.writeFile(indexPath, text, 'utf8');
   return { indexPath, count: items.length };
 }
-

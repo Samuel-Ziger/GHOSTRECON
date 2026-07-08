@@ -2,6 +2,13 @@ import { parseReconTarget } from '../modules/recon-target.js';
 import { requireScope, reconBodyIsIntrusive, audit as auditAuth } from '../modules/auth.js';
 import { reconHttpContext } from '../lib/http-history.mjs';
 import { runAutoRecon } from '../auto-agent/orchestrator.mjs';
+import {
+  listAutoRagMarkdown,
+  resolveAutoRagDir,
+  searchAutoRagMarkdown,
+  writeAutoLesson,
+  writeAutoRagNote,
+} from '../auto-agent/rag-memory.mjs';
 
 export function registerAutoReconRoutes(app, deps = {}) {
   const {
@@ -10,6 +17,75 @@ export function registerAutoReconRoutes(app, deps = {}) {
     allowReconRequest,
     ROOT,
   } = deps;
+
+  app.get('/api/auto-rag/status', requireScope('recon.read'), async (_req, res) => {
+    try {
+      const memories = await listAutoRagMarkdown({ root: ROOT, limit: 500 });
+      const counts = memories.reduce((acc, item) => {
+        acc[item.folder || 'decisions'] = (acc[item.folder || 'decisions'] || 0) + 1;
+        return acc;
+      }, {});
+      res.json({
+        ok: true,
+        dir: resolveAutoRagDir({ root: ROOT }),
+        count: memories.length,
+        counts,
+        recent: memories.slice(0, 12),
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
+  app.get('/api/auto-rag/search', requireScope('recon.read'), async (req, res) => {
+    try {
+      const query = String(req.query?.q || req.query?.query || '').trim();
+      const limit = Math.max(1, Math.min(50, Number(req.query?.limit || 8)));
+      res.json({
+        ok: true,
+        dir: resolveAutoRagDir({ root: ROOT }),
+        query,
+        memories: await searchAutoRagMarkdown({ root: ROOT, query, limit }),
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
+  app.post('/api/auto-rag/note', requireScope('notes.write'), async (req, res) => {
+    if (!validateCsrfToken(req)) {
+      res.status(403).json({ ok: false, error: 'CSRF invalido/ausente' });
+      return;
+    }
+    try {
+      const body = req.body || {};
+      const note = body.kind === 'lesson'
+        ? await writeAutoLesson({
+          root: ROOT,
+          target: body.target,
+          problem: body.problem,
+          decision: body.decision,
+          outcome: body.outcome,
+          modules: Array.isArray(body.modules) ? body.modules : [],
+          commanders: body.commanders || null,
+          confidence: body.confidence,
+          tags: Array.isArray(body.tags) ? body.tags : [],
+          metadata: body.metadata || null,
+        })
+        : await writeAutoRagNote({
+          root: ROOT,
+          kind: body.kind || 'note',
+          title: body.title || 'Auto note',
+          body: body.body || '',
+          target: body.target || '',
+          tags: Array.isArray(body.tags) ? body.tags : [],
+          metadata: body.metadata || null,
+        });
+      res.json({ ok: true, note });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
 
   app.post('/api/recon/auto/stream', requireScope('recon.run', { intrusiveCheck: (req) => reconBodyIsIntrusive(req.body) }), async (req, res) => {
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');

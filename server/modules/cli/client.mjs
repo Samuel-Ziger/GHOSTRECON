@@ -65,12 +65,33 @@ export class GhostClient {
     this._csrf = null;
     this._csrfExpiresAt = 0;
     this._apiKey = process.env.GHOSTRECON_API_KEY || '';
+    this._autoAuthTried = false;
   }
 
   _authHeaders() {
     const h = {};
     if (this._apiKey) h['X-API-Key'] = this._apiKey;
     return h;
+  }
+
+  async _maybeAutoAuthFromServer() {
+    if (this._apiKey || this._autoAuthTried) return;
+    this._autoAuthTried = true;
+    if (/^(0|false|no|off)$/i.test(String(process.env.GHOSTRECON_AUTO_AUTH_FROM_SERVER || '1').trim())) {
+      return;
+    }
+    try {
+      const res = await fetch(`${this.baseUrl}/api/setup/auto-auth`, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(2500),
+      });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const key = String(data?.apiKey || '').trim();
+      if (key) this._apiKey = key;
+    } catch {
+      // Best-effort only. Auth errors still surface from the requested endpoint.
+    }
   }
 
   async isAlive() {
@@ -252,7 +273,8 @@ export class GhostClient {
     }
   }
 
-  _fetch(pathname, { method = 'GET', body = null, headers = {}, timeoutMs = 10_000, auth = false } = {}) {
+  async _fetch(pathname, { method = 'GET', body = null, headers = {}, timeoutMs = 10_000, auth = false } = {}) {
+    if (auth) await this._maybeAutoAuthFromServer();
     const url = new URL(`${this.baseUrl}${pathname}`);
     const payload = body ? Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8') : null;
     const finalHeaders = { ...headers };

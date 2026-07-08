@@ -971,6 +971,56 @@
     gap: 10px;
     margin-bottom: 10px;
   }
+  .auto-rag-status-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 7px 10px;
+    border: 1px solid rgba(0, 212, 255, 0.2);
+    border-radius: 8px;
+    background: rgba(8, 14, 18, 0.78);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    max-width: 100%;
+  }
+  .auto-rag-status-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .auto-rag-status-title {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+  .auto-rag-status-value {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-bright);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: min(420px, 55vw);
+  }
+  .auto-rag-refresh-btn {
+    flex: 0 0 auto;
+    min-height: 30px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 255, 136, 0.26);
+    background: rgba(0, 255, 136, 0.08);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .auto-rag-refresh-btn:hover {
+    border-color: rgba(0, 255, 136, 0.46);
+    background: rgba(0, 255, 136, 0.14);
+  }
   .hub-actions-row-mitre {
     display: flex;
     width: 100%;
@@ -3374,6 +3424,13 @@
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         <button class="run-btn" id="runBtn" onclick="startRecon()">▶ RUN RECON</button>
         <button class="run-btn auto-run-btn" id="autoRunBtn" type="button" onclick="openAutoModeModal()">AUTO MODE</button>
+        <div class="auto-rag-status-card" id="autoRagStatusCard" title="Status do vault Markdown do Modo Auto">
+          <div class="auto-rag-status-main">
+            <span class="auto-rag-status-title">Auto RAG</span>
+            <span class="auto-rag-status-value" id="autoRagStatusValue">memoria local</span>
+          </div>
+          <button class="auto-rag-refresh-btn" type="button" onclick="refreshAutoRagStatus()">RAG</button>
+        </div>
         <button
           type="button"
           class="mitre-map-btn"
@@ -5070,6 +5127,37 @@ function syncAutoOpenrouterUi() {
   }
 }
 
+async function refreshAutoRagStatus({ quiet = false } = {}) {
+  const el = document.getElementById('autoRagStatusValue');
+  if (el) el.textContent = 'consultando...';
+  try {
+    const authConfig = getOptionalAuthConfig();
+    const fetchHeaders = {};
+    if (authConfig?.ghostreconApiKey) {
+      fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
+    }
+    const res = await fetch(apiUrl('/api/auto-rag/status'), { headers: fetchHeaders });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const counts = data?.counts || {};
+    const parts = [
+      `${data?.count || 0} memorias`,
+      counts.lessons ? `${counts.lessons} licoes` : '',
+      counts['cursor-tasks'] ? `${counts['cursor-tasks']} cursor` : '',
+    ].filter(Boolean);
+    if (el) {
+      el.textContent = parts.join(' | ') || '0 memorias';
+      if (data?.dir) el.title = data.dir;
+    }
+    if (!quiet && data?.dir) addLog(`AUTO RAG: ${data.count || 0} memorias em ${data.dir}`, 'info');
+    return data;
+  } catch (e) {
+    if (el) el.textContent = 'RAG indisponivel';
+    if (!quiet) addLog(`AUTO RAG: ${e?.message || e}`, 'warn');
+    return null;
+  }
+}
+
 function openAutoModeModal() {
   const modal = document.getElementById('autoModeModal');
   const target = document.getElementById('autoTargetInput');
@@ -5081,6 +5169,7 @@ function openAutoModeModal() {
   const status = document.getElementById('autoModeStatus');
   if (status) status.textContent = 'Escolha uma ou mais IAs comandantes para iniciar.';
   syncAutoOpenrouterUi();
+  refreshAutoRagStatus({ quiet: true });
   if (modal) modal.style.display = 'flex';
   setTimeout(() => target?.focus(), 0);
 }
@@ -5117,6 +5206,24 @@ function summarizeAutoEvent(ev) {
     return {
       msg: `AUTO plano: lider=${roles.leader || '-'} implementa=${roles.implementer || '-'} revisa=${roles.reviewer || '-'} | modulos=${modules.join(', ') || '(nenhum)'}`,
       level: 'success',
+    };
+  }
+  if (ev.type === 'auto_rag') {
+    if (['plan_saved', 'evaluation_saved'].includes(ev.phase)) {
+      refreshAutoRagStatus({ quiet: true });
+    }
+    const mem = ev.memory?.name || ev.memory?.filename || ev.memory?.filePath || '';
+    return {
+      msg: `AUTO RAG ${ev.phase || 'event'}${mem ? `: ${mem}` : ''}`,
+      level: ev.error || ev.memory?.error ? 'warn' : 'info',
+    };
+  }
+  if (ev.type === 'auto_cursor') {
+    refreshAutoRagStatus({ quiet: true });
+    const task = ev.task?.name || ev.task?.filename || '';
+    return {
+      msg: `AUTO Cursor: ${ev.mode || 'handoff'} | instalado=${ev.installed ? 'sim' : 'nao'} | tarefa=${task || '-'}`,
+      level: ev.error ? 'warn' : 'info',
     };
   }
   if (ev.type === 'auto_step') {
@@ -5261,6 +5368,8 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeAutoModeModal();
 });
+
+setTimeout(() => refreshAutoRagStatus({ quiet: true }), 900);
 
 const PIPE_UI_ALIASES = {
   vigolium_engine: 'vigolium_dast',

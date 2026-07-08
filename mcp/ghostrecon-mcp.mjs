@@ -2,17 +2,15 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GhostClient } from '../server/modules/cli/client.mjs';
-import { detectAutoProviders } from '../server/auto-agent/provider-detector.mjs';
-import { buildAutoToolCatalog } from '../server/auto-agent/tool-catalog.mjs';
-import { createAutoPlan } from '../server/auto-agent/planner.mjs';
 import {
   listAutoRagMarkdown,
   readAutoRagMarkdown,
+  searchAutoRagMarkdown,
+  writeAutoLesson,
+  writeAutoRagNote,
   loadAutoRagContext,
   resolveAutoRagDir,
 } from '../server/auto-agent/rag-memory.mjs';
-import { getHexstrikeCapabilities } from '../server/modules/hexstrike-capabilities.mjs';
-import { runHexstrikeOrchestrator } from '../server/modules/hexstrike-orchestrator.mjs';
 import { expandIntrusiveRunModules, gateModules } from '../server/modules/opsec.mjs';
 
 const SERVER_NAME = 'ghostrecon';
@@ -71,6 +69,34 @@ function cleanArray(value) {
       .split(',')
       .map((x) => x.trim())
       .filter(Boolean);
+}
+
+async function loadAutoPlanningModules() {
+  const [
+    providerDetector,
+    toolCatalog,
+    planner,
+  ] = await Promise.all([
+    import('../server/auto-agent/provider-detector.mjs'),
+    import('../server/auto-agent/tool-catalog.mjs'),
+    import('../server/auto-agent/planner.mjs'),
+  ]);
+  return {
+    detectAutoProviders: providerDetector.detectAutoProviders,
+    buildAutoToolCatalog: toolCatalog.buildAutoToolCatalog,
+    createAutoPlan: planner.createAutoPlan,
+  };
+}
+
+async function loadHexstrikeModules() {
+  const [capabilities, orchestrator] = await Promise.all([
+    import('../server/modules/hexstrike-capabilities.mjs'),
+    import('../server/modules/hexstrike-orchestrator.mjs'),
+  ]);
+  return {
+    getHexstrikeCapabilities: capabilities.getHexstrikeCapabilities,
+    runHexstrikeOrchestrator: orchestrator.runHexstrikeOrchestrator,
+  };
 }
 
 async function resolveRequestedModules(client, args = {}) {
@@ -422,6 +448,55 @@ const tools = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'ghostrecon_auto_rag_search',
+    description: 'Busca memorias Markdown do Modo Auto por termos, retornando previews curtos para reduzir contexto.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        limit: { type: 'integer', default: 8 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ghostrecon_auto_rag_write_note',
+    description: 'Cria uma nota Markdown local no vault Auto RAG para contexto humano ou de IA.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        body: { type: 'string' },
+        target: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        metadata: { type: 'object' },
+      },
+      required: ['title', 'body'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ghostrecon_auto_rag_write_lesson',
+    description: 'Registra uma licao aprendida estruturada para o Modo Auto reutilizar em runs futuras.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string' },
+        problem: { type: 'string' },
+        decision: { type: 'string' },
+        outcome: { type: 'string' },
+        modules: { type: 'array', items: { type: 'string' } },
+        commanders: { type: 'object' },
+        confidence: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        metadata: { type: 'object' },
+      },
+      required: ['problem', 'decision'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 async function readResource(uri) {
@@ -435,8 +510,8 @@ async function readResource(uri) {
       contents: [{ uri: rawUri, mimeType: 'application/json', text: jsonText(context) }],
     };
   }
-  if (rawUri.startsWith('ghostrecon://auto-rag/decisions/')) {
-    const name = decodeURIComponent(rawUri.slice('ghostrecon://auto-rag/decisions/'.length));
+  if (rawUri.startsWith('ghostrecon://auto-rag/')) {
+    const name = decodeURIComponent(rawUri.slice('ghostrecon://auto-rag/'.length));
     const item = await readAutoRagMarkdown(name, { root: ROOT });
     return {
       contents: [{ uri: rawUri, mimeType: 'text/markdown', text: item.text }],
@@ -534,6 +609,61 @@ function getPrompt(name, args = {}) {
 
 async function callTool(name, args = {}) {
   const client = makeClient();
+
+  if (name === 'ghostrecon_auto_rag_list') {
+    return toolResult({
+      ok: true,
+      dir: resolveAutoRagDir({ root: ROOT }),
+      memories: await listAutoRagMarkdown({ root: ROOT, limit: args.limit || 20 }),
+    });
+  }
+
+  if (name === 'ghostrecon_auto_rag_read') {
+    return toolResult(await readAutoRagMarkdown(args.name, { root: ROOT }));
+  }
+
+  if (name === 'ghostrecon_auto_rag_search') {
+    return toolResult({
+      ok: true,
+      dir: resolveAutoRagDir({ root: ROOT }),
+      query: String(args.query || ''),
+      memories: await searchAutoRagMarkdown({ root: ROOT, query: args.query, limit: args.limit || 8 }),
+    });
+  }
+
+  if (name === 'ghostrecon_auto_rag_write_note') {
+    return toolResult({
+      ok: true,
+      note: await writeAutoRagNote({
+        root: ROOT,
+        kind: 'note',
+        title: args.title,
+        body: args.body,
+        target: args.target || '',
+        tags: cleanArray(args.tags),
+        metadata: args.metadata || null,
+      }),
+    });
+  }
+
+  if (name === 'ghostrecon_auto_rag_write_lesson') {
+    return toolResult({
+      ok: true,
+      lesson: await writeAutoLesson({
+        root: ROOT,
+        target: args.target || '',
+        problem: args.problem,
+        decision: args.decision,
+        outcome: args.outcome || '',
+        modules: cleanArray(args.modules),
+        commanders: args.commanders || null,
+        confidence: args.confidence || '',
+        tags: cleanArray(args.tags),
+        metadata: args.metadata || null,
+      }),
+    });
+  }
+
   await ensureReady(client);
 
   if (name === 'ghostrecon_health') {
@@ -624,6 +754,7 @@ async function callTool(name, args = {}) {
   if (name === 'ghostrecon_plan_auto') {
     const target = String(args.target || '').trim();
     if (!target) return errorResult('target vazio');
+    const { detectAutoProviders, buildAutoToolCatalog, createAutoPlan } = await loadAutoPlanningModules();
     const commanders = cleanArray(args.commanders);
     const providers = await detectAutoProviders({ selected: commanders });
     const ragContext = await loadAutoRagContext({ root: ROOT, limit: 6 });
@@ -684,28 +815,18 @@ async function callTool(name, args = {}) {
   }
 
   if (name === 'ghostrecon_hexstrike_status') {
+    const { getHexstrikeCapabilities } = await loadHexstrikeModules();
     return toolResult(await getHexstrikeCapabilities({ ghostRoot: ROOT }));
   }
 
   if (name === 'ghostrecon_hexstrike_intel') {
     const target = String(args.target || '').trim();
     if (!target) return errorResult('target vazio');
+    const { runHexstrikeOrchestrator } = await loadHexstrikeModules();
     return toolResult(await runHexstrikeOrchestrator({
       target,
       objective: args.objective || 'comprehensive',
     }));
-  }
-
-  if (name === 'ghostrecon_auto_rag_list') {
-    return toolResult({
-      ok: true,
-      dir: resolveAutoRagDir({ root: ROOT }),
-      memories: await listAutoRagMarkdown({ root: ROOT, limit: args.limit || 20 }),
-    });
-  }
-
-  if (name === 'ghostrecon_auto_rag_read') {
-    return toolResult(await readAutoRagMarkdown(args.name, { root: ROOT }));
   }
 
   return errorResult(`tool desconhecida: ${name}`);
@@ -757,7 +878,7 @@ async function handleRequest(message) {
     if (method === 'resources/list') {
       const rag = await listAutoRagMarkdown({ root: ROOT, limit: 20 }).catch(() => []);
       const ragResources = rag.map((item) => ({
-        uri: `ghostrecon://auto-rag/decisions/${encodeURIComponent(item.name)}`,
+        uri: `ghostrecon://auto-rag/${encodeURIComponent(item.name)}`,
         name: item.title || item.name,
         description: `Auto Mode memory: ${item.name}`,
         mimeType: 'text/markdown',

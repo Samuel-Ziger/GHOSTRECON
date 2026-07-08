@@ -3,6 +3,7 @@ import { detectAutoProviders } from './provider-detector.mjs';
 import { buildAutoToolCatalog } from './tool-catalog.mjs';
 import { createAutoPlan, evaluateAutoRun } from './planner.mjs';
 import { loadAutoRagContext, writeAutoDecisionMarkdown } from './rag-memory.mjs';
+import { createCursorHandoff } from './providers/cursor.mjs';
 import { expandIntrusiveRunModules, gateModules } from '../modules/opsec.mjs';
 
 function sendSafe(emit, obj) {
@@ -119,6 +120,29 @@ export async function runAutoRecon({
     tags: ['plan', req.mode],
   }).catch((e) => ({ error: e?.message || String(e) }));
   captureEmit({ type: 'auto_rag', phase: 'plan_saved', memory: planMemory });
+
+  const cursorSelected = (plan.commanders?.selected || req.commanders || []).includes('cursor');
+  if (cursorSelected) {
+    const cursorHandoff = await createCursorHandoff({
+      root: ROOT,
+      env,
+      requestRunId,
+      target: req.target,
+      plan,
+      providers,
+      ragContext,
+      execFileImpl,
+    }).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+    captureEmit({
+      type: 'auto_cursor',
+      phase: 'handoff_ready',
+      mode: cursorHandoff?.state?.mode || 'handoff',
+      installed: Boolean(cursorHandoff?.state?.installed),
+      agentInstalled: Boolean(cursorHandoff?.state?.agentInstalled),
+      task: cursorHandoff?.task || null,
+      error: cursorHandoff?.error || null,
+    });
+  }
 
   const pipelineBody = {
     ...body,
