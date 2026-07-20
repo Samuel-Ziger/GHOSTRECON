@@ -42,6 +42,11 @@ data/*.db-*
 # Relatórios IA sem pasta de projeto
 data/ai_reports/
 
+# Relatórios de execução (incluindo HTML integrado do FrameSeven)
+/reports/
+FrameSeven/reports/
+**/integrated-findings.json
+
 # SQLite por projeto/escopo (não versionar)
 escopo/
 clone/
