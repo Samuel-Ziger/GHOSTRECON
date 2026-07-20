@@ -1,0 +1,163 @@
+package config
+
+import (
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestNewDefaults(t *testing.T) {
+	cfg := New("https://example.com")
+
+	if cfg.Target != "https://example.com" {
+		t.Errorf("target = %q", cfg.Target)
+	}
+
+	if cfg.Timeout != DefaultTimeout {
+		t.Errorf("timeout = %v, want %v", cfg.Timeout, DefaultTimeout)
+	}
+
+	if cfg.UserAgent != DefaultUserAgent {
+		t.Errorf("user agent = %q, want %q", cfg.UserAgent, DefaultUserAgent)
+	}
+
+	if cfg.RateRequests != DefaultRateRequests {
+		t.Errorf("rate requests = %d, want %d", cfg.RateRequests, DefaultRateRequests)
+	}
+
+	if cfg.ToolTimeout != DefaultToolTimeout {
+		t.Errorf("tool timeout = %v, want %v", cfg.ToolTimeout, DefaultToolTimeout)
+	}
+
+	if cfg.ToolConcurrency != DefaultToolConcurrency {
+		t.Errorf("tool concurrency = %d, want %d", cfg.ToolConcurrency, DefaultToolConcurrency)
+	}
+}
+
+func TestRandomUserAgent(t *testing.T) {
+	if len(UserAgents) == 0 {
+		t.Fatal("UserAgents pool is empty")
+	}
+
+	for range 20 {
+		ua := RandomUserAgent()
+		if !slices.Contains(UserAgents, ua) {
+			t.Fatalf("RandomUserAgent returned %q, which is not in the pool", ua)
+		}
+	}
+}
+
+func TestNormalizeTarget(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"https://example.com", "https://example.com"},
+		{"https://example.com/", "https://example.com"},
+		{"http://example.com/admin/", "http://example.com/admin"},
+		{"http://Example.COM/Path/", "http://example.com/Path"},
+		{"HTTP://EXAMPLE.COM", "http://example.com"},
+		{"https://example.com/path/to/page", "https://example.com/path/to/page"},
+		{"http://example.com/path?a=1&b=2", "http://example.com/path?a=1&b=2"},
+		{"", ""},
+		{"not-a-url", "not-a-url"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			got := normalizeTarget(c.input)
+			if got != c.want {
+				t.Errorf("normalizeTarget(%q) = %q, want %q", c.input, got, c.want)
+			}
+		})
+	}
+}
+
+func TestValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{"valid https", New("https://example.com"), false},
+		{"valid http", New("http://example.com/path?a=1"), false},
+		{"empty target", New(""), true},
+		{"blank target", New("   "), true},
+		{"missing scheme", New("example.com"), true},
+		{"unsupported scheme", New("ftp://example.com"), true},
+		{"no host", New("http://"), true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.cfg.Validate()
+
+			if c.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateNumericFields(t *testing.T) {
+	cfg := New("https://example.com")
+	cfg.Timeout = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("expected error for non-positive timeout")
+	}
+
+	cfg = New("https://example.com")
+	cfg.RateRequests = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("expected error for non-positive rate requests")
+	}
+
+	cfg = New("https://example.com")
+	cfg.ToolTimeout = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("expected error for non-positive tool timeout")
+	}
+
+	cfg = New("https://example.com")
+	cfg.ToolConcurrency = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("expected error for non-positive tool concurrency")
+	}
+
+	cfg = New("https://example.com")
+	cfg.Timeout = 5 * time.Second
+	cfg.ToolTimeout = 20 * time.Second
+	cfg.ToolConcurrency = 2
+	cfg.RateRequests = 10
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestNormalizedCustomPayloads(t *testing.T) {
+	cfg := New("https://example.com")
+	cfg.CustomPayloads = []string{"  /admin  ", "", "/admin", strings.Repeat("a", MaxCustomPayloadLen+10)}
+
+	payloads := cfg.NormalizedCustomPayloads()
+	if len(payloads) != 2 {
+		t.Fatalf("payloads = %v, want two normalized payloads", payloads)
+	}
+
+	if payloads[0] != "/admin" {
+		t.Errorf("first payload = %q, want /admin", payloads[0])
+	}
+
+	if len(payloads[1]) != MaxCustomPayloadLen {
+		t.Errorf("second payload length = %d, want %d", len(payloads[1]), MaxCustomPayloadLen)
+	}
+}

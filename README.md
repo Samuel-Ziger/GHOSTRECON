@@ -10,6 +10,10 @@ Use somente em alvos onde voce tem autorizacao explicita. O GHOSTRECON possui mu
 
 ## Status Atual Do Projeto
 
+**Estado operacional:** recon manual estável; Modo Auto pausado para evolução controlada.
+
+O Modo Auto já foi validado para planejamento Codex, recon passivo/deep-passive, avaliação pós-pipeline, cancelamento e timeouts. O FrameSeven integrado está disponível no RUN comum e no AUTO, com autenticação opcional, Vigolium obrigatório, deduplicação conjunta e relatório HTML integrado baseado no template original do FrameSeven.
+
 O repositorio esta organizado como uma stack local completa:
 
 - API principal Node/Express em `server/index.js`.
@@ -129,7 +133,7 @@ RUN RECON
   -> relatorio e evidencias
 ```
 
-Fluxo com Modo Auto:
+Fluxo com Modo Auto (temporariamente pausado para novas mudanças):
 
 ```text
 AUTO MODE
@@ -139,6 +143,10 @@ AUTO MODE
   -> backend monta plano
   -> pipeline executa
   -> avaliacao final aparece no terminal
+
+### Política de autonomia do Auto
+
+A UI possui quatro níveis planejados: observação, assistido, autorizado e autorização completa OPSEC. Os níveis 3/4 só devem liberar módulos ativos após confirmação humana; o fluxo ainda está em validação e não é considerado concluído.
 ```
 
 ## Modo Auto
@@ -700,6 +708,10 @@ Veja `docs/TOR.md`. O modo strict exige pre-requisitos como SOCKS, ControlPort, 
 ## Documentos Relacionados
 
 - `MODO-AUTO-GHOSTRECON.md`: arquitetura detalhada do Modo Auto.
+- `MELHORIAS-PENDENTES-MODO-AUTO.md`: backlog e estado atual do Auto.
+- `PLANO-MELHORIAS-AUTO-IA.md`: plano histórico e decisões de evolução do Auto.
+- `FRAMESEVEN-INTEGRACAO-FUTURA.md`: estado operacional, fluxo comum e melhorias futuras do FrameSeven.
+- `PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md`: especificação do fluxo autenticado e integração dos três motores.
 - `FUSAO-VIGOLIUM.md`: fusao e papel do Vigolium.
 - `ANALISE-PROJETO.md`: analise geral antiga do projeto.
 - `REFATORACAO.md`: notas de refatoracao.

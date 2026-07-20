@@ -3285,6 +3285,11 @@
           <div class="toggle-label" style="margin:8px 0 6px">Cookie (opcional)</div>
           <input id="authCookieInput" class="domain-input" type="text" placeholder="session=abc123" style="padding:8px 10px">
           <div class="toggle-row" style="margin-top:10px">
+            <span class="toggle-label">FrameSeven autenticado (fluxo normal)</span>
+            <label class="toggle"><input type="checkbox" id="frameSevenAuthToggle"><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+          </div>
+          <p class="auto-hint" style="margin:6px 0">Quando marcado, o navegador do FrameSeven abre durante o RUN normal; após o login, confirme o popup para executar GHOSTRECON → Vigolium → FrameSeven.</p>
+          <div class="toggle-row" style="margin-top:10px">
             <span class="toggle-label" title="Headers de identificação exigidos por alguns programas de bug bounty">Headers de programa (bug bounty)</span>
             <label class="toggle">
               <input type="checkbox" id="programHeadersToggle">
@@ -3380,6 +3385,16 @@
                 </select>
               </div>
               <div class="auto-field">
+                <label for="autoAutonomyLevelSelect">Autonomia da IA</label>
+                <select id="autoAutonomyLevelSelect" class="domain-input">
+                  <option value="observation" selected>1 — Observação</option>
+                  <option value="assisted">2 — Assistido</option>
+                  <option value="authorized">3 — Autorizado</option>
+                  <option value="authorized_opsec">4 — Autorização completa OPSEC</option>
+                </select>
+                <small class="auto-hint">Ações destrutivas sempre exigem confirmação humana.</small>
+              </div>
+              <div class="auto-field">
                 <label for="autoOpenrouterModelSelect">OpenRouter model</label>
                 <select id="autoOpenrouterModelSelect" class="domain-input">
                   <option value="anthropic/claude-3.7-sonnet">anthropic/claude-3.7-sonnet</option>
@@ -3410,9 +3425,14 @@
             <div class="auto-grid">
               <label class="auto-choice"><input type="checkbox" id="autoHexstrikeToggle" checked><div><strong>HexStrike</strong><span>Permite usar capacidades e MCP/bridge HexStrike no plano.</span></div></label>
               <label class="auto-choice"><input type="checkbox" id="autoDeepPassiveToggle" checked><div><strong>Deep passive</strong><span>Inclui catalogo passivo profundo antes de sugerir ativo.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoFrameSevenAuthToggle"><div><strong>FrameSeven autenticado</strong><span>Abre o navegador para login e exige confirmação antes de iniciar a auditoria autenticada.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoVigoliumCodexToggle"><div><strong>Vigolium com Codex</strong><span>Permite que o Codex configure a auditoria obrigatória do Vigolium.</span></div></label>
             </div>
 
-            <p class="auto-hint" id="autoModeStatus">Pronto para iniciar o agente automatico local.</p>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <p class="auto-hint" id="autoModeStatus">Pronto para iniciar o agente automatico local.</p>
+              <button type="button" class="auto-secondary-btn" id="autoCancelBtn" onclick="cancelAutoModeRecon()" disabled>Parar Auto</button>
+            </div>
             <details style="margin-top:12px" id="autoForgePanel">
               <summary style="cursor:pointer;color:var(--accent3)">Module Forge — revisão humana</summary>
               <div style="display:flex;gap:8px;align-items:center;margin:10px 0">
@@ -4514,6 +4534,9 @@ window.__ghostreconManualFp = new Set();
 let currentFilter = 'all';
 let findingsSearchQuery = '';
 let isRunning = false;
+let activeAutoController = null;
+let activeAutoSessionId = null;
+let autoCancelRequested = false;
 let stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
 let targetDomain = '';
 const MITRE_LIVE_SESSION_STORAGE_KEY = 'ghostrecon_mitre_live_session_id';
@@ -5334,11 +5357,21 @@ async function decideAutoForge(forgeId, decision) {
 function summarizeAutoEvent(ev) {
   if (!ev || typeof ev !== 'object') return null;
   if (ev.type === 'auto_session' && ev.phase === 'started') {
+    activeAutoSessionId = ev.sessionId || null;
+    autoCancelRequested = false;
     if (ev.sessionId) {
       localStorage.setItem('ghostrecon.auto.lastSessionId', ev.sessionId);
     }
     const commanders = Array.isArray(ev.commanders) && ev.commanders.length ? ev.commanders.join(', ') : 'ghostrecon';
     return { msg: `AUTO: sessão ${ev.sessionId || ev.requestRunId || '?'} | modo ${ev.mode || 'balanced'} | comandantes: ${commanders}`, level: 'section' };
+  }
+  if (ev.type === 'auto_session' && ['cancelled', 'interrupted', 'failed', 'completed'].includes(ev.phase)) {
+    if (ev.phase !== 'completed') addLog(`AUTO sessão ${ev.phase}: ${ev.error || ev.session?.error || ''}`.trim(), ev.phase === 'failed' ? 'error' : 'warn');
+    if (ev.phase !== 'completed') activeAutoSessionId = null;
+    return null;
+  }
+  if (ev.type === 'auto_stall_detected') {
+    return { msg: `AUTO watchdog: sem progresso há ${Math.round((ev.idleMs || 0) / 1000)}s | fase=${ev.currentStage || '-'} | módulo=${ev.currentModule || '-'}`, level: 'warn' };
   }
   if (ev.type === 'auto_providers') {
     const providers = Array.isArray(ev.providers) ? ev.providers : [];
@@ -5388,7 +5421,8 @@ function summarizeAutoEvent(ev) {
     };
   }
   if (ev.type === 'auto_heartbeat') {
-    return { msg: `AUTO heartbeat: iteração=${ev.iteration || 0} chamadas=${ev.agentCalls || 0} tempo=${Math.round((ev.elapsedMs || 0) / 1000)}s`, level: 'info' };
+    const where = ev.currentModule || ev.currentStage || '-';
+    return { msg: `AUTO heartbeat: iteração=${ev.iteration || 0} chamadas=${ev.agentCalls || 0} tempo=${Math.round((ev.elapsedMs || 0) / 1000)}s | atual=${where}`, level: 'info' };
   }
   if (ev.type === 'auto_agent_turn_completed') {
     const modules = Array.isArray(ev.decision?.requestedModules) ? ev.decision.requestedModules : [];
@@ -5472,9 +5506,15 @@ async function startAutoModeRecon() {
   const startBtn = document.getElementById('autoStartBtn');
   const runBtn = document.getElementById('runBtn');
   const status = document.getElementById('autoModeStatus');
+  const cancelBtn = document.getElementById('autoCancelBtn');
   const previousAutoText = autoBtn?.textContent || 'AUTO MODE';
 
+  activeAutoController = new AbortController();
+  autoCancelRequested = false;
+  activeAutoSessionId = null;
+
   isRunning = true;
+  if (cancelBtn) cancelBtn.disabled = false;
   logStarted = false;
   findings = [];
   targetDomain = target;
@@ -5513,8 +5553,11 @@ async function startAutoModeRecon() {
       autoBtn.textContent = previousAutoText;
       autoBtn.classList.remove('running');
     }
+    activeAutoController = null;
+    activeAutoSessionId = null;
     if (runBtn) runBtn.disabled = false;
     if (startBtn) startBtn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = true;
     document.getElementById('statusText').textContent = ok ? 'AUTO COMPLETO' : 'ERRO';
     currentPipeDetail = ok ? 'auto concluido' : 'auto erro';
     updateProgressDetail();
@@ -5537,6 +5580,9 @@ async function startAutoModeRecon() {
       commanders,
       includeHexstrike: document.getElementById('autoHexstrikeToggle')?.checked !== false,
       includeDeepPassive: document.getElementById('autoDeepPassiveToggle')?.checked !== false,
+      autonomyLevel: document.getElementById('autoAutonomyLevelSelect')?.value || 'observation',
+      frameSevenAuth: document.getElementById('autoFrameSevenAuthToggle')?.checked === true,
+      vigoliumUseCodex: document.getElementById('autoVigoliumCodexToggle')?.checked === true,
       resumeSessionId: document.getElementById('autoResumeSessionInput')?.value?.trim() || null,
       auth: authConfig,
     };
@@ -5548,15 +5594,42 @@ async function startAutoModeRecon() {
       method: 'POST',
       headers: fetchHeaders,
       body: JSON.stringify(body),
+      signal: activeAutoController.signal,
     });
     if (!res.ok) {
       finish(false, `AUTO: HTTP ${res.status} - confira se o servidor esta rodando e autenticado.`);
       return;
     }
     const ok = await consumeReconStreamFromResponse(res, 0, null, null);
-    finish(ok, ok ? 'AUTO: execucao concluida.' : 'AUTO: pipeline terminou com erro.');
+    if (autoCancelRequested) {
+      finish(true, 'AUTO: cancelamento concluído.');
+    } else {
+      finish(ok, ok ? 'AUTO: execucao concluida.' : 'AUTO: pipeline terminou com erro.');
+    }
   } catch (e) {
-    finish(false, `AUTO: ${e?.message || e}`);
+    finish(false, autoCancelRequested ? 'AUTO: cancelamento solicitado.' : `AUTO: ${e?.message || e}`);
+  }
+}
+
+async function cancelAutoModeRecon() {
+  if (!isRunning) return;
+  autoCancelRequested = true;
+  const sessionId = activeAutoSessionId;
+  const status = document.getElementById('autoModeStatus');
+  if (status) status.textContent = sessionId ? `Cancelando sessão ${sessionId}...` : 'Cancelando sessão...';
+  try {
+    if (sessionId) {
+      const token = await ensureCsrfToken();
+      const headers = autoApiHeaders(true);
+      headers['X-CSRF-Token'] = token;
+      await fetch(apiUrl(`/api/recon/auto/${encodeURIComponent(sessionId)}/cancel`), {
+        method: 'POST', headers, body: JSON.stringify({ reason: 'operator_ui' }),
+      });
+    }
+  } catch (e) {
+    addLog(`AUTO: falha ao solicitar cancelamento no servidor: ${e?.message || e}`, 'warn');
+  } finally {
+    activeAutoController?.abort();
   }
 }
 
@@ -7169,6 +7242,11 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
     try {
       chunk = await reader.read();
     } catch (e) {
+      if (autoCancelRequested) {
+        addLog('AUTO: stream encerrado após cancelamento solicitado.', 'warn');
+        mitreLivePost({ type: 'run_end' });
+        return true;
+      }
       addLog(
         `Stream NDJSON interrompida (${e?.message || e}). Mantém a aba aberta durante Shannon longo; evita suspender o portátil. Recarrega e tenta de novo se o servidor ainda corre.`,
         'error',
@@ -7190,6 +7268,38 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
 
       const autoSummary = summarizeAutoEvent(ev);
       if (autoSummary) addLog(autoSummary.msg, autoSummary.level || 'info');
+
+      if (ev.type === 'auto_approval_required' && ev.approval) {
+        const a = ev.approval;
+        const isAuthentication = a.kind === 'authentication';
+        const prompt = isAuthentication
+          ? `AUTENTICAÇÃO CONCLUÍDA\n\nAlvo: ${a.target || 'sessão atual'}\n\nFechar o navegador e iniciar as auditorias GHOSTRECON, Vigolium e FrameSeven?`
+          : `AÇÃO DESTRUTIVA SOLICITADA\n\nMódulo: ${a.module || a.tool || 'desconhecido'}\nAlvo: ${a.target || 'sessão atual'}\nAção: ${a.action || a.description || 'não especificada'}\nRisco: ${a.risk || 'ação ativa/destrutiva'}\n\nDeseja confirmar?`;
+        const approved = window.confirm(prompt);
+        try {
+          const csrf = await ensureCsrfToken();
+          await fetch(apiUrl(`/api/recon/auto/${encodeURIComponent(ev.sessionId)}/approval`), {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+            body: JSON.stringify({ approvalId: a.approvalId, approved, reason: approved ? 'operador confirmou' : 'operador recusou' }),
+          });
+          addLog(`AUTO: ação ${approved ? 'confirmada' : 'recusada'} pelo operador.`, approved ? 'warn' : 'info');
+        } catch (e) { addLog(`AUTO: falha ao responder aprovação (${e?.message || e})`, 'error'); }
+      }
+      if (ev.type === 'auth_required' && ev.approvalId) {
+        const approved = window.confirm(`AUTENTICAÇÃO DO FRAMESEVEN\n\nConclua o login na janela do navegador para ${ev.target || 'o alvo'} e clique em OK para iniciar GHOSTRECON, Vigolium e FrameSeven.`);
+        try {
+          const csrf = await ensureCsrfToken();
+          await fetch(apiUrl(`/api/recon/frameseven/${encodeURIComponent(ev.approvalId)}/approval`), {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+            body: JSON.stringify({ approved }),
+          });
+          addLog(`FrameSeven: autenticação ${approved ? 'confirmada' : 'recusada'}.`, approved ? 'info' : 'warn');
+        } catch (e) { addLog(`FrameSeven: falha ao confirmar autenticação (${e?.message || e})`, 'error'); }
+      }
+      if (ev.type === 'dedupe_summary' && ev.reportUrl) {
+        addLog(`Relatório integrado: ${ev.output || 0} achado(s) após deduplicação.`, 'success');
+        window.open(ev.reportUrl, 'frameseven_integrated_report', 'noopener,noreferrer');
+      }
 
       if (ev.type === 'shannon_cli' && ev.line != null) addLogShannonCliLine(ev.line);
       if (ev.type === 'log') addLog(ev.msg, ev.level || 'info');
@@ -7657,6 +7767,7 @@ async function startRecon() {
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
         profile: getReconProfile(),
         auth: getOptionalAuthConfig(),
+        frameSevenAuth: document.getElementById('frameSevenAuthToggle')?.checked === true,
         autoAiReports: aiReportsEnabled,
         aiProviderMode: lmStudioOnly ? 'lmstudio_only' : 'auto',
         shannonPrecheck,
@@ -7678,7 +7789,7 @@ async function startRecon() {
       if (engId) streamBody.engagementId = engId;
       const opHand = (document.getElementById('engagementOperatorInput')?.value || '').trim();
       if (opHand) streamBody.operator = opHand;
-      if (document.getElementById('confirmActiveToggle')?.checked) streamBody.confirmActive = true;
+      if (document.getElementById('confirmActiveToggle')?.checked || streamBody.profile === 'deep') streamBody.confirmActive = true;
       const opsecV = String(document.getElementById('opsecProfileSelect')?.value || 'standard')
         .trim()
         .toLowerCase();
@@ -9151,6 +9262,18 @@ function closeXssHelpModal() {
   o.classList.remove('is-open');
   o.setAttribute('aria-hidden', 'true');
 }
+  const deepProfileSelect = document.getElementById('reconProfileSelect');
+  deepProfileSelect?.addEventListener('change', () => {
+    const active = document.getElementById('confirmActiveToggle');
+    if (deepProfileSelect.value !== 'deep' || !active) return;
+    active.checked = true;
+    active.dispatchEvent(new Event('change', { bubbles: true }));
+    addLog('Perfil deep: Confirmar ativo habilitado automaticamente para permitir sqlmap e outros módulos intrusivos.', 'warn');
+  });
+  if (deepProfileSelect?.value === 'deep') {
+    const active = document.getElementById('confirmActiveToggle');
+    if (active) active.checked = true;
+  }
 </script>
 
 <div

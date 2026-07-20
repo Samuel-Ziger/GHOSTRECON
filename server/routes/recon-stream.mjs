@@ -18,6 +18,7 @@ import {
 } from '../modules/tor-strict.js';
 import { normalizeOpenrouterOnlyFlag } from '../modules/ai-dual-report.js';
 import { reconHttpContext } from '../lib/http-history.mjs';
+import { runIntegratedFrameSeven } from '../integrations/frameseven-runner.mjs';
 
 export function registerReconStreamRoutes(app, deps) {
   const {
@@ -80,12 +81,14 @@ export function registerReconStreamRoutes(app, deps) {
 
   const engagementIdRaw = req.body?.engagementId != null ? String(req.body.engagementId).trim() : '';
   const operatorRaw = req.body?.operator != null ? String(req.body.operator).trim() : '';
-  const confirmActive = Boolean(req.body?.confirmActive);
   const rawOpsec = String(req.body?.opsecProfile || process.env.GHOSTRECON_OPSEC_PROFILE || 'standard')
     .trim()
     .toLowerCase();
   const allowedOpsec = new Set(['passive', 'stealth', 'standard', 'aggressive']);
   const opsecProfile = allowedOpsec.has(rawOpsec) ? rawOpsec : 'standard';
+  // Deep is the explicit full-audit profile selected by the operator. It
+  // enables the active-module gate so sqlmap/Vigolium can reach the auth flow.
+  const confirmActive = Boolean(req.body?.confirmActive) || opsecProfile === 'deep';
   const playbookNameForCheck =
     req.body?.playbook != null ? String(req.body.playbook).trim() : '';
   const navigatorMode = Boolean(req.body?.navigatorMode === true);
@@ -335,13 +338,20 @@ export function registerReconStreamRoutes(app, deps) {
 
   try {
     await reconHttpContext.run({ requestRunId, target: domain, emit: send }, async () => {
-      await runPipeline({
+      await runIntegratedFrameSeven({
+        root: ROOT,
+        target: /^https?:\/\//i.test(domain) ? domain : `https://${domain}`,
+        authBrowser: req.body?.frameSevenAuth === true,
+        requestId: requestRunId,
+        signal: req.signal,
+        emit: send,
+        pipeline: (capturedAuth, integratedEmit) => runPipeline({
         domain,
         exactMatch,
-        modules,
-        emit: send,
+        modules: [...new Set([...modules, 'vigolium_dast', 'vigolium_audit'])],
+        emit: integratedEmit || send,
         kaliMode,
-        auth: authForPipeline,
+        auth: capturedAuth || authForPipeline,
         profile,
         outOfScope: req.body?.outOfScope,
         projectName: req.body?.projectName,
@@ -366,7 +376,7 @@ export function registerReconStreamRoutes(app, deps) {
         identityCtrl,
         navegation: navegationBody,
         navigatorMode: navigatorActive,
-        engine: req.body?.engine != null ? String(req.body.engine).trim().toLowerCase() : null,
+        engine: 'both',
         vigoliumStrategy:
           req.body?.vigoliumStrategy != null
             ? String(req.body.vigoliumStrategy).trim().toLowerCase()
@@ -380,7 +390,7 @@ export function registerReconStreamRoutes(app, deps) {
           ? req.body.vigoliumModuleTags.map(String)
           : null,
         vigoliumModuleTag: req.body?.vigoliumModuleTag != null ? String(req.body.vigoliumModuleTag).trim() : null,
-        vigoliumAgent: req.body?.vigoliumAgent != null ? String(req.body.vigoliumAgent).trim().toLowerCase() : null,
+        vigoliumAgent: 'audit',
         vigoliumSource: req.body?.vigoliumSource != null ? String(req.body.vigoliumSource).trim() : null,
         vigoliumAuthFiles: Array.isArray(req.body?.vigoliumAuthFiles)
           ? req.body.vigoliumAuthFiles.map(String)
@@ -404,6 +414,7 @@ export function registerReconStreamRoutes(app, deps) {
           req.body?.vigoliumReportOnly != null ? String(req.body.vigoliumReportOnly).trim() : null,
         vigoliumPreferPath: req.body?.vigoliumPreferPath === true,
         vigoliumUseCodex: req.body?.vigoliumUseCodex === true,
+        }),
       });
     });
   } catch (e) {

@@ -14,6 +14,8 @@ import { runForgeCorrectionLoop } from './forge/correction-loop.mjs';
 import { expandIntrusiveRunModules, gateModules } from '../modules/opsec.mjs';
 import { createAutoSession, readAutoSessionSnapshot, writeAutoSessionSnapshot } from './session-store.mjs';
 import { registerActiveAutoSession, unregisterActiveAutoSession } from './active-sessions.mjs';
+import fs from 'node:fs/promises';
+import { runFrameSeven, resolveFrameSevenBinary } from '../integrations/frameseven-adapter.mjs';
 
 function sendSafe(emit, obj) {
   try { emit(obj); } catch { /* ignore */ }
@@ -40,6 +42,12 @@ export function normalizeAutoRequest(body = {}) {
           : null,
     includeHexstrike: body.includeHexstrike !== false,
     includeDeepPassive: body.includeDeepPassive,
+    // Política explícita de autonomia da IA por sessão. O nível 4 continua
+    // sujeito à confirmação humana por ação destrutiva (não há execução livre).
+    autonomyLevel: ['observation', 'assisted', 'authorized', 'authorized_opsec'].includes(String(body.autonomyLevel || '').toLowerCase())
+      ? String(body.autonomyLevel).toLowerCase() : 'observation',
+    frameSevenAuth: body.frameSevenAuth === true,
+    vigoliumUseCodex: body.vigoliumUseCodex === true,
     resumeSessionId: body.resumeSessionId ? String(body.resumeSessionId).trim() : null,
   };
 }
@@ -64,27 +72,70 @@ export async function runAutoRecon({
     ? await readAutoSessionSnapshot(ROOT, req.resumeSessionId, env)
     : null;
   if (restoredState && restoredState.target !== req.target) throw new Error('sessão pertence a outro alvo');
+  if (restoredState && ['completed', 'cancelled'].includes(restoredState.status)) {
+    throw new Error(`sessão ${restoredState.status} não pode ser retomada`);
+  }
   const requestRunId = restoredState?.requestRunId || `auto-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
   const sessionId = restoredState?.sessionId || `session-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
   const session = createAutoSession({ sessionId, requestRunId, target: req.target, providers: req.commanders, env, restoredState });
+  session.state.autonomyLevel = req.autonomyLevel;
+  session.state.frameSevenAuth = req.frameSevenAuth;
   registerActiveAutoSession(session);
   if (signal) {
     if (signal.aborted) session.abort(signal.reason || 'client_disconnected');
     else signal.addEventListener('abort', () => session.abort(signal.reason || 'client_disconnected'), { once: true });
   }
   const captureEmit = (event) => {
+    session.touch(event);
     events.push(event);
     sendSafe(emit, event);
+  };
+  const rawRequestApproval = session.requestApproval.bind(session);
+  session.requestApproval = (details = {}, timeoutMs) => {
+    const pending = rawRequestApproval(details, timeoutMs);
+    if (session.state.pendingApproval) captureEmit({
+      type: 'auto_approval_required',
+      sessionId,
+      approval: session.state.pendingApproval,
+    });
+    return pending;
   };
 
   try {
   const heartbeat = setInterval(() => captureEmit({
     type: 'auto_heartbeat', sessionId, iteration: session.state.iteration,
     agentCalls: session.state.agentCalls, elapsedMs: Date.now() - Date.parse(session.state.startedAt),
+    lastActivityAt: session.state.lastActivityAt,
+    currentStage: session.state.currentStage,
+    currentModule: session.state.currentModule,
   }), Math.max(5_000, Math.min(60_000, Number(env.GHOSTRECON_AUTO_HEARTBEAT_MS || 15_000))));
   heartbeat.unref?.();
   session.resources.push({ close: () => clearInterval(heartbeat) });
-  captureEmit({ type: 'auto_session', phase: 'started', sessionId, requestRunId, mode: req.mode, commanders: req.commanders, limits: session.limits });
+  // O watchdog não pode ficar atrás do timeout do turno. O padrão é uma margem
+  // curta sobre o limite do agente (210 s para o padrão de 180 s), e pode ser
+  // aumentado explicitamente por configuração.
+  const configuredStallTimeout = Number(env.GHOSTRECON_AUTO_STALL_TIMEOUT_MS || 0);
+  const stallTimeoutMs = Math.max(
+    session.limits.agentTimeoutMs + 30_000,
+    Math.min(1_800_000, Number.isFinite(configuredStallTimeout) && configuredStallTimeout > 0
+      ? configuredStallTimeout : session.limits.agentTimeoutMs + 30_000),
+  );
+  const watchdog = setInterval(() => {
+    const idleMs = Date.now() - Date.parse(session.state.lastActivityAt || session.state.startedAt);
+    // O limite de turno do agente não se aplica a módulos do pipeline. Audits
+    // passivos (como CORS) podem aguardar vários requests sequenciais.
+    const inAgentTurn = String(session.state.currentStage || '').startsWith('agent:');
+    const effectiveTimeoutMs = inAgentTurn ? stallTimeoutMs : session.limits.sessionTimeoutMs;
+    if (idleMs < effectiveTimeoutMs || session.signal.aborted) return;
+    captureEmit({
+      type: 'auto_stall_detected', idleMs, stallTimeoutMs: effectiveTimeoutMs,
+      currentStage: session.state.currentStage, currentModule: session.state.currentModule,
+    });
+    session.abort(`auto_stall_timeout:${session.state.currentStage || 'unknown'}`);
+  }, Math.max(5_000, Math.min(30_000, Math.floor(stallTimeoutMs / 4))));
+  watchdog.unref?.();
+  session.resources.push({ close: () => clearInterval(watchdog) });
+  captureEmit({ type: 'auto_session', phase: 'started', sessionId, requestRunId, mode: req.mode, autonomyLevel: req.autonomyLevel, frameSevenAuth: req.frameSevenAuth, commanders: req.commanders, limits: session.limits });
   await writeAutoSessionSnapshot(ROOT, session.state, env);
   let ragContext = await loadAutoRagContext({ root: ROOT, env, target: req.target, modules: req.modules, decisionType: 'plan' }).catch((e) => ({
     dir: '',
@@ -108,6 +159,7 @@ export async function runAutoRecon({
   const catalog = await buildAutoToolCatalog({
     includeHexstrike: req.includeHexstrike,
     includeDeepPassive: req.includeDeepPassive !== false,
+    includeIntrusive: ['authorized', 'authorized_opsec'].includes(req.autonomyLevel),
     ghostRoot: ROOT,
   });
   const catalogHash = createHash('sha256').update(JSON.stringify(catalog.modules.map((m) => ({ id: m.id, class: m.class, available: m.available !== false })))).digest('hex');
@@ -151,6 +203,9 @@ export async function runAutoRecon({
       }
     },
     session,
+    allowIntrusive: ['authorized', 'authorized_opsec'].includes(req.autonomyLevel),
+    autonomyLevel: req.autonomyLevel,
+    frameSevenAuth: req.frameSevenAuth,
   });
   const successfulTurns = [...council.proposals, ...council.reviews].filter((turn) => turn.ok && turn.decision);
   for (const turn of successfulTurns) {
@@ -298,8 +353,10 @@ export async function runAutoRecon({
     includeDeepPassive: req.includeDeepPassive,
     ragContext,
     agentDecision,
+    autonomyLevel: req.autonomyLevel,
   });
   plan.sessionId = sessionId;
+  plan.autonomyLevel = req.autonomyLevel;
   plan.limits = session.limits;
   plan.catalogHash = catalogHash;
   plan.promptVersion = 'auto-council-v2';
@@ -368,8 +425,9 @@ export async function runAutoRecon({
     domain: req.target,
     modules: iterationPlan.modules,
     profile: body.profile || (iterationPlan.mode === 'quick' ? 'quick' : 'standard'),
-    opsecProfile: body.opsecProfile || 'standard',
+    opsecProfile: body.opsecProfile || (['authorized', 'authorized_opsec'].includes(req.autonomyLevel) ? 'aggressive' : 'standard'),
     autoAiReports: body.autoAiReports === true,
+    autonomyLevel: req.autonomyLevel,
     signal: session.signal,
     requestRunId,
     ...pipelineOverrides,
@@ -388,11 +446,68 @@ export async function runAutoRecon({
     throw new Error(`Modo Auto bloqueado por OPSEC: ${gate.reason || gate.blocked?.join(', ')}`);
   }
 
-  captureEmit({ type: 'auto_step', step: 'act', status: 'running', iteration, modules: iterationPlan.modules });
-  await runPipeline({
+  if (gate.acknowledged?.length && ['authorized', 'authorized_opsec'].includes(req.autonomyLevel)) {
+    const approved = await session.requestApproval({
+      module: gate.acknowledged.join(', '), target: req.target,
+      action: 'executar módulos intrusivos autorizados',
+      risk: req.autonomyLevel === 'authorized_opsec' ? 'alto — perfil OPSEC completo' : 'ativo — requer confirmação humana',
+    });
+    if (!approved) {
+      captureEmit({ type: 'auto_approval_denied', sessionId, modules: gate.acknowledged });
+      pipelineBody.modules = pipelineBody.modules.filter((id) => !gate.acknowledged.includes(id));
+    } else {
+      captureEmit({ type: 'auto_approval_granted', sessionId, modules: gate.acknowledged });
+    }
+  }
+
+  const integratedPipelineBody = {
     ...pipelineBody,
-    emit: captureEmit,
-  });
+    modules: [...new Set([...pipelineBody.modules, 'vigolium_dast', 'vigolium_audit'])],
+    engine: 'both',
+    vigoliumAgent: 'audit',
+    vigoliumUseCodex: req.vigoliumUseCodex,
+  };
+  const runGhostReconAndVigolium = async (capturedAuth = null) => {
+    captureEmit({ type: 'engine_started', engine: 'ghostrecon', iteration });
+    await runPipeline({
+      ...integratedPipelineBody,
+      auth: capturedAuth || integratedPipelineBody.auth,
+      emit: captureEmit,
+    });
+    captureEmit({ type: 'engine_done', engine: 'ghostrecon', iteration });
+    captureEmit({ type: 'engine_done', engine: 'vigolium', iteration });
+  };
+
+  captureEmit({ type: 'auto_step', step: 'act', status: 'running', iteration, modules: integratedPipelineBody.modules });
+  const frameSevenBinary = resolveFrameSevenBinary(ROOT, env);
+  const frameSevenAvailable = await fs.access(frameSevenBinary).then(() => true).catch(() => false);
+  const frameSevenTarget = /^https?:\/\//i.test(req.target) ? req.target : `https://${req.target}`;
+  if (!frameSevenAvailable) {
+    captureEmit({ type: 'engine_unavailable', engine: 'frameseven', binary: frameSevenBinary });
+    await runGhostReconAndVigolium();
+  } else if (req.frameSevenAuth) {
+    await runFrameSeven({
+      root: ROOT,
+      target: frameSevenTarget,
+      outputDir: `reports/frameseven-${sessionId}`,
+      authBrowser: true,
+      signal: session.signal,
+      emit: captureEmit,
+      waitForAuth: () => session.requestApproval({
+        kind: 'authentication', module: 'frameseven', target: req.target,
+        action: 'fechar navegador e compartilhar a sessão temporária com os motores',
+        risk: 'sessão autenticada temporária; nenhuma senha será armazenada',
+      }, Number(env.GHOSTRECON_FRAMESEVEN_AUTH_TIMEOUT_MS || 10 * 60_000)),
+      beforeScan: (capturedAuth) => runGhostReconAndVigolium(capturedAuth),
+      env,
+    });
+  } else {
+    await runGhostReconAndVigolium();
+    await runFrameSeven({
+      root: ROOT, target: frameSevenTarget, outputDir: `reports/frameseven-${sessionId}`,
+      authBrowser: false, signal: session.signal, emit: captureEmit, env,
+    });
+  }
   captureEmit({ type: 'auto_step', step: 'act', status: 'done' });
 
   for (const id of iterationPlan.modules) executedModules.add(id);

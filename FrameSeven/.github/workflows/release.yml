@@ -1,0 +1,619 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.+~]+)?$ ]]; then
+            echo "Release tags must use vX.Y.Z or a valid prerelease suffix."
+            exit 1
+          fi
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l $(find . -type f -name '*.go'))"
+
+          if [ -n "$unformatted" ]; then
+            echo "The following Go files are not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install fpdf2
+        run: python3 -m pip install fpdf2
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test with race detector
+        run: go test -race ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    needs:
+      - quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            artifact_os: linux
+            goarch: amd64
+            archive: tar.gz
+            deb_arch: amd64
+            rpm_arch: x86_64
+            arch_arch: x86_64
+          - goos: linux
+            artifact_os: linux
+            goarch: arm64
+            archive: tar.gz
+            deb_arch: arm64
+            rpm_arch: aarch64
+            arch_arch: aarch64
+          - goos: darwin
+            artifact_os: macos
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            artifact_os: macos
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            artifact_os: windows
+            goarch: amd64
+            archive: zip
+            extension: .exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install Linux packaging tools
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm zstd
+
+      - name: Build binaries
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          mkdir -p build
+          version="${RELEASE_TAG#v}"
+
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X main.buildVersion=$version" \
+            -o "build/frameseven-cli${EXTENSION}" \
+            ./cmd/cli/v1
+
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "build/frameseven-mcp${EXTENSION}" \
+            ./cmd/mcp
+
+      - name: Create release archive
+        shell: bash
+        env:
+          ARTIFACT_OS: ${{ matrix.artifact_os }}
+          GOARCH: ${{ matrix.goarch }}
+          ARCHIVE: ${{ matrix.archive }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          cli_package="frameseven_cli_${version}_${ARTIFACT_OS}_${GOARCH}"
+          mcp_package="frameseven_mcp_${version}_${ARTIFACT_OS}_${GOARCH}"
+
+          mkdir -p "dist/$cli_package" "dist/$mcp_package"
+          cp "build/frameseven-cli${EXTENSION}" README.md LICENSE "dist/$cli_package/"
+          cp "build/frameseven-mcp${EXTENSION}" README.md LICENSE "dist/$mcp_package/"
+
+          if [ "$ARCHIVE" = "zip" ]; then
+            (
+              cd dist
+              zip -qr "${cli_package}.zip" "$cli_package"
+              zip -qr "${mcp_package}.zip" "$mcp_package"
+            )
+          else
+            tar -C dist -czf "dist/${cli_package}.tar.gz" "$cli_package"
+            tar -C dist -czf "dist/${mcp_package}.tar.gz" "$mcp_package"
+          fi
+
+          rm -rf "dist/$cli_package" "dist/$mcp_package"
+
+      - name: Create Debian packages
+        if: matrix.goos == 'linux'
+        shell: bash
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          version="${RELEASE_TAG#v}"
+
+          # CLI package
+          package_root="deb/frameseven"
+          package_file="frameseven_cli_${version}_linux_${DEB_ARCH}.deb"
+
+          mkdir -p \
+            "$package_root/DEBIAN" \
+            "$package_root/usr/bin" \
+            "$package_root/usr/share/doc/frameseven"
+
+          install -m 0755 build/frameseven-cli "$package_root/usr/bin/frameseven"
+          install -m 0644 README.md "$package_root/usr/share/doc/frameseven/README.md"
+          install -m 0644 LICENSE "$package_root/usr/share/doc/frameseven/copyright"
+
+          installed_size="$(du -sk "$package_root/usr" | cut -f1)"
+
+          cat > "$package_root/DEBIAN/control" <<EOF
+          Package: frameseven
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: $DEB_ARCH
+          Installed-Size: $installed_size
+          Maintainer: Frame Seven Project <sayseven7@users.noreply.github.com>
+          Homepage: https://github.com/sayseven7/frameseven
+          Description: Offensive web security scanner
+           CLI-first scanner for authorized web security testing.
+          EOF
+
+          dpkg-deb --build --root-owner-group "$package_root" "dist/$package_file"
+          dpkg-deb --info "dist/$package_file"
+
+          # MCP package
+          mcp_root="deb/frameseven-mcp"
+          mcp_file="frameseven_mcp_${version}_linux_${DEB_ARCH}.deb"
+
+          mkdir -p \
+            "$mcp_root/DEBIAN" \
+            "$mcp_root/usr/bin" \
+            "$mcp_root/usr/share/doc/frameseven-mcp"
+
+          install -m 0755 build/frameseven-mcp "$mcp_root/usr/bin/frameseven-mcp"
+          install -m 0644 README.md "$mcp_root/usr/share/doc/frameseven-mcp/README.md"
+          install -m 0644 LICENSE "$mcp_root/usr/share/doc/frameseven-mcp/copyright"
+
+          mcp_installed_size="$(du -sk "$mcp_root/usr" | cut -f1)"
+
+          cat > "$mcp_root/DEBIAN/control" <<EOF
+          Package: frameseven-mcp
+          Version: $version
+          Section: utils
+          Priority: optional
+          Architecture: $DEB_ARCH
+          Installed-Size: $mcp_installed_size
+          Maintainer: Frame Seven Project <sayseven7@users.noreply.github.com>
+          Homepage: https://github.com/sayseven7/frameseven
+          Description: Offensive web security scanner - MCP server
+           MCP server for authorized web security testing.
+          EOF
+
+          dpkg-deb --build --root-owner-group "$mcp_root" "dist/$mcp_file"
+          dpkg-deb --info "dist/$mcp_file"
+
+      - name: Create RPM packages
+        if: matrix.goos == 'linux'
+        shell: bash
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          package_version="${version//-/_}"
+
+          # CLI package
+          package_file="frameseven_cli_${version}_linux_${GOARCH}.rpm"
+          rpm_root="$PWD/rpm"
+
+          mkdir -p \
+            "$rpm_root/BUILD" \
+            "$rpm_root/BUILDROOT" \
+            "$rpm_root/RPMS" \
+            "$rpm_root/SOURCES" \
+            "$rpm_root/SPECS" \
+            "$rpm_root/SRPMS"
+
+          install -m 0755 build/frameseven-cli "$rpm_root/SOURCES/frameseven"
+          install -m 0644 README.md "$rpm_root/SOURCES/README.md"
+          install -m 0644 LICENSE "$rpm_root/SOURCES/LICENSE"
+
+          cat > "$rpm_root/SPECS/frameseven.spec" <<EOF
+          Name: frameseven
+          Version: $package_version
+          Release: 1
+          Summary: Offensive web security scanner
+          License: MIT
+          URL: https://github.com/sayseven7/frameseven
+          Source0: frameseven
+          Source1: README.md
+          Source2: LICENSE
+
+          %description
+          CLI-first scanner for authorized web security testing.
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/share/doc/frameseven
+          install -m 0755 %{SOURCE0} %{buildroot}/usr/bin/frameseven
+          install -m 0644 %{SOURCE1} %{buildroot}/usr/share/doc/frameseven/README.md
+          install -m 0644 %{SOURCE2} %{buildroot}/usr/share/doc/frameseven/LICENSE
+
+          %files
+          /usr/bin/frameseven
+          /usr/share/doc/frameseven/README.md
+          /usr/share/doc/frameseven/LICENSE
+          EOF
+
+          rpmbuild \
+            -bb \
+            --target "$RPM_ARCH" \
+            --define "_topdir $rpm_root" \
+            --define "debug_package %{nil}" \
+            "$rpm_root/SPECS/frameseven.spec"
+
+          rpm_file="$(find "$rpm_root/RPMS" -type f -name '*.rpm' -print -quit)"
+
+          if [ -z "$rpm_file" ]; then
+            echo "RPM package was not created."
+            exit 1
+          fi
+
+          rpm -qip "$rpm_file"
+          cp "$rpm_file" "dist/$package_file"
+
+          # MCP package
+          mcp_package_file="frameseven_mcp_${version}_linux_${GOARCH}.rpm"
+          mcp_rpm_root="$PWD/rpm-mcp"
+
+          mkdir -p \
+            "$mcp_rpm_root/BUILD" \
+            "$mcp_rpm_root/BUILDROOT" \
+            "$mcp_rpm_root/RPMS" \
+            "$mcp_rpm_root/SOURCES" \
+            "$mcp_rpm_root/SPECS" \
+            "$mcp_rpm_root/SRPMS"
+
+          install -m 0755 build/frameseven-mcp "$mcp_rpm_root/SOURCES/frameseven-mcp"
+          install -m 0644 README.md "$mcp_rpm_root/SOURCES/README.md"
+          install -m 0644 LICENSE "$mcp_rpm_root/SOURCES/LICENSE"
+
+          cat > "$mcp_rpm_root/SPECS/frameseven-mcp.spec" <<EOF
+          Name: frameseven-mcp
+          Version: $package_version
+          Release: 1
+          Summary: Offensive web security scanner - MCP server
+          License: MIT
+          URL: https://github.com/sayseven7/frameseven
+          Source0: frameseven-mcp
+          Source1: README.md
+          Source2: LICENSE
+
+          %description
+          MCP server for authorized web security testing.
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/share/doc/frameseven-mcp
+          install -m 0755 %{SOURCE0} %{buildroot}/usr/bin/frameseven-mcp
+          install -m 0644 %{SOURCE1} %{buildroot}/usr/share/doc/frameseven-mcp/README.md
+          install -m 0644 %{SOURCE2} %{buildroot}/usr/share/doc/frameseven-mcp/LICENSE
+
+          %files
+          /usr/bin/frameseven-mcp
+          /usr/share/doc/frameseven-mcp/README.md
+          /usr/share/doc/frameseven-mcp/LICENSE
+          EOF
+
+          rpmbuild \
+            -bb \
+            --target "$RPM_ARCH" \
+            --define "_topdir $mcp_rpm_root" \
+            --define "debug_package %{nil}" \
+            "$mcp_rpm_root/SPECS/frameseven-mcp.spec"
+
+          mcp_rpm_file="$(find "$mcp_rpm_root/RPMS" -type f -name '*.rpm' -print -quit)"
+
+          if [ -z "$mcp_rpm_file" ]; then
+            echo "MCP RPM package was not created."
+            exit 1
+          fi
+
+          rpm -qip "$mcp_rpm_file"
+          cp "$mcp_rpm_file" "dist/$mcp_package_file"
+
+      - name: Create Arch Linux packages
+        if: matrix.goos == 'linux'
+        shell: bash
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          ARCH_ARCH: ${{ matrix.arch_arch }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          package_version="${version//-/_}"
+
+          # CLI package
+          package_root="$PWD/arch/frameseven"
+          package_file="frameseven_cli_${version}_linux_${GOARCH}.pkg.tar.zst"
+
+          mkdir -p \
+            "$package_root/usr/bin" \
+            "$package_root/usr/share/doc/frameseven"
+
+          install -m 0755 build/frameseven-cli "$package_root/usr/bin/frameseven"
+          install -m 0644 README.md "$package_root/usr/share/doc/frameseven/README.md"
+          install -m 0644 LICENSE "$package_root/usr/share/doc/frameseven/LICENSE"
+
+          package_size="$(du -sb "$package_root/usr" | cut -f1)"
+
+          cat > "$package_root/.PKGINFO" <<EOF
+          pkgname = frameseven
+          pkgbase = frameseven
+          pkgver = ${package_version}-1
+          pkgdesc = Offensive web security scanner
+          url = https://github.com/sayseven7/frameseven
+          builddate = $(date +%s)
+          packager = Frame Seven Project
+          size = $package_size
+          arch = $ARCH_ARCH
+          license = MIT
+          EOF
+
+          find "$package_root" -type d -exec chmod 0755 {} +
+          chmod 0644 "$package_root/.PKGINFO"
+
+          tar \
+            --zstd \
+            --owner=0 \
+            --group=0 \
+            -cf "dist/$package_file" \
+            -C "$package_root" \
+            .PKGINFO \
+            usr
+
+          tar --zstd -tf "dist/$package_file"
+
+          # MCP package
+          mcp_root="$PWD/arch/frameseven-mcp"
+          mcp_file="frameseven_mcp_${version}_linux_${GOARCH}.pkg.tar.zst"
+
+          mkdir -p \
+            "$mcp_root/usr/bin" \
+            "$mcp_root/usr/share/doc/frameseven-mcp"
+
+          install -m 0755 build/frameseven-mcp "$mcp_root/usr/bin/frameseven-mcp"
+          install -m 0644 README.md "$mcp_root/usr/share/doc/frameseven-mcp/README.md"
+          install -m 0644 LICENSE "$mcp_root/usr/share/doc/frameseven-mcp/LICENSE"
+
+          mcp_size="$(du -sb "$mcp_root/usr" | cut -f1)"
+
+          cat > "$mcp_root/.PKGINFO" <<EOF
+          pkgname = frameseven-mcp
+          pkgbase = frameseven-mcp
+          pkgver = ${package_version}-1
+          pkgdesc = Offensive web security scanner - MCP server
+          url = https://github.com/sayseven7/frameseven
+          builddate = $(date +%s)
+          packager = Frame Seven Project
+          size = $mcp_size
+          arch = $ARCH_ARCH
+          license = MIT
+          EOF
+
+          find "$mcp_root" -type d -exec chmod 0755 {} +
+          chmod 0644 "$mcp_root/.PKGINFO"
+
+          tar \
+            --zstd \
+            --owner=0 \
+            --group=0 \
+            -cf "dist/$mcp_file" \
+            -C "$mcp_root" \
+            .PKGINFO \
+            usr
+
+          tar --zstd -tf "dist/$mcp_file"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: frameseven-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  docker_image:
+    name: Build and publish Docker image
+    runs-on: ubuntu-latest
+    needs:
+      - quality
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build Docker image binaries
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          docker_build_dir="docker-build/$version"
+
+          mkdir -p "$docker_build_dir/bin"
+
+          cat > "$docker_build_dir/Dockerfile" <<'DOCKERFILE'
+          FROM debian:bookworm-slim
+
+          RUN apt-get update && \
+              apt-get install -y --no-install-recommends \
+                ca-certificates \
+                chromium \
+                fonts-dejavu-core \
+                fonts-liberation \
+                nmap \
+                python3 \
+                python3-venv \
+                sqlmap && \
+              rm -rf /var/lib/apt/lists/*
+
+          RUN python3 -m venv /opt/frameseven-python && \
+              /opt/frameseven-python/bin/python -m pip install --no-cache-dir --upgrade pip && \
+              /opt/frameseven-python/bin/python -m pip install --no-cache-dir "fpdf2>=2.8"
+
+          RUN useradd --create-home --uid 1000 --shell /bin/sh frameseven && \
+              mkdir -p /workspace && \
+              chown -R frameseven:frameseven /workspace /home/frameseven
+
+          COPY --chmod=0755 bin/frameseven /usr/local/bin/frameseven
+          COPY --chmod=0755 bin/frameseven-mcp /usr/local/bin/frameseven-mcp
+
+          ENV FRAMESEVEN_PYTHON=/opt/frameseven-python/bin/python
+
+          WORKDIR /workspace
+          USER frameseven
+
+          ENTRYPOINT ["frameseven"]
+          DOCKERFILE
+
+          go build \
+            -ldflags="-X main.buildVersion=$version" \
+            -o "$docker_build_dir/bin/frameseven" \
+            ./cmd/cli/v1
+
+          go build \
+            -o "$docker_build_dir/bin/frameseven-mcp" \
+            ./cmd/mcp
+
+      - name: Log in to GitHub Container Registry
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push Docker image
+        shell: bash
+        env:
+          IMAGE_NAME: ghcr.io/${{ github.repository }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          docker_build_dir="docker-build/$version"
+          image_name="$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')"
+
+          tags=(
+            --tag "$image_name:$version"
+          )
+
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tags+=(--tag "$image_name:latest")
+          fi
+
+          docker buildx create --use
+
+          docker buildx build \
+            --file "$docker_build_dir/Dockerfile" \
+            --platform linux/amd64 \
+            --push \
+            --provenance=false \
+            --sbom=false \
+            --label org.opencontainers.image.title=frameseven \
+            --label "org.opencontainers.image.description=frameseven CLI v1 and MCP server with runtime dependencies" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.version=$version" \
+            "${tags[@]}" \
+            "$docker_build_dir"
+
+  publish:
+    name: Publish release artifacts
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - docker_image
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: frameseven-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum frameseven* > SHA256SUMS
+
+      - name: Upload files to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" dist/* \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"

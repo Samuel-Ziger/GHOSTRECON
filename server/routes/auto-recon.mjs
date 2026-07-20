@@ -10,7 +10,9 @@ import {
   writeAutoRagNote,
 } from '../auto-agent/rag-memory.mjs';
 import { compareForgeVersions, listForgePackages, manageForgePackage, readForgePackage, recordForgeRuntimeResult, transitionForgePackage } from '../auto-agent/forge/lifecycle.mjs';
-import { cancelActiveAutoSession, listActiveAutoSessions } from '../auto-agent/active-sessions.mjs';
+import { cancelActiveAutoSession, getActiveAutoSession, listActiveAutoSessions } from '../auto-agent/active-sessions.mjs';
+import { reconcileOrphanedAutoSessions } from '../auto-agent/session-store.mjs';
+import { resolveFrameSevenApproval } from '../integrations/frameseven-runner.mjs';
 
 export function registerAutoReconRoutes(app, deps = {}) {
   const {
@@ -19,6 +21,8 @@ export function registerAutoReconRoutes(app, deps = {}) {
     allowReconRequest,
     ROOT,
   } = deps;
+
+  void reconcileOrphanedAutoSessions(ROOT).catch(() => []);
 
   app.get('/api/recon/auto/sessions', requireScope('recon.read'), (_req, res) => {
     res.json({ ok: true, sessions: listActiveAutoSessions() });
@@ -32,6 +36,24 @@ export function registerAutoReconRoutes(app, deps = {}) {
     const sessionId = String(req.params.sessionId || '');
     const cancelled = cancelActiveAutoSession(sessionId, `cancelled_by_${req.principal?.sub || 'operator'}`);
     res.status(cancelled ? 202 : 404).json({ ok: cancelled, sessionId, error: cancelled ? null : 'sessão AUTO ativa não encontrada' });
+  });
+
+  app.post('/api/recon/auto/:sessionId/approval', requireScope('recon.run'), (req, res) => {
+    if (!validateCsrfToken(req)) {
+      res.status(403).json({ ok: false, error: 'CSRF invalido/ausente' });
+      return;
+    }
+    const session = getActiveAutoSession(req.params.sessionId);
+    const approvalId = String(req.body?.approvalId || '');
+    const approved = req.body?.approved === true;
+    const resolved = session?.resolveApproval?.(approvalId, approved, String(req.body?.reason || '')) || false;
+    res.status(resolved ? 202 : 404).json({ ok: resolved, error: resolved ? null : 'aprovação pendente não encontrada' });
+  });
+
+  app.post('/api/recon/frameseven/:approvalId/approval', requireScope('recon.run'), (req, res) => {
+    if (!validateCsrfToken(req)) return res.status(403).json({ ok: false, error: 'CSRF invalido/ausente' });
+    const ok = resolveFrameSevenApproval(req.params.approvalId, req.body?.approved === true);
+    return res.status(ok ? 202 : 404).json({ ok });
   });
 
   app.get('/api/auto-forge', requireScope('recon.read'), async (_req, res) => {

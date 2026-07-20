@@ -76,6 +76,16 @@ Concluído na segunda evolução:
 - estimativa configurável de custo para providers sem custo reportado;
 - comparação automática de versões e canary determinístico por execução;
 
+## Estado operacional em 2026-07-20
+
+O conjunto arquitetural planejado foi implementado e os testes automatizados do Auto estão aprovados. A primeira execução real, porém, revelou diferença entre timeout sinalizado e cancelamento efetivo dentro de um módulo. O CORS foi corrigido para respeitar o sinal compartilhado, o fallback `codex exec` passou a executar com stdin fechado e falhas do App Server/fallback passaram a preservar ambas as causas.
+
+Também foram adicionados registro em memória e endpoints autenticados para listar e cancelar sessões individuais. A operação ainda é classificada como **beta supervisionado**, pois faltam controles visuais, reconciliação de snapshots órfãos, watchdog de progresso e propagação uniforme de cancelamento para todos os módulos.
+
+O backlog operacional atualizado está em `MELHORIAS-PENDENTES-MODO-AUTO.md`.
+
+O FrameSeven está integrado no RUN comum e no Modo Auto. O fluxo usa autenticação opcional, Vigolium obrigatório, deduplicação conjunta e o template HTML original do FrameSeven para o relatório final. Melhorias futuras permanecem documentadas em `FRAMESEVEN-INTEGRACAO-FUTURA.md`.
+
 ## Resumo executivo
 
 O Modo AUTO atual ainda é uma fase inicial. Ele detecta provedores, monta uma lista fixa de módulos, executa o pipeline e grava snapshots Markdown. As IAs Codex, Claude Code, Skynet/GHOST, modelo local e OpenRouter não são consultadas pelo orquestrador para criar o plano ou avaliar a execução. Cursor recebe somente um handoff Markdown por padrão.
@@ -643,11 +653,13 @@ O objetivo "IAs selecionadas tomam decisões e salvam no RAG" estará concluído
 
 ## Próxima entrega recomendada
 
-Próxima evolução é robustecer o ciclo de módulos já ativos:
+O FrameSeven está operacional no RUN comum e no AUTO; o backlog restante é de endurecimento de cancelamento e testes ponta a ponta, conforme `FRAMESEVEN-INTEGRACAO-FUTURA.md`.
 
-1. rollback manual e versionamento de módulos ativos;
-2. promoção gradual por percentual de execuções;
-3. cancelamento real de módulos com timeout cooperativo;
-4. comparação de resultados entre versões;
-5. correção dos travamentos e progresso por módulo;
-6. testes de integração HTTP da aprovação com execução no alvo.
+A próxima evolução do Auto é:
+
+1. cancelamento visível e individual na UI;
+2. reconciliação de sessões órfãs;
+3. watchdog e progresso por módulo;
+4. cancelamento cooperativo em todos os módulos;
+5. teste real passivo de ponta a ponta;
+6. depois, rollback, canary e integração de novos executores.
