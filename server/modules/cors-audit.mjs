@@ -15,6 +15,7 @@ import https from 'node:https';
 import http from 'node:http';
 
 const TIMEOUT_MS = 12_000;
+const DEFAULT_PHASE_TIMEOUT_MS = 180_000;
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 export const EVIL_ORIGIN = 'https://attacker.example';
 
@@ -36,9 +37,11 @@ function makeFinding({ type, value, score, url, meta, owasp, mitre, cvss }) {
 async function rawRequest(url, { method = 'GET', headers = {}, body = null, signal = null } = {}) {
   return new Promise((resolve) => {
     let settled = false;
+    let hardTimer;
     const finish = (value) => {
       if (settled) return;
       settled = true;
+      clearTimeout(hardTimer);
       signal?.removeEventListener('abort', onAbort);
       resolve(value);
     };
@@ -78,6 +81,9 @@ async function rawRequest(url, { method = 'GET', headers = {}, body = null, sign
     signal?.addEventListener('abort', onAbort, { once: true });
     req.on('error', (e) => finish({ status: null, headers: {}, body: '', error: signal?.aborted ? 'aborted' : e.message }));
     req.on('timeout', () => { req.destroy(); finish({ status: null, headers: {}, body: '', error: 'timeout' }); });
+    // Garantia independente do timeout de socket do Node: alguns servidores
+    // mantêm a conexão aberta sem produzir atividade.
+    hardTimer = setTimeout(() => onAbort(), TIMEOUT_MS);
     if (body) req.write(body);
     req.end();
   });
@@ -277,7 +283,8 @@ async function probeCorsUrl(url, log, signal) {
  * @param {Function} [opts.log]
  */
 export async function runCorsAudit(opts = {}) {
-  const { probeResults = [], findings = [], domain = '', log = null, signal = null } = opts;
+  const { probeResults = [], findings = [], domain = '', log = null, signal = null,
+    phaseTimeoutMs = DEFAULT_PHASE_TIMEOUT_MS } = opts;
   const urls = collectCorsProbeUrls({ probeResults, findings, domain });
   if (!urls.length) {
     log?.('[cors-audit] Nenhuma URL para probe', 'info');
@@ -288,9 +295,14 @@ export async function runCorsAudit(opts = {}) {
   const all = [];
   const seen = new Set();
   const results = {};
+  const deadline = Date.now() + Math.max(10_000, Number(phaseTimeoutMs) || DEFAULT_PHASE_TIMEOUT_MS);
 
   for (const url of urls) {
     if (signal?.aborted) throw signal.reason || new Error('CORS audit cancelado');
+    if (Date.now() >= deadline) {
+      log?.(`[cors-audit] Timeout da fase após ${phaseTimeoutMs}ms; seguindo para o próximo módulo`, 'warn');
+      return { findings: all, summary: { total: all.length, probed: Object.keys(results).length, timedOut: true, results } };
+    }
     try {
       const r = await probeCorsUrl(url, log, signal);
       results[url] = { baseline: r.baseline?.status, origin: r.withOrigin?.status, error: r.error || null };

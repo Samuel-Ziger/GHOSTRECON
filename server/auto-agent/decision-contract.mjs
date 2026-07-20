@@ -30,6 +30,31 @@ export function parseAgentDecisionText(text) {
   }
 }
 
+// Repairs only missing envelope fields. It never invents modules, evidence or
+// confidence; an incomplete model response remains explicitly low confidence.
+export function repairDecisionEnvelope(input, { objective = 'authorized_recon', action = 'abstain' } = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const repaired = { ...input };
+  // Compatibilidade com versões do prompt que chamavam esta ação de
+  // request_modules. O significado é idêntico a run_modules.
+  if (repaired.action === 'request_modules' || repaired.action === 'execute_modules') repaired.action = 'run_modules';
+  const missingAction = !String(repaired.action || '').trim();
+  const missingObjective = !String(repaired.objective || '').trim();
+  const missingConfidence = !Number.isFinite(Number(repaired.confidence));
+  if (missingAction || missingObjective || missingConfidence) {
+    repaired.action = action;
+    repaired.requestedModules = [];
+    repaired.evidenceRefs = [];
+    repaired.forgeRequest = null;
+  }
+  if (missingObjective) repaired.objective = objective;
+  if (missingConfidence) repaired.confidence = 0;
+  if (!Array.isArray(repaired.reasoningSummary)) repaired.reasoningSummary = ['Resposta reparada: campos estruturais ausentes.'];
+  if (!Array.isArray(repaired.requestedModules)) repaired.requestedModules = [];
+  if (!Array.isArray(repaired.evidenceRefs)) repaired.evidenceRefs = [];
+  return repaired;
+}
+
 export function validateAgentDecision(input, { catalogModuleIds = [], availableEvidenceRefs = null } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { ok: false, errors: ['decisão deve ser um objeto'] };

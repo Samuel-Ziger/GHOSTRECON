@@ -1,729 +1,569 @@
+<div align="center">
+
 # GHOSTRECON
 
-GHOSTRECON e uma plataforma local para recon, OSINT, validacao tecnica e organizacao de achados em bug bounty ou pentest autorizado. O projeto junta um servidor Node/Express, uma UI operacional em HTML, pipeline em streaming NDJSON, modulos de seguranca, paineis de analise, integracoes com IA, GhostTrace, GhostMap, GhostDesk, Vigolium e HexStrike.
+### Local-first security reconnaissance, validation and intelligence platform
 
-> Local-first por desenho. A stack foi pensada para rodar no computador do operador, em `127.0.0.1`, com cloud opcional apenas quando o usuario configura chaves de API.
+**Transforme superfície de ataque em evidência priorizada — do primeiro domínio ao relatório final.**
 
-## Aviso De Uso
+[![Node.js](https://img.shields.io/badge/Node.js-20--26-5FA04E?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![CLI](https://img.shields.io/badge/CLI-v1.1.0-111827?style=for-the-badge&logo=gnometerminal&logoColor=white)](#linha-de-comando)
+[![Tests](https://img.shields.io/badge/Test_Suites-98-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white)](#qualidade-e-testes)
+[![Local First](https://img.shields.io/badge/Local--First-Privacy-7C3AED?style=for-the-badge&logo=shield&logoColor=white)](#segurança-por-design)
 
-Use somente em alvos onde voce tem autorizacao explicita. O GHOSTRECON possui muitos modulos passivos, mas tambem pode acionar ferramentas ativas quando o operador habilita modos como Kali, Vigolium, sqlmap, nuclei, ffuf, navegacao, proxy, Tor ou validacoes especificas. O projeto tem gates de OPSEC, CSRF, auth e rate limit, mas a responsabilidade final de escopo e permissao e do operador.
+[Início rápido](#início-rápido) · [Arquitetura](#arquitetura) · [CLI](#linha-de-comando) · [Modo Auto](#modo-auto) · [Configuração](#configuração) · [Documentação](#documentação-técnica)
 
-## Status Atual Do Projeto
+</div>
 
-**Estado operacional:** recon manual estável; Modo Auto pausado para evolução controlada.
+---
 
-O Modo Auto já foi validado para planejamento Codex, recon passivo/deep-passive, avaliação pós-pipeline, cancelamento e timeouts. O FrameSeven integrado está disponível no RUN comum e no AUTO, com autenticação opcional, Vigolium obrigatório, deduplicação conjunta e relatório HTML integrado baseado no template original do FrameSeven.
+> [!WARNING]
+> Use o GHOSTRECON somente em ativos próprios ou em alvos para os quais você possui autorização explícita. Alguns módulos executam validações ativas e ferramentas ofensivas. Escopo, regras de engajamento e responsabilidade operacional continuam sendo do operador.
 
-O repositorio esta organizado como uma stack local completa:
+## O que é o GHOSTRECON?
 
-- API principal Node/Express em `server/index.js`.
-- UI principal em `public/index.html`.
-- Pipeline modular em `server/pipeline/`.
-- Modulos e integracoes em `server/modules/`, `server/routes/`, `server/integrations/` e `server/auto-agent/`.
-- CLI em `bin/ghostrecon.mjs`.
-- IA local em `ghost-local-v5/ghost-local`.
-- GhostTrace em `GhostTrace/`.
-- GhostMap em `ghostmap/`.
-- GhostDesk em `GhostDesk/`.
-- HexStrike em `IAs/hexstrike-ai`.
-- Playbooks em `playbooks/`.
-- Ferramentas auxiliares em `tools/`, `engines/`, `bridge/`, `apps/` e `scripts/`.
+O GHOSTRECON é uma plataforma local de **recon, OSINT, validação técnica e gestão de findings** para bug bounty e pentest autorizado. Em vez de juntar scripts desconectados, ele organiza todo o ciclo operacional em uma única experiência:
 
-## Sumario
+```text
+ALVO → DESCOBERTA → SUPERFÍCIE → VALIDAÇÃO → CORRELAÇÃO → EVIDÊNCIA → RELATÓRIO
+```
 
-- [Inicio Rapido](#inicio-rapido)
-- [URLs Locais](#urls-locais)
-- [Como Usar Na UI](#como-usar-na-ui)
-- [Modo Auto](#modo-auto)
-- [MCP Para Cursor](#mcp-para-cursor)
-- [HexStrike](#hexstrike)
-- [Arquitetura](#arquitetura)
-- [Estrutura Do Repositorio](#estrutura-do-repositorio)
-- [Pipeline Principal](#pipeline-principal)
-- [Modulos E Capacidades](#modulos-e-capacidades)
-- [APIs Principais](#apis-principais)
-- [CLI](#cli)
-- [Variaveis De Ambiente](#variaveis-de-ambiente)
-- [Scripts NPM](#scripts-npm)
-- [Testes](#testes)
-- [Troubleshooting](#troubleshooting)
-- [Documentos Relacionados](#documentos-relacionados)
+O núcleo combina uma API Node/Express, streaming NDJSON, cockpit web, CLI, MCP, pipeline modular e persistência local. Ao redor dele, motores e aplicações especializadas ampliam a investigação: **Vigolium**, **FrameSeven**, **GhostTrace**, **GhostMap**, **GhostDesk**, **GHOST local** e **HexStrike**.
 
-## Inicio Rapido
+### Por que ele é diferente?
 
-Requisitos principais:
+- **Local-first:** a operação começa em `127.0.0.1`; cloud e APIs externas são opcionais.
+- **Um pipeline, várias interfaces:** cockpit, CLI, MCP e Modo Auto usam o mesmo backend.
+- **Passivo por padrão, ativo sob controle:** perfis OPSEC e confirmação explícita protegem módulos intrusivos.
+- **Evidência em tempo real:** progresso, findings e eventos trafegam em NDJSON.
+- **Recon que acumula memória:** runs, diferenças, decisões e contexto podem ser persistidos e reutilizados.
+- **Motores complementares:** Node para orquestração e OSINT; Go/Vigolium para DAST; FrameSeven para análise e relatório integrado.
+- **IA sem dependência obrigatória de cloud:** suporte a provedores locais, CLIs instalados e OpenRouter.
 
-- Node.js 20 ou superior.
-- npm.
-- Bash para scripts auxiliares.
-- Python 3 para `ghost-local-v5`, HexStrike e algumas ferramentas opcionais.
-- Ferramentas externas opcionais: `nmap`, `ffuf`, `nuclei`, `sqlmap`, `subfinder`, `amass`, `katana`, `httpx`, `proxychains4`, Tor, Playwright browsers etc.
+## Visão geral
 
-Instalacao base:
+| Camada | O que entrega |
+| --- | --- |
+| **Cockpit** | Execução, terminal ao vivo, findings, controles OPSEC e acesso aos painéis |
+| **Recon Engine** | Descoberta, fingerprint, superfície web, validação, correlação e scoring |
+| **Vigolium** | Motor DAST em Go, estratégias `lite`, `balanced` e `deep` |
+| **FrameSeven** | Fluxo complementar autenticado, deduplicação e relatório HTML integrado |
+| **Modo Auto** | Planejamento e avaliação por agentes de IA com limites, auditoria e memória RAG |
+| **CLI + MCP** | Automação por terminal, CI, Cursor e clientes compatíveis com MCP |
+| **GhostTrace** | Anotações, evidências, handoff e preparação de relatório |
+| **GhostMap** | Visualização de relações, HTTP history e contexto MITRE/OWASP |
+| **GhostDesk** | Workbench operacional e consulta de dados locais/remotos |
+| **Storage** | SQLite local por padrão; Postgres e Supabase opcionais |
+
+## Início rápido
+
+### Requisitos
+
+- Node.js `>=20 <27`
+- npm
+- Bash em Linux/macOS ou WSL no Windows
+- Python 3 e Go apenas para componentes opcionais
+
+### Opção 1 — somente o núcleo
+
+É o caminho mais rápido para experimentar o cockpit e a API:
 
 ```bash
+git clone https://github.com/Samuel-Ziger/GHOSTRECON.git
+cd GHOSTRECON
 npm install
+cp .env.example .env
+AUTH_DISABLE=1 npm run start:minimal
+```
+
+Abra **http://127.0.0.1:3847**.
+
+> [!IMPORTANT]
+> `AUTH_DISABLE=1` é aceito somente em loopback e deve ser usado apenas no desenvolvimento local. Para operação persistente, configure API keys ou JWT.
+
+### Opção 2 — stack completa
+
+O instalador trabalha com perfis progressivos:
+
+```bash
+bash install.sh --profile minimal
+bash install.sh --profile passive
+bash install.sh --profile full
+```
+
+Depois:
+
+```bash
 cp .env.example .env
 npm start
 ```
 
-Para rodar apenas a API Node, sem subir a stack auxiliar:
+O `npm start` verifica ou inicia Vigolium, GHOST local, GhostTrace, GhostMap, GhostDesk, HexStrike e a API. Cada serviço pode ser desligado individualmente no `.env`.
+
+### Primeiro recon
+
+Pelo cockpit:
+
+1. Informe um domínio autorizado em **Target**.
+2. Escolha o perfil e os módulos.
+3. Revise os controles de escopo e OPSEC.
+4. Execute **RUN RECON**.
+5. Acompanhe eventos e findings em tempo real.
+6. Continue a investigação no Reporte, GhostTrace, GhostMap ou History.
+
+Pela CLI:
 
 ```bash
-npm run start:minimal
+npm run cli -- run \
+  --target example.com \
+  --playbook quick-triage \
+  --format summary
 ```
 
-Para rodar a API diretamente:
+## Como o fluxo funciona
+
+```mermaid
+flowchart LR
+    A[Target + Scope] --> B{Interface}
+    B -->|Cockpit| C[API Express]
+    B -->|CLI| C
+    B -->|MCP| C
+    B -->|Modo Auto| C
+    C --> D[OPSEC + Auth + CSRF]
+    D --> E[Pipeline NDJSON]
+    E --> F[Discovery]
+    F --> G[Surface Mapping]
+    G --> H[Validation]
+    H --> I[Correlation + Scoring]
+    I --> J[(SQLite / Postgres)]
+    I --> K[GhostTrace / GhostMap]
+    I --> L[Reports / Webhooks]
+    E -. opcional .-> M[Vigolium + FrameSeven + Kali]
+    E -. opcional .-> N[AI Council + RAG]
+```
+
+O endpoint principal é `POST /api/recon/stream`. Ele produz NDJSON para que qualquer cliente acompanhe o pipeline sem esperar o término completo da execução.
+
+### Fases do pipeline
+
+1. Normalização do alvo, escopo e contexto do engagement.
+2. Autenticação, CSRF, rate limit e gate OPSEC.
+3. Descoberta de ativos, DNS, RDAP, CT logs e fingerprint.
+4. Coleta de superfície: HTTP, TLS, headers, HTML, JavaScript, APIs e arquivos conhecidos.
+5. Validações especializadas e ferramentas externas autorizadas.
+6. Normalização, deduplicação semântica, correlação, OWASP/MITRE e scoring.
+7. Persistência, diff entre runs, relatórios, webhooks e handoffs.
+
+## Capacidades
+
+O backend reúne mais de 160 módulos e integrações. A disponibilidade efetiva depende do perfil, das ferramentas instaladas e das credenciais configuradas.
+
+<details>
+<summary><strong>Descoberta e OSINT</strong></summary>
+
+- crt.sh, VirusTotal, RDAP, DNS enrichment e CT monitoring
+- Subfinder, Amass, Wayback, CommonCrawl e GitHub search/clone
+- enumeração de subdomínios, origem, tecnologias, TLS e takeover
+- Shodan, dorks, Pastebin e descoberta de ativos
+
+</details>
+
+<details>
+<summary><strong>Web, API e client-side</strong></summary>
+
+- OpenAPI/Swagger, GraphQL, WebSocket e parâmetros
+- análise de HTML, JavaScript, source maps e service workers
+- CORS, headers, cookies, CSRF, JWT/JWKS e fluxos de autenticação
+- DOM XSS, prototype pollution, postMessage, JSONP e open redirect
+- Firebase, Supabase/RLS, low-code, Lovable e exposição de painéis
+
+</details>
+
+<details>
+<summary><strong>Validação e ferramentas externas</strong></summary>
+
+- Nuclei, ffuf, nmap, sqlmap, WPScan, dalfox e dirsearch
+- Vigolium DAST, FrameSeven e HexStrike
+- IDOR/BOLA, race harness, OOB collaborator e micro-exploit
+- proxychains, rotação de identidade, Navegation e Tor strict
+- captura HTTP, replay e evidência técnica
+
+</details>
+
+<details>
+<summary><strong>Inteligência e operação</strong></summary>
+
+- correlação, chaining, risk explanation e bounty estimation
+- histórico, baseline/diff, projetos, engagement e team locks
+- narrativas MITRE, purple-team export e workflow export
+- relatórios Gemini, OpenRouter, Anthropic ou modelo local
+- memória Auto RAG, Cortex e integração com Obsidian
+
+</details>
+
+Consulte o estado real da máquina a qualquer momento:
 
 ```bash
-npm run start:api
+curl http://127.0.0.1:3847/api/capabilities
 ```
 
-Em desenvolvimento local sem autenticar as rotas privilegiadas:
+## Playbooks
 
-```bash
-AUTH_DISABLE=1 npm run start:minimal
-```
+O repositório inclui 11 playbooks prontos para transformar intenção em uma seleção reproduzível de módulos.
 
-No Windows/PowerShell:
-
-```powershell
-$env:AUTH_DISABLE="1"
-npm run start:minimal
-```
-
-## URLs Locais
-
-Por padrao:
-
-| Servico | URL | Funcao |
-| --- | --- | --- |
-| GHOSTRECON Cockpit | `http://127.0.0.1:3847/` | UI principal de recon |
-| API Node | `http://127.0.0.1:3847/api/*` | Rotas do backend |
-| Reporte | `http://127.0.0.1:3847/reporte.html` | Validacao manual e handoff |
-| Cortex | `http://127.0.0.1:3847/cortex.html` | Base de conhecimento |
-| GhostMap | `http://127.0.0.1:3847/ghostmap/ghostrecon` | Mapa visual MITRE/OWASP |
-| History | `http://127.0.0.1:3847/vigolium-workbench.html` | Workbench, HTTP records e agente |
-| Post-Exploitation | `http://127.0.0.1:3847/post-exploitation.html` | Planejamento pos-exploracao |
-| Tor Validator | `http://127.0.0.1:3847/tor-validator.html` | Validacao de rota Tor |
-| Ghost local | `http://127.0.0.1:8000/gui/` | IA local, memoria e chat |
-| GhostTrace | `http://127.0.0.1:3847/anotacao/` | Anotacoes e relatorio |
-| HexStrike | `http://127.0.0.1:8888` | Servidor HexStrike, se iniciado |
-
-## Como Usar Na UI
-
-Fluxo normal:
-
-1. Abra `http://127.0.0.1:3847/`.
-2. Preencha o alvo em `Target`.
-3. Escolha perfil `quick`, `standard` ou `deep`.
-4. Marque os modulos desejados.
-5. Clique em `RUN RECON`.
-6. Acompanhe o terminal e os cards em tempo real.
-7. Abra `Ghostmap`, `Reporte`, `Cortex` ou `Vigolium` quando quiser investigar melhor.
-
-Fluxo com validacao manual:
-
-```text
-RUN RECON
-  -> findings na UI
-  -> Reporte
-  -> validacao manual
-  -> Anotacao / GhostTrace
-  -> relatorio e evidencias
-```
-
-Fluxo com Modo Auto (temporariamente pausado para novas mudanças):
-
-```text
-AUTO MODE
-  -> escolher IA(s)
-  -> escolher modelo OpenRouter, se aplicavel
-  -> incluir HexStrike/deep passive
-  -> backend monta plano
-  -> pipeline executa
-  -> avaliacao final aparece no terminal
-
-### Política de autonomia do Auto
-
-A UI possui quatro níveis planejados: observação, assistido, autorizado e autorização completa OPSEC. Os níveis 3/4 só devem liberar módulos ativos após confirmação humana; o fluxo ainda está em validação e não é considerado concluído.
-```
-
-## Modo Auto
-
-O Modo Auto fica na UI principal ao lado do `RUN RECON`, no botao `AUTO MODE`.
-
-Ele chama:
-
-```text
-POST /api/recon/auto/stream
-```
-
-O objetivo e permitir que uma ou mais IAs atuem como comandantes do recon. A primeira fase ja implementada faz um planner conservador local, detecta provedores disponiveis, monta catalogo de ferramentas, escolhe modulos e chama o pipeline normal do GHOSTRECON.
-
-Comandantes suportados no contrato atual:
-
-- `codex`
-- `claude_code`
-- `cursor`
-- `openrouter`
-- `skynet`
-- `local_model`
-
-OpenRouter permite escolher o modelo pelo popup. A lista atual vem de `server/auto-agent/provider-detector.mjs`:
-
-- `anthropic/claude-3.7-sonnet`
-- `openai/gpt-4.1`
-- `google/gemini-2.5-pro`
-- `x-ai/grok-4`
-- `deepseek/deepseek-r1`
-- `z-ai/glm-4.5`
-- `qwen/qwen3-coder`
-- `meta-llama/llama-4-maverick`
-
-Arquivos principais:
-
-- `server/auto-agent/provider-detector.mjs`
-- `server/auto-agent/tool-catalog.mjs`
-- `server/auto-agent/planner.mjs`
-- `server/auto-agent/orchestrator.mjs`
-- `server/routes/auto-recon.mjs`
-- `public/index.html`
-- `MODO-AUTO-GHOSTRECON.md`
-
-O documento detalhado da visao, papeis por combinacao de IA e fases futuras fica em:
-
-```text
-MODO-AUTO-GHOSTRECON.md
-```
-
-## MCP Para Cursor
-
-O projeto agora inclui um servidor MCP local do GHOSTRECON em:
-
-```text
-mcp/ghostrecon-mcp.mjs
-```
-
-A configuracao do Cursor fica em:
-
-```text
-.cursor/mcp.json
-```
-
-Ela registra dois MCPs:
-
-- `ghostrecon`: orquestrador local que chama a API `http://127.0.0.1:3847`.
-- `hexstrike-ai`: MCP externo do HexStrike, apontando para `IAs/hexstrike-ai/hexstrike_mcp.py` e servidor `http://127.0.0.1:8888`.
-
-Tools expostas pelo MCP do GHOSTRECON:
-
-- `ghostrecon_health`
-- `ghostrecon_capabilities`
-- `ghostrecon_list_modules`
-- `ghostrecon_list_playbooks`
-- `ghostrecon_plan_recon`
-- `ghostrecon_run_recon`
-- `ghostrecon_plan_auto`
-- `ghostrecon_run_auto`
-- `ghostrecon_list_runs`
-- `ghostrecon_get_run`
-- `ghostrecon_diff_runs`
-- `ghostrecon_get_intel`
-- `ghostrecon_hexstrike_status`
-- `ghostrecon_hexstrike_intel`
-- `ghostrecon_auto_rag_list`
-- `ghostrecon_auto_rag_read`
-- `ghostrecon_auto_rag_search`
-- `ghostrecon_auto_rag_write_note`
-- `ghostrecon_auto_rag_write_lesson`
-
-O MCP usa stdio e fala com a API do GHOSTRECON via HTTP, reaproveitando `server/modules/cli/client.mjs` para CSRF, auth e NDJSON. Por padrao no Cursor, `GHOSTRECON_MCP_AUTOSTART=1` tenta iniciar a API se ela nao estiver online. Se `GHOSTRECON_API_KEY` nao estiver definida, o cliente tenta obter a primeira chave local via `/api/setup/auto-auth` em loopback. Para ambientes mais controlados, defina `GHOSTRECON_MCP_AUTOSTART=0` e/ou `GHOSTRECON_AUTO_AUTH_FROM_SERVER=0`.
-
-Resources expostos:
-
-- `ghostrecon://capabilities`
-- `ghostrecon://playbooks`
-- `ghostrecon://runs/latest`
-- `ghostrecon://runs/{id}`
-- `ghostrecon://intel/{target}`
-- `ghostrecon://auto-rag/index`
-- `ghostrecon://auto-rag/{folder}/{file.md}`
-
-Prompts expostos:
-
-- `ghostrecon-plan-recon`
-- `ghostrecon-triage-findings`
-- `ghostrecon-report-draft`
-- `ghostrecon-auto-gap-analysis`
-
-Por seguranca, `ghostrecon_run_recon` chama o mesmo guard OPSEC usado pelo backend antes de executar. Se houver modulo intrusivo, a tool retorna erro com o plano e exige `confirmActive=true`.
-
-### Auto RAG Em Markdown
-
-O Modo Auto grava decisoes em Markdown em:
-
-```text
-data/auto-rag/
-  README.md
-  decisions/
-  lessons/
-  notes/
-  cursor-tasks/
-```
-
-Tambem gera um indice:
-
-```text
-data/auto-rag/README.md
-```
-
-Essa pasta pode ser aberta no Obsidian. Cada nova decisao/plano/avaliacao do Modo Auto vira um `.md` com frontmatter, modulos selecionados, papeis dos comandantes, estatisticas da run e JSON do plano/avaliacao. O proximo plano do Modo Auto carrega um resumo das memorias recentes e inclui esse contexto em `plan.memory`, reduzindo repeticao de contexto para as IAs. Para recuperar contexto sem carregar o vault inteiro, use `ghostrecon_auto_rag_search` com termos como target, modulo, tecnologia ou erro.
-
-Endpoints locais:
-
-- `GET /api/auto-rag/status`: status, contagem e memorias recentes.
-- `GET /api/auto-rag/search?q=termo`: busca simples em Markdown.
-- `POST /api/auto-rag/note`: cria nota ou lesson com CSRF e escopo `notes.write`.
-
-Quando o comandante `cursor` e selecionado, o Modo Auto cria um handoff em `data/auto-rag/cursor-tasks/` com alvo, plano, modulos e contexto RAG. Execucao real de Cursor/Agent fica desligada por padrao; a integracao atual e local, auditavel e human-in-loop.
-
-Variaveis:
-
-```bash
-GHOSTRECON_AUTO_RAG_ENABLED=1
-GHOSTRECON_AUTO_RAG_DIR=data/auto-rag
-```
-
-## HexStrike
-
-A pasta `IAs/hexstrike-ai` contem o HexStrike AI MCP. O GHOSTRECON integra HexStrike de forma conservadora nesta fase:
-
-- Detecta se a pasta existe.
-- Detecta `hexstrike_server.py`, `hexstrike_mcp.py` e `requirements.txt`.
-- Tenta telemetria no servidor HTTP.
-- Exibe status em `/api/capabilities`.
-- Permite o modulo `hexstrike_orchestrator`.
-- Usa endpoints de inteligencia permitidos para importar findings informacionais.
-- Nao executa comandos arbitrarios pelo GHOSTRECON.
-
-Arquivos principais:
-
-- `server/integrations/hexstrike-client.mjs`
-- `server/modules/hexstrike-capabilities.mjs`
-- `server/modules/hexstrike-orchestrator.mjs`
-- `server/tests/hexstrike-capabilities.test.js`
-- `server/tests/hexstrike-orchestrator.test.js`
-
-Variaveis uteis:
-
-```bash
-GHOSTRECON_HEXSTRIKE_URL=http://127.0.0.1:8888
-GHOSTRECON_HEXSTRIKE_HOME=IAs/hexstrike-ai
-GHOSTRECON_HEXSTRIKE_TIMEOUT_MS=60000
-GHOSTRECON_HEXSTRIKE_HEALTH_DEEP=0
-```
-
-Instalacao manual do HexStrike:
-
-```bash
-cd IAs/hexstrike-ai
-python3 -m venv hexstrike-env
-source hexstrike-env/bin/activate
-pip install -r requirements.txt
-python3 hexstrike_server.py --port 8888
-```
-
-No Windows, ative o venv conforme seu shell:
-
-```powershell
-cd IAs\hexstrike-ai
-py -3 -m venv hexstrike-env
-.\hexstrike-env\Scripts\Activate.ps1
-pip install -r requirements.txt
-python hexstrike_server.py --port 8888
-```
-
-## Arquitetura
-
-```text
-Usuario
-  -> public/index.html
-     -> API Node/Express :3847
-        -> rotas /api/*
-        -> runPipeline()
-        -> modulos GHOSTRECON
-        -> registry modular
-        -> SQLite/Postgres/Supabase
-        -> IA cloud/local opcional
-        -> HexStrike/Vigolium/Kali opcionais
-        -> NDJSON para UI
-
-Servicos auxiliares:
-  ghost-local-v5 :8000
-  GhostTrace     :3010 via /anotacao
-  GhostMap       :3020 via proxy
-  GhostDesk      :5173 via proxy
-  HexStrike      :8888 quando iniciado
-```
-
-Principais camadas:
-
-- `server/index.js`: entrada da API.
-- `server/app/register-routes.mjs`: registra rotas.
-- `server/routes/`: endpoints HTTP.
-- `server/pipeline/run-pipeline.mjs`: entrada do pipeline.
-- `server/pipeline/phases/`: fases do recon.
-- `server/modules/`: modulos, integracoes, storage e validadores.
-- `server/modules/module-registry.mjs`: registry de modulos refatorados.
-- `server/auto-agent/`: Modo Auto.
-- `server/integrations/`: clientes externos, como HexStrike.
-- `public/`: paineis HTML.
-
-## Estrutura Do Repositorio
-
-```text
-GHOSTRECON/
-  server/                  API, rotas, modulos, pipeline e testes
-  public/                  UI principal e paineis HTML
-  bin/                     CLI ghostrecon
-  scripts/                 start stack, instaladores e utilitarios
-  bridge/                  bridge Vigolium e capacidades externas
-  engines/                 motores locais opcionais
-  ghost-local-v5/          IA local FastAPI, memoria e chat
-  GhostTrace/              anotacoes e relatorio
-  ghostmap/                mapa visual e frontend dedicado
-  GhostDesk/               desktop/workbench auxiliar
-  apps/                    apps experimentais/auxiliares
-  IAs/                     agentes locais, HexStrike, Shannon/PentestGPT quando instalados
-  playbooks/               playbooks de recon e checklist
-  tools/                   ferramentas auxiliares
-  docs/                    documentacao tecnica
-  data/                    dados locais
-  logs/                    logs locais
-  .env.example             configuracao documentada
-```
-
-## Pipeline Principal
-
-O pipeline normal e exposto por:
-
-```text
-POST /api/recon/stream
-```
-
-Ele retorna NDJSON, permitindo que a UI mostre progresso e findings em tempo real.
-
-Fases principais:
-
-1. Normalizacao do alvo e escopo.
-2. Auth, CSRF, rate limit e OPSEC gate.
-3. Discovery e fingerprint.
-4. Coleta passiva: DNS, RDAP, crt.sh, Wayback, CommonCrawl, headers, TLS, robots, sitemap.
-5. Superficie web: URLs, parametros, JS, endpoints, OpenAPI, GraphQL.
-6. Validacoes e auditorias: headers, CORS, cookies, CSRF, JWT/JWKS, WebSocket, HTTP/3, service worker, DOM, secrets.
-7. Modulos opcionais: Kali, Vigolium, sqlmap, Nuclei, ffuf, WPScan, Navegation/Tor.
-8. Correlacao, dedupe, scoring, OWASP, MITRE e priorizacao.
-9. Persistencia local/remota.
-10. IA opcional e relatorios.
-11. Webhooks, history, Reporte, GhostMap e Cortex.
-
-## Modulos E Capacidades
-
-`GET /api/capabilities` devolve o estado de:
-
-- Kali/tools externos.
-- IA configurada.
-- GitHub token.
-- Registry de modulos.
-- Tool packs externos.
-- Shannon.
-- PentestGPT.
-- HexStrike.
-- Vigolium.
-
-Alguns modulos importantes:
-
-- `cookie_session_audit`
-- `csrf_flow_audit`
-- `jwt_jwks_audit`
-- `http3_quic_surface`
-- `nginx_http3_cve_2026_42530`
-- `panel_exposure_audit`
-- `service_worker_audit`
-- `api_contract_diff`
-- `websocket_recon`
-- `hpp_param_pollution`
-- `hexstrike_orchestrator`
-- `dom_clobbering_audit`
-- `email_security_deep`
-- `secrets_context_ranker`
-- `risk_explainer`
-- `vigolium_dast`
-- `vigolium_audit`
-- `vigolium_swarm`
-
-O registry atual fica em:
-
-```text
-server/modules/module-registry.mjs
-server/modules/module-registry-runners.mjs
-server/modules/module-ids.mjs
-```
-
-## APIs Principais
-
-| Rota | Funcao |
+| Playbook | Foco |
 | --- | --- |
-| `GET /api/csrf-token` | Emite token CSRF |
-| `GET /api/setup/auto-auth` | Ajuda setup local de API key |
-| `POST /api/recon/stream` | Recon normal em NDJSON |
-| `POST /api/recon/auto/stream` | Modo Auto em NDJSON |
-| `GET /api/capabilities` | Capacidades locais |
-| `GET /api/runs` | Historico de runs |
-| `GET /api/runs/:id` | Detalhes de uma run |
-| `GET /api/brain/*` | Cortex / memoria |
-| `POST /api/manual-validations` | Validacoes manuais |
-| `POST /api/anotacao-handoff` | Handoff para GhostTrace |
-| `GET /api/tunnel/status` | Status proxy/Tor |
-| `POST /api/ai-reports` | Relatorios IA |
-| `GET /api/vigolium/*` | Rotas Vigolium |
-| `POST /api/ghostcommand/*` | GhostCommand |
+| `quick-triage` | Primeiro passe rápido e discreto |
+| `api-first` | OpenAPI, GraphQL, endpoints e parâmetros |
+| `client-surface-hunt` | SPA/PWA, XSS, auth client-side e source maps |
+| `subdomain-hunt` | Enumeração e enriquecimento de subdomínios |
+| `cloud-takeover` | CNAMEs órfãos e takeover em cloud |
+| `secrets-leak` | GitHub, bundles, arquivos históricos e segredos |
+| `wordpress` | Superfície WordPress e WPScan |
+| `firebase-client-auth-hunt` | Firebase, regras, storage e auth no frontend |
+| `lovable-hunt` | Lovable, Supabase, RLS e aplicações vibe-coded |
+| `lowcode-hunt` | Bubble, Webflow, OutSystems, Mendix e Appsmith |
+| `full-recon` | Cobertura máxima passiva + ativa; exige autorização explícita |
 
-## CLI
-
-O binario fica em:
-
-```text
-bin/ghostrecon.mjs
+```bash
+npm run cli -- playbooks
+npm run cli -- run --target api.example.com --playbook api-first
 ```
 
-Uso via npm:
+## Linha de comando
+
+A CLI atual é a `v1.1.0-cli` e pode ser chamada por `npm run cli --` ou pelo binário `ghostrecon` após link/instalação do pacote.
 
 ```bash
 npm run cli -- --help
 ```
 
-Ou diretamente:
+### Operação básica
 
 ```bash
-node bin/ghostrecon.mjs --help
+# Recon passivo rápido
+npm run cli -- run -t example.com --playbook quick-triage --format summary
+
+# Combinar playbook e módulos
+npm run cli -- scan -t api.example.com \
+  --playbook api-first \
+  --modules graphql_recon,cors_audit \
+  --output api-run.json
+
+# Node + Vigolium
+npm run cli -- scan -t example.com \
+  --engine both \
+  --strategy balanced \
+  --modules rdap,vigolium_dast
+
+# Módulos ativos exigem ACK explícito
+npm run cli -- run -t example.com \
+  --opsec-profile aggressive \
+  --confirm-active \
+  --modules kali_nuclei,kali_ffuf
 ```
 
-A CLI usa os helpers em:
+### Workflow operacional
+
+```bash
+npm run cli -- runs --target example.com --limit 5
+npm run cli -- diff --baseline 12 --newer 18 --format summary
+npm run cli -- schedule --target example.com --interval 6h --playbook api-first
+npm run cli -- export --run 42 --to github --repo org/repo --severity high
+```
+
+A CLI também oferece `projects`, `engagement`, `narrative`, `purple`, `team`, `replay`, `obsidian` e `phish-infra`.
+
+## Modo Auto
+
+O Modo Auto transforma provedores de IA em comandantes do recon. Ele pode planejar uma run, selecionar módulos, acompanhar resultados, produzir avaliação pós-pipeline e gravar decisões para execuções futuras.
 
 ```text
-server/modules/cli/
+CONTEXTO + CAPABILITIES + MEMÓRIA
+              ↓
+         CONSELHO DE IAs
+              ↓
+       PLANO JSON VALIDADO
+              ↓
+       PIPELINE GHOSTRECON
+              ↓
+    AVALIAÇÃO + RAG + HANDOFF
 ```
 
-## Variaveis De Ambiente
+Provedores contemplados pelo contrato atual incluem Codex, Claude Code, Cursor, OpenRouter, GHOST/modelo local e endpoints OpenAI-compatible. A disponibilidade depende da instalação e configuração local.
 
-Copie `.env.example` para `.env` e ajuste o que precisar.
+> [!NOTE]
+> O Modo Auto está em evolução controlada. Limites de iteração, tempo, chamadas, custo, redaction e confirmação humana fazem parte do desenho; revise o plano antes de autorizar módulos ativos.
 
-Essenciais:
+Arquivos de decisão e memória ficam em `data/auto-rag/`, organizados como Markdown pesquisável. O fluxo principal usa `POST /api/recon/auto/stream`.
+
+Leia [MODO-AUTO-GHOSTRECON.md](MODO-AUTO-GHOSTRECON.md) para arquitetura, papéis do conselho, Module Forge e roadmap.
+
+## MCP
+
+O servidor MCP em `mcp/ghostrecon-mcp.mjs` conecta clientes compatíveis ao mesmo backend usado pelo cockpit e pela CLI. A configuração local do Cursor está em `.cursor/mcp.json`.
+
+Principais grupos de tools:
+
+- health, capabilities, módulos e playbooks;
+- planejamento e execução de recon normal ou Auto;
+- runs, diff e inteligência por alvo;
+- status e inteligência HexStrike;
+- leitura, busca e escrita controlada no Auto RAG.
+
+O MCP reutiliza autenticação, CSRF, streaming NDJSON e o gate OPSEC do backend. Módulos intrusivos continuam exigindo `confirmActive=true`.
+
+## Ecossistema local
+
+| Serviço | Endereço padrão | Papel |
+| --- | --- | --- |
+| GHOSTRECON | `http://127.0.0.1:3847/` | Cockpit e API principal |
+| Reporte | `http://127.0.0.1:3847/reporte.html` | Validação manual e handoff |
+| Cortex | `http://127.0.0.1:3847/cortex.html` | Conhecimento e contexto |
+| History | `http://127.0.0.1:3847/vigolium-workbench.html` | HTTP history e workbench |
+| GhostMap | `http://127.0.0.1:3847/ghostmap/ghostrecon` | Grafo e visualizações |
+| GhostTrace | `http://127.0.0.1:3847/anotacao/` | Anotações e evidências |
+| Tor Validator | `http://127.0.0.1:3847/tor-validator.html` | Verificação de rota Tor |
+| GHOST local | `http://127.0.0.1:8000/gui/` | IA local, memória e chat |
+| GhostDesk | `http://127.0.0.1:5173/` | Workbench auxiliar |
+| HexStrike | `http://127.0.0.1:8888` | Servidor HexStrike opcional |
+
+## Arquitetura
+
+```text
+GHOSTRECON/
+├── server/
+│   ├── app/                 registro e composição da aplicação
+│   ├── routes/              endpoints HTTP
+│   ├── pipeline/            dispatcher, estado e fases do recon
+│   ├── modules/             módulos, storage, auth e integrações
+│   ├── auto-agent/          conselho, providers, RAG e Module Forge
+│   ├── integrations/        FrameSeven e HexStrike
+│   └── tests/               testes Node
+├── public/                  cockpit e painéis HTML
+├── bin/                     CLI v1
+├── mcp/                     servidor MCP
+├── bridge/                  bridge e catálogo Vigolium
+├── engines/                 binários locais opcionais
+├── playbooks/               estratégias reproduzíveis
+├── GhostTrace/              anotações e relatórios
+├── ghostmap/                visualização e captura
+├── GhostDesk/               workbench auxiliar
+├── ghost-local-v5/          IA local
+├── FrameSeven/              engine complementar
+├── IAs/                     agentes e integrações de IA
+├── apps/GhostCommand/       app Android operacional
+├── tools/                   ferramentas auxiliares
+├── data/                    SQLite, runs e memória local
+└── docs/                    contratos e segurança
+```
+
+### Motores
+
+O pipeline suporta três abordagens complementares:
+
+| Modo | Uso ideal |
+| --- | --- |
+| `node` | OSINT, recon, correlação e módulos nativos GHOSTRECON |
+| `go` | DAST pelo motor Vigolium |
+| `both` | Cobertura combinada com findings normalizados e deduplicados |
 
 ```bash
+npm run engine:install
+npm run engine:build
+npm run cli -- scan -t example.com --engine both --strategy lite
+```
+
+## Segurança por design
+
+O GHOSTRECON trata segurança operacional como parte do pipeline, não como detalhe de implantação:
+
+- bind padrão em `127.0.0.1`;
+- autenticação por API key ou JWT;
+- bypass de desenvolvimento limitado ao loopback;
+- proteção CSRF em operações mutáveis;
+- rate limit para recon;
+- RBAC e scopes;
+- gate OPSEC por perfil e módulo;
+- confirmação explícita para ações intrusivas;
+- Tor strict com validação anti-leak e fail-closed;
+- redaction de segredos em history e contexto cloud;
+- limites de tempo, memória, saída e custo para ferramentas/agentes.
+
+> [!CAUTION]
+> Não exponha `HOST=0.0.0.0` sem autenticação forte, TLS/reverse proxy confiável e revisão de `GHOSTRECON_TRUST_PROXY`. Nunca use `AUTH_DISABLE=1` em uma interface pública.
+
+Veja [docs/AUTH-RBAC.md](docs/AUTH-RBAC.md) e [docs/TOR.md](docs/TOR.md).
+
+## Configuração
+
+Toda a configuração disponível e seus valores recomendados estão comentados em [.env.example](.env.example).
+
+### Núcleo
+
+```dotenv
 PORT=3847
 HOST=127.0.0.1
-AUTH_DISABLE=1
+AUTH_MODE=apikey
+AUTH_API_KEYS=minha-chave:admin:operador-local
 ```
 
-Auth local:
+### Persistência
 
-```bash
-AUTH_API_KEYS=nome:chave:admin
-GHOSTRECON_TRUST_PROXY=0
+SQLite local é o padrão. Para Postgres direto ou Supabase:
+
+```dotenv
+DATABASE_URL=postgresql://usuario:senha@127.0.0.1:5432/ghostworkflow
+GHOSTRECON_REMOTE_FALLBACK_SQLITE=1
 ```
 
-IA:
+### IA opcional
 
-```bash
+```dotenv
 GEMINI_API_KEY=
 OPENROUTER_API_KEY=
 ANTHROPIC_API_KEY=
-GHOSTRECON_OPENROUTER_MODEL=
 GHOSTRECON_LMSTUDIO_BASE_URL=http://127.0.0.1:8000/v1
 GHOSTRECON_LMSTUDIO_MODEL=ghost
 ```
 
-Modo Auto:
+### Controle da stack
 
-```bash
-GHOSTRECON_SKYNET_URL=http://127.0.0.1:8000
-GHOSTRECON_OPENROUTER_AUTO_MODEL=anthropic/claude-3.7-sonnet
-GHOSTRECON_AUTO_ALLOW_UNCONFIGURED=0
-```
-
-HexStrike:
-
-```bash
-GHOSTRECON_HEXSTRIKE_URL=http://127.0.0.1:8888
-GHOSTRECON_HEXSTRIKE_HOME=IAs/hexstrike-ai
-GHOSTRECON_HEXSTRIKE_TIMEOUT_MS=60000
-```
-
-Stack:
-
-```bash
+```dotenv
 GHOSTRECON_STACK_VIGOLIUM=1
 GHOSTRECON_STACK_GHOST=1
 GHOSTRECON_STACK_GHOSTTRACE=1
 GHOSTRECON_STACK_GHOSTMAP=1
 GHOSTRECON_STACK_GHOSTDESK=1
+GHOSTRECON_STACK_HEXSTRIKE=1
 ```
 
-Para desligar servicos pesados:
+Defina qualquer item como `0` para não iniciá-lo com `npm start`.
 
-```bash
-GHOSTRECON_STACK_VIGOLIUM=0
-GHOSTRECON_STACK_GHOST=0
-GHOSTRECON_STACK_GHOSTTRACE=0
-GHOSTRECON_STACK_GHOSTMAP=0
-GHOSTRECON_STACK_GHOSTDESK=0
-npm start
-```
+## Scripts úteis
 
-## Scripts NPM
-
-| Script | Funcao |
+| Comando | Ação |
 | --- | --- |
-| `npm start` | Sobe stack local completa |
-| `npm run start:minimal` | Sobe apenas API Node |
-| `npm run start:api` | Sobe `server/index.js` |
-| `npm run dev` | API em watch mode |
-| `npm test` | Roda todos os testes Node |
-| `npm run test:cli` | Testes da CLI |
-| `npm run cli -- --help` | CLI |
-| `npm run start:ghost` | Ghost local |
-| `npm run start:anotacao` | GhostTrace |
-| `npm run start:ghostmap` | GhostMap |
-| `npm run start:ghostdesk` | GhostDesk |
-| `npm run test:ai` | Smoke de APIs IA |
-| `npm run mitre:extract` | Gera bundle MITRE |
-| `npm run pentestgpt-bridge` | Bridge PentestGPT via OpenRouter |
-| `npm run engine:install` | Instala motor Vigolium |
-| `npm run engine:build` | Build do motor Vigolium |
+| `npm start` | Inicia a stack local |
+| `npm run start:minimal` | Inicia somente a API Node |
+| `npm run start:api` | Executa diretamente `server/index.js` |
+| `npm run dev` | API com watch mode |
+| `npm run cli -- --help` | Abre a CLI |
+| `npm test` | Executa a suíte Node |
+| `npm run test:cli` | Executa testes da CLI |
+| `npm run start:ghost` | Inicia a IA local |
+| `npm run start:anotacao` | Inicia o GhostTrace |
+| `npm run start:ghostmap` | Inicia o GhostMap |
+| `npm run start:ghostdesk` | Inicia o GhostDesk |
+| `npm run engine:install` | Instala o motor Vigolium |
+| `npm run engine:build` | Compila o motor Vigolium local |
 
-## Docker E Instalador
+## Docker
 
-Existe um `Dockerfile` na raiz para imagem minima da API:
+A imagem da raiz contém o núcleo Node, a UI e os recursos necessários para operação mínima:
 
 ```bash
 docker build -t ghostrecon .
-docker run --rm -p 3847:3847 -e AUTH_DISABLE=1 ghostrecon
+docker run --rm \
+  -p 3847:3847 \
+  -e HOST=0.0.0.0 \
+  -e AUTH_API_KEYS=troque-esta-chave:admin:docker \
+  ghostrecon
 ```
 
-O script `install.sh` tambem existe para setups por perfil. Use com cuidado, porque ele pode instalar dependencias de sistema e ferramentas externas conforme o perfil escolhido.
+Serviços auxiliares possuem requisitos próprios e não fazem parte dessa imagem mínima.
+
+## API essencial
+
+| Método | Rota | Função |
+| --- | --- | --- |
+| `GET` | `/api/health` | Saúde da API |
+| `GET` | `/api/csrf-token` | Emissão de token CSRF |
+| `GET` | `/api/capabilities` | Capacidades detectadas |
+| `POST` | `/api/recon/stream` | Recon normal em NDJSON |
+| `POST` | `/api/recon/auto/stream` | Recon comandado por IA |
+| `GET` | `/api/runs` | Histórico de runs |
+| `GET` | `/api/runs/:id` | Resultado de uma run |
+| `POST` | `/api/ai-reports` | Relatório por IA |
+| `POST` | `/api/manual-validations` | Registro de validação manual |
+| `POST` | `/api/anotacao-handoff` | Handoff para GhostTrace |
+| `GET` | `/api/tunnel/status` | Estado de proxy/Tor |
+
+Rotas privilegiadas exigem autenticação; rotas mutáveis também podem exigir `X-CSRF-Token`.
+
+## Qualidade e testes
+
+O projeto possui 98 arquivos de teste Node cobrindo pipeline, autenticação, OPSEC, módulos, storage, CLI, Modo Auto, Vigolium, FrameSeven, HexStrike e integrações.
 
 ```bash
-bash install.sh --help
-```
-
-## Testes
-
-Todos os testes:
-
-```bash
+# Suíte completa
 npm test
+
+# CLI
+npm run test:cli
+
+# Smoke de import sem abrir porta
+GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js).then(() => console.log('node app ok'))"
 ```
-
-Testes focados no Modo Auto e HexStrike:
-
-```bash
-node --test server/tests/auto-agent.test.js server/tests/hexstrike-capabilities.test.js server/tests/hexstrike-orchestrator.test.js
-```
-
-Smoke de import do servidor sem abrir porta:
-
-```bash
-GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js').then(()=>console.log('node app ok'))"
-```
-
-No PowerShell:
-
-```powershell
-$env:GHOSTRECON_NO_HTTP_LISTEN="1"
-node -e "import('./server/index.js').then(()=>console.log('node app ok'))"
-```
-
-Observacao: `package.json` exige Node `>=20 <27`. Com Node 18 alguns testes ainda podem rodar, mas dependencias como Supabase avisam que Node 18 esta deprecado.
 
 ## Troubleshooting
 
-### A UI abriu, mas as rotas retornam 401
+<details>
+<summary><strong>A UI abre, mas a API retorna 401</strong></summary>
 
-Configure `AUTH_API_KEYS` ou use `AUTH_DISABLE=1` apenas localmente.
+Configure `AUTH_API_KEYS` no `.env`. Para desenvolvimento estritamente local, use `AUTH_DISABLE=1`.
 
-### O botao AUTO MODE nao aparece
+</details>
 
-Recarregue a UI principal com cache limpo:
+<details>
+<summary><strong>O npm start tenta iniciar serviços demais</strong></summary>
 
-```text
-Ctrl+F5
-```
+Use `npm run start:minimal` ou desligue serviços com `GHOSTRECON_STACK_<SERVIÇO>=0`.
 
-O botao fica na pagina principal `public/index.html`, ao lado de `RUN RECON`.
+</details>
 
-### HexStrike aparece offline
+<details>
+<summary><strong>Ferramentas externas não aparecem</strong></summary>
 
-Confirme se o servidor HexStrike esta no ar:
+Consulte `/api/capabilities` e confirme se os binários estão no `PATH`. Algumas ferramentas dependem de Linux, Kali ou WSL.
 
-```bash
-curl http://127.0.0.1:8888/api/telemetry
-```
+</details>
 
-Ou inicie manualmente:
+<details>
+<summary><strong>Tor strict bloqueia a execução</strong></summary>
 
-```bash
-cd IAs/hexstrike-ai
-python3 hexstrike_server.py --port 8888
-```
+Esse modo falha fechado quando SOCKS, DNSPort, ControlPort, proxychains ou a validação anti-leak não estão corretos. Consulte [docs/TOR.md](docs/TOR.md).
 
-### npm start tenta subir muita coisa
+</details>
 
-Use:
+<details>
+<summary><strong>HexStrike aparece offline</strong></summary>
 
-```bash
-npm run start:minimal
-```
+Verifique `GHOSTRECON_HEXSTRIKE_URL`, o ambiente Python e o health endpoint do serviço na porta `8888`.
 
-Ou desligue partes:
+</details>
 
-```bash
-GHOSTRECON_STACK_GHOST=0 GHOSTRECON_STACK_GHOSTTRACE=0 npm start
-```
+## Documentação técnica
 
-### Ferramentas Kali nao aparecem
+- [Modo Auto e conselho de IAs](MODO-AUTO-GHOSTRECON.md)
+- [Autenticação, RBAC e scopes](docs/AUTH-RBAC.md)
+- [Tor strict e proteção anti-leak](docs/TOR.md)
+- [Contrato de módulos](docs/MODULE-CONTRACT.md)
+- [Integração autenticada do FrameSeven](PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md)
+- [Estado e evolução do FrameSeven](FRAMESEVEN-INTEGRACAO-FUTURA.md)
+- [Fusão GHOSTRECON + Vigolium](FUSAO-VIGOLIUM.md)
+- [Melhorias pendentes do Modo Auto](MELHORIAS-PENDENTES-MODO-AUTO.md)
 
-Rode `GET /api/capabilities` e confira se as ferramentas existem no `PATH`. Em ambientes Windows, muitas delas dependem de WSL/Kali.
+## Licenças e terceiros
 
-### CSRF invalido
+O repositório integra componentes com licenças próprias. O código do Vigolium permanece sob **AGPL-3.0**, incluindo as obrigações aplicáveis a modificações e operação em rede. Antes de redistribuir a stack, consulte [NOTICE](NOTICE), `vigolium/LICENSE`, `vigolium/THIRD_PARTY_NOTICES.md` e as licenças das demais dependências.
 
-A UI deve buscar `GET /api/csrf-token` antes de `POST /api/recon/stream` ou `/api/recon/auto/stream`. Se estiver testando manualmente, envie `X-CSRF-Token`.
+---
 
-### Tor strict bloqueou a run
+<div align="center">
 
-Veja `docs/TOR.md`. O modo strict exige pre-requisitos como SOCKS, ControlPort, DNSPort, `proxychains4` e validacao anti-leak.
+### Recon é coleta. Inteligência é saber o que validar em seguida.
 
-## Documentos Relacionados
+**GHOSTRECON — map the surface, validate the signal, keep the evidence.**
 
-- `MODO-AUTO-GHOSTRECON.md`: arquitetura detalhada do Modo Auto.
-- `MELHORIAS-PENDENTES-MODO-AUTO.md`: backlog e estado atual do Auto.
-- `PLANO-MELHORIAS-AUTO-IA.md`: plano histórico e decisões de evolução do Auto.
-- `FRAMESEVEN-INTEGRACAO-FUTURA.md`: estado operacional, fluxo comum e melhorias futuras do FrameSeven.
-- `PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md`: especificação do fluxo autenticado e integração dos três motores.
-- `FUSAO-VIGOLIUM.md`: fusao e papel do Vigolium.
-- `ANALISE-PROJETO.md`: analise geral antiga do projeto.
-- `REFATORACAO.md`: notas de refatoracao.
-- `docs/AUTH-RBAC.md`: auth, roles e scopes.
-- `docs/TOR.md`: Tor, strict mode e anti-leak.
-- `docs/MODULE-CONTRACT.md`: contrato de modulos.
-- `GhostTrace/README.md`: area de anotacoes.
-- `ghostmap/README.md`: GhostMap.
-- `IAs/README.md`: agentes locais.
-- `IAs/hexstrike-ai/README.md`: README upstream do HexStrike.
-- `playbooks/README.md`: playbooks.
-
-## Licenca E Notas
-
-Veja `NOTICE` e os READMEs das ferramentas integradas. Algumas pastas podem conter projetos externos ou engines opcionais com licencas proprias.
+</div>

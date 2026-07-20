@@ -31,11 +31,11 @@ function unwrapClaudeJson(stdout) {
 export async function decideWithClaudeCode({
   target, mode, catalog, ragContext, root, role = 'planner', iteration = 1,
   peerDecisions = [], observationBundle = null, env = process.env, execFileImpl = execFileDefault,
-  signal, maxContextChars = 120_000,
+  signal, maxContextChars = 120_000, allowIntrusive = false,
 } = {}) {
   const schema = JSON.parse(await fs.readFile(SCHEMA_PATH, 'utf8'));
   const timeoutMs = Math.max(30_000, Math.min(900_000, Number(env.GHOSTRECON_CLAUDE_TIMEOUT_MS || 240_000)));
-  const prompt = buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars });
+  const prompt = buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars, allowIntrusive });
   const args = [
     '--print',
     '--output-format', 'json',
@@ -58,7 +58,7 @@ export async function decideWithClaudeCode({
   });
   const parsed = unwrapClaudeJson(result?.stdout || '');
   const validated = validateAgentDecision(parsed, {
-    catalogModuleIds: availableCatalogIds(catalog),
+    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive }),
     availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
   });
   if (!validated.ok) throw new Error(`decisão Claude Code rejeitada: ${validated.errors.join('; ')}`);

@@ -1,5 +1,7 @@
 # Modo Auto GHOSTRECON
 
+> Estado em 2026-07-20: desenvolvimento pausado temporariamente. O fluxo passivo está validado; autonomia intrusiva 3/4 ainda aguarda teste completo de aprovação humana.
+
 Blueprint para integrar GHOSTRECON, HexStrike, MCP, Codex, Claude Code, Cursor, Skynet, modelos locais e OpenRouter em um modo autonomo de bug bounty autorizado.
 
 Gerado em: 2026-07-05

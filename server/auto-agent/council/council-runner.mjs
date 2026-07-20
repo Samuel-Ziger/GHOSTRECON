@@ -83,6 +83,8 @@ export async function runAgentCouncil({
   onTurn = () => {},
   observationBundle = null,
   session = null,
+  allowIntrusive = false,
+  autonomyLevel = 'observation',
 } = {}) {
   const selected = effectiveSelected(providers);
   const runTurn = async (p, role, peerDecisions = []) => {
@@ -102,6 +104,8 @@ export async function runAgentCouncil({
         signal: session?.signal,
         maxContextChars: session?.limits?.maxContextChars,
         session,
+        allowIntrusive,
+        autonomyLevel,
         });
       } catch (error) {
         if (preferredRunner !== runner && !session?.signal?.aborted) {

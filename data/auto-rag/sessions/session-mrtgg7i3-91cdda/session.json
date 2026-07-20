@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "session-mrtgg7i3-91cdda",
+  "requestRunId": "auto-mrtgg7i2-74238add",
+  "target": "admin.photonow.com.br",
+  "startedAt": "2026-07-20T16:44:42.363Z",
+  "status": "completed",
+  "iteration": 1,
+  "agentCalls": 2,
+  "usage": {
+    "codex": {
+      "calls": 2,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "totalTokens": 0,
+      "costUsd": 0,
+      "costEstimated": true
+    }
+  },
+  "costUsd": 0,
+  "lastActivityAt": "2026-07-20T16:45:41.241Z",
+  "currentStage": "agent:codex:planner",
+  "currentModule": null,
+  "providers": [
+    null
+  ],
+  "limits": {
+    "maxIterations": 3,
+    "sessionTimeoutMs": 1800000,
+    "agentTimeoutMs": 180000,
+    "maxAgentCalls": 12,
+    "maxContextChars": 120000,
+    "maxCostUsd": 10
+  },
+  "autonomyLevel": "authorized_opsec",
+  "catalogHash": "449054649db16e382eec14e7a67f7a3ead7cb575a17420a4f7659b05ea860cf1",
+  "promptVersion": "auto-council-v2",
+  "memoriesUsed": [
+    "decisions/2026-07-20T16-36-38-873Z-admin.photonow.com.br-plan-auto-mrtg5iwh-1904548f.md",
+    "decisions/2026-07-20T16-39-48-573Z-admin.photonow.com.br-evaluation-auto-mrtg5iwh-1904548f.md",
+    "decisions/2026-07-20T15-28-16-448Z-admin.photonow.com.br-plan-auto-mrtdpkpv-a49e8912.md",
+    "decisions/2026-07-20T15-24-50-340Z-admin.photonow.com.br-plan-auto-mrtdl3kt-02e7e32f.md",
+    "decisions/2026-07-16T16-34-19-328Z-admin.photonow.com.br-plan-auto-mrnq5zv4-96d81e97.md",
+    "decisions/2026-07-20T15-21-10-709Z-admin.photonow.com.br-plan-auto-mrtdg38c-8c6c6a32.md"
+  ],
+  "checkpoint": {
+    "status": "completed",
+    "nextIteration": null,
+    "nextModules": [],
+    "executedModules": [
+      "chaining",
+      "risk_explainer"
+    ],
+    "iterationHistory": [
+      {
+        "iteration": 1,
+        "modules": [
+          "chaining",
+          "risk_explainer"
+        ],
+        "observation": {
+          "findings": 54,
+          "warnings": 0,
+          "errors": 0
+        },
+        "decision": {
+          "action": "abstain",
+          "objective": "Decisão consolidada pelo conselho de agentes selecionados",
+          "reasoningSummary": [
+            "codex: A iteração observada produziu 54 achados, todos de baixa prioridade, sem avisos ou erros.",
+            "codex: Os resultados consistem principalmente em arquivos estáticos, infraestrutura CloudFront/S3, registros DNS e endereços de borda, sem sinal concreto de vulnerabilidade.",
+            "codex: Análises anteriores já aplicaram módulos especializados à superfície JavaScript e registraram ausência de sinais de alta confiança.",
+            "codex: No nível de autonomia observation, repetir módulos já executados não apresenta ganho informacional comprovado.",
+            "codex: Não há lacuna funcional comprovada que justifique forge_module, nem evidência suficiente para solicitar nova análise passiva nesta iteração."
+          ],
+          "evidenceRefs": [
+            "finding:20",
+            "finding:22",
+            "finding:28",
+            "finding:60",
+            "finding:118",
+            "finding:199",
+            "finding:201",
+            "memory:decisions/2026-07-20T15-29-38-726Z-admin.photonow.com.br-evaluation-auto-mrtdpkpv-a49e8912.md",
+            "memory:decisions/2026-07-20T16-39-48-573Z-admin.photonow.com.br-evaluation-auto-mrtg5iwh-1904548f.md"
+          ],
+          "requestedModules": [],
+          "rejectedModules": [],
+          "confidence": 0.94,
+          "assumptions": [
+            "As memórias resumem corretamente os módulos já executados e seus resultados agregados.",
+            "Os achados apresentados representam integralmente a saída relevante desta iteração.",
+            "Nenhuma nova evidência de maior prioridade foi omitida das observações fornecidas."
+          ],
+          "operatorQuestion": null,
+          "forgeRequest": null,
+          "council": {
+            "selected": [
+              "codex"
+            ],
+            "proposalProviders": [
+              "codex"
+            ],
+            "reviewProviders": [],
+            "quorum": 1
+          }
+        }
+      }
+    ]
+  },
+  "finishedAt": "2026-07-20T16:45:41.242Z",
+  "durationMs": 58879
+}

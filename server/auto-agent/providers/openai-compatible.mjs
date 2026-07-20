@@ -20,6 +20,7 @@ export async function decideWithOpenAiCompatible({
   signal,
   retries = 1,
   maxContextChars = 120_000,
+  allowIntrusive = false,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error(`${provider}: fetch indisponível`);
   if (!baseUrl || !model) throw new Error(`${provider}: baseUrl/model ausente`);
@@ -59,7 +60,7 @@ export async function decideWithOpenAiCompatible({
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${String(data?.error?.message || data?.message || 'erro').slice(0, 500)}`);
     const validate = (value) => validateAgentDecision(value, {
-      catalogModuleIds: availableCatalogIds(catalog),
+      catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive }),
       availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
     });
     const originalContent = extractOpenAiContent(data);

@@ -21,8 +21,9 @@ import { reviewForgePackage } from '../auto-agent/forge/code-review.mjs';
 import { listForgePackages, readForgePackage, recordForgeRuntimeResult, transitionForgePackage } from '../auto-agent/forge/lifecycle.mjs';
 import { runForgeCorrectionLoop } from '../auto-agent/forge/correction-loop.mjs';
 import { runActiveDynamicModules } from '../auto-agent/forge/runtime-loader.mjs';
-import { validateAgentDecision } from '../auto-agent/decision-contract.mjs';
-import { autoSessionLimits, createAutoSession } from '../auto-agent/session-store.mjs';
+import { repairDecisionEnvelope, validateAgentDecision } from '../auto-agent/decision-contract.mjs';
+import { autoSessionLimits, createAutoSession, reconcileOrphanedAutoSessions } from '../auto-agent/session-store.mjs';
+import { writeAutoSessionSnapshot } from '../auto-agent/session-store.mjs';
 import { CodexAppServerClient } from '../auto-agent/providers/codex-app-server.mjs';
 import { registerAutoReconRoutes } from '../routes/auto-recon.mjs';
 import { cancelActiveAutoSession, listActiveAutoSessions, registerActiveAutoSession, unregisterActiveAutoSession } from '../auto-agent/active-sessions.mjs';
@@ -41,6 +42,20 @@ test('registro de sessões permite cancelar somente a sessão ativa', () => {
   unregisterActiveAutoSession('session-cancel-test');
   assert.equal(cancelActiveAutoSession('session-cancel-test'), false);
   session.close('cancelled');
+});
+
+test('sessão running é reconciliada como interrupted após reinício', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-reconcile-'));
+  const session = createAutoSession({
+    sessionId: 'session-reconcile-test', requestRunId: 'run-reconcile', target: 'example.com',
+  });
+  await writeAutoSessionSnapshot(root, session.state, {});
+  session.close('running');
+  const changed = await reconcileOrphanedAutoSessions(root, {}, Date.now());
+  assert.deepEqual(changed, ['session-reconcile-test']);
+  const state = JSON.parse(await fs.readFile(path.join(root, 'data/auto-rag/sessions/session-reconcile-test/session.json'), 'utf8'));
+  assert.equal(state.status, 'interrupted');
+  assert.equal(state.currentStage, 'interrupted');
 });
 
 test('detectAutoProviders detecta comandos e OpenRouter sem executar IAs', async () => {
@@ -84,6 +99,24 @@ test('decisão rejeita evidência inexistente e Forge incompleto', () => {
   assert.equal(result.ok, false);
   assert.match(result.errors.join(' '), /evidência inexistente|evidências inexistentes/);
   assert.match(result.errors.join(' '), /benefit obrigatório/);
+});
+
+test('reparo do envelope Codex preenche apenas campos estruturais ausentes', () => {
+  const repaired = repairDecisionEnvelope({ action: 'run_modules', requestedModules: ['security_headers'] }, { objective: 'authorized_recon:test' });
+  assert.equal(repaired.action, 'abstain');
+  assert.equal(repaired.objective, 'authorized_recon:test');
+  assert.equal(repaired.confidence, 0);
+  assert.deepEqual(repaired.requestedModules, []);
+  const validated = validateAgentDecision(repaired, { catalogModuleIds: [] });
+  assert.equal(validated.ok, true);
+});
+
+test('contrato aceita alias legado request_modules', () => {
+  const repaired = repairDecisionEnvelope({
+    action: 'request_modules', objective: 'authorized_recon', confidence: 0.8,
+    requestedModules: [], reasoningSummary: [], evidenceRefs: [],
+  });
+  assert.equal(repaired.action, 'run_modules');
 });
 
 test('sessão AUTO aplica limites de chamadas e registra usage', () => {

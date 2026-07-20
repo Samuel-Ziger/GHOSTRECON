@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseAgentDecisionText, validateAgentDecision } from '../decision-contract.mjs';
+import { parseAgentDecisionText, repairDecisionEnvelope, validateAgentDecision } from '../decision-contract.mjs';
 import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt } from './shared.mjs';
 
 export function execFileClosedStdin(command, args, options = {}) {
@@ -96,6 +96,7 @@ export async function decideWithCodex({
   execFileImpl = execFileDefault,
   signal,
   maxContextChars = 120_000,
+  allowIntrusive = false,
 } = {}) {
   const timeoutMs = Math.max(30_000, Math.min(900_000, Number(env.GHOSTRECON_CODEX_TIMEOUT_MS || 240_000)));
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-codex-'));
@@ -121,8 +122,11 @@ export async function decideWithCodex({
       signal,
     });
     const output = await fs.readFile(outputFile, 'utf8').catch(() => '');
-    const parsed = parseAgentDecisionText(output || result?.stdout || '');
-    const catalogModuleIds = availableCatalogIds(catalog);
+    const rawParsed = parseAgentDecisionText(output || result?.stdout || '');
+    const parsed = repairDecisionEnvelope(rawParsed, {
+      objective: `authorized_recon:${target || 'target'}`,
+    });
+    const catalogModuleIds = availableCatalogIds(catalog, { allowIntrusive });
     const validated = validateAgentDecision(parsed, {
       catalogModuleIds,
       availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
@@ -136,7 +140,10 @@ export async function decideWithCodex({
       mode: 'exec',
       latencyMs: Date.now() - startedAt,
       decision: validated.decision,
-      transport: { command: 'codex exec', sandbox: 'read-only', ephemeral: true },
+      transport: {
+        command: 'codex exec', sandbox: 'read-only', ephemeral: true,
+        repaired: rawParsed?.action == null || rawParsed?.objective == null || rawParsed?.confidence == null,
+      },
     };
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

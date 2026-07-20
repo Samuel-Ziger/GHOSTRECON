@@ -139,10 +139,10 @@ function cursorArgs(env, root, prompt) {
 export async function decideWithCursor({
   target, mode, catalog, ragContext, root, role = 'planner', iteration = 1,
   peerDecisions = [], observationBundle = null, env = process.env,
-  execFileImpl = execFileDefault, signal, maxContextChars = 120_000,
+  execFileImpl = execFileDefault, signal, maxContextChars = 120_000, allowIntrusive = false,
 } = {}) {
   if (!envFlag(env, 'GHOSTRECON_CURSOR_PROVIDER_EXEC')) throw new Error('Cursor Agent exec desabilitado');
-  const prompt = buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars });
+  const prompt = buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars, allowIntrusive });
   const command = String(env.GHOSTRECON_CURSOR_AGENT_COMMAND || 'agent');
   const startedAt = Date.now();
   const result = await execFileImpl(command, cursorArgs(env, root, prompt), {
@@ -157,7 +157,7 @@ export async function decideWithCursor({
   } catch { /* parser comum tratará texto/JSON fenced */ }
   const parsed = typeof output === 'object' ? output : parseAgentDecisionText(output);
   const validated = validateAgentDecision(parsed, {
-    catalogModuleIds: availableCatalogIds(catalog),
+    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive }),
     availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
   });
   if (!validated.ok) throw new Error(`decisão Cursor rejeitada: ${validated.errors.join('; ')}`);

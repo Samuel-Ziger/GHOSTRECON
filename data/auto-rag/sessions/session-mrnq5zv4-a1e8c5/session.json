@@ -4,7 +4,7 @@
   "requestRunId": "auto-mrnq5zv4-96d81e97",
   "target": "admin.photonow.com.br",
   "startedAt": "2026-07-16T16:30:05.009Z",
-  "status": "running",
+  "status": "interrupted",
   "iteration": 1,
   "agentCalls": 1,
   "usage": {
@@ -37,5 +37,9 @@
     "decisions/2026-07-14T20-13-40-447Z-example.com-plan-auto-mrl39txk-bcada9b0.md",
     "cursor-tasks/2026-07-14T19-43-57-197Z-cursor-handoff---admin.photonow.com.br.md",
     "decisions/2026-07-08T17-09-54-531Z-admin.photonow.com.br-plan-auto-mrcc2e8i-1c2da76b.md"
-  ]
+  ],
+  "finishedAt": "2026-07-20T13:56:57.476Z",
+  "durationMs": 336412467,
+  "error": "server_restarted_before_session_completed",
+  "currentStage": "interrupted"
 }

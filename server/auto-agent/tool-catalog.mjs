@@ -49,6 +49,7 @@ export function classifyAutoModule(id, manifest = null) {
 export async function buildAutoToolCatalog({
   includeHexstrike = true,
   includeDeepPassive = true,
+  includeIntrusive = false,
   hexstrikeCapabilities = null,
   ghostRoot,
 } = {}) {
@@ -78,6 +79,14 @@ export async function buildAutoToolCatalog({
         class: classifyAutoModule(id, manifestById.get(id)),
         manifest: manifestById.get(id) || null,
       });
+    }
+  }
+  if (includeIntrusive) {
+    for (const manifest of manifests.filter((m) => m.intrusive === true)) {
+      if (!modules.some((item) => item.id === manifest.id)) {
+        modules.push({ id: manifest.id, source: 'ghostrecon', enabledByDefault: false,
+          class: 'intrusive', manifest });
+      }
     }
   }
   if (includeHexstrike) {

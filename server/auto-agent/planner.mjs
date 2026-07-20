@@ -51,6 +51,7 @@ export function createAutoPlan({
   includeDeepPassive = null,
   ragContext = null,
   agentDecision = null,
+  autonomyLevel = 'observation',
 } = {}) {
   const selectedMode = normalizeMode(mode);
   const requested = uniq(requestedModules);
@@ -60,6 +61,9 @@ export function createAutoPlan({
   const decidedModules = uniq(agentDecision?.requestedModules);
   if (agentDecision && decidedModules.length) {
     modules.push(...decidedModules);
+    if (['authorized', 'authorized_opsec'].includes(autonomyLevel)) {
+      modules.push(...(catalog.modules || []).filter((m) => m.available !== false && (m.class === 'intrusive' || m.manifest?.intrusive === true)).map((m) => m.id));
+    }
   } else {
     modules.push(...AUTO_BASE_MODULES);
     if (deep) modules.push(...AUTO_DEEP_PASSIVE_MODULES);
@@ -67,6 +71,9 @@ export function createAutoPlan({
       modules.push(...AUTO_HEXSTRIKE_MODULES);
     }
     modules.push(...requested.filter((m) => !/^kali_|sqlmap|vigolium_|cloud_bruteforce|cred_spray|race_/i.test(m)));
+    if (['authorized', 'authorized_opsec'].includes(autonomyLevel)) {
+      modules.push(...(catalog.modules || []).filter((m) => m.available !== false && (m.class === 'intrusive' || m.manifest?.intrusive === true)).map((m) => m.id));
+    }
   }
 
   const roles = commanderRoles(providers);
@@ -111,7 +118,7 @@ export function createAutoPlan({
     modules: uniq(modules),
     agentDecision: agentDecision || null,
     policy: {
-      intrusiveAllowed: false,
+      intrusiveAllowed: ['authorized', 'authorized_opsec'].includes(autonomyLevel),
       moduleForge: 'disabled_in_phase_1',
       hexstrikeTools: 'intelligence_only',
     },

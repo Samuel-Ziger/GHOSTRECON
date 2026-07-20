@@ -16,6 +16,10 @@ export function cancelActiveAutoSession(sessionId, reason = 'cancelled_by_operat
   return true;
 }
 
+export function getActiveAutoSession(sessionId) {
+  return activeSessions.get(String(sessionId || '')) || null;
+}
+
 export function listActiveAutoSessions() {
   return [...activeSessions.values()].map((session) => ({
     sessionId: session.state.sessionId,
@@ -23,5 +27,8 @@ export function listActiveAutoSessions() {
     target: session.state.target,
     iteration: session.state.iteration,
     startedAt: session.state.startedAt,
+    lastActivityAt: session.state.lastActivityAt,
+    currentStage: session.state.currentStage,
+    currentModule: session.state.currentModule,
   }));
 }

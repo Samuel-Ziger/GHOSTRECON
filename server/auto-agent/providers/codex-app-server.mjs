@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { parseAgentDecisionText, validateAgentDecision } from '../decision-contract.mjs';
+import { parseAgentDecisionText, repairDecisionEnvelope, validateAgentDecision } from '../decision-contract.mjs';
 import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt } from './shared.mjs';
 import { codexChildEnv } from './codex.mjs';
 
@@ -108,18 +108,32 @@ class CodexAppServerClient {
     const turnId = result?.turn?.id;
     if (!turnId) throw new Error('turn/start não retornou turnId');
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.send({ method: 'turn/interrupt', id: this.nextId++, params: { threadId, turnId } });
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         this.turns.delete(turnId);
-        reject(new Error(`codex app-server: timeout (${timeoutMs}ms)`));
+        fn(value);
+      };
+      const timer = setTimeout(() => {
+        try { this.send({ method: 'turn/interrupt', id: this.nextId++, params: { threadId, turnId } }); } catch { /* processo já encerrado */ }
+        // O interrupt é best-effort: o timeout não pode depender da resposta do App Server.
+        finish(reject, new Error(`codex app-server: timeout (${timeoutMs}ms)`));
+        this.close();
       }, timeoutMs);
-      const done = (fn) => (value) => { clearTimeout(timer); fn(value); };
-      this.turns.set(turnId, { text: '', resolve: done(resolve), reject: done(reject) });
+      this.turns.set(turnId, {
+        text: '',
+        resolve: (value) => finish(resolve, value),
+        reject: (error) => finish(reject, error),
+      });
       const turn = this.turns.get(turnId);
       for (const message of this.orphanTurnMessages.get(turnId) || []) this.applyTurnMessage(turnId, turn, message);
       this.orphanTurnMessages.delete(turnId);
       signal?.addEventListener('abort', () => {
-        this.send({ method: 'turn/interrupt', id: this.nextId++, params: { threadId, turnId } });
+        try { this.send({ method: 'turn/interrupt', id: this.nextId++, params: { threadId, turnId } }); } catch { /* ignore */ }
+        finish(reject, signal.reason || new Error('sessão AUTO cancelada'));
+        this.close();
       }, { once: true });
     });
   }
@@ -147,16 +161,22 @@ export async function decideWithCodexAppServer(opts = {}) {
     timeoutMs: session.limits.agentTimeoutMs,
     signal: session.signal,
   });
-  const parsed = parseAgentDecisionText(text);
+  const rawParsed = parseAgentDecisionText(text);
+  const parsed = repairDecisionEnvelope(rawParsed, {
+    objective: `authorized_recon:${opts.target || 'target'}`,
+  });
   const validated = validateAgentDecision(parsed, {
-    catalogModuleIds: availableCatalogIds(catalog),
+    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive: opts.allowIntrusive === true }),
     availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
   });
   if (!validated.ok) throw new Error(`decisão Codex App Server rejeitada: ${validated.errors.join('; ')}`);
   return {
     ok: true, provider: 'codex', role: opts.role, iteration: opts.iteration,
     latencyMs: Date.now() - startedAt, decision: validated.decision,
-    transport: { command: 'codex app-server', persistent: true, threadId: session.codexAppServer.threadId },
+    transport: {
+      command: 'codex app-server', persistent: true, threadId: session.codexAppServer.threadId,
+      repaired: rawParsed?.action == null || rawParsed?.objective == null || rawParsed?.confidence == null,
+    },
   };
 }
 

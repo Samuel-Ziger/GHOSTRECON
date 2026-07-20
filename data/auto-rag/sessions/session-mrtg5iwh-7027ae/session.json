@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "session-mrtg5iwh-7027ae",
+  "requestRunId": "auto-mrtg5iwh-1904548f",
+  "target": "admin.photonow.com.br",
+  "startedAt": "2026-07-20T16:36:23.921Z",
+  "status": "completed",
+  "iteration": 1,
+  "agentCalls": 2,
+  "usage": {
+    "codex": {
+      "calls": 2,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "totalTokens": 0,
+      "costUsd": 0,
+      "costEstimated": true
+    }
+  },
+  "costUsd": 0,
+  "lastActivityAt": "2026-07-20T16:39:48.589Z",
+  "currentStage": "agent:codex:planner",
+  "currentModule": null,
+  "providers": [
+    null
+  ],
+  "limits": {
+    "maxIterations": 3,
+    "sessionTimeoutMs": 1800000,
+    "agentTimeoutMs": 180000,
+    "maxAgentCalls": 12,
+    "maxContextChars": 120000,
+    "maxCostUsd": 10
+  },
+  "autonomyLevel": "authorized_opsec",
+  "catalogHash": "449054649db16e382eec14e7a67f7a3ead7cb575a17420a4f7659b05ea860cf1",
+  "promptVersion": "auto-council-v2",
+  "memoriesUsed": [
+    "decisions/2026-07-20T15-28-16-448Z-admin.photonow.com.br-plan-auto-mrtdpkpv-a49e8912.md",
+    "decisions/2026-07-20T15-24-50-340Z-admin.photonow.com.br-plan-auto-mrtdl3kt-02e7e32f.md",
+    "decisions/2026-07-16T16-34-19-328Z-admin.photonow.com.br-plan-auto-mrnq5zv4-96d81e97.md",
+    "decisions/2026-07-20T15-21-10-709Z-admin.photonow.com.br-plan-auto-mrtdg38c-8c6c6a32.md",
+    "decisions/2026-07-20T15-28-58-794Z-admin.photonow.com.br-evaluation-auto-mrtdpkpv-a49e8912.md",
+    "decisions/2026-07-20T15-29-38-726Z-admin.photonow.com.br-evaluation-auto-mrtdpkpv-a49e8912.md"
+  ],
+  "checkpoint": {
+    "status": "completed",
+    "nextIteration": null,
+    "nextModules": [],
+    "executedModules": [
+      "subdomains",
+      "rdap",
+      "dns_enrichment",
+      "security_headers",
+      "robots_sitemap",
+      "wellknown_security_txt",
+      "wayback",
+      "common_crawl",
+      "js_intel",
+      "client_surface_audit",
+      "cors_audit",
+      "header_intel",
+      "chaining",
+      "risk_explainer",
+      "email_security_deep",
+      "api_contract_diff",
+      "websocket_recon",
+      "hpp_param_pollution",
+      "dom_clobbering_audit",
+      "secrets_context_ranker",
+      "hexstrike_orchestrator"
+    ],
+    "iterationHistory": [
+      {
+        "iteration": 1,
+        "modules": [
+          "subdomains",
+          "rdap",
+          "dns_enrichment",
+          "security_headers",
+          "robots_sitemap",
+          "wellknown_security_txt",
+          "wayback",
+          "common_crawl",
+          "js_intel",
+          "client_surface_audit",
+          "cors_audit",
+          "header_intel",
+          "chaining",
+          "risk_explainer",
+          "email_security_deep",
+          "api_contract_diff",
+          "websocket_recon",
+          "hpp_param_pollution",
+          "dom_clobbering_audit",
+          "secrets_context_ranker",
+          "hexstrike_orchestrator"
+        ],
+        "observation": {
+          "findings": 77,
+          "warnings": 3,
+          "errors": 0
+        },
+        "decision": {
+          "action": "abstain",
+          "objective": "Decisão consolidada pelo conselho de agentes selecionados",
+          "reasoningSummary": [
+            "codex: Todos os módulos passivos e deep_passive disponíveis já foram executados nesta rodada.",
+            "codex: Os achados acionáveis concentram-se em configuração defensiva ausente, principalmente HSTS e cabeçalhos de segurança, com registros duplicados que não justificam nova execução.",
+            "codex: A ampla lista de arquivos JavaScript já foi submetida aos módulos especializados, sem evidência apresentada de segredo, contrato de API, WebSocket ou falha DOM confirmada.",
+            "codex: O perfil de risco do hexstrike é classificatório e não comprova vulnerabilidade por si só.",
+            "codex: O ativo relacionado photonow.com.br não deve ser incorporado sem confirmação explícita de escopo.",
+            "codex: Não há lacuna comprovada no catálogo que justifique forge_module, e módulos intrusivos estão excluídos por política desta iteração."
+          ],
+          "evidenceRefs": [
+            "finding:145",
+            "finding:151",
+            "finding:161",
+            "finding:163",
+            "finding:165",
+            "finding:288",
+            "finding:290",
+            "finding:319",
+            "memory:decisions/2026-07-20T15-29-38-726Z-admin.photonow.com.br-evaluation-auto-mrtdpkpv-a49e8912.md"
+          ],
+          "requestedModules": [],
+          "rejectedModules": [],
+          "confidence": 0.96,
+          "assumptions": [
+            "A autorização informada cobre admin.photonow.com.br, mas não autoriza automaticamente ampliar o escopo para photonow.com.br.",
+            "A relação de módulos executados e os achados fornecidos representam integralmente a rodada anterior.",
+            "Repetir módulos sem novos artefatos ou mudança de escopo teria baixo valor incremental."
+          ],
+          "operatorQuestion": null,
+          "forgeRequest": null,
+          "council": {
+            "selected": [
+              "codex"
+            ],
+            "proposalProviders": [
+              "codex"
+            ],
+            "reviewProviders": [],
+            "quorum": 1
+          }
+        }
+      }
+    ]
+  },
+  "finishedAt": "2026-07-20T16:39:48.589Z",
+  "durationMs": 204668
+}
