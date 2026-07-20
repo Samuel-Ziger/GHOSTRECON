@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cosineSimilarity, localTextEmbedding } from './semantic-ranker.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(__dirname, '..', '..');
@@ -37,6 +38,7 @@ const MEMORY_FOLDERS = Object.freeze({
   lessons: 'lessons',
   notes: 'notes',
   cursorTasks: 'cursor-tasks',
+  forgeRequests: 'forge-requests',
 });
 
 function clampLimit(value, fallback = 20, max = 200) {
@@ -58,6 +60,7 @@ function folderForKind(kind = '') {
   if (['lesson', 'lessons'].includes(k)) return MEMORY_FOLDERS.lessons;
   if (['note', 'notes'].includes(k)) return MEMORY_FOLDERS.notes;
   if (['cursor', 'cursor-task', 'cursor_tasks', 'cursor-tasks'].includes(k)) return MEMORY_FOLDERS.cursorTasks;
+  if (['forge', 'module-forge', 'forge-request', 'forge-requests'].includes(k)) return MEMORY_FOLDERS.forgeRequests;
   return MEMORY_FOLDERS.decisions;
 }
 
@@ -124,6 +127,7 @@ export async function writeAutoDecisionMarkdown({
     `kind: ${yamlString(kind)}`,
     `target: ${yamlString(target)}`,
     `requestRunId: ${yamlString(requestRunId)}`,
+    `sessionId: ${yamlString(plan?.sessionId || '')}`,
     `created: ${yamlString(now.toISOString())}`,
     `tags: [${normalizeTags(tags).map((t) => yamlString(t)).join(', ')}]`,
     '---',
@@ -199,7 +203,10 @@ export async function writeAutoRagNote({
   const folder = folderForKind(kind);
   const safeTitle = slug(title || kind, kind);
   const filename = `${timestamp(now)}-${safeTitle}.md`;
-  const filePath = path.join(dirs[folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks' : folder], filename);
+  const dirKey = folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks'
+    : folder === MEMORY_FOLDERS.forgeRequests ? 'forgeRequests'
+      : folder;
+  const filePath = path.join(dirs[dirKey], filename);
   const frontmatter = [
     '---',
     `type: ${yamlString('ghostrecon-auto-memory')}`,
@@ -283,6 +290,7 @@ export async function listAutoRagMarkdown({ root = DEFAULT_ROOT, env = process.e
     lessons: dirs.lessons,
     notes: dirs.notes,
     'cursor-tasks': dirs.cursorTasks,
+    'forge-requests': dirs.forgeRequests,
   })) {
     const entries = await fs.readdir(folder, { withFileTypes: true }).catch(() => []);
     for (const e of entries) {
@@ -311,19 +319,25 @@ export async function listAutoRagMarkdown({ root = DEFAULT_ROOT, env = process.e
 export async function readAutoRagMarkdown(name, { root = DEFAULT_ROOT, env = process.env } = {}) {
   const dirs = await ensureAutoRagDirs({ root, env });
   const safe = safeMemoryRef(name);
-  const dirKey = safe.folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks' : safe.folder;
+  const dirKey = safe.folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks'
+    : safe.folder === MEMORY_FOLDERS.forgeRequests ? 'forgeRequests'
+      : safe.folder;
   const filePath = path.join(dirs[dirKey], safe.file);
   return { name: safe.ref, file: safe.file, folder: safe.folder, path: filePath, text: await fs.readFile(filePath, 'utf8') };
 }
 
 export async function searchAutoRagMarkdown({
   query = '',
+  target = '',
+  technologies = [],
+  modules = [],
+  decisionType = '',
   root = DEFAULT_ROOT,
   env = process.env,
   limit = 8,
   scanLimit = 120,
 } = {}) {
-  const q = String(query || '').trim().toLowerCase();
+  const q = [query, target, decisionType, ...(technologies || []), ...(modules || [])].join(' ').trim().toLowerCase();
   const terms = q
     .split(/[^a-z0-9._-]+/i)
     .map((x) => x.trim().toLowerCase())
@@ -332,6 +346,8 @@ export async function searchAutoRagMarkdown({
   if (!terms.length) return items.slice(0, clampLimit(limit, 8, 50));
 
   const scored = [];
+  const semanticEnabled = !/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_SEMANTIC_RAG || '1'));
+  const queryEmbedding = semanticEnabled ? localTextEmbedding(q) : null;
   for (const item of items) {
     const text = await fs.readFile(item.path, 'utf8').catch(() => '');
     const hay = `${item.name}\n${item.title}\n${text}`.toLowerCase();
@@ -340,6 +356,15 @@ export async function searchAutoRagMarkdown({
       const matches = hay.split(term).length - 1;
       score += matches * (item.title.toLowerCase().includes(term) ? 3 : 1);
     }
+    const targetTerm = String(target || '').toLowerCase();
+    if (targetTerm && hay.includes(targetTerm)) score += 20;
+    for (const technology of technologies || []) if (hay.includes(String(technology).toLowerCase())) score += 5;
+    for (const moduleId of modules || []) if (hay.includes(String(moduleId).toLowerCase())) score += 7;
+    if (decisionType && hay.includes(String(decisionType).toLowerCase())) score += 4;
+    if (queryEmbedding) score += Math.max(0, cosineSimilarity(queryEmbedding, localTextEmbedding(`${item.title}\n${stripFrontmatter(text).slice(0, 6000)}`))) * 12;
+    if (item.folder === 'lessons' && /outcome|resultado|conclu|success|failed|falha/i.test(text)) score += 6;
+    const date = Date.parse(item.name.slice(item.name.indexOf('/') + 1, item.name.indexOf('/') + 11));
+    if (Number.isFinite(date)) score += Math.max(0, 3 - ((Date.now() - date) / 86_400_000) / 30);
     if (score > 0) {
       scored.push({
         ...item,
@@ -353,8 +378,11 @@ export async function searchAutoRagMarkdown({
     .slice(0, clampLimit(limit, 8, 50));
 }
 
-export async function loadAutoRagContext({ root = DEFAULT_ROOT, env = process.env, limit = 6 } = {}) {
-  const items = await listAutoRagMarkdown({ root, env, limit });
+export async function loadAutoRagContext({ root = DEFAULT_ROOT, env = process.env, limit = 6, target = '', technologies = [], modules = [], decisionType = 'plan' } = {}) {
+  const targeted = target ? await searchAutoRagMarkdown({ root, env, query: target, target, technologies, modules, decisionType, limit }) : [];
+  const recent = target ? [] : await listAutoRagMarkdown({ root, env, limit });
+  const byName = new Map([...targeted, ...recent].map((item) => [item.name, item]));
+  const items = [...byName.values()].slice(0, clampLimit(limit, 6, 50));
   return {
     dir: resolveAutoRagDir({ root, env }),
     items: items.map((item) => ({
@@ -390,6 +418,7 @@ export async function updateAutoRagIndex({ root = DEFAULT_ROOT, env = process.en
     ...section('lessons', 'Lessons'),
     ...section('notes', 'Notes'),
     ...section('cursor-tasks', 'Cursor Tasks'),
+    ...section('forge-requests', 'Module Forge Requests'),
   ].join('\n');
   await fs.writeFile(indexPath, text, 'utf8');
   return { indexPath, count: items.length };

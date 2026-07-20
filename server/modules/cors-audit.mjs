@@ -33,8 +33,21 @@ function makeFinding({ type, value, score, url, meta, owasp, mitre, cvss }) {
   return { type, value, score, prio, url, meta: meta || {}, owasp, mitre, cvss: cvss || null, source: 'cors_audit' };
 }
 
-async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {}) {
+async function rawRequest(url, { method = 'GET', headers = {}, body = null, signal = null } = {}) {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    let req;
+    const onAbort = () => {
+      req?.destroy();
+      finish({ status: null, headers: {}, body: '', error: 'aborted' });
+    };
+    if (signal?.aborted) return finish({ status: null, headers: {}, body: '', error: 'aborted' });
     let parsed;
     try { parsed = new URL(url); } catch { return resolve({ status: null, headers: {}, body: '', error: 'invalid_url' }); }
 
@@ -53,17 +66,18 @@ async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {
       },
     };
 
-    const req = mod.request(opts, (res) => {
+    req = mod.request(opts, (res) => {
       const resHeaders = {};
       for (const [k, v] of Object.entries(res.headers || {})) resHeaders[k.toLowerCase()] = v;
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; if (buf.length > 8192) req.destroy(); });
-      res.on('end', () => resolve({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
+      res.on('end', () => finish({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
     });
 
-    req.on('error', (e) => resolve({ status: null, headers: {}, body: '', error: e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ status: null, headers: {}, body: '', error: 'timeout' }); });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    req.on('error', (e) => finish({ status: null, headers: {}, body: '', error: signal?.aborted ? 'aborted' : e.message }));
+    req.on('timeout', () => { req.destroy(); finish({ status: null, headers: {}, body: '', error: 'timeout' }); });
     if (body) req.write(body);
     req.end();
   });
@@ -230,18 +244,20 @@ export function collectCorsProbeUrls({ probeResults = [], findings = [], domain 
   return [...urls].slice(0, max);
 }
 
-async function probeCorsUrl(url, log) {
+async function probeCorsUrl(url, log, signal) {
   log?.(`[cors-audit] ${url}`, 'info');
-  const baseline = await rawRequest(url, { method: 'GET' });
+  const baseline = await rawRequest(url, { method: 'GET', signal });
   if (baseline.error) return { url, findings: [], error: baseline.error };
 
   const withOrigin = await rawRequest(url, {
     method: 'GET',
+    signal,
     headers: { Origin: EVIL_ORIGIN },
   });
 
   const preflight = await rawRequest(url, {
     method: 'OPTIONS',
+    signal,
     headers: {
       Origin: EVIL_ORIGIN,
       'Access-Control-Request-Method': 'GET',
@@ -261,7 +277,7 @@ async function probeCorsUrl(url, log) {
  * @param {Function} [opts.log]
  */
 export async function runCorsAudit(opts = {}) {
-  const { probeResults = [], findings = [], domain = '', log = null } = opts;
+  const { probeResults = [], findings = [], domain = '', log = null, signal = null } = opts;
   const urls = collectCorsProbeUrls({ probeResults, findings, domain });
   if (!urls.length) {
     log?.('[cors-audit] Nenhuma URL para probe', 'info');
@@ -274,8 +290,9 @@ export async function runCorsAudit(opts = {}) {
   const results = {};
 
   for (const url of urls) {
+    if (signal?.aborted) throw signal.reason || new Error('CORS audit cancelado');
     try {
-      const r = await probeCorsUrl(url, log);
+      const r = await probeCorsUrl(url, log, signal);
       results[url] = { baseline: r.baseline?.status, origin: r.withOrigin?.status, error: r.error || null };
       for (const f of r.findings || []) {
         const key = `${f.type}::${url}`;

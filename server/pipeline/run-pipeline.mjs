@@ -11,22 +11,35 @@ import { runAggressivePhase } from './phases/aggressive.mjs';
 import { runAssetDiscoveryPhase } from './phases/asset-discovery.mjs';
 import { runFinalizePhase } from './phases/finalize.mjs';
 import { ROOT } from './pipeline-shared.mjs';
+import { runActiveDynamicModules } from '../auto-agent/forge/runtime-loader.mjs';
 
 export async function runPipeline(ctx) {
   const s = createPipelineState(ctx);
   s.ROOT = ROOT;
 
+  s.throwIfAborted();
   await runInputPhase(s);
+  s.throwIfAborted();
   await runFingerprintPhase(s);
+  s.throwIfAborted();
   await runDiscoveryPhase(s);
+  s.throwIfAborted();
   await runProbePhase(s);
+  s.throwIfAborted();
   await runContentDiscoveryPhase(s);
+  s.throwIfAborted();
   await runGoEnginePhase(s);
+  s.throwIfAborted();
   await runValidationPhase(s);
+  s.throwIfAborted();
   await runAggressivePhase(s);
+  s.throwIfAborted();
   await runAssetDiscoveryPhase(s);
 
+  await runActiveDynamicModules(s, { root: s.ROOT });
+
   await runGoAgentPhase(s);
+  s.throwIfAborted();
 
   await runFinalizePhase({
     domain: s.domain,

@@ -374,6 +374,7 @@ export async function runProbePhase(s) {
           findings,
           domain: domainStr,
           log,
+          signal: s.signal,
         });
         for (const f of corsFindings) addFinding(withProvenance(f, 'cors_audit'));
         if (corsFindings.length) {
@@ -382,6 +383,7 @@ export async function runProbePhase(s) {
           log(`CORS audit: nenhuma misconfig detectada (${summary?.probed || 0} URL(s) testadas)`, 'info');
         }
       } catch (e) {
+        if (s.signal?.aborted) throw s.signal.reason || e;
         log(`CORS audit: ${e?.message || e}`, 'warn');
       }
       pipe('cors_audit', 'done');

@@ -1,6 +1,7 @@
 import { listModuleManifests } from '../modules/module-registry.mjs';
 import { getHexstrikeCapabilities } from '../modules/hexstrike-capabilities.mjs';
 import { isIntrusive } from '../modules/opsec.mjs';
+import { listActiveDynamicManifests } from './forge/runtime-loader.mjs';
 
 export const AUTO_BASE_MODULES = Object.freeze([
   'subdomains',
@@ -52,6 +53,7 @@ export async function buildAutoToolCatalog({
   ghostRoot,
 } = {}) {
   const manifests = listModuleManifests();
+  const dynamicManifests = ghostRoot ? await listActiveDynamicManifests(ghostRoot).catch(() => []) : [];
   const manifestById = new Map(manifests.map((m) => [m.id, m]));
   const hexstrike = includeHexstrike
     ? (hexstrikeCapabilities || await getHexstrikeCapabilities({ ghostRoot }).catch((e) => ({ ok: false, message: e?.message || String(e) })))
@@ -91,10 +93,20 @@ export async function buildAutoToolCatalog({
       });
     }
   }
+  for (const manifest of dynamicManifests) {
+    modules.push({
+      id: manifest.id,
+      source: 'ai-forge',
+      enabledByDefault: false,
+      class: classifyAutoModule(manifest.id, manifest),
+      available: true,
+      manifest,
+    });
+  }
 
   return {
     modules: uniq(modules.map((m) => m.id)).map((id) => modules.find((m) => m.id === id)),
     hexstrike,
-    registry: manifests,
+    registry: [...manifests, ...dynamicManifests],
   };
 }

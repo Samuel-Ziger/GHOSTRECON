@@ -1,10 +1,19 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { detectAutoProviders } from './provider-detector.mjs';
 import { buildAutoToolCatalog } from './tool-catalog.mjs';
 import { createAutoPlan, evaluateAutoRun } from './planner.mjs';
-import { loadAutoRagContext, writeAutoDecisionMarkdown } from './rag-memory.mjs';
+import { loadAutoRagContext, writeAutoDecisionMarkdown, writeAutoRagNote } from './rag-memory.mjs';
 import { createCursorHandoff } from './providers/cursor.mjs';
+import { runAgentCouncil } from './council/council-runner.mjs';
+import { createPendingForgeRequest } from './forge/forge-store.mjs';
+import { generatePendingArtifact } from './forge/generate-artifact.mjs';
+import { buildAutoObservationBundle } from './observation-builder.mjs';
+import { validateAndTestForgePackage } from './forge/validate-package.mjs';
+import { reviewForgePackage } from './forge/code-review.mjs';
+import { runForgeCorrectionLoop } from './forge/correction-loop.mjs';
 import { expandIntrusiveRunModules, gateModules } from '../modules/opsec.mjs';
+import { createAutoSession, readAutoSessionSnapshot, writeAutoSessionSnapshot } from './session-store.mjs';
+import { registerActiveAutoSession, unregisterActiveAutoSession } from './active-sessions.mjs';
 
 function sendSafe(emit, obj) {
   try { emit(obj); } catch { /* ignore */ }
@@ -31,6 +40,7 @@ export function normalizeAutoRequest(body = {}) {
           : null,
     includeHexstrike: body.includeHexstrike !== false,
     includeDeepPassive: body.includeDeepPassive,
+    resumeSessionId: body.resumeSessionId ? String(body.resumeSessionId).trim() : null,
   };
 }
 
@@ -43,20 +53,40 @@ export async function runAutoRecon({
   fetchImpl = globalThis.fetch,
   execFileImpl,
   pipelineOverrides = {},
+  signal,
 } = {}) {
   if (typeof runPipeline !== 'function') {
     throw new Error('runPipeline ausente para Modo Auto');
   }
   const req = normalizeAutoRequest(body);
   const events = [];
-  const requestRunId = `auto-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+  const restoredState = req.resumeSessionId
+    ? await readAutoSessionSnapshot(ROOT, req.resumeSessionId, env)
+    : null;
+  if (restoredState && restoredState.target !== req.target) throw new Error('sessão pertence a outro alvo');
+  const requestRunId = restoredState?.requestRunId || `auto-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+  const sessionId = restoredState?.sessionId || `session-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+  const session = createAutoSession({ sessionId, requestRunId, target: req.target, providers: req.commanders, env, restoredState });
+  registerActiveAutoSession(session);
+  if (signal) {
+    if (signal.aborted) session.abort(signal.reason || 'client_disconnected');
+    else signal.addEventListener('abort', () => session.abort(signal.reason || 'client_disconnected'), { once: true });
+  }
   const captureEmit = (event) => {
     events.push(event);
     sendSafe(emit, event);
   };
 
-  captureEmit({ type: 'auto_meta', requestRunId, mode: req.mode, commanders: req.commanders });
-  const ragContext = await loadAutoRagContext({ root: ROOT, env }).catch((e) => ({
+  try {
+  const heartbeat = setInterval(() => captureEmit({
+    type: 'auto_heartbeat', sessionId, iteration: session.state.iteration,
+    agentCalls: session.state.agentCalls, elapsedMs: Date.now() - Date.parse(session.state.startedAt),
+  }), Math.max(5_000, Math.min(60_000, Number(env.GHOSTRECON_AUTO_HEARTBEAT_MS || 15_000))));
+  heartbeat.unref?.();
+  session.resources.push({ close: () => clearInterval(heartbeat) });
+  captureEmit({ type: 'auto_session', phase: 'started', sessionId, requestRunId, mode: req.mode, commanders: req.commanders, limits: session.limits });
+  await writeAutoSessionSnapshot(ROOT, session.state, env);
+  let ragContext = await loadAutoRagContext({ root: ROOT, env, target: req.target, modules: req.modules, decisionType: 'plan' }).catch((e) => ({
     dir: '',
     items: [],
     error: e?.message || String(e),
@@ -69,6 +99,10 @@ export async function runAutoRecon({
     error: ragContext.error || null,
   });
   const providers = await detectAutoProviders({ selected: req.commanders, env, fetchImpl, execFileImpl });
+  if (req.openrouterModel) {
+    const openrouter = providers.providers.find((p) => p.id === 'openrouter');
+    if (openrouter) openrouter.defaultModel = req.openrouterModel;
+  }
   captureEmit({ type: 'auto_providers', ...providers });
 
   const catalog = await buildAutoToolCatalog({
@@ -76,6 +110,10 @@ export async function runAutoRecon({
     includeDeepPassive: req.includeDeepPassive !== false,
     ghostRoot: ROOT,
   });
+  const catalogHash = createHash('sha256').update(JSON.stringify(catalog.modules.map((m) => ({ id: m.id, class: m.class, available: m.available !== false })))).digest('hex');
+  session.state.catalogHash = catalogHash;
+  session.state.promptVersion = 'auto-council-v2';
+  session.state.memoriesUsed = (ragContext.items || []).map((item) => item.name);
   captureEmit({
     type: 'auto_catalog',
     modules: catalog.modules.map((m) => ({ id: m.id, source: m.source, class: m.class, available: m.available !== false })),
@@ -85,6 +123,169 @@ export async function runAutoRecon({
       baseUrl: catalog.hexstrike.baseUrl || null,
     } : null,
   });
+
+  const council = await runAgentCouncil({
+    providers: providers.providers,
+    target: req.target,
+    mode: req.mode,
+    catalog,
+    ragContext,
+    root: ROOT,
+    env,
+    fetchImpl,
+    execFileImpl,
+    iteration: 1,
+    onTurn: (turn) => {
+      if (turn.phase === 'started') {
+        captureEmit({ type: 'auto_agent_turn_started', provider: turn.provider, role: turn.role, iteration: turn.iteration });
+      } else if (turn.phase === 'completed') {
+        captureEmit({
+          type: 'auto_agent_turn_completed', provider: turn.provider, role: turn.role,
+          iteration: turn.iteration, latencyMs: turn.latencyMs, decision: turn.decision,
+        });
+      } else {
+        captureEmit({
+          type: 'auto_agent_turn_failed', provider: turn.provider, role: turn.role,
+          iteration: turn.iteration, error: turn.error, fallback: 'council_or_deterministic_plan',
+        });
+      }
+    },
+    session,
+  });
+  const successfulTurns = [...council.proposals, ...council.reviews].filter((turn) => turn.ok && turn.decision);
+  for (const turn of successfulTurns) {
+    const memory = await writeAutoRagNote({
+      root: ROOT,
+      env,
+      kind: 'module-forge',
+      title: `${turn.provider} ${turn.role} decision - ${req.target}`,
+      target: req.target,
+      tags: ['decision', turn.provider, turn.role, `iteration-${turn.iteration}`],
+      body: [
+        `- Request run: \`${requestRunId}\``,
+        `- Provider: \`${turn.provider}\``,
+        `- Model: \`${turn.model || 'default'}\``,
+        `- Role: \`${turn.role}\``,
+        `- Iteration: \`${turn.iteration}\``,
+        '',
+        '## Decision',
+        '',
+        `\`\`\`json\n${JSON.stringify(turn.decision, null, 2)}\n\`\`\``,
+      ].join('\n'),
+      metadata: {
+        sessionId, requestRunId, provider: turn.provider, model: turn.model || null,
+        role: turn.role, iteration: turn.iteration, latencyMs: turn.latencyMs, usage: turn.usage || null,
+        promptVersion: 'auto-council-v2', catalogHash, memoriesUsed: session.state.memoriesUsed,
+      },
+    }).catch((e) => ({ error: e?.message || String(e) }));
+    captureEmit({
+      type: 'auto_memory_written', provider: turn.provider,
+      decision: memory?.name || null, error: memory?.error || null,
+    });
+  }
+  const agentDecision = council.finalDecision;
+  captureEmit({
+    type: 'auto_council_verdict',
+    selected: council.selected,
+    proposals: council.proposals.filter((t) => t.ok).map((t) => t.provider),
+    reviews: council.reviews.filter((t) => t.ok).map((t) => t.provider),
+    decision: agentDecision,
+    fallback: agentDecision ? null : 'deterministic_plan',
+  });
+  let forge = null;
+  if (agentDecision?.action === 'forge_module' && agentDecision.forgeRequest) {
+    const generator = providers.providers.find((p) => p.id === 'claude_code' && p.selected && p.usable)
+      || providers.providers.find((p) => p.id === 'codex' && p.selected && p.usable)
+      || null;
+    forge = await createPendingForgeRequest({
+      root: ROOT,
+      requestRunId,
+      target: req.target,
+      decision: agentDecision,
+      council,
+      authorOverride: generator?.id || null,
+      authorModelOverride: generator?.defaultModel || null,
+    }).catch((e) => ({ error: e?.message || String(e) }));
+    captureEmit({
+      type: 'auto_forge_status',
+      status: forge?.error ? 'error' : 'proposed',
+      forgeId: forge?.forgeId || null,
+      author: forge?.author || agentDecision.forgeRequest.author || null,
+      path: forge?.dir || null,
+      error: forge?.error || null,
+      pipelineEnabled: false,
+    });
+    if (!forge?.error && generator && !/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_FORGE_GENERATE || '1'))) {
+      captureEmit({ type: 'auto_forge_status', status: 'generating', forgeId: forge.forgeId, author: generator.id, pipelineEnabled: false });
+      const generated = await generatePendingArtifact({
+        provider: generator.id,
+        request: agentDecision.forgeRequest,
+        target: req.target,
+        root: ROOT,
+        pendingDir: forge.dir,
+        env,
+        execFileImpl,
+      }).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+      forge.generated = generated;
+      captureEmit({
+        type: 'auto_forge_status', status: generated.ok ? 'generated_pending_validation' : 'generation_failed',
+        forgeId: forge.forgeId, author: generator.id, error: generated.error || null, pipelineEnabled: false,
+      });
+      if (generated.ok) {
+        const gates = await validateAndTestForgePackage(forge.dir, { env }).catch((e) => ({ ok: false, status: 'validation_error', error: e?.message || String(e) }));
+        forge.gates = gates;
+        captureEmit({
+          type: 'auto_forge_status', status: gates.status || (gates.ok ? 'pending_ai_code_review' : 'validation_failed'),
+          forgeId: forge.forgeId, author: generator.id, error: gates.error || null,
+          validationOk: Boolean(gates.validation?.ok), testsOk: Boolean(gates.tests?.ok), pipelineEnabled: false,
+        });
+        if (gates.ok) {
+          const codeReview = await reviewForgePackage({
+            pendingDir: forge.dir, root: ROOT, providers: providers.providers,
+            env, fetchImpl, execFileImpl,
+          }).catch((e) => ({ approved: false, status: 'review_error', error: e?.message || String(e) }));
+          forge.codeReview = codeReview;
+          captureEmit({
+            type: 'auto_forge_status', status: codeReview.status,
+            forgeId: forge.forgeId, author: generator.id, error: codeReview.error || null,
+            approvals: codeReview.approvals || 0, pipelineEnabled: false,
+          });
+          if (codeReview.status === 'changes_requested') {
+            captureEmit({ type: 'auto_forge_status', status: 'correction_in_progress', forgeId: forge.forgeId, author: generator.id, pipelineEnabled: false });
+            const correction = await runForgeCorrectionLoop({
+              pendingDir: forge.dir, root: ROOT, provider: generator.id, target: req.target,
+              providers: providers.providers, env, fetchImpl, execFileImpl, initialReview: codeReview,
+            }).catch((e) => ({ ok: false, status: 'correction_failed', error: e?.message || String(e) }));
+            forge.correction = correction;
+            forge.codeReview = correction.finalReview || codeReview;
+            captureEmit({
+              type: 'auto_forge_status', status: correction.status, forgeId: forge.forgeId,
+              author: generator.id, attempts: correction.attempts || 0, error: correction.error || null,
+              pipelineEnabled: false,
+            });
+          }
+        }
+      }
+    }
+    await writeAutoRagNote({
+      root: ROOT,
+      env,
+      kind: 'decision',
+      title: `Module Forge request - ${agentDecision.forgeRequest.proposedId}`,
+      target: req.target,
+      tags: ['module-forge', 'pending', agentDecision.forgeRequest.author || 'council'],
+      body: [
+        `- Request run: \`${requestRunId}\``,
+        `- Forge ID: \`${forge?.forgeId || 'error'}\``,
+        '- Pipeline enabled: `false`',
+        '',
+        '## Forge request',
+        '',
+        `\`\`\`json\n${JSON.stringify(agentDecision.forgeRequest, null, 2)}\n\`\`\``,
+      ].join('\n'),
+      metadata: { requestRunId, forge },
+    }).catch(() => null);
+  }
 
   const plan = createAutoPlan({
     target: req.target,
@@ -96,7 +297,12 @@ export async function runAutoRecon({
     includeHexstrike: req.includeHexstrike,
     includeDeepPassive: req.includeDeepPassive,
     ragContext,
+    agentDecision,
   });
+  plan.sessionId = sessionId;
+  plan.limits = session.limits;
+  plan.catalogHash = catalogHash;
+  plan.promptVersion = 'auto-council-v2';
   captureEmit({ type: 'auto_plan', plan });
   const planMemory = await writeAutoDecisionMarkdown({
     root: ROOT,
@@ -144,13 +350,28 @@ export async function runAutoRecon({
     });
   }
 
+  let iteration = Number(session.state.checkpoint?.nextIteration || 1);
+  let iterationPlan = session.state.checkpoint?.nextModules?.length
+    ? { ...plan, modules: session.state.checkpoint.nextModules }
+    : plan;
+  let evaluation = null;
+  const executedModules = new Set(session.state.checkpoint?.executedModules || []);
+  const iterationHistory = [...(session.state.checkpoint?.iterationHistory || [])];
+  while (true) {
+  session.assertActive();
+  session.state.iteration = iteration;
+  await writeAutoSessionSnapshot(ROOT, session.state, env);
+  captureEmit({ type: 'auto_iteration_started', sessionId, iteration, modules: iterationPlan.modules });
+  const iterationEventStart = events.length;
   const pipelineBody = {
     ...body,
     domain: req.target,
-    modules: plan.modules,
-    profile: body.profile || (plan.mode === 'quick' ? 'quick' : 'standard'),
+    modules: iterationPlan.modules,
+    profile: body.profile || (iterationPlan.mode === 'quick' ? 'quick' : 'standard'),
     opsecProfile: body.opsecProfile || 'standard',
     autoAiReports: body.autoAiReports === true,
+    signal: session.signal,
+    requestRunId,
     ...pipelineOverrides,
   };
   const gate = gateModules({
@@ -167,14 +388,175 @@ export async function runAutoRecon({
     throw new Error(`Modo Auto bloqueado por OPSEC: ${gate.reason || gate.blocked?.join(', ')}`);
   }
 
-  captureEmit({ type: 'auto_step', step: 'act', status: 'running', modules: plan.modules });
+  captureEmit({ type: 'auto_step', step: 'act', status: 'running', iteration, modules: iterationPlan.modules });
   await runPipeline({
     ...pipelineBody,
     emit: captureEmit,
   });
   captureEmit({ type: 'auto_step', step: 'act', status: 'done' });
 
-  const evaluation = evaluateAutoRun({ events, plan });
+  for (const id of iterationPlan.modules) executedModules.add(id);
+  const iterationEvents = events.slice(iterationEventStart);
+  const observationBundle = buildAutoObservationBundle({ events: iterationEvents, plan: iterationPlan });
+  const technologies = [...new Set(observationBundle.findings.map((finding) => finding.type).filter(Boolean))];
+  ragContext = await loadAutoRagContext({
+    root: ROOT, env, target: req.target, technologies,
+    modules: iterationPlan.modules, decisionType: 'evaluation',
+  }).catch(() => ragContext);
+  captureEmit({
+    type: 'auto_observation',
+    iteration,
+    findings: observationBundle.findings.length,
+    warnings: observationBundle.warnings.length,
+    errors: observationBundle.errors.length,
+  });
+  const evaluationCouncil = await runAgentCouncil({
+    providers: providers.providers,
+    target: req.target,
+    mode: req.mode,
+    catalog,
+    ragContext,
+    root: ROOT,
+    env,
+    fetchImpl,
+    execFileImpl,
+    iteration: iteration + 1,
+    observationBundle,
+    onTurn: (turn) => {
+      if (turn.phase === 'started') {
+        captureEmit({ type: 'auto_agent_turn_started', provider: turn.provider, role: turn.role, iteration: iteration + 1 });
+      } else if (turn.phase === 'completed') {
+        captureEmit({
+          type: 'auto_agent_turn_completed', provider: turn.provider, role: turn.role,
+          iteration: iteration + 1, latencyMs: turn.latencyMs, decision: turn.decision,
+        });
+      } else {
+        captureEmit({
+          type: 'auto_agent_turn_failed', provider: turn.provider, role: turn.role,
+          iteration: iteration + 1, error: turn.error, fallback: 'heuristic_evaluation',
+        });
+      }
+    },
+    session,
+  });
+  const evaluationTurns = [...evaluationCouncil.proposals, ...evaluationCouncil.reviews].filter((turn) => turn.ok && turn.decision);
+  for (const turn of evaluationTurns) {
+    const memory = await writeAutoRagNote({
+      root: ROOT,
+      env,
+      kind: 'decision',
+      title: `${turn.provider} post-pipeline ${turn.role} - ${req.target}`,
+      target: req.target,
+      tags: ['decision', 'post-pipeline', turn.provider, turn.role, `iteration-${iteration}`],
+      body: [
+        `- Request run: \`${requestRunId}\``,
+        `- Provider: \`${turn.provider}\``,
+        `- Role: \`${turn.role}\``,
+        '',
+        '## Decision', '',
+        `\`\`\`json\n${JSON.stringify(turn.decision, null, 2)}\n\`\`\``,
+      ].join('\n'),
+      metadata: { sessionId, requestRunId, provider: turn.provider, role: turn.role, iteration, usage: turn.usage || null },
+    }).catch((e) => ({ error: e?.message || String(e) }));
+    captureEmit({ type: 'auto_memory_written', provider: turn.provider, decision: memory?.name || null, error: memory?.error || null });
+  }
+  const nextDecision = evaluationCouncil.finalDecision;
+  captureEmit({
+    type: 'auto_council_verdict',
+    phase: 'post_pipeline',
+    selected: evaluationCouncil.selected,
+    proposals: evaluationCouncil.proposals.filter((t) => t.ok).map((t) => t.provider),
+    reviews: evaluationCouncil.reviews.filter((t) => t.ok).map((t) => t.provider),
+    decision: nextDecision,
+    fallback: nextDecision ? null : 'heuristic_evaluation',
+  });
+  let postForge = null;
+  if (nextDecision?.action === 'forge_module' && nextDecision.forgeRequest) {
+    const generator = providers.providers.find((p) => p.id === 'claude_code' && p.selected && p.usable)
+      || providers.providers.find((p) => p.id === 'codex' && p.selected && p.usable)
+      || null;
+    postForge = await createPendingForgeRequest({
+      root: ROOT, requestRunId, target: req.target, decision: nextDecision, council: evaluationCouncil,
+      authorOverride: generator?.id || null, authorModelOverride: generator?.defaultModel || null,
+    }).catch((e) => ({ error: e?.message || String(e) }));
+    captureEmit({
+      type: 'auto_forge_status', status: postForge?.error ? 'error' : 'proposed',
+      forgeId: postForge?.forgeId || null, author: postForge?.author || null,
+      path: postForge?.dir || null, error: postForge?.error || null, pipelineEnabled: false,
+    });
+    if (!postForge?.error && generator && !/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_FORGE_GENERATE || '1'))) {
+      const generated = await generatePendingArtifact({
+        provider: generator.id, request: nextDecision.forgeRequest, target: req.target,
+        root: ROOT, pendingDir: postForge.dir, env, execFileImpl,
+      }).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+      postForge.generated = generated;
+      captureEmit({
+        type: 'auto_forge_status', status: generated.ok ? 'generated_pending_validation' : 'generation_failed',
+        forgeId: postForge.forgeId, author: generator.id, error: generated.error || null, pipelineEnabled: false,
+      });
+      if (generated.ok) {
+        const gates = await validateAndTestForgePackage(postForge.dir, { env }).catch((e) => ({ ok: false, status: 'validation_error', error: e?.message || String(e) }));
+        postForge.gates = gates;
+        captureEmit({
+          type: 'auto_forge_status', status: gates.status || (gates.ok ? 'pending_ai_code_review' : 'validation_failed'),
+          forgeId: postForge.forgeId, author: generator.id, error: gates.error || null,
+          validationOk: Boolean(gates.validation?.ok), testsOk: Boolean(gates.tests?.ok), pipelineEnabled: false,
+        });
+        if (gates.ok) {
+          const codeReview = await reviewForgePackage({
+            pendingDir: postForge.dir, root: ROOT, providers: providers.providers,
+            env, fetchImpl, execFileImpl,
+          }).catch((e) => ({ approved: false, status: 'review_error', error: e?.message || String(e) }));
+          postForge.codeReview = codeReview;
+          captureEmit({
+            type: 'auto_forge_status', status: codeReview.status,
+            forgeId: postForge.forgeId, author: generator.id, error: codeReview.error || null,
+            approvals: codeReview.approvals || 0, pipelineEnabled: false,
+          });
+          if (codeReview.status === 'changes_requested') {
+            captureEmit({ type: 'auto_forge_status', status: 'correction_in_progress', forgeId: postForge.forgeId, author: generator.id, pipelineEnabled: false });
+            const correction = await runForgeCorrectionLoop({
+              pendingDir: postForge.dir, root: ROOT, provider: generator.id, target: req.target,
+              providers: providers.providers, env, fetchImpl, execFileImpl, initialReview: codeReview,
+            }).catch((e) => ({ ok: false, status: 'correction_failed', error: e?.message || String(e) }));
+            postForge.correction = correction;
+            postForge.codeReview = correction.finalReview || codeReview;
+            captureEmit({
+              type: 'auto_forge_status', status: correction.status, forgeId: postForge.forgeId,
+              author: generator.id, attempts: correction.attempts || 0, error: correction.error || null,
+              pipelineEnabled: false,
+            });
+          }
+        }
+      }
+    }
+    await writeAutoRagNote({
+      root: ROOT,
+      env,
+      kind: 'module-forge',
+      title: `Post-pipeline Module Forge - ${nextDecision.forgeRequest.proposedId}`,
+      target: req.target,
+      tags: ['module-forge', 'post-pipeline', postForge?.generated?.ok ? 'generated' : 'pending'],
+      body: [
+        `- Request run: \`${requestRunId}\``,
+        `- Forge ID: \`${postForge?.forgeId || 'error'}\``,
+        '- Pipeline enabled: `false`',
+        '',
+        '## Forge request', '',
+        `\`\`\`json\n${JSON.stringify(nextDecision.forgeRequest, null, 2)}\n\`\`\``,
+      ].join('\n'),
+      metadata: { requestRunId, forge: postForge },
+    }).catch(() => null);
+  }
+
+  evaluation = evaluateAutoRun({ events: iterationEvents, plan: iterationPlan });
+  evaluation.agentDecision = nextDecision;
+  evaluation.observation = {
+    findings: observationBundle.findings.length,
+    warnings: observationBundle.warnings.length,
+    errors: observationBundle.errors.length,
+  };
+  evaluation.forge = postForge;
   captureEmit({ type: 'auto_evaluation', evaluation });
   const evalMemory = await writeAutoDecisionMarkdown({
     root: ROOT,
@@ -184,12 +566,49 @@ export async function runAutoRecon({
     kind: 'evaluation',
     title: `Auto evaluation - ${req.target}`,
     summary: 'Modo Auto evaluation after running the GHOSTRECON pipeline.',
-    plan,
+    plan: iterationPlan,
     evaluation,
     providers,
     events,
     tags: ['evaluation', evaluation.ok ? 'ok' : 'error'],
   }).catch((e) => ({ error: e?.message || String(e) }));
   captureEmit({ type: 'auto_rag', phase: 'evaluation_saved', memory: evalMemory });
-  return { requestRunId, plan, evaluation, events };
+  iterationHistory.push({ iteration, modules: [...iterationPlan.modules], observation: evaluation.observation, decision: nextDecision });
+  captureEmit({ type: 'auto_iteration_completed', sessionId, iteration, decision: nextDecision?.action || 'finish' });
+  const requestedNext = (nextDecision?.requestedModules || []).filter((id) => !executedModules.has(id));
+  const wantsAnotherIteration = ['run_modules', 'continue_with_context'].includes(nextDecision?.action) && requestedNext.length > 0;
+  if (wantsAnotherIteration && iteration < session.limits.maxIterations) {
+    session.state.checkpoint = {
+      status: 'ready_for_next_iteration', nextIteration: iteration + 1, nextModules: requestedNext,
+      executedModules: [...executedModules], iterationHistory,
+    };
+    await writeAutoSessionSnapshot(ROOT, session.state, env);
+    iteration += 1;
+    iterationPlan = { ...iterationPlan, modules: requestedNext, agentDecision: nextDecision };
+    continue;
+  }
+  session.state.checkpoint = {
+    status: 'completed', nextIteration: null, nextModules: [],
+    executedModules: [...executedModules], iterationHistory,
+  };
+  if (wantsAnotherIteration && iteration >= session.limits.maxIterations) {
+    captureEmit({ type: 'auto_limit_reached', limit: 'maxIterations', value: session.limits.maxIterations });
+  }
+  break;
+  }
+  evaluation.iterations = iterationHistory;
+  const finalSession = session.close('completed');
+  await writeAutoSessionSnapshot(ROOT, finalSession, env);
+  captureEmit({ type: 'auto_session', phase: 'completed', session: finalSession });
+  return { sessionId, requestRunId, plan, evaluation, events };
+  } catch (error) {
+    const status = session.signal.aborted ? 'cancelled' : 'failed';
+    const failedSession = session.close(status);
+    failedSession.error = error?.message || String(error);
+    await writeAutoSessionSnapshot(ROOT, failedSession, env).catch(() => null);
+    captureEmit({ type: 'auto_session', phase: status, session: failedSession, error: failedSession.error });
+    throw error;
+  } finally {
+    unregisterActiveAutoSession(sessionId);
+  }
 }

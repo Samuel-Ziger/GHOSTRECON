@@ -32,12 +32,21 @@ async function commandAvailable(command, { execFileImpl = execFileDefault, platf
   }
 }
 
-async function httpReachable(url, { fetchImpl = globalThis.fetch, timeoutMs = 2500 } = {}) {
+async function commandSucceeds(command, args, { execFileImpl = execFileDefault, timeoutMs = 5000 } = {}) {
+  try {
+    await execFileImpl(command, args, { timeout: timeoutMs, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function httpReachable(url, { fetchImpl = globalThis.fetch, timeoutMs = 2500, headers = {} } = {}) {
   if (typeof fetchImpl !== 'function' || !url) return false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(url, { method: 'GET', signal: controller.signal, headers: { accept: 'application/json' } });
+    const res = await fetchImpl(url, { method: 'GET', signal: controller.signal, headers: { accept: 'application/json', ...headers } });
     return Boolean(res?.ok || (res?.status >= 200 && res?.status < 500));
   } catch {
     return false;
@@ -47,15 +56,26 @@ async function httpReachable(url, { fetchImpl = globalThis.fetch, timeoutMs = 25
 }
 
 function provider(id, fields = {}) {
-  return {
+  const out = {
     id,
     selected: false,
     installed: false,
     configured: false,
+    authenticated: false,
     reachable: false,
     roleHint: 'unavailable',
     ...fields,
   };
+  out.usable = fields.usable ?? Boolean(out.selected && out.configured && out.authenticated && out.reachable);
+  out.reason = out.usable ? null : fields.reason || (
+    !out.selected ? 'not_selected'
+      : !out.installed ? 'not_installed'
+        : !out.configured ? 'not_configured'
+          : !out.authenticated ? 'not_authenticated'
+            : !out.reachable ? 'not_reachable'
+              : 'not_usable'
+  );
+  return out;
 }
 
 export function normalizeCommanderSelection(input) {
@@ -74,6 +94,8 @@ export async function detectAutoProviders({
   const skynetUrl = String(env.GHOSTRECON_SKYNET_URL || env.GHOSTRECON_GHOST_BASE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
   const lmstudioUrl = String(env.GHOSTRECON_LMSTUDIO_BASE_URL || '').replace(/\/+$/, '');
   const ollamaUrl = String(env.OLLAMA_HOST || env.GHOSTRECON_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+  const openrouterKey = String(env.OPENROUTER_API_KEY || '').trim();
+  const cursorExecEnabled = envFlag(env, 'GHOSTRECON_CURSOR_PROVIDER_EXEC');
 
   const [
     codexInstalled,
@@ -81,16 +103,35 @@ export async function detectAutoProviders({
     cursorInstalled,
     cursorAgentInstalled,
     skynetReachable,
+    skynetModelsReachable,
     lmstudioReachable,
     ollamaReachable,
+    openrouterReachable,
   ] = await Promise.all([
     commandAvailable('codex', { execFileImpl, platform }),
     commandAvailable('claude', { execFileImpl, platform }),
     commandAvailable('cursor', { execFileImpl, platform }),
     commandAvailable('agent', { execFileImpl, platform }),
     httpReachable(`${skynetUrl}/health`, { fetchImpl }),
+    httpReachable(`${skynetUrl}/v1/models`, { fetchImpl }),
     lmstudioUrl ? httpReachable(`${lmstudioUrl}/models`, { fetchImpl }) : false,
     httpReachable(`${ollamaUrl}/api/tags`, { fetchImpl }),
+    openrouterKey ? httpReachable('https://openrouter.ai/api/v1/models', {
+      fetchImpl,
+      headers: { Authorization: `Bearer ${openrouterKey}` },
+    }) : false,
+  ]);
+
+  const [codexAuthenticated, claudeAuthenticated, cursorAuthenticated] = await Promise.all([
+    codexInstalled && selectedSet.has('codex')
+      ? commandSucceeds('codex', ['login', 'status'], { execFileImpl })
+      : false,
+    claudeInstalled && (selectedSet.has('claude') || selectedSet.has('claude_code'))
+      ? commandSucceeds('claude', ['auth', 'status'], { execFileImpl })
+      : false,
+    cursorAgentInstalled && selectedSet.has('cursor') && cursorExecEnabled
+      ? commandSucceeds(String(env.GHOSTRECON_CURSOR_AGENT_COMMAND || 'agent'), ['status'], { execFileImpl })
+      : false,
   ]);
 
   const out = [
@@ -98,7 +139,8 @@ export async function detectAutoProviders({
       selected: selectedSet.has('codex'),
       installed: codexInstalled,
       configured: codexInstalled,
-      reachable: codexInstalled,
+      authenticated: codexAuthenticated,
+      reachable: codexAuthenticated,
       roleHint: 'module_forge_integrator',
       command: 'codex',
     }),
@@ -106,7 +148,8 @@ export async function detectAutoProviders({
       selected: selectedSet.has('claude') || selectedSet.has('claude_code'),
       installed: claudeInstalled,
       configured: claudeInstalled,
-      reachable: claudeInstalled,
+      authenticated: claudeAuthenticated,
+      reachable: claudeAuthenticated,
       roleHint: 'deep_planner_module_author',
       command: 'claude',
     }),
@@ -114,7 +157,10 @@ export async function detectAutoProviders({
       selected: selectedSet.has('cursor'),
       installed: cursorInstalled,
       configured: cursorInstalled,
-      reachable: cursorInstalled,
+      authenticated: cursorAuthenticated,
+      reachable: cursorAgentInstalled && cursorAuthenticated,
+      usable: selectedSet.has('cursor') && cursorExecEnabled && cursorAuthenticated,
+      reason: !cursorExecEnabled ? 'handoff_only' : cursorAuthenticated ? null : 'not_authenticated',
       roleHint: cursorAgentInstalled ? 'ide_agent_human_in_loop' : 'ide_human_in_loop',
       command: 'cursor',
       agentInstalled: cursorAgentInstalled,
@@ -123,7 +169,8 @@ export async function detectAutoProviders({
       selected: selectedSet.has('skynet'),
       installed: true,
       configured: Boolean(skynetUrl),
-      reachable: skynetReachable,
+      authenticated: skynetReachable && skynetModelsReachable,
+      reachable: skynetReachable && skynetModelsReachable,
       roleHint: 'local_private_commander',
       baseUrl: skynetUrl,
     }),
@@ -131,25 +178,27 @@ export async function detectAutoProviders({
       selected: selectedSet.has('local') || selectedSet.has('local_model') || selectedSet.has('glm'),
       installed: lmstudioReachable || ollamaReachable,
       configured: Boolean(lmstudioUrl || ollamaUrl),
+      authenticated: lmstudioReachable || ollamaReachable,
       reachable: lmstudioReachable || ollamaReachable,
       roleHint: 'offline_fallback_planner',
       lmstudioUrl: lmstudioUrl || null,
       ollamaUrl,
+      defaultModel: env.GHOSTRECON_LOCAL_MODEL || env.GHOSTRECON_LMSTUDIO_MODEL || 'local-model',
     }),
     provider('openrouter', {
       selected: selectedSet.has('openrouter'),
       installed: true,
-      configured: Boolean(String(env.OPENROUTER_API_KEY || '').trim()),
-      reachable: Boolean(String(env.OPENROUTER_API_KEY || '').trim()),
+      configured: Boolean(openrouterKey),
+      authenticated: openrouterReachable,
+      reachable: openrouterReachable,
       roleHint: 'cloud_planner_reviewer',
       defaultModel: env.GHOSTRECON_OPENROUTER_AUTO_MODEL || env.GHOSTRECON_OPENROUTER_MODEL || OPENROUTER_AUTO_MODELS[0],
       models: [...OPENROUTER_AUTO_MODELS],
     }),
   ];
 
-  const selectedConfigured = out.filter((p) => p.selected && (p.configured || p.installed || envFlag(env, 'GHOSTRECON_AUTO_ALLOW_UNCONFIGURED')));
-  const available = out.filter((p) => p.configured || p.installed || p.reachable);
-  const commanders = selectedConfigured.length ? selectedConfigured : available.filter((p) => ['skynet', 'codex', 'openrouter', 'local_model'].includes(p.id)).slice(0, 2);
+  const allowUnconfigured = envFlag(env, 'GHOSTRECON_AUTO_ALLOW_UNCONFIGURED');
+  const commanders = out.filter((p) => p.selected && (p.usable || allowUnconfigured));
 
   return {
     ok: commanders.length > 0,

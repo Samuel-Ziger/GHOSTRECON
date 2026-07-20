@@ -229,6 +229,7 @@ test('SOCKS5 handshake remoteDns (socks5h) envia ATYP=0x03', async () => {
         // truncar e responder succeeded mínimo
         c.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
         const upstream = net.connect({ host: '127.0.0.1', port: echo.address().port });
+        upstream.on('error', () => {});
         upstream.on('connect', () => { c.pipe(upstream); upstream.pipe(c); });
       }
     });

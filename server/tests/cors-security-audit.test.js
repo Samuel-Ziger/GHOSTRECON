@@ -4,6 +4,7 @@ import {
   analyzeCorsResponses,
   collectCorsProbeUrls,
   EVIL_ORIGIN,
+  runCorsAudit,
 } from '../modules/cors-audit.mjs';
 import { summarizeSecurityHeaderGaps } from '../modules/security-headers.js';
 import { analyzeSuspiciousResponseHeaders } from '../modules/header-intel.js';
@@ -61,6 +62,16 @@ test('cors-audit: collectCorsProbeUrls inclui /health nos origins', () => {
     domain: 'example.com',
   });
   assert.ok(urls.some((u) => u.includes('/health')));
+});
+
+test('cors-audit: respeita cancelamento antes do primeiro probe', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('operator_cancelled'));
+  await assert.rejects(() => runCorsAudit({
+    probeResults: [{ r: { ok: true, url: 'https://api.example.com/', status: 200 } }],
+    domain: 'example.com',
+    signal: controller.signal,
+  }), /operator_cancelled/);
 });
 
 test('security-headers: summarizeSecurityHeaderGaps com 3+ ausentes', () => {

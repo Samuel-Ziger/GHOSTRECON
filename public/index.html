@@ -3393,6 +3393,10 @@
                 </select>
               </div>
             </div>
+            <div class="auto-field">
+              <label for="autoResumeSessionInput">Retomar sessão (opcional)</label>
+              <input id="autoResumeSessionInput" class="domain-input" type="text" placeholder="session-..." autocomplete="off" spellcheck="false">
+            </div>
 
             <div class="auto-grid" id="autoCommanderGrid">
               <label class="auto-choice"><input type="checkbox" class="auto-commander" value="codex"><div><strong>Codex</strong><span>Planeja, decide modulo novo e coordena o arsenal.</span></div></label>
@@ -3409,6 +3413,15 @@
             </div>
 
             <p class="auto-hint" id="autoModeStatus">Pronto para iniciar o agente automatico local.</p>
+            <details style="margin-top:12px" id="autoForgePanel">
+              <summary style="cursor:pointer;color:var(--accent3)">Module Forge — revisão humana</summary>
+              <div style="display:flex;gap:8px;align-items:center;margin:10px 0">
+                <button type="button" class="auto-secondary-btn" onclick="refreshAutoForge()">Atualizar candidatos</button>
+                <span class="auto-hint" id="autoForgeStatus">Ainda não consultado.</span>
+              </div>
+              <div id="autoForgeList" style="display:grid;gap:8px;max-height:190px;overflow:auto"></div>
+              <div id="autoForgeDetail" style="display:none;margin-top:10px"></div>
+            </details>
           </div>
           <div class="auto-modal-foot">
             <p class="auto-hint">Este modo chama /api/recon/auto/stream e registra plano, revisao e eventos no terminal.</p>
@@ -5179,17 +5192,159 @@ function closeAutoModeModal() {
   if (modal) modal.style.display = 'none';
 }
 
+function autoApiHeaders(json = false) {
+  const headers = json ? { 'Content-Type': 'application/json' } : {};
+  const authConfig = getOptionalAuthConfig();
+  if (authConfig?.ghostreconApiKey) headers['X-API-Key'] = authConfig.ghostreconApiKey;
+  return headers;
+}
+
+async function refreshAutoForge() {
+  const status = document.getElementById('autoForgeStatus');
+  const list = document.getElementById('autoForgeList');
+  if (status) status.textContent = 'Consultando...';
+  try {
+    const res = await fetch(apiUrl('/api/auto-forge'), { headers: autoApiHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (list) list.replaceChildren();
+    for (const item of data.items || []) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'auto-choice';
+      button.style.cssText = 'width:100%;text-align:left;color:inherit';
+      const body = document.createElement('div');
+      const title = document.createElement('strong');
+      title.textContent = `${item.moduleId || 'módulo'} · ${item.status || item.state}`;
+      const meta = document.createElement('span');
+      meta.textContent = `${item.author || '?'}${item.model ? `/${item.model}` : ''} · v${item.version || 1} · ${item.target || '-'} · pipeline ${item.pipelineEnabled ? 'ativo' : 'bloqueado'}`;
+      body.append(title, meta);
+      button.append(body);
+      button.onclick = () => inspectAutoForge(item.forgeId);
+      list?.append(button);
+    }
+    if (status) status.textContent = `${data.items?.length || 0} pacote(s).`;
+  } catch (e) {
+    if (status) status.textContent = `Falha: ${e?.message || e}`;
+  }
+}
+
+async function inspectAutoForge(forgeId) {
+  const detail = document.getElementById('autoForgeDetail');
+  if (!detail) return;
+  detail.style.display = 'block';
+  detail.textContent = 'Carregando pareceres e código...';
+  try {
+    const res = await fetch(apiUrl(`/api/auto-forge/${encodeURIComponent(forgeId)}`), { headers: autoApiHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const item = data.item;
+    const artifacts = item.artifacts || {};
+    detail.replaceChildren();
+    const heading = document.createElement('div');
+    heading.className = 'auto-hint';
+    heading.textContent = `${item.moduleId} · ${item.status} · ${item.forgeId}`;
+    const code = document.createElement('pre');
+    code.style.cssText = 'max-height:260px;overflow:auto;white-space:pre-wrap;font-size:10px;background:rgba(0,0,0,.3);padding:10px';
+    code.textContent = [
+      'VEREDITO', JSON.stringify(artifacts['verdict.json'], null, 2),
+      '\nPARECERES', JSON.stringify(artifacts['ai-reviews.json'], null, 2),
+      '\nMÓDULO', artifacts['module.mjs'] || '(não gerado)',
+      '\nTESTE', artifacts['module.test.js'] || '(não gerado)',
+    ].join('\n');
+    detail.append(heading, code);
+    if (item.state === 'proposed') {
+      const actions = document.createElement('div');
+      actions.className = 'auto-actions';
+      for (const [decision, label] of [['reject', 'Rejeitar'], ['approve', 'Aprovar, ativar e executar']]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = decision === 'approve' ? 'auto-primary-btn' : 'auto-secondary-btn';
+        button.textContent = label;
+        button.onclick = () => decideAutoForge(forgeId, decision);
+        actions.append(button);
+      }
+      detail.append(actions);
+    } else if (['active', 'disabled'].includes(item.state)) {
+      const actions = document.createElement('div');
+      actions.className = 'auto-actions';
+      const options = item.pipelineEnabled
+        ? [['canary', 'Definir canary'], ['promote', 'Promover'], ['rollback', 'Rollback'], ['disable', 'Desabilitar']]
+        : [['enable', 'Habilitar'], ['rollback', 'Rollback']];
+      for (const [action, label] of options) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = action === 'promote' ? 'auto-primary-btn' : 'auto-secondary-btn';
+        button.textContent = label;
+        button.onclick = () => lifecycleAutoForge(forgeId, action);
+        actions.append(button);
+      }
+      detail.append(actions);
+    }
+  } catch (e) {
+    detail.textContent = `Falha: ${e?.message || e}`;
+  }
+}
+
+async function lifecycleAutoForge(forgeId, action) {
+  const reason = window.prompt(`Justificativa para ${action}:`);
+  if (reason == null || !reason.trim()) return;
+  let percentage;
+  if (action === 'canary') {
+    percentage = Number(window.prompt('Percentual do canary (1-100):', '10'));
+    if (!Number.isFinite(percentage) || percentage < 1 || percentage > 100) return;
+  }
+  try {
+    const token = await ensureCsrfToken();
+    const headers = autoApiHeaders(true);
+    headers['X-CSRF-Token'] = token;
+    const res = await fetch(apiUrl(`/api/auto-forge/${encodeURIComponent(forgeId)}/lifecycle`), {
+      method: 'POST', headers, body: JSON.stringify({ action, reason: reason.trim(), percentage }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    addLog(`AUTO Module Forge: ${forgeId} → ${data.status}.`, 'success');
+    await refreshAutoForge();
+    await inspectAutoForge(data.restoredForgeId || forgeId);
+  } catch (e) {
+    addLog(`AUTO Module Forge lifecycle: ${e?.message || e}`, 'warn');
+  }
+}
+
+async function decideAutoForge(forgeId, decision) {
+  const reason = window.prompt(decision === 'approve' ? 'Justificativa da aprovação:' : 'Motivo da rejeição:');
+  if (reason == null || !reason.trim()) return;
+  try {
+    const token = await ensureCsrfToken();
+    const headers = autoApiHeaders(true);
+    headers['X-CSRF-Token'] = token;
+    const res = await fetch(apiUrl(`/api/auto-forge/${encodeURIComponent(forgeId)}/verdict`), {
+      method: 'POST', headers, body: JSON.stringify({ decision, reason: reason.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    addLog(`AUTO Module Forge: ${forgeId} ${decision === 'approve' ? 'aprovado, ativado e executado no alvo original' : 'rejeitado'}.`, 'success');
+    await refreshAutoForge();
+    document.getElementById('autoForgeDetail')?.replaceChildren();
+  } catch (e) {
+    addLog(`AUTO Module Forge: falha na decisão — ${e?.message || e}`, 'warn');
+  }
+}
+
 function summarizeAutoEvent(ev) {
   if (!ev || typeof ev !== 'object') return null;
-  if (ev.type === 'auto_meta') {
+  if (ev.type === 'auto_session' && ev.phase === 'started') {
+    if (ev.sessionId) {
+      localStorage.setItem('ghostrecon.auto.lastSessionId', ev.sessionId);
+    }
     const commanders = Array.isArray(ev.commanders) && ev.commanders.length ? ev.commanders.join(', ') : 'ghostrecon';
-    return { msg: `AUTO: sessao ${ev.requestRunId || '?'} | modo ${ev.mode || 'balanced'} | comandantes: ${commanders}`, level: 'section' };
+    return { msg: `AUTO: sessão ${ev.sessionId || ev.requestRunId || '?'} | modo ${ev.mode || 'balanced'} | comandantes: ${commanders}`, level: 'section' };
   }
   if (ev.type === 'auto_providers') {
     const providers = Array.isArray(ev.providers) ? ev.providers : [];
     const ready = providers
       .filter((p) => p.selected || p.configured || p.reachable || p.installed)
-      .map((p) => `${p.id}${p.selected ? '*' : ''}`);
+      .map((p) => `${p.id}${p.selected ? '*' : ''}[${p.usable ? 'pronto' : p.reason || 'indisponível'}]`);
     return { msg: `AUTO providers: ${ready.join(', ') || 'nenhum detectado'}`, level: ready.length ? 'info' : 'warn' };
   }
   if (ev.type === 'auto_catalog') {
@@ -5224,6 +5379,56 @@ function summarizeAutoEvent(ev) {
     return {
       msg: `AUTO Cursor: ${ev.mode || 'handoff'} | instalado=${ev.installed ? 'sim' : 'nao'} | tarefa=${task || '-'}`,
       level: ev.error ? 'warn' : 'info',
+    };
+  }
+  if (ev.type === 'auto_agent_turn_started') {
+    return {
+      msg: `AUTO IA: ${ev.provider || '?'} iniciou turno ${ev.role || 'agent'} (iteração ${ev.iteration || 1})`,
+      level: 'info',
+    };
+  }
+  if (ev.type === 'auto_heartbeat') {
+    return { msg: `AUTO heartbeat: iteração=${ev.iteration || 0} chamadas=${ev.agentCalls || 0} tempo=${Math.round((ev.elapsedMs || 0) / 1000)}s`, level: 'info' };
+  }
+  if (ev.type === 'auto_agent_turn_completed') {
+    const modules = Array.isArray(ev.decision?.requestedModules) ? ev.decision.requestedModules : [];
+    return {
+      msg: `AUTO IA: ${ev.provider || '?'} decidiu ${ev.decision?.action || '-'} | confiança=${ev.decision?.confidence ?? '-'} | módulos=${modules.join(', ') || '(nenhum)'}`,
+      level: 'success',
+    };
+  }
+  if (ev.type === 'auto_agent_turn_failed') {
+    return {
+      msg: `AUTO IA: ${ev.provider || '?'} falhou em ${ev.role || 'turn'}: ${ev.error || 'erro'} | fallback=${ev.fallback || 'nenhum'}`,
+      level: 'warn',
+    };
+  }
+  if (ev.type === 'auto_memory_written') {
+    return {
+      msg: `AUTO RAG: decisão de ${ev.provider || '?'} salva em ${ev.decision || '-'}`,
+      level: ev.decision ? 'info' : 'warn',
+    };
+  }
+  if (ev.type === 'auto_council_verdict') {
+    const modules = Array.isArray(ev.decision?.requestedModules) ? ev.decision.requestedModules : [];
+    return {
+      msg: `AUTO conselho: propostas=${(ev.proposals || []).join(', ') || '-'} | revisões=${(ev.reviews || []).join(', ') || '-'} | veredito=${ev.decision?.action || ev.fallback || '-'} | módulos=${modules.join(', ') || '(nenhum)'}`,
+      level: ev.decision ? 'success' : 'warn',
+    };
+  }
+  if (ev.type === 'auto_observation') {
+    return {
+      msg: `AUTO observação pós-pipeline: findings=${ev.findings || 0} | warnings=${ev.warnings || 0} | errors=${ev.errors || 0}`,
+      level: ev.errors ? 'warn' : 'info',
+    };
+  }
+  if (ev.type === 'auto_forge_status') {
+    const gates = ev.validationOk != null || ev.testsOk != null
+      ? ` | validação=${ev.validationOk ? 'ok' : 'falha'} testes=${ev.testsOk ? 'ok' : 'falha'}`
+      : '';
+    return {
+      msg: `AUTO Module Forge: ${ev.status || '?'} | id=${ev.forgeId || '-'} | autor=${ev.author || '-'}${gates} | pipeline=${ev.pipelineEnabled ? 'ativo' : 'bloqueado'}`,
+      level: ev.status === 'error' ? 'warn' : 'info',
     };
   }
   if (ev.type === 'auto_step') {
@@ -5332,6 +5537,7 @@ async function startAutoModeRecon() {
       commanders,
       includeHexstrike: document.getElementById('autoHexstrikeToggle')?.checked !== false,
       includeDeepPassive: document.getElementById('autoDeepPassiveToggle')?.checked !== false,
+      resumeSessionId: document.getElementById('autoResumeSessionInput')?.value?.trim() || null,
       auth: authConfig,
     };
     if (commanders.includes('openrouter')) {

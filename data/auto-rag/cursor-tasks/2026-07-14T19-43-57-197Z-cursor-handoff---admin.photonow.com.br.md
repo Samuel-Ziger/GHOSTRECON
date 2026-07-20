@@ -1,0 +1,318 @@
+---
+type: "ghostrecon-auto-memory"
+kind: "cursor-task"
+target: "admin.photonow.com.br"
+created: "2026-07-14T19:43:57.197Z"
+tags: ["ghostrecon", "auto-mode", "cursor-task", "cursor", "handoff", "task"]
+---
+
+# Cursor handoff - admin.photonow.com.br
+
+## Mission
+
+Target: `admin.photonow.com.br`
+Request run: `auto-mrl27l5p-70a8bb7e`
+
+## Expected Cursor Role
+
+- Read this task before editing.
+- Act as workspace implementer/reviewer when selected by Auto Mode.
+- Prefer small modules, tests, and local-only behavior.
+- Do not run intrusive network actions without explicit operator confirmation.
+
+## Commander Roles
+
+- leader: skynet
+- implementer: codex
+- reviewer: openrouter
+
+## Planned Modules
+
+- subdomains
+- rdap
+- dns_enrichment
+- security_headers
+- robots_sitemap
+- wellknown_security_txt
+- wayback
+- common_crawl
+- js_intel
+- client_surface_audit
+- cors_audit
+- header_intel
+- chaining
+- risk_explainer
+- email_security_deep
+- api_contract_diff
+- websocket_recon
+- hpp_param_pollution
+- dom_clobbering_audit
+- secrets_context_ranker
+- hexstrike_orchestrator
+
+## Recent RAG Context
+
+- decisions/2026-07-08T17-29-31-977Z-example.com-evaluation-auto-mrccrmqw-3c9eb029.md: Auto evaluation - example.com
+- decisions/2026-07-08T17-29-31-959Z-example.com-plan-auto-mrccrmqw-3c9eb029.md: Auto plan - example.com
+- decisions/2026-07-08T17-28-58-623Z-example.com-evaluation-auto-mrccqwyw-ddce4e53.md: Auto evaluation - example.com
+- decisions/2026-07-08T17-28-58-538Z-example.com-plan-auto-mrccqwyw-ddce4e53.md: Auto plan - example.com
+- decisions/2026-07-08T17-09-54-531Z-admin.photonow.com.br-plan-auto-mrcc2e8i-1c2da76b.md: Auto plan - admin.photonow.com.br
+
+## Plan JSON
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "ghostrecon.auto.plan",
+  "target": "admin.photonow.com.br",
+  "mode": "deep",
+  "objective": "authorized_bug_bounty_recon",
+  "commanders": {
+    "selected": [
+      "codex",
+      "cursor"
+    ],
+    "available": [
+      "codex",
+      "claude_code",
+      "cursor",
+      "skynet",
+      "local_model",
+      "openrouter"
+    ],
+    "roles": {
+      "leader": "skynet",
+      "implementer": "codex",
+      "reviewer": "openrouter"
+    },
+    "openrouterModel": "google/gemma-4-31b-it"
+  },
+  "steps": [
+    {
+      "id": "observe",
+      "action": "collect_capabilities",
+      "status": "planned"
+    },
+    {
+      "id": "plan",
+      "action": "select_modules",
+      "status": "planned",
+      "modules": [
+        "subdomains",
+        "rdap",
+        "dns_enrichment",
+        "security_headers",
+        "robots_sitemap",
+        "wellknown_security_txt",
+        "wayback",
+        "common_crawl",
+        "js_intel",
+        "client_surface_audit",
+        "cors_audit",
+        "header_intel",
+        "chaining",
+        "risk_explainer",
+        "email_security_deep",
+        "api_contract_diff",
+        "websocket_recon",
+        "hpp_param_pollution",
+        "dom_clobbering_audit",
+        "secrets_context_ranker",
+        "hexstrike_orchestrator"
+      ]
+    },
+    {
+      "id": "act",
+      "action": "run_ghostrecon_pipeline",
+      "status": "planned"
+    },
+    {
+      "id": "evaluate",
+      "action": "summarize_findings_and_detect_gaps",
+      "status": "planned"
+    }
+  ],
+  "modules": [
+    "subdomains",
+    "rdap",
+    "dns_enrichment",
+    "security_headers",
+    "robots_sitemap",
+    "wellknown_security_txt",
+    "wayback",
+    "common_crawl",
+    "js_intel",
+    "client_surface_audit",
+    "cors_audit",
+    "header_intel",
+    "chaining",
+    "risk_explainer",
+    "email_security_deep",
+    "api_contract_diff",
+    "websocket_recon",
+    "hpp_param_pollution",
+    "dom_clobbering_audit",
+    "secrets_context_ranker",
+    "hexstrike_orchestrator"
+  ],
+  "policy": {
+    "intrusiveAllowed": false,
+    "moduleForge": "disabled_in_phase_1",
+    "hexstrikeTools": "intelligence_only"
+  },
+  "memory": {
+    "ragDir": "/home/client01/Área de trabalho/Tools/GHOSTRECON/data/auto-rag",
+    "recentDecisionCount": 5,
+    "recentDecisions": [
+      {
+        "name": "decisions/2026-07-08T17-29-31-977Z-example.com-evaluation-auto-mrccrmqw-3c9eb029.md",
+        "title": "Auto evaluation - example.com",
+        "preview": "# Auto evaluation - example.com\n\n## Summary\n\nModo Auto evaluation after running the GHOSTRECON pipeline.\n\n## Target\n\n- Target: `example.com`\n- Request run: `auto-mrccrmqw-3c9eb029`\n- Kind: `evaluation`\n\n## Commander Roles\n\n- leader: skynet\n- implementer: skynet\n- reviewer: openrouter\n\n## Selected Modules\n\n- subdomains\n- rdap\n- dns_enrichment\n- security_headers\n- robots_sitemap\n- wellknown_security_txt\n- wayback\n- common_crawl\n- js_intel\n- client_surface_audit\n- cors_audit\n- header_intel\n- chaining\n- risk_explainer\n\n## Event Stats\n\n- total: 10\n- findings: 1\n- errors: 0\n- warnings: 0\n\n## Evaluation\n\n```json\n{\n  \"schemaVersion\": 1,\n  \"kind\": \"ghostrecon.auto.evaluation\",\n  \"target\": \"example.co"
+      },
+      {
+        "name": "decisions/2026-07-08T17-29-31-959Z-example.com-plan-auto-mrccrmqw-3c9eb029.md",
+        "title": "Auto plan - example.com",
+        "preview": "# Auto plan - example.com\n\n## Summary\n\nModo Auto selected commanders, modules and execution policy before running the pipeline.\n\n## Target\n\n- Target: `example.com`\n- Request run: `auto-mrccrmqw-3c9eb029`\n- Kind: `plan`\n\n## Commander Roles\n\n- leader: skynet\n- implementer: skynet\n- reviewer: openrouter\n\n## Selected Modules\n\n- subdomains\n- rdap\n- dns_enrichment\n- security_headers\n- robots_sitemap\n- wellknown_security_txt\n- wayback\n- common_crawl\n- js_intel\n- client_surface_audit\n- cors_audit\n- header_intel\n- chaining\n- risk_explainer\n\n## Event Stats\n\n- total: 5\n- findings: 0\n- errors: 0\n- warnings: 0\n\n## Evaluation\n\n_Not available yet._\n\n## Plan\n\n```json\n{\n  \"schemaVersion\": 1,\n  \"kind\": \"ghost"
+      },
+      {
+        "name": "decisions/2026-07-08T17-28-58-623Z-example.com-evaluation-auto-mrccqwyw-ddce4e53.md",
+        "title": "Auto evaluation - example.com",
+        "preview": "# Auto evaluation - example.com\n\n## Summary\n\nModo Auto evaluation after running the GHOSTRECON pipeline.\n\n## Target\n\n- Target: `example.com`\n- Request run: `auto-mrccqwyw-ddce4e53`\n- Kind: `evaluation`\n\n## Commander Roles\n\n- leader: skynet\n- implementer: skynet\n- reviewer: openrouter\n\n## Selected Modules\n\n- subdomains\n- rdap\n- dns_enrichment\n- security_headers\n- robots_sitemap\n- wellknown_security_txt\n- wayback\n- common_crawl\n- js_intel\n- client_surface_audit\n- cors_audit\n- header_intel\n- chaining\n- risk_explainer\n\n## Event Stats\n\n- total: 10\n- findings: 1\n- errors: 0\n- warnings: 0\n\n## Evaluation\n\n```json\n{\n  \"schemaVersion\": 1,\n  \"kind\": \"ghostrecon.auto.evaluation\",\n  \"target\": \"example.co"
+      },
+      {
+        "name": "decisions/2026-07-08T17-28-58-538Z-example.com-plan-auto-mrccqwyw-ddce4e53.md",
+        "title": "Auto plan - example.com",
+        "preview": "# Auto plan - example.com\n\n## Summary\n\nModo Auto selected commanders, modules and execution policy before running the pipeline.\n\n## Target\n\n- Target: `example.com`\n- Request run: `auto-mrccqwyw-ddce4e53`\n- Kind: `plan`\n\n## Commander Roles\n\n- leader: skynet\n- implementer: skynet\n- reviewer: openrouter\n\n## Selected Modules\n\n- subdomains\n- rdap\n- dns_enrichment\n- security_headers\n- robots_sitemap\n- wellknown_security_txt\n- wayback\n- common_crawl\n- js_intel\n- client_surface_audit\n- cors_audit\n- header_intel\n- chaining\n- risk_explainer\n\n## Event Stats\n\n- total: 5\n- findings: 0\n- errors: 0\n- warnings: 0\n\n## Evaluation\n\n_Not available yet._\n\n## Plan\n\n```json\n{\n  \"schemaVersion\": 1,\n  \"kind\": \"ghost"
+      },
+      {
+        "name": "decisions/2026-07-08T17-09-54-531Z-admin.photonow.com.br-plan-auto-mrcc2e8i-1c2da76b.md",
+        "title": "Auto plan - admin.photonow.com.br",
+        "preview": "# Auto plan - admin.photonow.com.br\n\n## Summary\n\nModo Auto selected commanders, modules and execution policy before running the pipeline.\n\n## Target\n\n- Target: `admin.photonow.com.br`\n- Request run: `auto-mrcc2e8i-1c2da76b`\n- Kind: `plan`\n\n## Commander Roles\n\n- leader: skynet\n- implementer: codex\n- reviewer: openrouter\n\n## Selected Modules\n\n- subdomains\n- rdap\n- dns_enrichment\n- security_headers\n- robots_sitemap\n- wellknown_security_txt\n- wayback\n- common_crawl\n- js_intel\n- client_surface_audit\n- cors_audit\n- header_intel\n- chaining\n- risk_explainer\n- email_security_deep\n- api_contract_diff\n- websocket_recon\n- hpp_param_pollution\n- dom_clobbering_audit\n- secrets_context_ranker\n- hexstrike_or"
+      }
+    ]
+  }
+}
+```
+
+## Providers JSON
+
+```json
+{
+  "ok": true,
+  "selected": [
+    "codex",
+    "cursor"
+  ],
+  "providers": [
+    {
+      "id": "codex",
+      "selected": true,
+      "installed": true,
+      "configured": true,
+      "reachable": true,
+      "roleHint": "module_forge_integrator",
+      "command": "codex"
+    },
+    {
+      "id": "claude_code",
+      "selected": false,
+      "installed": true,
+      "configured": true,
+      "reachable": true,
+      "roleHint": "deep_planner_module_author",
+      "command": "claude"
+    },
+    {
+      "id": "cursor",
+      "selected": true,
+      "installed": true,
+      "configured": true,
+      "reachable": true,
+      "roleHint": "ide_human_in_loop",
+      "command": "cursor",
+      "agentInstalled": false
+    },
+    {
+      "id": "skynet",
+      "selected": false,
+      "installed": true,
+      "configured": true,
+      "reachable": false,
+      "roleHint": "local_private_commander",
+      "baseUrl": "http://127.0.0.1:8000"
+    },
+    {
+      "id": "local_model",
+      "selected": false,
+      "installed": false,
+      "configured": true,
+      "reachable": false,
+      "roleHint": "offline_fallback_planner",
+      "lmstudioUrl": "http://127.0.0.1:1234/v1",
+      "ollamaUrl": "http://127.0.0.1:11434"
+    },
+    {
+      "id": "openrouter",
+      "selected": false,
+      "installed": true,
+      "configured": true,
+      "reachable": true,
+      "roleHint": "cloud_planner_reviewer",
+      "defaultModel": "google/gemma-4-31b-it",
+      "models": [
+        "anthropic/claude-3.7-sonnet",
+        "openai/gpt-4.1",
+        "google/gemini-2.5-pro",
+        "x-ai/grok-4",
+        "deepseek/deepseek-r1",
+        "z-ai/glm-4.5",
+        "qwen/qwen3-coder",
+        "meta-llama/llama-4-maverick"
+      ]
+    }
+  ],
+  "commanders": [
+    "codex",
+    "cursor"
+  ]
+}
+```
+
+## Metadata
+```json
+{
+  "requestRunId": "auto-mrl27l5p-70a8bb7e",
+  "cursor": {
+    "id": "cursor",
+    "mode": "handoff",
+    "installed": true,
+    "agentInstalled": false,
+    "command": "cursor",
+    "agentCommand": "agent",
+    "execEnabled": false
+  },
+  "modules": [
+    "subdomains",
+    "rdap",
+    "dns_enrichment",
+    "security_headers",
+    "robots_sitemap",
+    "wellknown_security_txt",
+    "wayback",
+    "common_crawl",
+    "js_intel",
+    "client_surface_audit",
+    "cors_audit",
+    "header_intel",
+    "chaining",
+    "risk_explainer",
+    "email_security_deep",
+    "api_contract_diff",
+    "websocket_recon",
+    "hpp_param_pollution",
+    "dom_clobbering_audit",
+    "secrets_context_ranker",
+    "hexstrike_orchestrator"
+  ]
+}
+```

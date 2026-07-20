@@ -9,6 +9,8 @@ import {
   writeAutoLesson,
   writeAutoRagNote,
 } from '../auto-agent/rag-memory.mjs';
+import { compareForgeVersions, listForgePackages, manageForgePackage, readForgePackage, recordForgeRuntimeResult, transitionForgePackage } from '../auto-agent/forge/lifecycle.mjs';
+import { cancelActiveAutoSession, listActiveAutoSessions } from '../auto-agent/active-sessions.mjs';
 
 export function registerAutoReconRoutes(app, deps = {}) {
   const {
@@ -17,6 +19,105 @@ export function registerAutoReconRoutes(app, deps = {}) {
     allowReconRequest,
     ROOT,
   } = deps;
+
+  app.get('/api/recon/auto/sessions', requireScope('recon.read'), (_req, res) => {
+    res.json({ ok: true, sessions: listActiveAutoSessions() });
+  });
+
+  app.post('/api/recon/auto/:sessionId/cancel', requireScope('recon.run'), (req, res) => {
+    if (!validateCsrfToken(req)) {
+      res.status(403).json({ ok: false, error: 'CSRF invalido/ausente' });
+      return;
+    }
+    const sessionId = String(req.params.sessionId || '');
+    const cancelled = cancelActiveAutoSession(sessionId, `cancelled_by_${req.principal?.sub || 'operator'}`);
+    res.status(cancelled ? 202 : 404).json({ ok: cancelled, sessionId, error: cancelled ? null : 'sessão AUTO ativa não encontrada' });
+  });
+
+  app.get('/api/auto-forge', requireScope('recon.read'), async (_req, res) => {
+    try {
+      res.json({ ok: true, items: await listForgePackages(ROOT) });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
+  app.get('/api/auto-forge/:forgeId', requireScope('recon.read'), async (req, res) => {
+    try {
+      res.json({ ok: true, item: await readForgePackage(ROOT, String(req.params.forgeId || '')) });
+    } catch (e) {
+      res.status(404).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
+  app.get('/api/auto-forge-module/:moduleId/compare', requireScope('recon.read'), async (req, res) => {
+    try {
+      res.json({ ok: true, moduleId: req.params.moduleId, versions: await compareForgeVersions(ROOT, String(req.params.moduleId || '')) });
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/auto-forge/:forgeId/verdict', requireScope('recon.run'), async (req, res) => {
+    if (!validateCsrfToken(req)) {
+      res.status(403).json({ ok: false, error: 'CSRF invalido/ausente' });
+      return;
+    }
+    try {
+      const result = await transitionForgePackage({
+        root: ROOT,
+        forgeId: String(req.params.forgeId || ''),
+        decision: String(req.body?.decision || ''),
+        reason: String(req.body?.reason || ''),
+        percentage: req.body?.percentage,
+        operator: req.principal?.sub || 'local',
+      });
+      if (result.decision !== 'approve') {
+        res.json(result);
+        return;
+      }
+      const runtimeEvents = [];
+      let runtime;
+      try {
+        await runPipeline({
+          domain: result.target,
+          exactMatch: false,
+          modules: [result.moduleId],
+          profile: 'standard',
+          opsecProfile: 'standard',
+          autoAiReports: false,
+          emit: (event) => runtimeEvents.push(event),
+        });
+        const completed = runtimeEvents.find((event) => event.type === 'dynamic_module_completed' && event.forgeId === result.forgeId);
+        const moduleError = runtimeEvents.find((event) => event.type === 'dynamic_module_error' && event.forgeId === result.forgeId);
+        if (!completed || moduleError) throw new Error(moduleError?.error || 'módulo aprovado não concluiu a primeira execução');
+        runtime = await recordForgeRuntimeResult({ root: ROOT, forgeId: result.forgeId, success: true, findings: completed.findings });
+      } catch (error) {
+        runtime = await recordForgeRuntimeResult({ root: ROOT, forgeId: result.forgeId, success: false, error: error?.message || String(error) });
+      }
+      res.status(runtime.ok ? 200 : 422).json({ ...result, ok: runtime.ok, runtime, eventCount: runtimeEvents.length });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e?.message || String(e) });
+    }
+  });
+
+  app.post('/api/auto-forge/:forgeId/lifecycle', requireScope('recon.run'), async (req, res) => {
+    if (!validateCsrfToken(req)) {
+      res.status(403).json({ ok: false, error: 'CSRF invalido/ausente' });
+      return;
+    }
+    try {
+      res.json(await manageForgePackage({
+        root: ROOT,
+        forgeId: String(req.params.forgeId || ''),
+        action: String(req.body?.action || ''),
+        reason: String(req.body?.reason || ''),
+        operator: req.principal?.sub || 'local',
+      }));
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
 
   app.get('/api/auto-rag/status', requireScope('recon.read'), async (_req, res) => {
     try {
@@ -128,6 +229,11 @@ export function registerAutoReconRoutes(app, deps = {}) {
     });
 
     const requestRunId = `auto-http-${Date.now().toString(36)}`;
+    const controller = new AbortController();
+    req.once('aborted', () => controller.abort(new Error('cliente desconectado')));
+    res.once('close', () => {
+      if (!res.writableEnded) controller.abort(new Error('stream encerrado pelo cliente'));
+    });
     try {
       await reconHttpContext.run({ requestRunId, target: parsed.target, emit: send }, async () => {
         await runAutoRecon({
@@ -135,6 +241,7 @@ export function registerAutoReconRoutes(app, deps = {}) {
           runPipeline,
           emit: send,
           ROOT,
+          signal: controller.signal,
         });
       });
     } catch (e) {

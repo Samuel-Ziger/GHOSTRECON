@@ -11,7 +11,8 @@ function normalizeMode(mode) {
 }
 
 function commanderRoles(providers = []) {
-  const active = (providers || []).filter((p) => p.selected || p.reachable || p.configured);
+  const selected = (providers || []).filter((p) => p.selected);
+  const active = selected.filter((p) => p.usable !== false && (p.reachable || p.configured || p.installed));
   const has = (id) => active.some((p) => p.id === id);
   const leader =
     has('skynet') ? 'skynet'
@@ -49,18 +50,24 @@ export function createAutoPlan({
   includeHexstrike = true,
   includeDeepPassive = null,
   ragContext = null,
+  agentDecision = null,
 } = {}) {
   const selectedMode = normalizeMode(mode);
   const requested = uniq(requestedModules);
   const deep = includeDeepPassive == null ? selectedMode === 'deep' : Boolean(includeDeepPassive);
   const modules = [];
 
-  modules.push(...AUTO_BASE_MODULES);
-  if (deep) modules.push(...AUTO_DEEP_PASSIVE_MODULES);
-  if (includeHexstrike && shouldUseHexstrike({ requestedModules: requested, catalog, mode: selectedMode })) {
-    modules.push(...AUTO_HEXSTRIKE_MODULES);
+  const decidedModules = uniq(agentDecision?.requestedModules);
+  if (agentDecision && decidedModules.length) {
+    modules.push(...decidedModules);
+  } else {
+    modules.push(...AUTO_BASE_MODULES);
+    if (deep) modules.push(...AUTO_DEEP_PASSIVE_MODULES);
+    if (includeHexstrike && shouldUseHexstrike({ requestedModules: requested, catalog, mode: selectedMode })) {
+      modules.push(...AUTO_HEXSTRIKE_MODULES);
+    }
+    modules.push(...requested.filter((m) => !/^kali_|sqlmap|vigolium_|cloud_bruteforce|cred_spray|race_/i.test(m)));
   }
-  modules.push(...requested.filter((m) => !/^kali_|sqlmap|vigolium_|cloud_bruteforce|cred_spray|race_/i.test(m)));
 
   const roles = commanderRoles(providers);
   const openrouter = (providers || []).find((p) => p.id === 'openrouter');
@@ -102,6 +109,7 @@ export function createAutoPlan({
       },
     ],
     modules: uniq(modules),
+    agentDecision: agentDecision || null,
     policy: {
       intrusiveAllowed: false,
       moduleForge: 'disabled_in_phase_1',

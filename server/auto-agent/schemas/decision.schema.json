@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GHOSTRECON Auto Agent Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "objective", "reasoningSummary", "requestedModules", "confidence"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["run_modules", "continue_with_context", "finish", "ask_operator", "forge_module", "abstain"]
+    },
+    "objective": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "reasoningSummary": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 2000 }
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "requestedModules": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_:-]{0,127}$" }
+    },
+    "rejectedModules": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason"],
+        "properties": {
+          "id": { "type": "string", "maxLength": 128 },
+          "reason": { "type": "string", "maxLength": 2000 }
+        }
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "maxLength": 1000 }
+    },
+    "operatorQuestion": { "type": ["string", "null"], "maxLength": 2000 },
+    "forgeRequest": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["proposedId", "gap", "benefit", "evidenceRefs", "intrusive", "expectedInputs", "expectedOutputs", "testStrategy", "risks"],
+      "properties": {
+        "proposedId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
+        "gap": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "benefit": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "evidenceRefs": { "type": "array", "items": { "type": "string", "maxLength": 500 } },
+        "intrusive": { "type": "boolean" },
+        "expectedInputs": { "type": "array", "items": { "type": "string", "maxLength": 500 } },
+        "expectedOutputs": { "type": "array", "items": { "type": "string", "maxLength": 500 } },
+        "testStrategy": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "risks": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "session-mrnq5zv4-a1e8c5",
+  "requestRunId": "auto-mrnq5zv4-96d81e97",
+  "target": "admin.photonow.com.br",
+  "startedAt": "2026-07-16T16:30:05.009Z",
+  "status": "running",
+  "iteration": 1,
+  "agentCalls": 1,
+  "usage": {
+    "codex": {
+      "calls": 1,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "totalTokens": 0,
+      "costUsd": 0
+    }
+  },
+  "costUsd": 0,
+  "providers": [
+    null
+  ],
+  "limits": {
+    "maxIterations": 3,
+    "sessionTimeoutMs": 1800000,
+    "agentTimeoutMs": 180000,
+    "maxAgentCalls": 12,
+    "maxContextChars": 120000,
+    "maxCostUsd": 10
+  },
+  "catalogHash": "e417c5b104e3885c6bd8070699449a99fea2221244b3f30b08101cfc41ae7e96",
+  "promptVersion": "auto-council-v2",
+  "memoriesUsed": [
+    "decisions/2026-07-14T19-43-57-176Z-admin.photonow.com.br-plan-auto-mrl27l5p-70a8bb7e.md",
+    "decisions/2026-07-14T19-50-32-761Z-example.com-plan-auto-mrl2g35s-0174ebc4.md",
+    "decisions/2026-07-14T19-50-24-476Z-example.com-plan-auto-mrl2fws2-011e7453.md",
+    "decisions/2026-07-14T20-13-40-447Z-example.com-plan-auto-mrl39txk-bcada9b0.md",
+    "cursor-tasks/2026-07-14T19-43-57-197Z-cursor-handoff---admin.photonow.com.br.md",
+    "decisions/2026-07-08T17-09-54-531Z-admin.photonow.com.br-plan-auto-mrcc2e8i-1c2da76b.md"
+  ]
+}

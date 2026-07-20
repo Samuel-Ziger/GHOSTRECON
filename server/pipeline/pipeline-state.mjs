@@ -69,6 +69,8 @@ export function createPipelineState(ctx) {
     vigoliumReportOnly = null,
     vigoliumPreferPath = false,
     vigoliumUseCodex = false,
+    signal = null,
+    requestRunId = null,
   } = ctx;
 
   const apexHostIsIp = targetIsIp(domain);
@@ -158,6 +160,11 @@ export function createPipelineState(ctx) {
     vigoliumPreferPath: shouldPreferVigoliumPath({ vigoliumPreferPath, kaliMode }),
     vigoliumUseCodex: shouldUseVigoliumCodex({ vigoliumUseCodex }),
     vigoliumAuditMode: vigoliumAuditMode || null,
+    signal,
+    requestRunId,
+    throwIfAborted() {
+      if (signal?.aborted) throw signal.reason || new Error('pipeline cancelado');
+    },
     ...pctx,
   };
 }

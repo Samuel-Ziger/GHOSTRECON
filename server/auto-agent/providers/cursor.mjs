@@ -1,6 +1,8 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeAutoRagNote } from '../rag-memory.mjs';
+import { parseAgentDecisionText, validateAgentDecision } from '../decision-contract.mjs';
+import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt } from './shared.mjs';
 
 const execFileDefault = promisify(execFileCb);
 
@@ -121,5 +123,46 @@ export async function createCursorHandoff({
     ok: Boolean(note),
     state,
     task: note,
+  };
+}
+
+function cursorArgs(env, root, prompt) {
+  const configured = String(env.GHOSTRECON_CURSOR_AGENT_ARGS_JSON || '').trim();
+  if (configured) {
+    const args = JSON.parse(configured);
+    if (!Array.isArray(args)) throw new Error('GHOSTRECON_CURSOR_AGENT_ARGS_JSON deve ser array');
+    return args.map((arg) => String(arg).replaceAll('{cwd}', root).replaceAll('{prompt}', prompt));
+  }
+  return ['-p', '--output-format', 'json', '--mode', 'ask', '--workspace', root, prompt];
+}
+
+export async function decideWithCursor({
+  target, mode, catalog, ragContext, root, role = 'planner', iteration = 1,
+  peerDecisions = [], observationBundle = null, env = process.env,
+  execFileImpl = execFileDefault, signal, maxContextChars = 120_000,
+} = {}) {
+  if (!envFlag(env, 'GHOSTRECON_CURSOR_PROVIDER_EXEC')) throw new Error('Cursor Agent exec desabilitado');
+  const prompt = buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars });
+  const command = String(env.GHOSTRECON_CURSOR_AGENT_COMMAND || 'agent');
+  const startedAt = Date.now();
+  const result = await execFileImpl(command, cursorArgs(env, root, prompt), {
+    cwd: root, timeout: Number(env.GHOSTRECON_AUTO_AGENT_TIMEOUT_MS || 180_000),
+    maxBuffer: 8 * 1024 * 1024, windowsHide: true, signal,
+  });
+  const raw = String(result?.stdout || '').trim();
+  let output = raw;
+  try {
+    const envelope = JSON.parse(raw);
+    output = envelope.result || envelope.message || envelope.content || envelope;
+  } catch { /* parser comum tratará texto/JSON fenced */ }
+  const parsed = typeof output === 'object' ? output : parseAgentDecisionText(output);
+  const validated = validateAgentDecision(parsed, {
+    catalogModuleIds: availableCatalogIds(catalog),
+    availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
+  });
+  if (!validated.ok) throw new Error(`decisão Cursor rejeitada: ${validated.errors.join('; ')}`);
+  return {
+    ok: true, provider: 'cursor', role, iteration, latencyMs: Date.now() - startedAt,
+    decision: validated.decision, transport: { command, mode: 'ask', realtime: true },
   };
 }
