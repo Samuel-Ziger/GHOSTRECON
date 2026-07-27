@@ -1,4 +1,5 @@
 import { pickStealthUserAgent } from './request-policy.js';
+import { combineAbortSignals, throwIfAborted } from './http-utils.js';
 
 function buildHeaders(auth = {}, modules = []) {
   const h = {
@@ -41,7 +42,17 @@ function isSearchEngineUrl(url) {
 /**
  * Pedido HTTP leve em achados HIGH / HIGH_PROBABILITY com URL, para refrescar meta (status).
  */
-export async function runHighPrioHttpRecheck({ findings, auth, modules, log, limit = 20 }) {
+export async function runHighPrioHttpRecheck({
+  findings,
+  auth,
+  modules,
+  log,
+  limit = 20,
+  signal = null,
+  fetchImpl = globalThis.fetch,
+}) {
+  throwIfAborted(signal);
+  if (typeof fetchImpl !== 'function') throw new TypeError('fetch implementation unavailable');
   const cap = Math.max(1, Number(process.env.GHOSTRECON_HIGH_RECHECK_MAX || limit));
   const picked = [];
   for (const f of findings || []) {
@@ -59,16 +70,18 @@ export async function runHighPrioHttpRecheck({ findings, auth, modules, log, lim
   if (typeof log === 'function') log(`Recheck HIGH: ${picked.length} URL(s) com GET rápido`, 'info');
 
   for (const { f, url } of picked) {
+    throwIfAborted(signal);
     try {
-      const res = await fetch(url, {
+      const res = await fetchImpl(url, {
         method: 'GET',
         redirect: 'manual',
-        signal: AbortSignal.timeout(12_000),
+        signal: combineAbortSignals(signal, 12_000),
         headers: buildHeaders(auth, modules),
       });
       const tag = `recheck_http=${res.status}@${new Date().toISOString()}`;
       f.meta = [f.meta, tag].filter(Boolean).join(' • ');
     } catch (e) {
+      if (signal?.aborted) throw signal.reason || e;
       const tag = `recheck_http=err:${String(e?.message || e).slice(0, 80)}@${new Date().toISOString()}`;
       f.meta = [f.meta, tag].filter(Boolean).join(' • ');
     }

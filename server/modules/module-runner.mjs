@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { getProcessExecutionContext } from '../lib/process-execution-context.mjs';
 
 export function positiveIntEnv(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   const n = Number(process.env[name]);
@@ -114,6 +115,7 @@ export async function mapPool(items, concurrency, fn, opts = {}) {
 }
 
 export function runProcess(cmd, args = [], opts = {}) {
+  const executionContext = getProcessExecutionContext();
   const {
     timeoutMs = 60_000,
     spawnOpts = {},
@@ -127,7 +129,47 @@ export function runProcess(cmd, args = [], opts = {}) {
     rejectOnTimeout = true,
     wrapCommand = null,
     label = cmd,
+    signal: explicitSignal = null,
+    rejectOnAbort = true,
+    killGraceMs: explicitKillGraceMs = null,
+    closeGraceMs: explicitCloseGraceMs = null,
+    spawnImpl = spawn,
+    onStdout = null,
+    onStderr = null,
+    input = null,
+    stdinMaxBytes = 1024 * 1024,
   } = opts;
+  const hasInput = input !== null && input !== undefined;
+  if (hasInput && !Buffer.isBuffer(input) && typeof input !== 'string') {
+    return Promise.reject(new TypeError(`${label} input deve ser string ou Buffer`));
+  }
+  const inputBuffer = hasInput
+    ? (Buffer.isBuffer(input) ? input : Buffer.from(input, 'utf8'))
+    : null;
+  const inputLimit = Math.max(0, Number(stdinMaxBytes) || 0);
+  if (inputBuffer && inputBuffer.length > inputLimit) {
+    const error = new Error(`${label} input excede limite (${inputBuffer.length} > ${inputLimit} bytes)`);
+    error.code = 'PROCESS_STDIN_TOO_LARGE';
+    return Promise.reject(error);
+  }
+  const inheritedSignal = executionContext?.signal ?? null;
+  const signal = explicitSignal ?? inheritedSignal;
+  const managedProcessGroup =
+    executionContext?.managedProcessGroup === true && process.platform !== 'win32';
+  const killGraceMs = Math.max(
+    10,
+    Math.min(
+      30_000,
+      Number(explicitKillGraceMs ?? executionContext?.killGraceMs) || 250,
+    ),
+  );
+  const closeGraceMs = Math.max(
+    50,
+    Math.min(
+      30_000,
+      Number(explicitCloseGraceMs ?? executionContext?.closeGraceMs) || 1_000,
+    ),
+  );
 
   let finalCmd = cmd;
   let finalArgs = Array.isArray(args) ? args : [];
@@ -139,10 +181,32 @@ export function runProcess(cmd, args = [], opts = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(finalCmd, finalArgs, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...spawnOpts,
-    });
+    if (signal?.aborted) {
+      const cause = signal.reason instanceof Error ? signal.reason : null;
+      const error = new Error(
+        `${label} cancelado${cause?.message ? `: ${cause.message}` : ''}`,
+        cause ? { cause } : undefined,
+      );
+      error.name = 'AbortError';
+      error.code = 'PROCESS_ABORTED';
+      reject(error);
+      return;
+    }
+
+    let child;
+    try {
+      child = spawnImpl(finalCmd, finalArgs, {
+        ...spawnOpts,
+        // O payload de stdin nunca entra em argv, no resultado ou nos logs.
+        // Quando presente, force pipes também para stdout/stderr, necessários
+        // para aplicar os limites de saída deste runner.
+        stdio: hasInput ? ['pipe', 'pipe', 'pipe'] : (spawnOpts.stdio || ['ignore', 'pipe', 'pipe']),
+        ...(managedProcessGroup ? { detached: true } : {}),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
     const out = createCappedOutputCollector({
       maxBytes: stdoutMaxBytes,
       mode: 'head',
@@ -154,17 +218,63 @@ export function runProcess(cmd, args = [], opts = {}) {
       marker: '\n[ghostrecon: stderr truncated]\n',
     });
     let settled = false;
+    let termination = null;
+    let timeoutTimer = null;
+    let killTimer = null;
+    let closeTimer = null;
+    let exitFallbackTimer = null;
+    let terminalObserved = false;
+    let exitObserved = null;
+
+    const collectStdout = (data) => {
+      out.append(data);
+      if (typeof onStdout === 'function') {
+        try {
+          onStdout(data);
+        } catch {
+          // Telemetria de streaming não pode alterar o ciclo de vida do filho.
+        }
+      }
+    };
+    const collectStderr = (data) => {
+      err.append(data);
+      if (typeof onStderr === 'function') {
+        try {
+          onStderr(data);
+        } catch {
+          // Telemetria de streaming não pode alterar o ciclo de vida do filho.
+        }
+      }
+    };
+
+    const cleanup = () => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+      if (closeTimer) clearTimeout(closeTimer);
+      if (exitFallbackTimer) clearTimeout(exitFallbackTimer);
+      timeoutTimer = null;
+      killTimer = null;
+      closeTimer = null;
+      exitFallbackTimer = null;
+      signal?.removeEventListener('abort', onAbort);
+      child.stdout?.removeListener('data', collectStdout);
+      child.stderr?.removeListener('data', collectStderr);
+      child.stdin?.removeListener('error', onStdinError);
+      child.removeListener('error', onError);
+      child.removeListener('exit', onExit);
+      child.removeListener('close', onClose);
+    };
 
     const finish = (result) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
       resolve(result);
     };
     const fail = (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
       reject(error);
     };
     const resultFor = (extra = {}) => ({
@@ -176,32 +286,222 @@ export function runProcess(cmd, args = [], opts = {}) {
       stdoutStats: out.stats(),
       stderrStats: err.stats(),
       timedOut: Boolean(extra.timedOut),
+      ...(extra.cancelled ? { cancelled: true } : {}),
+      ...(extra.terminationConfirmed !== undefined
+        ? { terminationConfirmed: Boolean(extra.terminationConfirmed) }
+        : {}),
+      ...(extra.unterminated ? { unterminated: true } : {}),
       cmd: finalCmd,
       args: finalArgs,
     });
 
-    const timer = setTimeout(() => {
+    const signalChild = (killSignal) => {
+      if (!child.pid) return false;
       try {
-        child.kill('SIGKILL');
+        if (managedProcessGroup) process.kill(-child.pid, killSignal);
+        else child.kill(killSignal);
+        return true;
       } catch {
-        // ignore
+        try {
+          child.kill(killSignal);
+          return true;
+        } catch {
+          return false;
+        }
       }
-      const error = new Error(`${label} timeout (${timeoutMs}ms)`);
-      error.result = resultFor({ code: 124, ok: false, timedOut: true });
-      if (rejectOnTimeout) fail(error);
-      else finish(error.result);
-    }, Math.max(1, Number(timeoutMs) || 60_000));
+    };
 
-    child.stdout.on('data', (d) => out.append(d));
-    child.stderr.on('data', (d) => err.append(d));
-    child.on('error', (e) => {
+    const terminationResult = ({
+      code = null,
+      signal: terminalSignal = null,
+      confirmed = false,
+      unterminated = false,
+    } = {}) =>
+      resultFor({
+        code: termination?.kind === 'timeout' ? 124 : code,
+        signal: terminalSignal,
+        ok: false,
+        timedOut: termination?.kind === 'timeout',
+        cancelled: termination?.kind === 'abort',
+        terminationConfirmed: confirmed,
+        unterminated,
+      });
+
+    const settleTermination = ({ code = null, signal: terminalSignal = null } = {}) => {
+      const result = terminationResult({
+        code,
+        signal: terminalSignal,
+        confirmed: true,
+      });
+      if (termination?.kind === 'timeout') {
+        const error = new Error(`${label} timeout (${timeoutMs}ms)`);
+        error.code = 'PROCESS_TIMEOUT';
+        error.result = result;
+        if (rejectOnTimeout) fail(error);
+        else finish(result);
+        return;
+      }
+
+      if (termination?.kind === 'error') {
+        const original = termination.reason instanceof Error
+          ? termination.reason
+          : new Error(`${label} falhou`);
+        original.result = result;
+        if (rejectOnError) fail(original);
+        else {
+          finish({
+            ...result,
+            stderr: `${result.stderr}\n${original.message}`.trim(),
+          });
+        }
+        return;
+      }
+
+      const cause = termination?.reason instanceof Error ? termination.reason : null;
+      const error = new Error(
+        `${label} cancelado${cause?.message ? `: ${cause.message}` : ''}`,
+        cause ? { cause } : undefined,
+      );
+      error.name = 'AbortError';
+      error.code = 'PROCESS_ABORTED';
+      error.result = result;
+      if (rejectOnAbort) fail(error);
+      else finish(result);
+    };
+
+    const failUnterminated = () => {
+      if (settled || terminalObserved || exitObserved || !termination) return;
+      const result = terminationResult({
+        confirmed: false,
+        unterminated: true,
+      });
+      const cause = termination.reason instanceof Error
+        ? termination.reason
+        : termination.kind === 'timeout'
+          ? new Error(`${label} timeout (${timeoutMs}ms)`)
+          : null;
+      const error = new Error(
+        `${label} não confirmou encerramento após SIGTERM/SIGKILL `
+          + `(${closeGraceMs}ms aguardando exit/close)`,
+        cause ? { cause } : undefined,
+      );
+      error.code = 'PROCESS_UNTERMINATED';
+      error.fatal = true;
+      error.recoverable = false;
+      error.unterminated = true;
+      error.terminationKind = termination.kind;
+      error.result = result;
+      fail(error);
+    };
+
+    const requestTermination = (kind, reason = null) => {
+      if (settled || termination) return;
+      termination = { kind, reason };
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+
+      signalChild('SIGTERM');
+      killTimer = setTimeout(() => {
+        killTimer = null;
+        signalChild('SIGKILL');
+        closeTimer = setTimeout(() => {
+          closeTimer = null;
+          failUnterminated();
+        }, closeGraceMs);
+        closeTimer.ref?.();
+      }, killGraceMs);
+      killTimer.ref?.();
+    };
+
+    function onAbort() {
+      requestTermination('abort', signal?.reason);
+    }
+
+    function onStdinError() {
+      // EPIPE é esperado quando o filho encerra antes de consumir todo o
+      // payload. O exit code/close continua sendo a fonte do resultado.
+    }
+
+    function onError(error) {
+      if (termination) {
+        // Um evento `error` (por exemplo, falha ao enviar um sinal) não prova
+        // que o processo terminou. Aguarde obrigatoriamente exit/close; o
+        // limite de reap produzirá PROCESS_UNTERMINATED se isso não ocorrer.
+        return;
+      }
+      if (Number.isInteger(Number(child?.pid)) && Number(child.pid) > 0) {
+        requestTermination('error', error);
+        return;
+      }
       const result = resultFor({ code: -1, ok: false });
-      if (rejectOnError) fail(e);
-      else finish({ ...result, stderr: `${result.stderr}\n${e?.message || e}`.trim() });
-    });
-    child.on('close', (code, signal) => {
-      finish(resultFor({ code, signal, ok: code === 0, timedOut: false }));
-    });
+      if (rejectOnError) fail(error);
+      else finish({ ...result, stderr: `${result.stderr}\n${error?.message || error}`.trim() });
+    }
+
+    function onTerminal(code, closeSignal) {
+      if (terminalObserved || settled) return;
+      terminalObserved = true;
+      if (termination) {
+        settleTermination({ code, signal: closeSignal });
+        return;
+      }
+      finish(resultFor({ code, signal: closeSignal, ok: code === 0, timedOut: false }));
+    }
+
+    function onExit(code, exitSignal) {
+      if (terminalObserved || settled || exitObserved) return;
+      exitObserved = { code, signal: exitSignal };
+      // `exit` confirma que o processo acabou, mas `close` é a fronteira que
+      // garante o escoamento de stdout/stderr. Aguarde close por um intervalo
+      // limitado; se uma implementação quebrada nunca o emitir, exit ainda é
+      // confirmação suficiente para assentar sem declarar unterminated.
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
+      if (closeTimer) {
+        clearTimeout(closeTimer);
+        closeTimer = null;
+      }
+      exitFallbackTimer = setTimeout(
+        () => {
+          exitFallbackTimer = null;
+          onTerminal(exitObserved.code, exitObserved.signal);
+        },
+        closeGraceMs,
+      );
+      exitFallbackTimer.ref?.();
+    }
+
+    function onClose(code, closeSignal) {
+      onTerminal(code, closeSignal);
+    }
+
+    child.stdout?.on('data', collectStdout);
+    child.stderr?.on('data', collectStderr);
+    child.stdin?.on('error', onStdinError);
+    child.on('error', onError);
+    child.on('exit', onExit);
+    child.on('close', onClose);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // Fecha a janela entre a checagem anterior ao spawn e o registro do
+    // listener. AbortSignal não reenvia eventos que já ocorreram.
+    if (signal?.aborted) onAbort();
+    if (hasInput && !termination && !settled) {
+      try {
+        child.stdin?.end(inputBuffer);
+      } catch {
+        // O fechamento do processo produzirá o resultado terminal.
+      }
+    }
+
+    timeoutTimer = !termination && !settled ? setTimeout(
+      () => requestTermination('timeout'),
+      Math.max(1, Number(timeoutMs) || 60_000),
+    ) : null;
+    timeoutTimer.unref?.();
   });
 }
 

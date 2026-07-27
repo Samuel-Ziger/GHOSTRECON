@@ -4,7 +4,6 @@ import {
   validateNavegationTorPath,
 } from '../modules/navegation.js';
 import { requireScope, requireRole, audit as auditAuth } from '../modules/auth.js';
-import { augmentProcessPathFromCommonDirs } from '../modules/tool-path.js';
 import { newnym as torNewnym, torHealth as torControlHealth } from '../modules/tor-control.js';
 import {
   isStrict as torIsStrict,
@@ -152,11 +151,13 @@ export function registerProxyTunnelRoutes(app, { validateCsrfToken, ghostProxy, 
       res.status(403).json({ ok: false, error: 'CSRF' });
       return;
     }
-    try {
-      const added = augmentProcessPathFromCommonDirs();
-      res.json({ ok: true, added });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
-    }
+    // PATH participates in binary selection and is therefore part of the
+    // execution policy sealed at boot. Mutating the process-global PATH while
+    // sessions are running could select a different executable after approval.
+    res.status(409).json({
+      ok: false,
+      error: 'PATH_REFRESH_RESTART_REQUIRED',
+      message: 'Configure o PATH no ambiente e reinicie a stack para atualizar ferramentas.',
+    });
   });
 }

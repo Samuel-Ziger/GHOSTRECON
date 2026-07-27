@@ -1,4 +1,4 @@
-import { parseAgentDecisionText, validateAgentDecision } from '../decision-contract.mjs';
+import { normalizeAndValidateAgentDecision, parseAgentDecisionText } from '../decision-contract.mjs';
 import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt, extractOpenAiContent } from './shared.mjs';
 
 export async function decideWithOpenAiCompatible({
@@ -21,6 +21,7 @@ export async function decideWithOpenAiCompatible({
   retries = 1,
   maxContextChars = 120_000,
   allowIntrusive = false,
+  autonomyLevel = 'observation',
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error(`${provider}: fetch indisponível`);
   if (!baseUrl || !model) throw new Error(`${provider}: baseUrl/model ausente`);
@@ -36,7 +37,13 @@ export async function decideWithOpenAiCompatible({
         model,
         messages: [
           { role: 'system', content: 'Você é um agente decisor do GHOSTRECON. Retorne somente JSON válido.' },
-          { role: 'user', content: buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars }) },
+          {
+            role: 'user',
+            content: buildAgentPrompt({
+              target, mode, catalog, ragContext, role, iteration, peerDecisions,
+              observationBundle, maxContextChars, allowIntrusive, autonomyLevel,
+            }),
+          },
         ],
         temperature: 0.2,
         max_tokens: 8192,
@@ -59,8 +66,10 @@ export async function decideWithOpenAiCompatible({
     if (!res) throw lastError || new Error(`${provider}: chamada falhou`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${String(data?.error?.message || data?.message || 'erro').slice(0, 500)}`);
-    const validate = (value) => validateAgentDecision(value, {
-      catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive }),
+    const validate = (value) => normalizeAndValidateAgentDecision(value, {
+      repairEnvelope: true,
+      repairOptions: { objective: `authorized_recon:${target || 'target'}` },
+      catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive, autonomyLevel }),
       availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
     });
     const originalContent = extractOpenAiContent(data);

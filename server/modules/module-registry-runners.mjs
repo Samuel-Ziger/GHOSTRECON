@@ -134,6 +134,7 @@ export const moduleRunners = {
       origins: activeOriginsFromState(s),
       domain: s.domain,
       outOfScopeList: s.outOfScopeList,
+      scopePolicy: s.scopePolicy,
       modules: s.modules,
       previousSnapshots,
       log: s.log,
@@ -193,7 +194,10 @@ export const moduleRunners = {
   },
 
   async email_security_deep(s) {
-    const { findings: emailFindings } = await runEmailSecurityDeep(s.domain, { log: s.log });
+    const { findings: emailFindings } = await runEmailSecurityDeep(s.domain, {
+      log: s.log,
+      hostAllowed: (host) => s.hostInScope(host),
+    });
     return {
       findings: emailFindings,
       logOk: emailFindings.length

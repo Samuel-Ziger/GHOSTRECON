@@ -1,1245 +1,660 @@
 # Modo Auto GHOSTRECON
 
-> Estado em 2026-07-20: desenvolvimento pausado temporariamente. O fluxo passivo está validado; autonomia intrusiva 3/4 ainda aguarda teste completo de aprovação humana.
-
-Blueprint para integrar GHOSTRECON, HexStrike, MCP, Codex, Claude Code, Cursor, Skynet, modelos locais e OpenRouter em um modo autonomo de bug bounty autorizado.
-
-Gerado em: 2026-07-05
+> Estado verificado em 2026-07-26: **beta supervisionado**. Este documento
+> descreve o contrato operacional atual. Planos e listas de modelos anteriores
+> eram propostas de arquitetura e não devem ser usados como fonte de verdade.
+> O saldo auditável desta evolução, inclusive bloqueadores ainda abertos, está
+> em `STATUS-FINALIZACAO-MODO-AUTO.md`.
 
 ## Objetivo
 
-Criar um modo `auto` onde o operador escolhe uma ou mais IAs comandantes. A IA escolhida assume a frente da operacao: decide quais modulos do GHOSTRECON usar, quais ferramentas do HexStrike chamar, quando usar MCP, quando consultar memoria, quando acionar outra IA e quando criar um modulo novo para cobrir uma lacuna encontrada durante o recon.
+O Modo Auto permite que uma ou mais IAs selecionadas pelo operador planejem e
+avaliem um reconhecimento autorizado. A IA não executa ferramentas diretamente
+no turno de decisão. O GHOSTRECON continua sendo a autoridade que:
 
-O GHOSTRECON continua sendo o orquestrador local, dono de OPSEC, escopo, logs, pipeline, findings, persistencia e validacao. As IAs sao os comandantes/analistas. HexStrike, Kali, Vigolium e os modulos GHOSTRECON sao as ferramentas operacionais.
+- valida alvo, escopo, RBAC, engagement/ROE e OPSEC;
+- constrói o catálogo realmente disponível;
+- normaliza e valida a decisão estruturada;
+- expande o plano completo, congela-o e calcula seu hash;
+- solicita confirmação humana;
+- executa somente o plano autorizado;
+- limita tempo, processos, iterações, chamadas e contexto;
+- redige, registra e avalia os resultados.
 
-## Memoria RAG em Markdown
+Autonomia não representa autorização. Um nível mais alto dá ao planner acesso a
+mais classes do catálogo, mas não ignora nenhum gate.
 
-O Modo Auto deve manter uma memoria local em Markdown para reduzir repeticao de contexto entre IAs e permitir leitura humana no Obsidian.
-
-Local padrao:
-
-```text
-data/auto-rag/
-  README.md
-  decisions/
-    2026-...-target-plan-auto-....md
-    2026-...-target-evaluation-auto-....md
-  lessons/
-    2026-...-lesson-....md
-  notes/
-  cursor-tasks/
-```
-
-Cada decisao relevante gera um novo `.md` com frontmatter, target, requestRunId, comandantes, modulos, plano, avaliacao e estatisticas de eventos. Lessons registram problema, decisao e resultado para o agente nao repetir o mesmo raciocinio. O planner carrega memorias recentes e injeta resumo em `plan.memory`.
-
-Variaveis:
-
-```bash
-GHOSTRECON_AUTO_RAG_ENABLED=1
-GHOSTRECON_AUTO_RAG_DIR=data/auto-rag
-```
-
-MCP relacionado:
-
-- `ghostrecon_auto_rag_list`
-- `ghostrecon_auto_rag_read`
-- `ghostrecon_auto_rag_search`
-- `ghostrecon_auto_rag_write_note`
-- `ghostrecon_auto_rag_write_lesson`
-- `ghostrecon://auto-rag/index`
-- `ghostrecon://auto-rag/{folder}/{file.md}`
-
-API local relacionada:
-
-- `GET /api/auto-rag/status`
-- `GET /api/auto-rag/search?q=termo`
-- `POST /api/auto-rag/note`
-
-Quando Cursor for selecionado, o Auto Orchestrator grava uma tarefa em `data/auto-rag/cursor-tasks/`. Essa tarefa e um handoff seguro para o IDE/Agent com plano, modulos, papeis e contexto RAG. Execucao headless deve ficar atras de variavel de ambiente; o padrao e human-in-loop.
-
-## Principio central
-
-Separar claramente:
-
-1. **Comandantes**: IAs que tomam decisoes.
-2. **Ferramentas**: sistemas que executam acoes.
-3. **Orquestrador**: GHOSTRECON, que valida, executa, registra e limita tudo.
+## Fluxo atual
 
 ```text
-Usuario
-  -> escolhe IA(s) comandante(s)
-     -> Auto Orchestrator
-        -> Tool Catalog
-        -> Provider Router / Agent Council
-        -> Planner
-        -> Executor
-        -> Evaluator
-        -> Module Forge
-        -> Memory / Cortex
-
-Ferramentas disponiveis:
-  - GHOSTRECON modules
-  - HexStrike HTTP
-  - HexStrike MCP
-  - Vigolium
-  - Kali tools
-  - Playbooks
-  - Cortex / memoria
+requisição + principal autenticado + alvo
+                  │
+                  ▼
+       seleção/probe dos providers
+                  │
+                  ▼
+ catálogo híbrido filtrado pelos opt-ins
+                  │
+                  ▼
+       contexto e RAG já redigidos
+                  │
+                  ▼
+      planner/conselho somente leitura
+                  │
+                  ▼
+ decisão JSON normalizada e validada
+                  │
+                  ▼
+ checkpoint v2 pronto + claim atômico de uso único
+                  │
+                  ▼
+ expansão de dependências, engines e risco
+                  │
+                  ▼
+ plano efetivo congelado + SHA-256
+                  │
+                  ▼
+ preflight + RBAC + scope + ROE + OPSEC
+                  │
+                  ▼
+ aprovação humana obrigatória nos níveis 2–4
+                  │
+                  ▼
+ GHOSTRECON → Vigolium → FrameSeven
+                  │
+                  ▼
+ observação redigida → nova decisão/encerramento
+                  │
+                  ▼
+ avaliação, snapshot, RAG e status terminal
 ```
 
-## Quando o usuario escolhe uma IA
+## Catálogo do Auto
 
-Se o operador marcar apenas uma IA, ela vira a comandante principal e executa todas as funcoes possiveis:
+O catálogo não é mais a antiga lista fixa de 21 módulos. Ele combina:
 
-| IA | Papel quando selecionada sozinha |
+1. módulos com manifest no registry;
+2. capacidades legadas das fases do pipeline;
+3. módulos Forge ativos e íntegros;
+4. capacidades explícitas de FrameSeven e Vigolium;
+5. o orquestrador de inteligência HexStrike.
+
+Cada entrada informa origem, disponibilidade, classe, requisitos, timeout,
+concorrência e outputs quando conhecidos. A presença no catálogo não é
+autorização nem garantia de execução: a política da sessão e os gates ainda são
+aplicados ao plano efetivo.
+
+Enquanto manifest e capacidade legada coexistirem, a fusão é conservadora: a
+classe de maior risco prevalece e requisitos como Kali/autenticação são
+combinados, não reduzidos. Isso impede que um manifest desatualizado rebaixe uma
+operação que o pipeline ainda trata como ativa ou intrusiva.
+
+### Classes
+
+| Classe | Significado no Auto |
 | --- | --- |
-| Codex | Planeja, cria modulos, edita codigo, roda testes e integra patches. |
-| Claude Code | Planeja, analisa profundamente, cria/refatora codigo, usa subagents e revisa estrategia. |
-| Cursor | Atua como agente IDE/headless quando disponivel; bom para revisao contextual e fluxo human-in-loop. |
-| Skynet | Comandante local privado, usa memoria, decide plano e interpreta findings. |
-| Modelo local GLM/Outro | Backend local OpenAI-compatible para Skynet ou planner offline. |
-| OpenRouter | Comandante cloud/fallback com acesso a varios modelos por uma API OpenAI-compatible. |
+| `passive` | OSINT ou coleta pública conservadora |
+| `deep_passive` | Análise passiva mais profunda |
+| `active` | Probe limitado, sem intenção intrusiva |
+| `intrusive` | DAST, fuzzing, enumeração intensa ou validação de maior risco |
+| `hexstrike_intel` | Inteligência e recomendação do HexStrike, não execução automática da ferramenta recomendada |
+| `destructive` | Nunca exposta ao planner Auto |
 
-Regra obrigatoria: qualquer comandante selecionado sozinho deve conseguir operar em **solo full-stack**. Isso significa assumir, dentro das suas capacidades, todas as etapas:
+Capacidades com finalidade de ataque de credenciais, ocultação de identidade ou
+expansão perigosa de escopo ficam fora do Auto mesmo quando a implementação
+atual pareça apenas gerar um plano. Entre os IDs explicitamente proibidos estão
+`cloud_bruteforce`, `cred_spray`, `identity_rotation`, `kali_proxychains`,
+`navegation` e `stealth_requests`.
 
-```text
-planejar -> executar plano via GHOSTRECON/HexStrike -> avaliar findings -> detectar lacunas -> criar ou propor modulo -> revisar -> pedir testes -> integrar ou deixar pending
-```
+O Auto também não delega probes destrutivos do FrameSeven. O FrameSeven é o
+único motor que mantém perfil ofensivo na integração Auto. Os perfis são
+explícitos:
 
-Se a IA solo nao tiver capacidade segura de editar arquivos diretamente, ela deve gerar plano/patch/modulo em formato estruturado e o GHOSTRECON coloca em `dynamic/pending` para teste e aprovacao.
+- recon: `recon,cve`;
+- ofensivo/autenticado:
+  `recon,access,redirect,misconfig,cve,crawler,content,subdomain,ports,nmap,bannergrab`.
 
-### Papel solo por comandante
+Não se usa `tools all` nem se envia `-active-scan`. O perfil ofensivo permanece
+intrusivo e não autoriza write probes.
 
-| Comandante solo | Como faz tudo |
-| --- | --- |
-| Codex | Planeja, edita arquivos, cria modulo/teste, roda testes e integra no arsenal. |
-| Claude Code | Planeja, cria modulo/teste, revisa em turno separado, roda comandos e integra se permitido. |
-| Cursor Agent | Planeja e cria via CLI/headless se disponivel; se for apenas IDE, opera com human-in-loop e pending. |
-| Skynet | Planeja e avalia localmente; gera rascunho de modulo/patch e deixa GHOSTRECON testar/aprovar. |
-| GLM/local model | Igual Skynet quando servido via API local; gera JSON/patch, GHOSTRECON aplica com policy. |
-| OpenRouter | Planeja, avalia, gera modulo/patch em JSON; GHOSTRECON aplica em pending, testa e so ativa apos policy/aprovacao. |
+No RUN manual, o plano também é expandido antes do preflight. Se qualquer ID
+resultante for intrusivo — inclusive uma capacidade Vigolium/DAST ou o
+`frameseven_active` implícito em `includeFrameSeven` — a rota exige engagement
+formal e confirmação ativa antes de preparar ou iniciar o processo.
 
-### Contrato minimo para modo solo
+## Níveis de autonomia
 
-Toda IA solo deve responder com este tipo de pacote quando quiser criar capacidade nova:
+Os identificadores transmitidos pela UI/API são estáveis:
 
-```json
-{
-  "action": "forge_module",
-  "reason": "Classe de tecnologia/vulnerabilidade sem cobertura nativa.",
-  "module": {
-    "id": "forge_example_module",
-    "filename": "forge-example-module.mjs",
-    "code": "...",
-    "manifest": {
-      "id": "forge_example_module",
-      "category": "validation",
-      "intrusive": false,
-      "outputs": ["finding"]
-    }
-  },
-  "test": {
-    "filename": "forge-example-module.test.js",
-    "code": "..."
-  },
-  "activation": {
-    "requested": true,
-    "requiresApproval": true
-  }
-}
-```
-
-O GHOSTRECON, nao a IA, decide se o pacote sera escrito, testado, aprovado e ativado.
-
-## Quando o usuario escolhe varias IAs
-
-Se o operador marcar varias IAs, o GHOSTRECON monta um conselho de agentes. Um lider e escolhido por disponibilidade e tipo de tarefa; os outros recebem funcoes especializadas.
-
-### Ordem sugerida para lider tatico
-
-1. Skynet local, se estiver online e o operador quiser privacidade/offline.
-2. Claude Code, se disponivel e a tarefa exigir planejamento profundo.
-3. Codex, se a tarefa envolver forte criacao de codigo/modulos.
-4. OpenRouter, se modelos cloud estiverem permitidos ou como fallback.
-5. Cursor, se o fluxo for IDE/human-in-loop ou se o Cursor Agent CLI estiver disponivel.
-
-### Divisao ideal de funcoes
-
-| Agente | Melhor uso |
-| --- | --- |
-| Skynet | Planejamento privado, memoria operacional, interpretacao de findings, decisao rapida. |
-| GLM local | Motor local para Skynet; bom para reasoning/coding/tool calling se servido via endpoint OpenAI-compatible. |
-| Claude Code | Estrategista, revisor profundo, subagents, validacao de planos e analise de arquitetura. |
-| Codex | Module Forge, edicao do repo, testes, patches, integracao no registry. |
-| Cursor | Revisao no IDE, execucao assistida, MCP do HexStrike no ambiente do editor, human-in-loop. |
-| OpenRouter | Fallback cloud, acesso a modelos diferentes, roteamento de modelo por custo/capacidade. |
-
-## Matriz fixa de papeis por combinacao
-
-O Modo Auto deve ter papeis predefinidos para cada combinacao de comandantes. Isso evita que as IAs fiquem competindo sem regra clara.
-
-Importante: OpenRouter nao deve entrar na matriz apenas como `openrouter`. O modelo escolhido muda o papel dele na equipe. Portanto o comandante real deve ser tratado como:
-
-```text
-openrouter:<model_id>
-```
-
-Exemplos:
-
-```text
-openrouter:openai/gpt-5.5-pro
-openrouter:z-ai/glm-5.2
-openrouter:moonshotai/kimi-k2.7-code
-openrouter:anthropic/claude-opus-4.8
-```
-
-Isso permite que modelos mais fortes assumam funcoes mais importantes do que outros agentes em determinadas etapas.
-
-Regra geral:
-
-1. Um agente lidera a decisao tatica.
-2. Um agente implementa quando houver codigo novo.
-3. Um agente revisa o plano ou o modulo.
-4. O GHOSTRECON executa, testa e registra.
-5. Se os testes passarem, o modulo entra no arsenal.
-
-### Fluxo canonico Codex + Claude Code + OpenRouter
-
-Este e o fluxo principal desejado para auto-melhoria:
-
-```text
-1. Codex analisa a run e decide se existe lacuna.
-2. Se precisar de modulo novo, Codex abre uma "module-forge request".
-3. Claude Code cria o modulo e o teste correspondente.
-4. OpenRouter revisa o modulo, o teste e a justificativa.
-5. GHOSTRECON roda os testes em sandbox/local.
-6. Se passar, Codex integra no dynamic registry / arsenal.
-7. GHOSTRECON salva aprendizado em Cortex/playbook auto-learned.
-```
-
-Responsabilidades:
-
-| Etapa | Responsavel | Saida esperada |
-| --- | --- | --- |
-| Detectar lacuna | Codex | `forge_request` com motivo, padrao observado e modulo sugerido. |
-| Criar modulo | Claude Code | Arquivo `.mjs` + teste `.test.js` em `dynamic/pending`. |
-| Revisar modulo | OpenRouter | Parecer JSON: aprovado, riscos, alteracoes exigidas. |
-| Testar | GHOSTRECON | Resultado de `node --test` e validacao de manifest. |
-| Integrar arsenal | Codex | Move para `dynamic/approved`, atualiza catalogo e playbook. |
-| Aprender | GHOSTRECON/Skynet | Registro em memoria/Cortex. |
-
-### Combinacoes principais
-
-| Selecionados | Lider | Implementador | Revisor | Uso ideal |
-| --- | --- | --- | --- | --- |
-| Codex | Codex | Codex | Codex em modo review | Tudo em um: planeja, cria, testa e integra. |
-| Claude Code | Claude Code | Claude Code | Claude Code em etapa separada | Planejamento profundo e criacao direta. |
-| OpenRouter | OpenRouter modelo escolhido | Nenhum direto; gera patch/plano | OpenRouter segundo modelo/preset | Quando so ha cloud LLM disponivel; GHOSTRECON executa plano. |
-| Skynet | Skynet | Nenhum direto | Skynet/evaluator | Operacao local privada sem criacao automatica pesada. |
-| Codex + Claude Code | Codex | Claude Code | Codex | Codex decide lacuna; Claude implementa; Codex testa/integra. |
-| Codex + OpenRouter | Codex | Codex | OpenRouter | Codex implementa; OpenRouter revisa qualidade/risco. |
-| Claude Code + OpenRouter | Claude Code | Claude Code | OpenRouter | Claude planeja/cria; OpenRouter revisa com modelo escolhido. |
-| Skynet + Codex | Skynet | Codex | Skynet | Skynet decide com memoria local; Codex cria modulo. |
-| Skynet + OpenRouter | Skynet | Nenhum direto | OpenRouter | Skynet lidera; OpenRouter da segunda opiniao/fallback. |
-| Cursor + Codex | Codex | Codex | Cursor/human-in-loop | Codex trabalha; Cursor ajuda revisao no IDE. |
-| Cursor + Claude Code | Claude Code | Claude Code | Cursor/human-in-loop | Claude cria; Cursor revisa no IDE. |
-| Codex + Claude Code + OpenRouter | Codex | Claude Code | OpenRouter | Fluxo canonico de Module Forge. |
-| Skynet + Codex + OpenRouter | Skynet | Codex | OpenRouter | Operacao privada com revisao cloud opcional. |
-| Skynet + Codex + Claude Code | Skynet | Codex ou Claude Code | Claude Code ou Codex | Skynet decide; Codex/Claude dividem engenharia. |
-| Todos | Skynet ou Codex, conforme modo escolhido | Claude Code para modulo novo; Codex para integracao | OpenRouter + Cursor | Conselho completo: decisao, implementacao, revisao e arsenal. |
-
-### Peso do modelo OpenRouter na equipe
-
-Quando OpenRouter estiver selecionado junto com Codex, Claude Code, Cursor ou Skynet, o papel dele depende do modelo escolhido.
-
-| Modelo/Preset OpenRouter | Peso na equipe | Pode liderar? | Melhor funcao |
+| UI | Identificador | Classes permitidas | Aprovação |
 | --- | --- | --- | --- |
-| `openai/gpt-5.5-pro` | muito alto | sim | Lider premium, reasoning profundo, revisao final. |
-| `openai/gpt-5.5` | alto | sim | Lider geral, planner, evaluator. |
-| `anthropic/claude-opus-4.8` | muito alto | sim | Revisor profundo, estrategia, risco. |
-| `anthropic/claude-sonnet-5` | alto | sim | Planner, analise, revisao equilibrada. |
-| `moonshotai/kimi-k2.7-code` | alto em codigo | sim para Forge | Module design, revisao de codigo, patches. |
-| `z-ai/glm-5.2` | medio/alto | sim em custo-beneficio/local-like | Planner barato, evaluator frequente, coding assistido. |
-| `qwen/qwen3.7-max` | medio/alto | sim em coding/custo | Coding, analise tecnica, plano alternativo. |
-| `qwen/qwen-plus` | medio | nao por padrao | Iteracoes baratas e triagem. |
-| `deepseek/deepseek-r1` | alto reasoning | sim para revisao | Raciocinio, validacao de hipoteses. |
-| `deepseek/deepseek-chat` | medio | nao por padrao | Custo-beneficio, triagem. |
-| `google/gemini-3.5-flash` | medio/alto contexto | sim para contexto grande | Logs/runs grandes, triagem com contexto. |
-| `google/gemini-3.1-flash-lite` | medio baixo custo | nao por padrao | Avaliacao barata e repetida. |
-| `openrouter/auto` | variavel | sim se operador permitir | Deixar OpenRouter escolher o melhor disponivel. |
-| `openrouter/fusion` | variavel | sim se operador permitir | Combinacao/roteamento avancado. |
+| 1 | `observation` | `passive`, `deep_passive`, `hexstrike_intel` | Não abre aprovação de plano |
+| 2 | `assisted` | anteriores + `active` | Obrigatória antes da execução |
+| 3 | `authorized` | anteriores + `intrusive` | Obrigatória; requer `recon.intrusive` |
+| 4 | `authorized_opsec` | mesmas classes do nível 3, com OPSEC `aggressive` | Obrigatória; requer `recon.intrusive` |
 
-Regra pratica:
+O nível 4 não é “liberdade total”. Ele não inclui classe destrutiva, não
+contorna engagement, não amplia escopo, não habilita write probes e não
+substitui a confirmação humana.
 
-```text
-Se OpenRouter usa modelo premium reasoning:
-  ele pode liderar ou revisar acima dos outros.
+Os níveis 3/4 são rejeitados já na rota quando o principal não possui
+`recon.intrusive`. Papéis `red` e `admin` normalmente possuem essa capacidade;
+o contrato exato de RBAC continua em `docs/AUTH-RBAC.md`.
 
-Se OpenRouter usa modelo coding:
-  ele deve participar do Module Forge e revisar/criar codigo.
+### Recusa da aprovação
 
-Se OpenRouter usa modelo custo-beneficio:
-  ele nao deve liderar quando Codex/Claude/Skynet estiverem disponiveis;
-  deve atuar como evaluator barato/fallback.
+- qualquer recusa nos níveis 2–4 encerra a iteração sem executar pipeline,
+  módulo ou engine;
+- não existe continuação automática de um “restante seguro” e o plano recusado
+  não é silenciosamente reexpandido;
+- a recusa e o hash do plano apresentado ficam na trilha da sessão.
 
-Se OpenRouter usa auto/fusion:
-  ele pode liderar apenas se o operador aceitar roteamento automatico.
-```
+Para tentar um conjunto menor, o operador deve iniciar ou aprovar um novo plano,
+que será expandido, validado e identificado por outro hash.
 
-### Exemplo: Claude Code + Codex + OpenRouter GLM + Cursor
+## Plano efetivo e invariantes
 
-Selecao:
+A decisão da IA não é enviada diretamente ao pipeline. Antes da execução:
 
-```text
-claude-code
-codex
-cursor
-openrouter:z-ai/glm-5.2
-```
+1. aliases e IDs são normalizados;
+2. apenas módulos existentes, disponíveis e permitidos permanecem;
+3. dependências, fases legadas, Kali e engines são expandidos;
+4. risco é recalculado sobre a lista expandida;
+5. FrameSeven, Vigolium e HexStrike são conferidos contra seus opt-ins;
+6. preflight de engagement/escopo e gate OPSEC são executados;
+7. o objeto completo é congelado;
+8. um hash SHA-256 identifica o plano;
+9. o popup mostra alvo, módulos, engines, risco, limites e o hash;
+10. o executor recebe exatamente os campos congelados.
 
-Papeis recomendados:
+Quando FrameSeven ou Vigolium participam, a identidade observada do executável
+também entra no catálogo e no plano. Hash, tamanho e metadados são obtidos do
+mesmo descritor regular, sem seguir symlink, e a identidade aprovada é
+revalidada imediatamente antes de cada `spawn`, inclusive o merge posterior do
+FrameSeven. Divergência falha fechado.
 
-```text
-Claude Code: lider estrategico e criador principal de modulo.
-Codex: detector de lacuna, executor de integracao e testes do arsenal.
-OpenRouter GLM 5.2: evaluator barato/segunda opiniao/cross-check.
-Cursor: revisao human-in-loop no IDE.
-GHOSTRECON: policy, execucao, testes e registry.
-```
+O perfil de planejamento `deep` não é repassado como um atalho capaz de habilitar
+fases legadas ocultas. No Auto, o modo influencia a escolha explícita do
+planner; o perfil entregue ao pipeline permanece limitado para preservar a
+igualdade entre o plano aprovado e o executado.
 
-Se em vez de GLM 5.2 fosse `openai/gpt-5.5-pro`:
+Nenhum adapter ou fallback pode injetar módulos após o último gate. Alteração do
+plano exige nova expansão, novo hash e nova validação.
 
-```text
-OpenRouter GPT-5.5 Pro: pode virar lider premium ou revisor final.
-Claude Code: cria modulo.
-Codex: integra/testa.
-Cursor: human-in-loop.
-```
+### Gates explícitos no runtime
 
-Se fosse `moonshotai/kimi-k2.7-code`:
+Além do filtro do catálogo, o caminho Auto aplica gates dentro das fases. Isso
+evita que comportamento legado, ativado historicamente por perfil ou pela mera
+entrada numa fase, execute algo que não aparece no plano congelado.
 
-```text
-OpenRouter Kimi Code: participa diretamente do design/revisao do modulo.
-Claude Code: implementa.
-Codex: integra/testa.
-Cursor: human-in-loop.
-```
+Entre as capacidades explicitadas estão:
 
-### Regra de escolha do lider
+- `http_probe` e `wafw00f` na fase de probe;
+- fetch de bundles do alvo na descoberta de conteúdo, que exige uma análise
+  target-touching como `js_intel`/auditoria client-side; Wayback/Common Crawl
+  sozinhos não o habilitam;
+- `evidence_verification` e `active_param_discovery` na validação;
+- `asset_discovery` na descoberta de ativos;
+- `high_recheck` e `browser_xss_verify` na finalização;
+- ferramentas Kali e follow-ups de serviço, que exigem seus próprios IDs no
+  Auto.
 
-O operador pode escolher manualmente o lider. Se usar `leaderMode: auto`, aplicar:
+Também foram reclassificados como `active` os módulos que consultam diretamente
+o alvo, mesmo que antes fossem descritos como passivos, por exemplo headers,
+robots/well-known, JavaScript, CORS e auditorias client-side. A política do RUN
+manual foi preservada onde existe compatibilidade legada; essa compatibilidade
+não é usada para ampliar o Auto.
 
-```text
-Se Skynet selecionada e online:
-  Skynet lidera operacao de bug bounty.
-Se OpenRouter premium reasoning selecionado e operador permitir cloud leader:
-  OpenRouter pode liderar acima de Skynet/Codex/Claude para planejamento.
-Senao se Codex selecionado:
-  Codex lidera quando Module Forge estiver ativo.
-Senao se Claude Code selecionado:
-  Claude Code lidera planejamento profundo.
-Senao se OpenRouter selecionado:
-  OpenRouter lidera com o modelo escolhido.
-Senao se Cursor Agent selecionado:
-  Cursor lidera em modo human-in-loop.
-```
+## Contrato de decisão
 
-Configuracao sugerida para controlar isso:
+A fonte de verdade é
+`server/auto-agent/schemas/decision.schema.json`, complementada por
+`server/auto-agent/decision-contract.mjs`.
 
-```env
-GHOSTRECON_OPENROUTER_CAN_LEAD=1
-GHOSTRECON_OPENROUTER_PREMIUM_CAN_OVERRIDE=1
-GHOSTRECON_OPENROUTER_CHEAP_CAN_LEAD=0
-```
+### Ações canônicas
 
-### Regra de Module Forge
+- `run_modules`;
+- `continue_with_context`;
+- `finish`;
+- `ask_operator`;
+- `forge_module`;
+- `abstain`.
 
-Quando Module Forge estiver ativo, a divisao deve ser:
+Saídas comuns de modelos como `request_modules` e `execute_modules` são aliases
+aceitos pelo normalizador e convertidos para `run_modules` antes da validação.
+Outras ações são rejeitadas.
 
-```text
-Detectar necessidade:
-  Preferir Codex.
-  Fallback: Skynet, Claude Code, OpenRouter.
+Toda decisão precisa ter:
 
-Criar modulo:
-  Preferir Claude Code se selecionado.
-  Fallback: Codex.
-  Fallback cloud: OpenRouter gera patch/plano, mas GHOSTRECON aplica com cuidado.
+- `action`;
+- `objective` não vazio;
+- `reasoningSummary`;
+- `requestedModules`;
+- `confidence` entre `0` e `1`.
 
-Revisar:
-  Preferir OpenRouter com preset "reasoning" ou "coding".
-  Fallback: Claude Code.
-  Fallback: Codex review.
+Referências devem pertencer ao conjunto de evidências permitido. `forge_module`
+exige uma solicitação completa com ID proposto, lacuna, benefício, evidências,
+entradas, saídas, estratégia de teste e riscos; `intrusive` deve ser `false`.
+Reparo estrutural é limitado e observável. A falha do provider preserva a causa
+do App Server e do fallback, em vez de apresentar o fallback como decisão da IA.
 
-Testar:
-  Sempre GHOSTRECON local.
+## Providers e conselho
 
-Adicionar ao arsenal:
-  Preferir Codex.
-  Fallback: GHOSTRECON dynamic loader apos aprovacao.
-```
+O contrato contempla:
 
-### Fallbacks quando Codex nao foi selecionado
+- Codex por App Server persistente por sessão, com fallback `codex exec`;
+- Claude Code em modo não interativo e de planejamento;
+- OpenRouter;
+- GHOST/Skynet e modelos OpenAI-compatible locais;
+- Cursor Agent quando realmente utilizável; handoff continua sendo fallback.
 
-Codex e o melhor candidato para integrar codigo ao arsenal, mas o Modo Auto nao pode depender dele. Se Codex nao estiver selecionado ou nao estiver disponivel, aplicar esta cadeia:
+Somente providers selecionados e utilizáveis participam. “Instalado”,
+“configurado”, “autenticado”, “alcançável” e “selecionado” são estados
+distintos.
 
-```text
-Detectar lacuna:
-  1. Skynet
-  2. Claude Code
-  3. OpenRouter Reasoning
-  4. Cursor Agent
-  5. GHOSTRECON evaluator heuristico
+O conselho recebe propostas estruturadas. Módulos inválidos são descartados
+antes do veredito. A arbitragem determinística não eleva risco e não usa um
+provider não selecionado. Empate ou conflito de alto impacto vira
+`ask_operator`; não existe vitória silenciosa por fallback. Uma seleção
+explícita e allowlisted do operador pode impedir que uma decisão prematura
+`finish`/`abstain` suprima o trabalho pedido, mas continua sujeita a todos os
+gates.
 
-Criar modulo:
-  1. Claude Code
-  2. Cursor Agent
-  3. OpenRouter Coding gera patch estruturado
-  4. Skynet/local model gera rascunho
-  5. GHOSTRECON cria stub/template pendente
+O planner trata catálogo, HTML, finding, URL, log, RAG e proposta de outro agente
+como dados não confiáveis. Ele não faz rede, não edita o projeto nem executa
+ferramentas durante a decisão.
 
-Revisar:
-  1. OpenRouter Reasoning/Coding
-  2. Claude Code
-  3. Skynet
-  4. Cursor/human-in-loop
-  5. GHOSTRECON lint/test-only
+## Sessões, ownership e retomada
 
-Testar:
-  Sempre GHOSTRECON local.
+Cada sessão possui `sessionId`, proprietário, alvo, autonomia, opt-ins, limites,
+catálogo, versão do prompt, checkpoint e estado terminal.
 
-Adicionar ao arsenal:
-  1. Claude Code aplica integracao se selecionado.
-  2. Cursor Agent aplica integracao se disponivel.
-  3. GHOSTRECON dynamic loader move para approved apos testes + policy.
-  4. Se nenhum integrador existir, manter em pending aguardando aprovacao humana.
-```
+- listar, cancelar, aprovar e retomar são limitados ao proprietário;
+- um `sessionId` ativo duplicado é rejeitado;
+- aprovação é de uso único e ligada à sessão;
+- cancelamento durante planner, aprovação, pipeline ou engine aborta as esperas;
+- snapshots são gravados atomicamente com permissão restrita;
+- snapshots `running` órfãos são reconciliados como interrompidos;
+- checkpoints novos usam `checkpointVersion: 2`;
+- somente `ready_for_iteration` e `ready_for_next_iteration` são retomáveis;
+- retomada valida proprietário, alvo, autonomia, `catalogHash`,
+  `promptVersion`, `resumePolicyHash`, plano semântico e identidades dos engines;
+- cada checkpoint pronto é consumido por claim atômico `wx` e durável antes da
+  execução; reuso e rollback são recusados;
+- checkpoint v1 permanece legível para diagnóstico, mas não é retomável;
+- estados `planning`, `iteration_in_progress` e avaliação não são retomados no
+  meio de efeitos: exigem uma nova execução;
+- sessão `completed` ou `cancelled` não volta a executar.
 
-Regra importante: sem Codex, a integracao final deve ser mais conservadora. O modulo pode ser gerado e testado, mas deve ficar em `dynamic/pending` ate:
+Estados terminais da sessão incluem `completed`, `failed`, `cancelled`,
+`interrupted`, `timed_out`, `stalled` e `budget_exceeded`. A avaliação e os
+outcomes de pipeline/engine também podem registrar `partial`: houve resultado
+útil e uma ou mais falhas recuperáveis, não execução integral.
 
-- passar testes;
-- passar validacao de manifest;
-- passar policy de imports/execucao;
-- ter revisao por OpenRouter/Claude/Skynet ou aprovacao humana.
+## Timeout, cancelamento e resiliência
 
-### Probabilidades de selecao e papeis
+O Auto ativa uma fronteira resiliente por fase. O recon manual mantém o
+comportamento fail-fast por padrão, mas `POST /api/recon/stream` agora cria um
+`AbortController`: abort do request ou fechamento prematuro da resposta cancela
+o pipeline e é propagado às integrações Vigolium/FrameSeven.
 
-As combinacoes abaixo cobrem os cenarios principais sem Codex. Para combinacoes com Codex, usar a tabela anterior.
+No mesmo endpoint manual, módulos, engines e dependências são expandidos antes
+do preflight. Qualquer módulo intrusivo dessa lista efetiva exige
+`recon.intrusive`, engagement formal ativo, ROE assinado, escopo e janela
+válidos e `confirmActive`; OPSEC `aggressive` não substitui consentimento.
 
-| Selecionados sem Codex | Lider | Criador de modulo | Revisor | Integracao ao arsenal |
-| --- | --- | --- | --- | --- |
-| Claude Code | Claude Code | Claude Code | Claude Code em turno separado | Claude Code ou dynamic loader apos teste. |
-| OpenRouter | OpenRouter escolhido | OpenRouter Coding gera patch | OpenRouter Reasoning ou segundo modelo | Dynamic loader em pending; aprovacao recomendada. |
-| Skynet | Skynet | Skynet gera rascunho | Skynet/evaluator | Pending ate revisao/teste. |
-| Cursor | Cursor Agent se disponivel | Cursor Agent | Cursor/human-in-loop | Cursor ou pending. |
-| Claude Code + OpenRouter | Claude Code | Claude Code | OpenRouter | Claude Code integra; GHOSTRECON testa. |
-| Claude Code + Skynet | Skynet | Claude Code | Skynet | Claude Code integra; Skynet registra aprendizado. |
-| Claude Code + Cursor | Claude Code | Claude Code | Cursor/human-in-loop | Claude Code ou Cursor integra. |
-| OpenRouter + Skynet | Skynet | OpenRouter Coding ou Skynet rascunho | OpenRouter Reasoning | Pending/dynamic loader apos policy. |
-| OpenRouter + Cursor | OpenRouter | Cursor Agent se disponivel; senao OpenRouter patch | OpenRouter + Cursor | Cursor integra ou pending. |
-| Skynet + Cursor | Skynet | Cursor Agent; fallback Skynet rascunho | Cursor/human-in-loop | Cursor integra ou pending. |
-| Claude Code + OpenRouter + Skynet | Skynet | Claude Code | OpenRouter | Claude Code integra; GHOSTRECON testa. |
-| Claude Code + OpenRouter + Cursor | Claude Code | Claude Code | OpenRouter + Cursor | Claude Code/Cursor integra. |
-| Claude Code + Skynet + Cursor | Skynet | Claude Code | Cursor + Skynet | Claude Code integra. |
-| OpenRouter + Skynet + Cursor | Skynet | Cursor Agent ou OpenRouter Coding | OpenRouter | Cursor integra ou pending. |
-| Claude Code + OpenRouter + Skynet + Cursor | Skynet | Claude Code | OpenRouter + Cursor | Claude Code integra; GHOSTRECON aprova. |
+Para cada fase:
 
-### Todas as probabilidades por funcao
+1. é criado um `AbortSignal` derivado;
+2. é aplicado um deadline específico;
+3. sucesso, falha, timeout ou cancelamento gera `phase_outcome`;
+4. no timeout, requests e subprocessos gerenciados são abortados;
+5. processos recebem `SIGTERM` e, depois do período de graça, `SIGKILL`;
+6. o orquestrador espera a fase assentar;
+7. somente uma fase recuperável e realmente encerrada permite continuar;
+8. uma fase que não assenta gera `PIPELINE_PHASE_UNSETTLED` e interrompe a run
+   para evitar dois módulos concorrendo sobre o mesmo estado.
 
-Em vez de tentar decorar todas as combinacoes, o codigo deve resolver por funcao:
+Cancelamento solicitado pelo operador nunca é convertido em falha recuperável.
+Heartbeats indicam telemetria; `currentActivity`, timestamps e outcomes indicam
+progresso real.
 
-```text
-Lider:
-  userSelectedLeader
-  -> Skynet
-  -> Claude Code
-  -> Codex
-  -> OpenRouter
-  -> Cursor Agent
-  -> modo manual
+Ainda existem módulos legados agrupados em uma mesma fase. Portanto, “timeout
+por fase” não significa que cada checkbox legado já possua isolamento individual.
+Essa migração continua no backlog.
 
-Detector de lacuna:
-  Codex
-  -> Skynet
-  -> Claude Code
-  -> OpenRouter Reasoning
-  -> Cursor Agent
-  -> GHOSTRECON evaluator
+O FrameSeven possui deadlines independentes para captura do navegador,
+aprovação do operador, execução de GHOSTRECON/Vigolium anterior ao scan
+autenticado e o próprio scan. Timeout ou cancelamento aborta a etapa,
+envia `SIGTERM` à árvore, escala para `SIGKILL` após a graça e só libera o fluxo
+depois do assentamento limitado do processo e da limpeza dos temporários.
 
-Criador de modulo:
-  Claude Code
-  -> Codex
-  -> Cursor Agent
-  -> OpenRouter Coding
-  -> Skynet/local model
-  -> template pending
+## RAG e observações
 
-Revisor:
-  OpenRouter Reasoning/Coding
-  -> Claude Code
-  -> Codex
-  -> Skynet
-  -> Cursor/human-in-loop
-  -> test-only
+O RAG local permanece em `data/auto-rag/`, organizado em decisões, avaliações,
+lessons, solicitações Forge e handoffs. Antes de persistir:
 
-Integrador:
-  Codex
-  -> Claude Code
-  -> Cursor Agent
-  -> dynamic loader approved
-  -> pending/human approval
-```
+- valores são redigidos recursivamente;
+- `Authorization`, cookies, tokens, passwords e padrões equivalentes são
+  substituídos;
+- strings, arrays, objetos e arquivos têm limites;
+- observações são deduplicadas e resumidas;
+- gravações são atômicas e com permissão restrita.
 
-Assim, qualquer selecao vira uma equipe valida. Se a selecao nao tiver um papel forte para alguma etapa, o GHOSTRECON degrada com seguranca para `pending` e nao ativa o modulo automaticamente.
+A recuperação prioriza o mesmo alvo e contexto relevante. Memória RAG é
+evidência não confiável, nunca instrução. Falha de persistência deve aparecer na
+sessão; não pode ser silenciosa.
 
-### Papel dos modelos OpenRouter dentro do conselho
+Separadamente do RAG, todo evento produzido pelo orquestrador Auto passa por uma
+fronteira pública de redação antes de atualizar a sessão, entrar na lista de
+eventos ou ser escrito no NDJSON. A sanitização é recursiva, mascara padrões de
+segredo, substitui o root local e remove campos de artefato que contenham
+caminhos absolutos. Ela não afirma que todo relatório bruto de ferramenta
+externa já passou pela mesma fronteira.
 
-Cada preset OpenRouter deve ser tratado como um comandante/revisor diferente:
+## Segredos e probes que escrevem estado
 
-| Preset OpenRouter | Papel quando selecionado junto com agentes |
-| --- | --- |
-| Melhor geral | Pode liderar se nenhum agente local forte estiver selecionado. |
-| Reasoning profundo | Revisor de planos, riscos e cadeias de ataque. |
-| Coding / Module Forge | Revisor tecnico de modulo novo e sugestor de implementacao. |
-| Custo-beneficio | Avaliador barato para iteracoes frequentes. |
-| Maior contexto | Analisa runs grandes, logs extensos e historico do alvo. |
-| Auto Router | Fallback generico quando o operador nao quer escolher modelo. |
+Findings de segredo são mascarados e recebem fingerprint antes de NDJSON,
+SQLite, relatório ou RAG. O material cru, quando necessário ao fluxo
+explicitamente autorizado, fica somente em memória numa propriedade não
+enumerável. Captura de evidência de token é opt-in; seus diretórios/arquivos são
+restritos (`0700`/`0600`) e o conteúdo persistido é redigido.
 
-Exemplo com todos selecionados:
+`secret_validation` é uma capacidade intrusiva explícita. A análise continua
+offline por padrão; probe de rede só pode ocorrer quando esse ID passou pelo
+plano e pelos gates.
+
+Probes de escrita de Supabase e Firebase ficam desligados no pipeline, inclusive
+quando há token no ambiente ou no bundle. A presença de `service_role`, anon key
+ou configuração de signup não autoriza criação de conta, insert, update,
+delete, upload ou RPC mutável. Da mesma forma, o teste FTP `STOR` é separado dos
+follow-ups de leitura e permanece desligado por padrão. Esses caminhos exigem
+um fluxo dedicado de autorização e não são delegados pelo Auto atual.
+
+## Module Forge
+
+O planner pode solicitar Forge apenas para uma lacuna comprovada e não
+intrusiva. Ele não escreve código diretamente.
+
+O ciclo preservado é:
 
 ```text
-Skynet: memoria e contexto operacional.
-Codex: decide se precisa criar modulo e integra ao arsenal.
-Claude Code: cria o modulo novo.
-OpenRouter Reasoning: revisa plano e risco.
-OpenRouter Coding: revisa modulo e teste.
-Cursor: revisao human-in-loop no IDE.
-GHOSTRECON: executa, testa, normaliza e registra.
+request
+  → geração em pending
+  → validação estática
+  → syntax check
+  → testes offline restritos
+  → revisão do conselho
+  → aprovação humana
+  → active_pending_first_run (desabilitado globalmente)
+  → canário exclusivo por activationId + hashes
+  → promoção, rollback ou rejeição
 ```
 
-### Exemplos de composicao
+Na execução, o módulo aprovado roda no runner forte Bubblewrap em Linux, com
+namespace de rede separado, ambiente limpo, artefatos somente leitura, `/tmp`
+efêmero, capabilities removidas e limites de tempo, memória e saída. Se
+Bubblewrap ou o runner forte estiver indisponível, o módulo não fica disponível
+no catálogo e aprovação/canário falham fechado.
+
+A aprovação cria o estado `active_pending_first_run`, mantém
+`pipelineEnabled=false` e emite um `activationId`. Sob lock exclusivo de
+lifecycle, a transição compara por CAS o alvo, a integridade exata do artefato e
+o binding/version/hash do engagement apresentados ao operador. O engagement é
+revalidado dentro do lock, imediatamente antes e depois do canário.
+
+O primeiro canário chama diretamente o runner de módulos dinâmicos: somente o
+ID Forge aprovado é executado, sem pipeline legado, DNS, finalize, engines ou
+relatórios automáticos. O runner forte exige uma atestação nova, ligada por
+`operationId` e challenge, para cada operação de teste/runtime. Timeout e
+cancelamento exigem acknowledgement de término e processo realmente assentado;
+sem isso a operação falha como `AUTO_FORGE_SANDBOX_UNTERMINATED`. Apenas o
+resultado dessa ativação e do artefato selado pode habilitar o pacote;
+resultados atrasados, repetidos ou com hash divergente são rejeitados.
+
+Pacotes ativos criados antes do campo `runtimeIntegrity` não são carregados
+automaticamente. Eles precisam ser revistos e reaprovados para receber o selo
+novo. Isso é uma migração deliberadamente fail-closed.
+
+## Engines opcionais
+
+### HexStrike
+
+`includeHexstrike=true` torna `hexstrike_orchestrator` visível. O módulo atual
+importa inteligência e um plano de ferramentas. Uma ferramenta recomendada não
+é marcada como executada nem recebe autorização implicitamente.
+
+### Vigolium
+
+`includeVigolium=true` torna suas capacidades visíveis, desde que o binário
+esteja disponível. Na política atual ele permanece um motor complementar de
+análise defensiva e não recebe o perfil ofensivo do FrameSeven. Estratégias ou
+capacidades Vigolium historicamente classificadas como DAST/intrusivas não são
+autorizadas pela simples inclusão do motor, pela autonomia 4 nem por
+`vigoliumUseCodex`; este último só escolhe o provider do agente.
+
+### FrameSeven
+
+`includeFrameSeven=true` habilita o engine. `frameSevenAuth=true` é um opt-in
+adicional, exige autonomia autorizada e abre a confirmação específica do fluxo
+do navegador. O contexto autenticado:
+
+- valida a origem;
+- tem TTL;
+- é consumido uma vez;
+- usa diretório `0700` e arquivo `0600`;
+- não coloca senha, cookie ou token em argv/log/RAG;
+- é removido ao final ou no cancelamento.
+
+No RUN manual, a regra geral é exigir autorização formal para qualquer módulo
+intrusivo do plano expandido. `includeFrameSeven=true` seleciona o perfil
+ofensivo explícito e read-oriented descrito acima; ele continua classificado
+como intrusivo mesmo sem navegador. Antes de iniciar, a rota exige
+`recon.intrusive`, engagement formal ativo, ROE assinado, alvo dentro do escopo
+e da janela, além de confirmação ativa. `aggressive`, o toggle autenticado ou a
+presença do binário não substituem nenhum desses gates. `tools all`,
+`-active-scan` e ferramentas com efeitos mutáveis não fazem parte desse perfil.
+
+Os testes locais de integração FrameSeven, plano efetivo Auto e rota RUN
+confirmam os perfis versionados, a exclusividade entre
+recon/active/authenticated, o gate ofensivo e a ausência de
+`tools all`/`-active-scan`. O teste real do popup, navegador e alvo autorizado
+continua sendo E2E controlado.
+
+Quando o compartilhamento com Vigolium foi explicitamente autorizado, cookies e
+headers são materializados num bundle temporário restrito e passados por
+`--auth-file`; valores inline, `Authorization` e `Cookie` são redigidos da
+telemetria, e o bundle é removido em `finally`. O transporte seguro não concede
+novos módulos nem altera escopo.
+
+O Auto não usa o conjunto destrutivo do FrameSeven. A ordem, quando os motores
+foram selecionados, é:
 
 ```text
-Codex somente
-  Codex planeja, executa module forge, testa e avalia.
-
-Codex + Cursor
-  Codex cria modulos e roda testes.
-  Cursor revisa no IDE e pode usar MCP/human-in-loop.
-
-Codex + Claude Code
-  Claude lidera planejamento e revisao profunda.
-  Codex implementa modulos, testes e patches.
-
-Skynet + Codex
-  Skynet decide estrategia e interpreta findings.
-  Codex cria ou melhora modulos quando houver lacuna.
-
-Todas disponiveis
-  Skynet lidera operacao local.
-  Claude revisa plano e hipoteses.
-  Codex implementa lacunas.
-  Cursor revisa no IDE quando necessario.
-  OpenRouter entra como fallback ou consulta especializada.
+GHOSTRECON → Vigolium → FrameSeven
 ```
 
-## OpenRouter no Modo Auto
-
-OpenRouter entra como um comandante cloud e tambem como roteador de modelos. Ele e util quando:
-
-- Skynet/modelo local estiver offline ou fraco para a tarefa.
-- O operador quiser usar modelos especificos sem integrar cada provider separado.
-- O Auto Mode precisar de fallback automatico.
-- O planejamento exigir modelos com contexto maior, tool calling ou melhor raciocinio.
-
-Quando o operador selecionar OpenRouter como comandante, o GHOSTRECON deve perguntar qual modelo usar. Se o operador selecionar OpenRouter junto com outras IAs, o OpenRouter pode ser configurado como lider, revisor, fallback ou especialista por tipo de tarefa.
-
-Fluxo desejado:
-
-```text
-Usuario marca OpenRouter
-  -> GHOSTRECON consulta /api/v1/models
-  -> mostra presets recomendados + lista completa pesquisavel
-  -> usuario escolhe:
-      1. Melhor geral
-      2. Melhor reasoning profundo
-      3. Melhor coding/module forge
-      4. Melhor custo-beneficio
-      5. Maior contexto
-      6. Auto Router
-      7. Ver todos os modelos OpenRouter
-      8. Informar model id manualmente
-  -> Auto Mode usa esse model id no planner/evaluator
-```
-
-### Como a API funciona
-
-OpenRouter oferece endpoint OpenAI-compatible:
-
-```text
-POST https://openrouter.ai/api/v1/chat/completions
-Authorization: Bearer <OPENROUTER_API_KEY>
-Content-Type: application/json
-HTTP-Referer: <opcional>
-X-OpenRouter-Title: <opcional>
-```
-
-Exemplo de payload:
-
-```json
-{
-  "model": "anthropic/claude-sonnet-4.6",
-  "messages": [
-    {
-      "role": "system",
-      "content": "Voce e o comandante do modo auto GHOSTRECON. Responda apenas JSON valido."
-    },
-    {
-      "role": "user",
-      "content": "Planeje a iteracao 1 para o alvo autorizado."
-    }
-  ],
-  "stream": false
-}
-```
-
-Tambem deve ser usado:
-
-```text
-GET https://openrouter.ai/api/v1/models
-GET https://openrouter.ai/api/v1/model/{author}/{slug}
-```
-
-Esses endpoints permitem descobrir modelos, contexto, preco, parametros suportados e disponibilidade.
-
-### Seletor de modelos OpenRouter
-
-O seletor nao deve ser hardcoded para sempre. Ele deve:
-
-1. Buscar `GET /api/v1/models` no inicio da sessao.
-2. Cruzar modelos disponiveis com uma lista de preferencias do GHOSTRECON.
-3. Mostrar os modelos recomendados como botoes/presets rapidos.
-4. Mostrar tambem **todos os modelos retornados pelo OpenRouter** em lista pesquisavel/filtravel.
-5. Mostrar apenas modelos realmente disponiveis na conta/API no momento.
-6. Permitir model id manual.
-7. Salvar a escolha na run auto para reproducibilidade.
-
-Snapshot de recomendacoes iniciais consultadas na API do OpenRouter em 2026-07-05:
-
-| Preset | Modelos candidatos | Uso |
-| --- | --- | --- |
-| Melhor geral | `openai/gpt-5.5-pro`, `anthropic/claude-sonnet-5`, `~openai/gpt-latest`, `~anthropic/claude-sonnet-latest` | Lider do modo auto quando custo nao for a principal restricao. |
-| Reasoning profundo | `openai/gpt-5.5-pro`, `anthropic/claude-opus-4.8`, `anthropic/claude-opus-4.8-fast`, `~openai/gpt-latest` | Planejamento complexo, analise de cadeia de ataque, avaliacao de lacunas. |
-| Coding / Module Forge | `moonshotai/kimi-k2.7-code`, `openai/gpt-5.5-pro`, `anthropic/claude-sonnet-5`, `z-ai/glm-5.2`, `qwen/qwen3.7-max` | Criar modulos, testes, parsers, normalizadores e refatoracoes. |
-| Custo-beneficio | `z-ai/glm-5.2`, `qwen/qwen3.7-plus`, `qwen/qwen-plus`, `google/gemini-3.1-flash-lite`, `~openai/gpt-mini-latest` | Iteracoes frequentes, avaliacao barata, triagem inicial. |
-| Maior contexto | `openrouter/auto`, `~openai/gpt-latest`, `z-ai/glm-5.2`, `~google/gemini-pro-latest`, `anthropic/claude-sonnet-5` | Ler runs grandes, logs, muitos findings e historico longo. |
-| Gratuito/teste | modelos com sufixo `:free`, quando retornados por `/api/v1/models` | Testes de integracao, smoke tests e desenvolvimento. |
-| Auto Router | `openrouter/auto` ou `openrouter/fusion` | Deixar o OpenRouter escolher/combinar modelos conforme disponibilidade. |
-
-Regra: se um modelo recomendado nao existir na resposta de `/api/v1/models`, esconder da UI e usar o proximo candidato do preset.
-
-Exemplo de prompt no CLI:
-
-```text
-OpenRouter selecionado.
-
-Escolha o modelo:
-1. Melhor geral: openai/gpt-5.5
-2. Premium reasoning: openai/gpt-5.5-pro
-3. Coding / Module Forge: moonshotai/kimi-k2.7-code
-4. Custo-beneficio: z-ai/glm-5.2
-5. Maior contexto: openrouter/auto
-6. Claude reasoning: anthropic/claude-opus-4.8
-7. Ver todos os modelos
-8. Manual: informar model id
-```
-
-### Modelos que devem aparecer como opcoes rapidas
-
-Quando estes modelos estiverem presentes na resposta da API, eles devem aparecer como botoes/opcoes rapidas no seletor OpenRouter:
-
-```text
-openai/gpt-5.5-pro
-openai/gpt-5.5
-~openai/gpt-latest
-openai/gpt-chat-latest
-anthropic/claude-sonnet-5
-~anthropic/claude-sonnet-latest
-anthropic/claude-opus-4.8
-anthropic/claude-opus-4.8-fast
-moonshotai/kimi-k2.7-code
-z-ai/glm-5.2
-qwen/qwen3.7-max
-qwen/qwen3.7-plus
-qwen/qwen-plus
-~google/gemini-pro-latest
-google/gemini-3.5-flash
-google/gemini-3.1-flash-lite
-x-ai/grok-4.3
-deepseek/deepseek-r1
-deepseek/deepseek-chat
-openrouter/auto
-openrouter/fusion
-```
-
-Mas o operador deve poder abrir "todos os modelos" e escolher qualquer um dos modelos retornados por `/api/v1/models`.
-
-Exemplo de configuracao gravada na run:
-
-```json
-{
-  "commander": "openrouter",
-  "openrouter": {
-    "preset": "coding",
-    "model": "moonshotai/kimi-k2.7-code",
-    "fallbackModels": [
-      "anthropic/claude-sonnet-5",
-      "z-ai/glm-5.2",
-      "openrouter/auto"
-    ]
-  }
-}
-```
-
-### Variaveis sugeridas
-
-```env
-OPENROUTER_API_KEY=
-GHOSTRECON_OPENROUTER_ENABLED=1
-GHOSTRECON_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-GHOSTRECON_OPENROUTER_DEFAULT_MODEL=anthropic/claude-sonnet-4.6
-GHOSTRECON_OPENROUTER_FALLBACK_MODEL=openai/gpt-5.2
-GHOSTRECON_OPENROUTER_LOW_COST_MODEL=openrouter/auto
-GHOSTRECON_OPENROUTER_MODEL_PRESET=best-general
-GHOSTRECON_OPENROUTER_ALLOWED_MODELS=
-GHOSTRECON_OPENROUTER_APP_TITLE=GHOSTRECON Auto Mode
-GHOSTRECON_OPENROUTER_HTTP_REFERER=http://127.0.0.1:3847
-```
-
-### Papel do OpenRouter
-
-| Tarefa | Uso recomendado |
-| --- | --- |
-| Planner cloud | Gerar plano JSON quando Skynet/Claude/Codex local nao estiverem disponiveis. |
-| Fallback | Repetir plano com outro modelo se o comandante falhar. |
-| Model router | Escolher modelo por custo, contexto, tool calling ou reasoning. |
-| Evaluator | Revisar findings e decidir proxima iteracao. |
-| Code reviewer | Revisar modulo gerado, mas nao editar arquivos diretamente. |
-
-No modo multi-IA, OpenRouter pode ter papeis diferentes por modelo:
-
-```text
-OpenRouter + Codex
-  OpenRouter: planner/evaluator cloud
-  Codex: implementa modulos e roda testes
-
-OpenRouter + Skynet
-  Skynet: lider local e memoria
-  OpenRouter: segunda opiniao ou fallback quando Skynet falhar
-
-OpenRouter + Claude Code + Codex
-  Claude Code: estrategia profunda local/CLI
-  OpenRouter: consulta externa/modelo alternativo
-  Codex: module forge
-```
-
-## Integracoes pesquisadas
-
-### Codex
-
-Fontes oficiais indicam que Codex pode ser usado via:
-
-- `codex exec` para automacao nao interativa.
-- `codex exec --json` para eventos JSONL.
-- `--output-schema` para respostas estruturadas.
-- SDK TypeScript `@openai/codex-sdk`.
-- SDK Python `openai-codex`.
-- `codex app-server` via JSON-RPC.
-- MCP servers configurados no `config.toml`.
-
-Uso recomendado no GHOSTRECON:
-
-- Module Forge.
-- Edicao de codigo.
-- Criacao de testes.
-- Refatoracao do core.
-- Revisao de diffs.
-- Saida estruturada para planos quando usado como comandante.
-
-### Claude Code
-
-Fontes oficiais indicam que Claude Code:
-
-- Le o codebase, edita arquivos, roda comandos e integra ferramentas.
-- Possui CLI `claude`, `claude -p`, continuidade de sessoes e background agents.
-- Tem Agent SDK para workflows customizados.
-- Suporta MCP, memorias, hooks, skills e subagents.
-
-Uso recomendado no GHOSTRECON:
-
-- Lider tatico de planejamento profundo.
-- Revisor de planos.
-- Analise de arquitetura.
-- Revisao de modulos criados pelo Codex.
-- Subagents para investigar areas diferentes em paralelo.
-
-### Cursor
-
-Fontes oficiais indicam que Cursor possui:
-
-- Cursor CLI.
-- Headless CLI para automacao.
-- MCP no CLI.
-- ACP, Agent Client Protocol, para clientes customizados.
-- Configuracao de MCP por `.cursor/mcp.json`.
-
-Uso recomendado no GHOSTRECON:
-
-- Provider opcional.
-- Human-in-loop no IDE.
-- Revisao visual.
-- Uso de MCP HexStrike no ambiente Cursor.
-- Automacao via CLI/headless quando o binario `agent` estiver disponivel.
-
-Observacao: nesta maquina foi encontrado `cursor.cmd`, mas nao foi encontrado `agent` no PATH. O detector deve separar "Cursor IDE instalado" de "Cursor Agent CLI disponivel".
-
-### Skynet
-
-Skynet ainda sera definida como IA propria/futura. No Modo Auto ela deve ser uma interface local padronizada, nao um acoplamento direto a um modelo especifico.
-
-Contrato sugerido:
-
-```text
-POST http://127.0.0.1:8000/v1/chat/completions
-OpenAI-compatible
-```
-
-Funcoes:
-
-- Comandante local.
-- Memoria privada.
-- Planner padrao.
-- Evaluator.
-- Consulta ao Cortex/Ghost KB.
-
-### GLM local ou outro modelo local
-
-Nao amarrar o projeto a um nome fixo. Criar provider generico `local-openai-compatible`.
-
-Variaveis:
-
-```env
-GHOSTRECON_LOCAL_MODEL_ENABLED=1
-GHOSTRECON_LOCAL_MODEL_BASE_URL=http://127.0.0.1:8001/v1
-GHOSTRECON_LOCAL_MODEL_NAME=glm-4.5-air
-GHOSTRECON_LOCAL_MODEL_ROLE=planner,evaluator
-```
-
-Se futuramente existir GLM 5.5 local, basta trocar o `MODEL_NAME`.
-
-## Componentes novos no repositorio
-
-Estrutura sugerida:
-
-```text
-server/
-  auto-agent/
-    orchestrator.mjs
-    provider-detector.mjs
-    provider-router.mjs
-    council.mjs
-    tool-catalog.mjs
-    planner.mjs
-    executor.mjs
-    evaluator.mjs
-    run-memory.mjs
-    module-forge.mjs
-    schemas.mjs
-    policy.mjs
-    providers/
-      codex.mjs
-      claude-code.mjs
-      cursor.mjs
-      skynet.mjs
-      local-openai.mjs
-      openrouter.mjs
-  integrations/
-    hexstrike-client.mjs
-    hexstrike-mcp.mjs
-  modules/
-    dynamic/
-      pending/
-      approved/
-    hexstrike-orchestrator.mjs
-  routes/
-    auto.mjs
-```
-
-## Provider Detector
-
-Detecta quais comandantes existem:
-
-```text
-codex --version
-claude --version
-cursor --version
-agent --version
-GET Skynet /health
-GET local model /models
-GET OpenRouter /api/v1/models com OPENROUTER_API_KEY
-```
-
-Saida esperada:
-
-```json
-{
-  "codex": {
-    "available": true,
-    "roles": ["planner", "codegen", "module_forge", "review"]
-  },
-  "claudeCode": {
-    "available": false,
-    "roles": ["planner", "deep_review", "subagents"]
-  },
-  "cursor": {
-    "available": true,
-    "agentCli": false,
-    "roles": ["ide_review", "human_in_loop"]
-  },
-  "skynet": {
-    "available": false,
-    "roles": ["local_planner", "memory", "private_reasoning"]
-  },
-  "openrouter": {
-    "available": true,
-    "roles": ["cloud_planner", "fallback", "model_router"]
-  }
-}
-```
-
-## Tool Catalog
-
-O planner deve receber um catalogo unificado:
-
-```json
-{
-  "ghostModules": [],
-  "kaliTools": {},
-  "hexstrike": {},
-  "hexstrikeMcp": {},
-  "vigolium": {},
-  "externalPacks": [],
-  "playbooks": [],
-  "pastRuns": [],
-  "forgedModules": [],
-  "opsec": {},
-  "scope": {}
-}
-```
-
-Fontes:
-
-- `listModuleManifests()`
-- `getKaliCapabilities()`
-- `getVigoliumCapabilities()`
-- `listExternalToolPacks()`
-- `listPlaybooks()`
-- `listRuns()`
-- `hexstrike /health`
-- `server/modules/dynamic/approved`
-
-## Plano JSON do comandante
-
-Toda IA comandante deve responder em JSON validado por schema:
-
-```json
-{
-  "iteration": 1,
-  "leader": "skynet",
-  "assistants": ["codex", "openrouter"],
-  "hypothesis": "O alvo parece expor API GraphQL com possivel IDOR.",
-  "ghostrecon": {
-    "modules": ["graphql_recon", "openapi_harvest", "authz_matrix"],
-    "profile": "stealth",
-    "kaliMode": false
-  },
-  "hexstrike": {
-    "enabled": true,
-    "calls": [
-      {
-        "path": "/api/intelligence/analyze-target",
-        "payload": {
-          "target": "api.example.com",
-          "analysis_type": "comprehensive"
-        }
-      }
-    ]
-  },
-  "forge": {
-    "enabled": false,
-    "reason": ""
-  },
-  "stop": {
-    "maxMinutes": 45,
-    "stopIfNoNewFindingsForIterations": 2
-  }
-}
-```
-
-## Endpoint do Modo Auto
+Cada engine produz outcome próprio (`done`, `partial`, `skipped`, `failed`,
+`timeout` ou `cancelled`) e conserva sua proveniência.
+
+O adapter posterga o terminal de sucesso até o `report.json` ser validado por
+schema, origem e tamanho, normalizado e mesclado. A deduplicação agrega fontes e
+evidências em vez de apagar proveniência. Exit code recuperável com relatório
+útil, erros/truncamento no relatório ou falha posterior de merge resultam em um
+único `engine_partial`; cancelamento continua sendo terminal distinto.
+
+Relatórios válidos sob `reports/` são servidos por
+`GET /api/frameseven/reports/:reportId/:file`. O material exposto é regenerado
+somente dos findings normalizados/redigidos e limitado a `report.html`,
+`report.json` e `report.md`; PDF e artefato bruto do scanner são recusados. A
+rota exige `recon.read`, confere owner (salvo papel privilegiado) e binding
+histórico de engagement/ROE/escopo. A leitura abre o arquivo com `O_NOFOLLOW`,
+usa o mesmo descritor validado e compara `fstat` antes/depois; HTML recebe CSP
+`sandbox` sem permissão de scripts, além de `no-store`, `nosniff` e
+`Referrer-Policy`.
+
+## API e eventos
+
+Endpoint principal:
 
 ```text
 POST /api/recon/auto/stream
 ```
 
-Payload:
+Campos relevantes do payload:
 
 ```json
 {
-  "domain": "alvo-autorizado.com",
-  "engagementId": "eng_123",
-  "maxIterations": 8,
-  "selectedCommanders": ["skynet", "codex", "openrouter"],
-  "leaderMode": "auto",
-  "hexstrike": true,
-  "hexstrikeMcp": false,
-  "forgeModules": true,
-  "forgeRequireApproval": true,
-  "opsecProfile": "stealth"
+  "domain": "alvo-autorizado.example",
+  "selectedCommanders": ["codex"],
+  "mode": "deep",
+  "autonomyLevel": "assisted",
+  "includeHexstrike": false,
+  "includeVigolium": false,
+  "vigoliumUseCodex": false,
+  "includeFrameSeven": false,
+  "frameSevenAuth": false,
+  "engagementId": null
 }
 ```
 
-Eventos NDJSON:
+Rotas de sessão permitem listar, cancelar e resolver aprovação, sempre com RBAC,
+CSRF e ownership. Entre os eventos de observabilidade estão:
 
-```text
-agent_detected
-agent_team
-agent_plan
-agent_tool
-hexstrike_call
-pipeline_run
-finding
-evaluation
-module_forge_requested
-module_forged
-module_test
-done
+- `auto_session`;
+- `auto_provider_probe`;
+- `auto_agent_turn_started` / `completed` / `failed`;
+- `auto_effective_plan`;
+- `auto_approval_required` / `granted` / `denied`;
+- `auto_iteration_started` / `completed`;
+- `phase_started` e `phase_outcome`;
+- `module_outcome`;
+- `engine_started`, `engine_done`, `engine_partial`, `engine_failed`,
+  `engine_timeout`, `engine_cancelled`, `engine_skipped`;
+- `auto_engine_outcome`;
+- `auto_heartbeat`;
+- eventos RAG e Forge.
+
+Clientes devem manter compatibilidade com o NDJSON e não interpretar
+desconexão do navegador como prova automática de falha do scanner.
+Eventos Auto são sanitizados antes de entrar na sessão e no stream; payloads
+brutos de subprocessos não devem contornar essa função.
+
+## Verificação local
+
+As regressões centrais podem ser verificadas sem alvo externo:
+
+```bash
+node --test \
+  server/tests/auto-agent.test.js \
+  server/tests/auto-planner-contract.test.js \
+  server/tests/auto-effective-plan.test.js \
+  server/tests/auto-session-security.test.js \
+  server/tests/auto-resume-checkpoint.test.js \
+  server/tests/auto-event-redaction.test.js \
+  server/tests/auto-route-public-data.test.js \
+  server/tests/auto-rag-runtime-security.test.js \
+  server/tests/auto-strict-phase-gates.test.js \
+  server/tests/auto-content-network-gates.test.js \
+  server/tests/pipeline-resilience.test.js \
+  server/tests/process-cancellation.test.js \
+  server/tests/probe-cancellation.test.js \
+  server/tests/kali-execution-policy.test.js \
+  server/tests/secret-safety.test.js \
+  server/tests/write-probes-safety.test.js \
+  server/tests/forge-security.test.js \
+  server/tests/recon-stream-route.test.js \
+  server/tests/frameseven-integration.test.js \
+  server/tests/vigolium-bridge.test.js \
+  server/tests/vigolium-agent.test.js
 ```
 
-## HexStrike no Node
+Checks complementares:
 
-Criar `server/integrations/hexstrike-client.mjs` para o Node falar diretamente com HexStrike:
-
-```text
-GET  /health
-GET  /api/telemetry
-POST /api/intelligence/analyze-target
-POST /api/intelligence/select-tools
-POST /api/intelligence/technology-detection
-POST /api/bugbounty/reconnaissance-workflow
-POST /api/tools/<tool>
+```bash
+node --test server/tests/opsec.test.js
+node --test server/tests/auth.test.js
+node --test server/tests/engagement.test.js
+GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js')"
 ```
 
-Evitar liberar `/api/command` como primeira versao. Quando necessario, criar wrappers explicitamente aprovados.
+Esta evolução foi desenhada e testada com executores injetados, mocks e
+fixtures. Nenhum scan real de rede, navegador autenticado, DAST, Kali, Nmap,
+sqlmap ou alvo externo faz parte da validação documental desta entrega.
 
-## Module Forge
+## Limitações conhecidas
 
-Module Forge e o mecanismo de auto-melhoria.
+1. O catálogo é híbrido; ainda há duplicação de classificação entre manifests,
+   OPSEC e a lista de capacidades legadas.
+2. O limite resiliente é por fase. Módulos legados dentro da mesma fase ainda
+   precisam ser migrados para deadlines individuais.
+3. O adapter FrameSeven não propaga uma política Tor/proxy estrita. Não trate
+   sua seleção como garantia de paridade de transporte OPSEC.
+4. A paridade residual de autenticação, proveniência e relatório entre RUN
+   normal e Auto ainda precisa de teste ponta a ponta com navegador real
+   controlado. Até esse E2E, níveis 3/4 permanecem experimentais.
 
-Quando ativar:
+O backlog atualizado está em
+`MELHORIAS-PENDENTES-MODO-AUTO.md`.
 
-- Ferramenta falhou repetidamente no mesmo padrao.
-- IA detectou classe de vulnerabilidade sem modulo.
-- Reporter marcou finding como "sem cobertura automatica".
-- HexStrike encontrou algo recorrente que o GHOSTRECON nao normaliza.
+## Histórico preservado
 
-Fluxo:
+### 2026-07-05 — blueprint inicial
 
-1. Criar modulo em `server/modules/dynamic/pending/<slug>.mjs`.
-2. Criar teste em `server/tests/dynamic/<slug>.test.js`.
-3. Rodar apenas o teste novo.
-4. Se passar, mover para `approved`.
-5. Dynamic loader carrega no proximo refresh/boot.
-6. Modulo aparece em `/api/capabilities`.
-7. Planner pode selecionar nas proximas runs.
+Foi definido o princípio comandante/ferramenta/orquestrador, o endpoint NDJSON,
+o primeiro catálogo passivo, o detector de providers, o HexStrike intelligence
+e a memória Markdown. Tabelas antigas de “melhor modelo” e nomes futuros eram
+exemplos aspiracionais e foram removidas do contrato operacional porque
+disponibilidade e IDs de modelos mudam.
 
-## Dynamic Registry
+### 2026-07-14 — decisão real e conselho
 
-Hoje o registry e estatico. Para o Forge funcionar, criar:
+Entraram schema de decisão, adaptadores reais, conselho, persistência de turnos,
+RAG orientado ao alvo, Forge pending/review/approval e isolamento de geração.
 
-```text
-server/modules/module-registry-dynamic.mjs
-```
+### 2026-07-16 — ciclo de vida
 
-Responsabilidades:
+Entraram probes de usabilidade, sessão persistente, limites, cancelamento,
+checkpoints, App Server Codex, Cursor Agent opcional, canary/rollback Forge e
+reparo JSON limitado.
 
-- Ler `server/modules/dynamic/approved/*.mjs`.
-- Importar dinamicamente.
-- Validar `moduleManifest`.
-- Expor manifestos em `/api/capabilities`.
-- Bloquear modulo sem teste aprovado.
-- Bloquear modulo com imports proibidos ou execucao direta fora do runner.
+### 2026-07-20 — estabilização inicial
 
-## Politicas de seguranca e controle
+Execuções reais expuseram falhas de timeout do App Server e stalls no CORS.
+Foram adicionados watchdog, cancelamento individual, reconciliação de sessões e
+correções iniciais. A afirmação histórica de “desenvolvimento pausado” não é
+mais o estado atual.
 
-Mesmo rodando somente local:
+### 2026-07-25 — plano efetivo e endurecimento
 
-- Respeitar escopo e engagement.
-- Evitar duplicar scans pesados em paralelo.
-- Usar mutex por alvo.
-- Separar modo passivo, standard e agressivo.
-- Todo plano da IA deve passar por schema e policy.
-- HexStrike `/api/command` deve ficar bloqueado por padrao.
-- Module Forge deve comecar com aprovacao humana.
-- Logs nao devem salvar segredos em claro.
-- OpenRouter deve ser opt-in porque envia dados para cloud.
+O catálogo passou a cobrir manifests, legado e engines; o plano efetivo ganhou
+expansão, hash e aprovação; níveis de autonomia passaram a ter política
+explícita; sessões receberam ownership/RBAC; providers e subprocessos ganharam
+encerramento em dois estágios; o pipeline Auto ganhou resiliência por fase; RAG
+e Forge receberam redação, limites, isolamento e integridade. Probes implícitos
+passaram a exigir capacidades explícitas no Auto; classificações divergentes
+passaram a escolher o maior risco; write probes e validação online de segredos
+foram separados e fechados por padrão.
 
-## Roadmap de implementacao
+### 2026-07-26 — retomada, Forge e FrameSeven
 
-### Fase 0 - Documento e fundacao
+Checkpoints v2 passaram a representar somente fronteiras prontas e receberam
+claim durável anti-replay. O catálogo passou a vincular identidade dos engines e
+integridade Forge. O runtime Forge ganhou runner forte Bubblewrap, ativação
+exclusiva por `activationId` e canário hash-bound. Eventos Auto passaram por
+redação central antes da sessão/NDJSON. O FrameSeven passou a normalizar e
+mesclar `report.json`, emitir um único terminal depois do merge e servir
+relatórios por rota autenticada e contida.
 
-- [x] Criar este documento.
-- [x] Criar `server/integrations/hexstrike-client.mjs`.
-- [x] Adicionar `hexstrike` em `/api/capabilities`.
-- [x] Criar detector inicial de providers.
-- [x] Corrigir path do HexStrike para procurar tambem `IAs/hexstrike-ai`.
-
-### Fase 1 - Auto basico
-
-- [x] Criar `server/auto-agent/provider-detector.mjs`.
-- [x] Criar `server/auto-agent/tool-catalog.mjs`.
-- [ ] Criar `server/auto-agent/providers/openrouter.mjs`.
-- [ ] Criar `server/auto-agent/providers/skynet.mjs`.
-- [x] Criar `server/auto-agent/planner.mjs`.
-- [x] Criar `POST /api/recon/auto/stream`.
-- [ ] Criar CLI `ghostrecon auto --target`.
-- [x] Executar loop `observe -> plan -> act -> evaluate`.
-
-Implementado em 2026-07-05:
-
-- `server/auto-agent/provider-detector.mjs`: detecta Codex, Claude Code, Cursor, Skynet, modelo local e OpenRouter.
-- `server/auto-agent/tool-catalog.mjs`: monta catalogo inicial de modulos GHOSTRECON + HexStrike intelligence.
-- `server/auto-agent/planner.mjs`: cria plano conservador, sem modulos intrusivos por padrao.
-- `server/auto-agent/orchestrator.mjs`: executa `observe -> plan -> act -> evaluate` chamando `runPipeline`.
-- `server/routes/auto-recon.mjs`: expoe `POST /api/recon/auto/stream` em NDJSON.
-- `.env.example`: adiciona variaveis de Modo Auto / HexStrike.
-
-### Fase 2 - Equipe de comandantes
-
-- [ ] Criar `provider-router.mjs`.
-- [ ] Criar `council.mjs`.
-- [ ] Integrar Codex via `codex exec --json` ou SDK.
-- [ ] Integrar Claude Code via `claude -p` ou Agent SDK.
-- [ ] Integrar Cursor CLI/headless quando `agent` estiver disponivel.
-- [x] Permitir selecionar uma ou varias IAs na UI.
-
-Implementado em 2026-07-05:
-
-- `public/index.html`: adiciona botao `AUTO MODE` ao lado do `RUN RECON` na UI principal, com pop-up para escolher comandantes, modelo OpenRouter, HexStrike e deep passive.
-- `ghost-local-v5/ghost-local/frontend/index.html`: adiciona botao `AUTO` na aba GHOSTRECON, card de status e pop-up de selecao.
-- O pop-up pergunta alvo, modo (`quick`, `balanced`, `deep`), IAs comandantes e modelo OpenRouter.
-- `ghost-local-v5/ghost-local/backend/main.py`: adiciona proxy `/ghostrecon/auto/stream` para chamar o Node em `/api/recon/auto/stream`.
-
-### Fase 3 - HexStrike profundo
-
-- [x] Criar modulo `hexstrike_orchestrator`.
-- [x] Normalizar outputs HexStrike para findings GHOSTRECON.
-- [x] Criar allowlist inicial por endpoint seguro.
-- [ ] Integrar HexStrike MCP como opcional.
-- [x] Criar `.cursor/mcp.json` ou guia para Cursor usar `hexstrike_mcp.py`.
-- [ ] Criar config Codex/Claude para MCP HexStrike.
-
-Implementado em 2026-07-05:
-
-- `server/modules/hexstrike-orchestrator.mjs`: chama `/api/intelligence/analyze-target` e `/api/intelligence/select-tools`.
-- `server/modules/module-registry.mjs`: registra `hexstrike_orchestrator` como modulo do arsenal.
-- `server/modules/module-registry-runners.mjs`: adiciona runner do modulo.
-- `server/pipeline/phases/validation.mjs`: dispara o modulo quando selecionado.
-- `server/tests/hexstrike-orchestrator.test.js`: cobre normalizacao, runner offline e registry.
-- `.cursor/mcp.json`: registra o HexStrike MCP local para o Cursor.
-
-### Fase 4 - Module Forge
-
-- [ ] Criar `server/modules/dynamic/pending`.
-- [ ] Criar `server/modules/dynamic/approved`.
-- [ ] Criar dynamic loader.
-- [ ] Criar `module-forge.mjs`.
-- [ ] Criar testes automaticos para modulos gerados.
-- [ ] Criar UI de aprovacao.
-- [ ] Salvar aprendizados em Cortex e playbooks auto-learned.
-
-### Fase 5 - Operacao madura
-
-- [ ] Dashboard de iteracoes auto.
-- [ ] Comparar custo/latencia/qualidade por comandante.
-- [ ] Aprender quais IAs funcionam melhor por tarefa.
-- [ ] Relatorio final com cadeia de decisoes.
-- [ ] Exportar plano, comandos, findings, evidencias e modulos criados.
-
-## Configuracao sugerida
-
-```env
-# Modo Auto
-GHOSTRECON_AUTO_ENABLED=1
-GHOSTRECON_AUTO_MAX_ITERATIONS=8
-GHOSTRECON_AUTO_DEFAULT_LEADER=auto
-GHOSTRECON_AUTO_COMMANDERS=codex,claude-code,cursor,skynet,openrouter
-GHOSTRECON_AUTO_FORGE=0
-GHOSTRECON_AUTO_FORGE_REQUIRE_APPROVAL=1
-
-# HexStrike
-GHOST_HEXSTRIKE_URL=http://127.0.0.1:8888
-GHOST_START_HEXSTRIKE=1
-HEXSTRIKE_PORT=8888
-
-# Codex
-GHOSTRECON_CODEX_BIN=codex
-GHOSTRECON_CODEX_MODE=exec
-
-# Claude Code
-GHOSTRECON_CLAUDE_CODE_BIN=claude
-
-# Cursor
-GHOSTRECON_CURSOR_BIN=cursor
-GHOSTRECON_CURSOR_AGENT_BIN=agent
-
-# Skynet / modelo local
-GHOSTRECON_SKYNET_URL=http://127.0.0.1:8000/v1/chat/completions
-GHOSTRECON_LOCAL_MODEL_BASE_URL=http://127.0.0.1:8001/v1
-GHOSTRECON_LOCAL_MODEL_NAME=glm-4.5-air
-
-# OpenRouter
-OPENROUTER_API_KEY=
-GHOSTRECON_OPENROUTER_ENABLED=1
-GHOSTRECON_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-GHOSTRECON_OPENROUTER_DEFAULT_MODEL=anthropic/claude-sonnet-4.6
-GHOSTRECON_OPENROUTER_FALLBACK_MODEL=openai/gpt-5.2
-GHOSTRECON_OPENROUTER_LOW_COST_MODEL=openrouter/auto
-```
-
-## Criterios de sucesso
-
-- O operador consegue ativar Modo Auto e escolher uma ou varias IAs.
-- O sistema mostra apenas comandantes disponiveis.
-- Uma IA escolhida consegue gerar um plano JSON valido.
-- O GHOSTRECON valida o plano contra escopo, OPSEC e capabilities.
-- O executor roda GHOSTRECON e HexStrike sem duplicar acoes pesadas.
-- Findings de HexStrike entram normalizados no resultado final.
-- O evaluator decide continuar/parar com base em findings novos.
-- Module Forge cria um modulo pequeno, testavel e aprovado.
-- Modulo aprovado aparece em `/api/capabilities`.
-
-## Fontes oficiais consultadas
-
-- OpenAI Codex Manual: https://developers.openai.com/codex/codex-manual.md
-- OpenRouter Quickstart: https://openrouter.ai/docs/quickstart
-- OpenRouter API Reference: https://openrouter.ai/docs/api/reference/overview
-- OpenRouter Authentication: https://openrouter.ai/docs/api/reference/authentication
-- OpenRouter Models API: https://openrouter.ai/docs/guides/overview/models
-- Claude Code Overview: https://code.claude.com/docs/en/overview
-- Claude Code CLI Reference: https://code.claude.com/docs/en/cli-reference
-- Claude Code Agent SDK: https://code.claude.com/docs/en/agent-sdk/overview
-- Cursor CLI: https://cursor.com/docs/cli/overview
-- Cursor Headless CLI: https://cursor.com/docs/cli/headless
-- Cursor MCP: https://cursor.com/docs/mcp.md
-- GLM-4.5: https://github.com/zai-org/GLM-4.5
+Na revisão posterior do mesmo dia, o RUN manual recebeu cancelamento propagado
+por `AbortSignal` e engagement/ROE formal para todo plano intrusivo expandido.
+Naquele estágio histórico, a integração FrameSeven ainda dependia de
+`tools all`; essa seleção foi posteriormente substituída pelos perfis explícitos
+recon e ofensivo descritos neste documento. FrameSeven e Vigolium passaram a
+revalidar a identidade selada antes de cada processo; o FrameSeven ganhou
+deadlines separados por etapa. O lifecycle Forge passou a comparar
+alvo/artefato/engagement sob lock, revalidar a autorização antes e depois do
+canário e executar somente o módulo dinâmico com atestação por operação.
+Relatórios públicos FrameSeven passaram a ser artefatos HTML/JSON/Markdown
+regenerados e redigidos, lidos por descritor seguro e autorizados por
+owner/engagement.

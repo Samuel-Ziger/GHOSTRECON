@@ -1,4 +1,6 @@
 import fs from 'fs';
+import { redactFindingsForPublic } from '../modules/finding-redaction.mjs';
+import { redactAutoValue } from '../auto-agent/redaction.mjs';
 
 export function aiAutoReportsServerAllowed() {
   const v = String(process.env.GHOSTRECON_AI_AUTO ?? '1').trim().toLowerCase();
@@ -56,7 +58,7 @@ export function buildPipelineExportPayloadForAi({
   bountyContext = null,
   auth = null,
 }) {
-  const findingsExport = findings.map((f) => {
+  const findingsExport = redactFindingsForPublic(findings).map((f) => {
     const ev = f.verification;
     let verificationOut;
     if (ev && typeof ev === 'object') {
@@ -98,7 +100,7 @@ export function buildPipelineExportPayloadForAi({
     stats: { ...stats },
     findings: findingsExport,
     correlation,
-    reportTemplates,
+    reportTemplates: redactAutoValue(reportTemplates),
     runId,
     storage,
     intelMerge,

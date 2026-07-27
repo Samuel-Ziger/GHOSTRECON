@@ -111,6 +111,7 @@ import {
   snapshotTelemetry as torSnapshotTelemetry,
 } from '../../modules/tor-strict.js';
 import { newnym as torNewnym } from '../../modules/tor-control.js';
+import { pipelineCapabilityAllowed } from '../pipeline-state.mjs';
 
 import path from 'path';
 import { ROOT, firstIpv4FromDnsRecords, sleep } from '../pipeline-shared.mjs';
@@ -153,47 +154,60 @@ export async function runAssetDiscoveryPhase(s) {
 
     progress(90);
 
-    // ── ASSET DISCOVERY (passivo complementar) ──
-    pipe('assets', 'active');
-    try {
-      const assets = await discoverAssetHints(domain, subdomainsAlive, tlsSanHosts);
-      for (const a of assets) addFinding(a, null);
-      const tk = detectTakeoverCandidates(findings);
-      for (const t of tk) addFinding(t, null);
-      // Takeover avançado (fase 2): CNAME + corpo
-      const aliveHosts = [...new Set(findings.filter((f) => f.type === 'subdomain').map((f) => f.value))].slice(0, 20);
-      for (const h of aliveHosts) {
-        try {
-          const chain = await resolveCnameChain(h, 4);
-          const prov = matchProviderByCname(chain);
-          if (!prov) continue;
-          let body = '';
+    // ── ASSET DISCOVERY (DNS + probes de takeover) ──
+    const runImplicitAssetDiscovery = pipelineCapabilityAllowed(s, 'asset_discovery');
+    pipe('assets', runImplicitAssetDiscovery ? 'active' : 'skip');
+    if (runImplicitAssetDiscovery) {
+      try {
+        const assets = await discoverAssetHints(domain, subdomainsAlive, tlsSanHosts, {
+          ipAllowed: (ip) => s.hostInScope(ip),
+        });
+        for (const a of assets) addFinding(a, null);
+        const tk = detectTakeoverCandidates(findings);
+        for (const t of tk) addFinding(t, null);
+        // Takeover avançado (fase 2): CNAME + corpo
+        const aliveHosts = [...new Set(findings
+          .filter((f) => f.type === 'subdomain')
+          .map((f) => f.value)
+          .filter((host) => s.hostInScope(host)))].slice(0, 20);
+        for (const h of aliveHosts) {
           try {
-            const hl = hostLiteralForUrl(h);
-            const res = await fetch(`https://${hl}/`, { redirect: 'follow', signal: AbortSignal.timeout(9000) });
-            body = await res.text();
+            const chain = await resolveCnameChain(h, 4);
+            const prov = matchProviderByCname(chain);
+            if (!prov) continue;
+            let body = '';
+            try {
+              const hl = hostLiteralForUrl(h);
+              const targetUrl = `https://${hl}/`;
+              if (!s.urlInScope(targetUrl)) continue;
+              const res = await fetch(targetUrl, {
+                redirect: 'manual',
+                signal: AbortSignal.timeout(9000),
+              });
+              body = await res.text();
+            } catch {}
+            const match = matchProviderBody(prov, body);
+            addFinding(
+              {
+                type: 'takeover',
+                prio: match ? 'high' : 'med',
+                score: match ? 82 : 60,
+                value: `Takeover ${match ? 'CONFIRMED' : 'candidate'}: ${h} → ${prov.name}`,
+                meta: `cname_chain=${chain.join(' > ').slice(0, 160)} • body_match=${match ? 'yes' : 'no'}`,
+                url: `https://${hostLiteralForUrl(h)}/`,
+              },
+              null,
+            );
           } catch {}
-          const match = matchProviderBody(prov, body);
-          addFinding(
-            {
-              type: 'takeover',
-              prio: match ? 'high' : 'med',
-              score: match ? 82 : 60,
-              value: `Takeover ${match ? 'CONFIRMED' : 'candidate'}: ${h} → ${prov.name}`,
-              meta: `cname_chain=${chain.join(' > ').slice(0, 160)} • body_match=${match ? 'yes' : 'no'}`,
-              url: `https://${hostLiteralForUrl(h)}/`,
-            },
-            null,
-          );
-        } catch {}
+        }
+        if (assets.length || tk.length) {
+          log(`Asset discovery: +${assets.length} hints, takeover candidates: ${tk.length}`, 'info');
+        }
+      } catch (e) {
+        log(`Asset discovery: ${e.message}`, 'warn');
       }
-      if (assets.length || tk.length) {
-        log(`Asset discovery: +${assets.length} hints, takeover candidates: ${tk.length}`, 'info');
-      }
-    } catch (e) {
-      log(`Asset discovery: ${e.message}`, 'warn');
+      pipe('assets', 'done');
     }
-    pipe('assets', 'done');
 
     if (modules.includes('cloud_bruteforce') && !apexHostIsIp) {
       pipe('cloud_bruteforce', 'active');
@@ -203,6 +217,7 @@ export async function runAssetDiscoveryPhase(s) {
           name: rootName,
           target: domain,
           executor: async ({ method, url }) => {
+            if (!s.urlInScope(url)) return { error: 'fora do escopo autorizado' };
             try {
               const r = await fetch(url, { method, redirect: 'manual', signal: AbortSignal.timeout(10000) });
               const body = await r.text();

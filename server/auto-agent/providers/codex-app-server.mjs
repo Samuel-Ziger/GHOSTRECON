@@ -1,8 +1,18 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { parseAgentDecisionText, repairDecisionEnvelope, validateAgentDecision } from '../decision-contract.mjs';
+import { normalizeAndValidateAgentDecision, parseAgentDecisionText } from '../decision-contract.mjs';
 import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt } from './shared.mjs';
 import { codexChildEnv } from './codex.mjs';
+
+const IS_POSIX = process.platform !== 'win32';
+const APP_SERVER_KILL_GRACE_MS = 1_500;
+
+function abortError(reason, fallback = 'Codex App Server cancelado') {
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason ? String(reason) : fallback);
+  error.name = 'AbortError';
+  return error;
+}
 
 class CodexAppServerClient {
   constructor({ command = 'codex', root, env, signal, spawnImpl = spawn } = {}) {
@@ -11,16 +21,43 @@ class CodexAppServerClient {
     this.pending = new Map();
     this.turns = new Map();
     this.orphanTurnMessages = new Map();
+    this.closed = false;
+    this.exited = false;
+    this.killTimer = null;
+    this.parentSignal = signal || null;
+    this.onParentAbort = () => this.close(abortError(this.parentSignal?.reason, 'sessão AUTO cancelada'));
     this.proc = spawnImpl(command, ['app-server', '--listen', 'stdio://'], {
       cwd: root, env: codexChildEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      // Em POSIX isto cria um process group próprio. Assim o watchdog encerra
+      // também subprocessos do App Server, e não apenas o processo pai.
+      detached: IS_POSIX,
     });
     this.stderr = '';
     this.proc.stderr?.on('data', (chunk) => { this.stderr = `${this.stderr}${chunk}`.slice(-8000); });
-    this.proc.once('error', (error) => this.rejectAll(error));
-    this.proc.once('exit', (code) => this.rejectAll(new Error(`codex app-server encerrou (${code}): ${this.stderr}`)));
+    this.proc.once('error', (error) => {
+      this.markExited();
+      this.rejectAll(error);
+    });
+    this.proc.once('exit', (code, childSignal) => {
+      this.markExited();
+      if (!this.closed || this.pending.size || this.turns.size) {
+        this.rejectAll(new Error(
+          `codex app-server encerrou (${code ?? childSignal ?? 'unknown'}): ${this.stderr}`,
+        ));
+      }
+    });
     this.lines = readline.createInterface({ input: this.proc.stdout });
     this.lines.on('line', (line) => this.onLine(line));
-    signal?.addEventListener('abort', () => this.close(), { once: true });
+    signal?.addEventListener('abort', this.onParentAbort, { once: true });
+    if (signal?.aborted) this.onParentAbort();
+  }
+
+  markExited() {
+    this.exited = true;
+    if (this.killTimer) clearTimeout(this.killTimer);
+    this.killTimer = null;
+    this.parentSignal?.removeEventListener('abort', this.onParentAbort);
+    try { this.lines?.close(); } catch { /* já encerrado */ }
   }
 
   rejectAll(error) {
@@ -28,19 +65,43 @@ class CodexAppServerClient {
     for (const item of this.turns.values()) item.reject(error);
     this.pending.clear();
     this.turns.clear();
+    this.orphanTurnMessages.clear();
   }
 
-  send(message) { this.proc.stdin.write(`${JSON.stringify(message)}\n`); }
+  send(message) {
+    if (this.closed || !this.proc?.stdin?.writable || this.proc.stdin.destroyed) {
+      throw new Error('codex app-server não está disponível');
+    }
+    this.proc.stdin.write(`${JSON.stringify(message)}\n`);
+  }
 
   request(method, params, timeoutMs = 30_000) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`${method}: timeout`)); }, timeoutMs);
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        const error = Object.assign(new Error(`${method}: timeout`), {
+          code: 'CODEX_APP_SERVER_REQUEST_TIMEOUT',
+          method,
+        });
+        reject(error);
+        // Se uma chamada RPC básica travou, a conexão stdio inteira deixou de
+        // ser confiável. Encerrá-la impede que o fallback rode em paralelo com
+        // um App Server órfão.
+        this.close(error);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); },
       });
-      this.send({ method, id, params });
+      try {
+        this.send({ method, id, params });
+      } catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+        this.close(error);
+      }
     });
   }
 
@@ -59,7 +120,9 @@ class CodexAppServerClient {
     if (!turn) {
       if (turnId) {
         if (!this.orphanTurnMessages.has(turnId)) this.orphanTurnMessages.set(turnId, []);
-        this.orphanTurnMessages.get(turnId).push(message);
+        const queued = this.orphanTurnMessages.get(turnId);
+        queued.push(message);
+        if (queued.length > 128) queued.shift();
       }
       return;
     }
@@ -109,38 +172,75 @@ class CodexAppServerClient {
     if (!turnId) throw new Error('turn/start não retornou turnId');
     return new Promise((resolve, reject) => {
       let settled = false;
+      let onAbort = null;
       const finish = (fn, value) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener('abort', onAbort);
         this.turns.delete(turnId);
         fn(value);
       };
       const timer = setTimeout(() => {
         try { this.send({ method: 'turn/interrupt', id: this.nextId++, params: { threadId, turnId } }); } catch { /* processo já encerrado */ }
         // O interrupt é best-effort: o timeout não pode depender da resposta do App Server.
-        finish(reject, new Error(`codex app-server: timeout (${timeoutMs}ms)`));
-        this.close();
+        const error = Object.assign(new Error(`codex app-server: timeout (${timeoutMs}ms)`), {
+          code: 'CODEX_APP_SERVER_TURN_TIMEOUT',
+          turnId,
+        });
+        finish(reject, error);
+        this.close(error);
       }, timeoutMs);
       this.turns.set(turnId, {
         text: '',
         resolve: (value) => finish(resolve, value),
         reject: (error) => finish(reject, error),
       });
+      onAbort = () => {
+        try { this.send({ method: 'turn/interrupt', id: this.nextId++, params: { threadId, turnId } }); } catch { /* ignore */ }
+        const error = abortError(signal?.reason, 'sessão AUTO cancelada');
+        finish(reject, error);
+        this.close(error);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
       const turn = this.turns.get(turnId);
       for (const message of this.orphanTurnMessages.get(turnId) || []) this.applyTurnMessage(turnId, turn, message);
       this.orphanTurnMessages.delete(turnId);
-      signal?.addEventListener('abort', () => {
-        try { this.send({ method: 'turn/interrupt', id: this.nextId++, params: { threadId, turnId } }); } catch { /* ignore */ }
-        finish(reject, signal.reason || new Error('sessão AUTO cancelada'));
-        this.close();
-      }, { once: true });
     });
   }
 
-  close() {
-    this.lines?.close();
-    this.proc?.kill('SIGTERM');
+  signalProcess(signalName) {
+    if (!this.proc || this.exited) return;
+    const pid = Number(this.proc.pid);
+    if (IS_POSIX && Number.isInteger(pid) && pid > 1 && pid !== process.pid) {
+      try {
+        process.kill(-pid, signalName);
+        return;
+      } catch {
+        // O spawn injetado por testes ou uma plataforma sem grupo próprio cai
+        // no kill do processo individual.
+      }
+    }
+    try { this.proc.kill(signalName); } catch { /* já encerrado */ }
+  }
+
+  close(reason = new Error('codex app-server encerrado')) {
+    if (this.closed) return;
+    this.closed = true;
+    this.parentSignal?.removeEventListener('abort', this.onParentAbort);
+    try { this.proc?.stdin?.end(); } catch { /* já encerrado */ }
+    try { this.lines?.close(); } catch { /* já encerrado */ }
+    this.rejectAll(abortError(reason));
+    if (this.exited) return;
+    this.signalProcess('SIGTERM');
+    this.killTimer = setTimeout(() => {
+      if (!this.exited) this.signalProcess('SIGKILL');
+    }, APP_SERVER_KILL_GRACE_MS);
+    this.killTimer.unref?.();
   }
 }
 
@@ -162,11 +262,13 @@ export async function decideWithCodexAppServer(opts = {}) {
     signal: session.signal,
   });
   const rawParsed = parseAgentDecisionText(text);
-  const parsed = repairDecisionEnvelope(rawParsed, {
-    objective: `authorized_recon:${opts.target || 'target'}`,
-  });
-  const validated = validateAgentDecision(parsed, {
-    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive: opts.allowIntrusive === true }),
+  const validated = normalizeAndValidateAgentDecision(rawParsed, {
+    repairEnvelope: true,
+    repairOptions: { objective: `authorized_recon:${opts.target || 'target'}` },
+    catalogModuleIds: availableCatalogIds(catalog, {
+      allowIntrusive: opts.allowIntrusive === true,
+      autonomyLevel: opts.autonomyLevel,
+    }),
     availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
   });
   if (!validated.ok) throw new Error(`decisão Codex App Server rejeitada: ${validated.errors.join('; ')}`);

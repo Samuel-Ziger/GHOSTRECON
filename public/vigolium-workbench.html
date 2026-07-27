@@ -378,7 +378,7 @@
           <textarea id="reportImportHtml" placeholder="ou cole HTML do report aqui" style="min-height:76px"></textarea>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>File</th><th>Size</th><th>Modified</th><th>Path</th><th>Actions</th></tr></thead>
+              <thead><tr><th>File</th><th>Size</th><th>Modified</th><th>Origin</th><th>Actions</th></tr></thead>
               <tbody id="reportRows"></tbody>
             </table>
           </div>
@@ -561,7 +561,7 @@
             <td class="blue">${esc(r.file || '-')}</td>
             <td>${esc(bytes(r.size || 0))}</td>
             <td class="muted">${esc(fmtDate(r.mtime))}</td>
-            <td class="muted">${esc(short(r.path || '-', 120))}</td>
+            <td class="muted">${esc(short(r.origin || 'runtime', 120))}</td>
             <td>
               <button onclick="window.open(apiUrl(${jsArg(r.url || '')}), '_blank', 'noopener,noreferrer')">abrir</button>
               <button onclick="copy(${jsArg(r.url || '')})">copy url</button>

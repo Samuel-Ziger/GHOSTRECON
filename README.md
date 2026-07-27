@@ -37,7 +37,9 @@ O núcleo combina uma API Node/Express, streaming NDJSON, cockpit web, CLI, MCP,
 - **Passivo por padrão, ativo sob controle:** perfis OPSEC e confirmação explícita protegem módulos intrusivos.
 - **Evidência em tempo real:** progresso, findings e eventos trafegam em NDJSON.
 - **Recon que acumula memória:** runs, diferenças, decisões e contexto podem ser persistidos e reutilizados.
-- **Motores complementares:** Node para orquestração e OSINT; Go/Vigolium para DAST; FrameSeven para análise e relatório integrado.
+- **Motores complementares:** Node para orquestração e OSINT; Go/Vigolium para
+  DAST; FrameSeven para análise, merge de findings e relatórios servidos por
+  rota autenticada.
 - **IA sem dependência obrigatória de cloud:** suporte a provedores locais, CLIs instalados e OpenRouter.
 
 ## Visão geral
@@ -47,7 +49,7 @@ O núcleo combina uma API Node/Express, streaming NDJSON, cockpit web, CLI, MCP,
 | **Cockpit** | Execução, terminal ao vivo, findings, controles OPSEC e acesso aos painéis |
 | **Recon Engine** | Descoberta, fingerprint, superfície web, validação, correlação e scoring |
 | **Vigolium** | Motor DAST em Go, estratégias `lite`, `balanced` e `deep` |
-| **FrameSeven** | Fluxo complementar autenticado, deduplicação e relatório HTML integrado |
+| **FrameSeven** | Fluxo complementar autenticado, normalização/merge de findings e relatórios protegidos por `recon.read` |
 | **Modo Auto** | Planejamento e avaliação por agentes de IA com limites, auditoria e memória RAG |
 | **CLI + MCP** | Automação por terminal, CI, Cursor e clientes compatíveis com MCP |
 | **GhostTrace** | Anotações, evidências, handoff e preparação de relatório |
@@ -276,28 +278,146 @@ A CLI também oferece `projects`, `engagement`, `narrative`, `purple`, `team`, `
 
 ## Modo Auto
 
-O Modo Auto transforma provedores de IA em comandantes do recon. Ele pode planejar uma run, selecionar módulos, acompanhar resultados, produzir avaliação pós-pipeline e gravar decisões para execuções futuras.
+O Modo Auto é um orquestrador **supervisionado**. As IAs selecionadas propõem um
+plano; o GHOSTRECON valida o contrato, expande dependências e engines, aplica
+RBAC, escopo, engagement e OPSEC, solicita a aprovação necessária e somente
+então executa o plano congelado.
 
 ```text
-CONTEXTO + CAPABILITIES + MEMÓRIA
-              ↓
-         CONSELHO DE IAs
-              ↓
-       PLANO JSON VALIDADO
-              ↓
-       PIPELINE GHOSTRECON
-              ↓
-    AVALIAÇÃO + RAG + HANDOFF
+CONTEXTO REDIGIDO + CATÁLOGO + RAG
+                  ↓
+             CONSELHO DE IAs
+                  ↓
+          DECISÃO JSON VALIDADA
+                  ↓
+        CHECKPOINT V2 + CLAIM ÚNICO
+                  ↓
+     PLANO EFETIVO EXPANDIDO + HASH
+                  ↓
+       RBAC + ESCOPO + ROE + OPSEC
+                  ↓
+          APROVAÇÃO HUMANA 2–4
+                  ↓
+ GHOSTRECON → Vigolium → FrameSeven
+                  ↓
+       AVALIAÇÃO + RAG + HANDOFF
 ```
 
-Provedores contemplados pelo contrato atual incluem Codex, Claude Code, Cursor, OpenRouter, GHOST/modelo local e endpoints OpenAI-compatible. A disponibilidade depende da instalação e configuração local.
+O catálogo do Auto combina manifests, fases legadas, módulos Forge ativos e
+engines externas. Cada item é classificado como `passive`, `deep_passive`,
+`active`, `intrusive` ou `hexstrike_intel`. Capacidades destrutivas ou voltadas
+a credenciais, ocultação de identidade e expansão indevida de escopo não são
+delegadas ao Auto, inclusive na autonomia máxima. Quando manifest e legado
+divergem, vale a classe de maior risco e os requisitos são combinados.
 
-> [!NOTE]
-> O Modo Auto está em evolução controlada. Limites de iteração, tempo, chamadas, custo, redaction e confirmação humana fazem parte do desenho; revise o plano antes de autorizar módulos ativos.
+### Autonomia
 
-Arquivos de decisão e memória ficam em `data/auto-rag/`, organizados como Markdown pesquisável. O fluxo principal usa `POST /api/recon/auto/stream`.
+| Nível | Identificador | Política |
+| --- | --- | --- |
+| 1 | `observation` | Passivo/deep-passive e inteligência; não abre gate de execução ativa |
+| 2 | `assisted` | Pode propor ações não intrusivas; exige confirmação do plano |
+| 3 | `authorized` | Pode propor módulos intrusivos autorizados; exige `recon.intrusive`, engagement/ROE aplicável e confirmação |
+| 4 | `authorized_opsec` | Mesmo limite de risco do nível 3, com perfil OPSEC `aggressive`; não autoriza ações destrutivas |
 
-Leia [MODO-AUTO-GHOSTRECON.md](MODO-AUTO-GHOSTRECON.md) para arquitetura, papéis do conselho, Module Forge e roadmap.
+HexStrike, Vigolium e FrameSeven aparecem no catálogo somente quando seus
+respectivos toggles são ativados. O modo autenticado do FrameSeven exige opt-in
+adicional e confirmação própria; segredos e cookies não entram em argv, RAG ou
+logs. Quando mais de um motor é selecionado, a ordem é
+**GHOSTRECON → Vigolium → FrameSeven**.
+
+As identidades dos executáveis FrameSeven e Vigolium são calculadas durante o
+catálogo/preflight, seladas no plano efetivo e revalidadas imediatamente antes
+de cada `spawn`. Troca de binário, hash, tamanho ou metadado depois da aprovação
+falha fechado em vez de promover silenciosamente uma nova identidade.
+
+O ciclo de retomada usa checkpoints v2 nas fronteiras
+`ready_for_iteration`/`ready_for_next_iteration`. Cada plano pronto é consumido
+por um claim atômico e durável antes da execução; reuso e rollback são
+recusados. Checkpoints v1 continuam legíveis para diagnóstico, mas não são
+retomáveis, e não existe retomada no meio de engine ou avaliação.
+
+Módulos Forge aprovados usam um runner forte Bubblewrap em Linux. Sem esse
+sandbox, o catálogo os marca como indisponíveis e aprovação/canário falham
+fechado. A aprovação cria uma ativação ainda não executável globalmente; apenas
+o primeiro canário exclusivo, vinculado ao `activationId` e aos hashes
+aprovados, pode habilitar o pacote. Alvo, integridade do artefato e versão/hash
+do engagement são comparados atomicamente sob lock; o engagement é revalidado
+antes e depois do canário. Esse canário executa somente o módulo dinâmico
+aprovado, sem pipeline legado, DNS ou finalização. Cada operação do sandbox
+recebe uma atestação própria e timeout/cancelamento só assenta após confirmação
+de encerramento do processo.
+
+Nos níveis 2–4, recusar a aprovação encerra sem executar pipeline, módulo ou
+engine; não existe continuação automática de um “restante seguro”. O runtime
+também exige IDs explícitos para ações que antes podiam ocorrer implicitamente
+numa fase, como HTTP/WAF, verify, descoberta ativa de parâmetros,
+assets/takeover, recheck HIGH, browser XSS e ferramentas/follow-ups Kali.
+Fontes passivas de URL não habilitam sozinhas o fetch de bundles do alvo.
+
+Findings de segredo são mascarados antes de eventos/persistência.
+`secret_validation` é intrusivo e explícito. Writes/signup de
+Supabase/Firebase e FTP `STOR` ficam desligados por padrão e não são habilitados
+pela simples presença de token, anon key, `service_role` ou variável de
+ambiente. Quando auth é compartilhado com Vigolium, ele segue por arquivo
+temporário restrito, não por argv/log.
+
+O timeout do Auto é aplicado por fase. Uma falha recuperável é registrada e a
+execução só segue quando a fase realmente encerrou; processo que não responde a
+`SIGTERM` recebe `SIGKILL`. Resultado útil com falhas recuperáveis termina como
+`partial`, e não como sucesso silencioso. O caminho manual continua fail-fast
+por padrão, mas agora cria seu próprio `AbortController`: abort do request ou
+fechamento do stream é propagado ao pipeline, Vigolium e FrameSeven.
+
+No RUN manual, qualquer módulo intrusivo encontrado depois da expansão de
+aliases, engines e dependências exige cumulativamente `recon.intrusive`,
+engagement formal ativo, ROE assinado, alvo dentro do escopo e da janela, além
+de `confirmActive`; perfil `aggressive` não substitui esses gates. Isso inclui
+qualquer capacidade Vigolium já classificada como intrusiva quando solicitada.
+Na política atual do Auto, o FrameSeven é o único motor que mantém um perfil
+ofensivo. Esse perfil usa a lista explícita e read-oriented
+`recon,access,redirect,misconfig,cve,crawler,content,subdomain,ports,nmap,bannergrab`;
+não usa `tools all` nem envia `-active-scan`. Por continuar intrusivo, exige os
+mesmos gates mesmo sem `-auth-browser`. O adapter FrameSeven aplica deadlines
+separados para captura autenticada, aprovação humana, trabalho anterior ao scan
+e scan, com encerramento
+`SIGTERM` → `SIGKILL` e espera limitada de assentamento.
+
+No FrameSeven, o terminal de sucesso só é emitido depois de validar, normalizar
+e mesclar o `report.json`. Evidência útil com erro recuperável de scan, relatório
+incompleto ou falha de merge gera um único `engine_partial`. A rota protegida
+serve somente `report.html`, `report.json` e `report.md` regenerados a partir
+dos findings normalizados e redigidos; PDF e arquivos brutos não são públicos.
+`GET /api/frameseven/reports/:reportId/:file` exige `recon.read`, valida owner e
+binding de engagement, abre o arquivo com `O_NOFOLLOW`, lê pelo mesmo descritor,
+confere `fstat` e aplica CSP sandbox sem scripts ao HTML.
+
+Antes de atualizar a sessão ou escrever NDJSON, todo evento produzido pelo
+orquestrador Auto passa por redação recursiva central. Segredos são mascarados,
+o root local é substituído e caminhos absolutos de artefatos são omitidos. Essa
+fronteira não substitui o teste ponta a ponta de artefatos produzidos por
+ferramentas externas.
+
+Provedores contemplados pelo contrato incluem Codex, Claude Code, Cursor,
+OpenRouter, GHOST/modelo local e endpoints OpenAI-compatible. A disponibilidade
+depende da instalação e configuração local. Decisões e memórias redigidas ficam
+em `data/auto-rag/`; o endpoint principal é
+`POST /api/recon/auto/stream`.
+
+> [!IMPORTANT]
+> Autonomia é uma política de seleção, nunca autorização do alvo. Níveis 3/4
+> continuam experimentais e devem ser usados apenas com escopo e ROE explícitos.
+
+Limites atuais: o catálogo/classificação ainda são híbridos; parte dos módulos
+legados compartilha timeout por fase; o adapter FrameSeven ainda não transporta
+Tor/proxy estrito; e a paridade residual entre RUN e Auto — especialmente o
+fluxo autenticado com navegador real controlado — ainda precisa de validação
+ponta a ponta.
+
+Leia [MODO-AUTO-GHOSTRECON.md](MODO-AUTO-GHOSTRECON.md) para o contrato
+operacional, [STATUS-FINALIZACAO-MODO-AUTO.md](STATUS-FINALIZACAO-MODO-AUTO.md)
+para a fotografia verificável da evolução atual e
+[MELHORIAS-PENDENTES-MODO-AUTO.md](MELHORIAS-PENDENTES-MODO-AUTO.md)
+para as limitações atuais.
 
 ## MCP
 
@@ -387,8 +507,23 @@ O GHOSTRECON trata segurança operacional como parte do pipeline, não como deta
 - gate OPSEC por perfil e módulo;
 - confirmação explícita para ações intrusivas;
 - Tor strict com validação anti-leak e fail-closed;
-- redaction de segredos em history e contexto cloud;
-- limites de tempo, memória, saída e custo para ferramentas/agentes.
+- redação de segredos em history, contexto cloud, sessão e eventos NDJSON do
+  Auto;
+- limites de tempo, memória, saída e custo para ferramentas/agentes;
+- plano efetivo congelado e identificado por hash antes da execução Auto;
+- checkpoint Auto v2 com claim atômico durável e proteção contra replay;
+- sessões Auto isoladas por operador e aprovação humana de uso único;
+- recusa de aprovação Auto fail-closed, sem execução parcial do plano;
+- gates de capacidade dentro das fases Auto, além do filtro do catálogo;
+- segredos mascarados e write probes separados/desligados por padrão;
+- encerramento em dois estágios (`SIGTERM` → `SIGKILL`) para processos
+  gerenciados;
+- cancelamento do RUN manual propagado por `AbortSignal`;
+- identidade FrameSeven/Vigolium selada e revalidada antes de cada processo;
+- Forge fail-closed quando o sandbox forte Bubblewrap não está disponível;
+- aprovação Forge vinculada atomicamente a alvo, artefato e engagement;
+- relatórios FrameSeven sanitizados servidos por rota autenticada, com owner,
+  engagement, descritor seguro e allowlist HTML/JSON/Markdown.
 
 > [!CAUTION]
 > Não exponha `HOST=0.0.0.0` sem autenticação forte, TLS/reverse proxy confiável e revisão de `GHOSTRECON_TRUST_PROXY`. Nunca use `AUTH_DISABLE=1` em uma interface pública.
@@ -493,11 +628,30 @@ Rotas privilegiadas exigem autenticação; rotas mutáveis também podem exigir 
 
 ## Qualidade e testes
 
-O projeto possui 98 arquivos de teste Node cobrindo pipeline, autenticação, OPSEC, módulos, storage, CLI, Modo Auto, Vigolium, FrameSeven, HexStrike e integrações.
+A suíte Node cobre pipeline, autenticação, OPSEC, módulos, storage, CLI, Modo
+Auto, Vigolium, FrameSeven, HexStrike e integrações. Para alterações no Auto,
+comece pelos testes locais e sem rede:
 
 ```bash
-# Suíte completa
-npm test
+node --test \
+  server/tests/auto-agent.test.js \
+  server/tests/auto-planner-contract.test.js \
+  server/tests/auto-effective-plan.test.js \
+  server/tests/auto-session-security.test.js \
+  server/tests/auto-rag-runtime-security.test.js \
+  server/tests/auto-strict-phase-gates.test.js \
+  server/tests/auto-content-network-gates.test.js \
+  server/tests/pipeline-resilience.test.js \
+  server/tests/process-cancellation.test.js \
+  server/tests/probe-cancellation.test.js \
+  server/tests/kali-execution-policy.test.js \
+  server/tests/secret-safety.test.js \
+  server/tests/write-probes-safety.test.js \
+  server/tests/forge-security.test.js \
+  server/tests/recon-stream-route.test.js \
+  server/tests/frameseven-integration.test.js \
+  server/tests/vigolium-bridge.test.js \
+  server/tests/vigolium-agent.test.js
 
 # CLI
 npm run test:cli
@@ -505,6 +659,11 @@ npm run test:cli
 # Smoke de import sem abrir porta
 GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js).then(() => console.log('node app ok'))"
 ```
+
+`npm test` inclui cenários que podem não ser totalmente herméticos. Revise o
+alvo e a política de rede antes da suíte completa. As melhorias atuais do Auto
+foram desenhadas para validação por mocks/fixtures; elas não equivalem a um scan
+real de navegador, DAST, Kali ou rede externa.
 
 ## Troubleshooting
 
@@ -546,6 +705,7 @@ Verifique `GHOSTRECON_HEXSTRIKE_URL`, o ambiente Python e o health endpoint do s
 ## Documentação técnica
 
 - [Modo Auto e conselho de IAs](MODO-AUTO-GHOSTRECON.md)
+- [Status de finalização do Modo Auto](STATUS-FINALIZACAO-MODO-AUTO.md)
 - [Autenticação, RBAC e scopes](docs/AUTH-RBAC.md)
 - [Tor strict e proteção anti-leak](docs/TOR.md)
 - [Contrato de módulos](docs/MODULE-CONTRACT.md)

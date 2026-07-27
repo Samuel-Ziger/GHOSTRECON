@@ -2,7 +2,6 @@ import fs from 'fs';
 import { readFile, writeFile, mkdtemp, rm } from 'fs/promises';
 import { join, delimiter } from 'path';
 import { tmpdir } from 'os';
-import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { limits } from '../config.js';
 import { sevToPrio, sevToScore } from '../lib/severity.mjs';
@@ -18,7 +17,7 @@ import { hostLiteralForUrl } from './recon-target.js';
 import { buildMysql3306IntelFindings } from './mysql-nmap-intel.js';
 import { probeFtpAnonymousWritable } from './ftp-anon-write-probe.js';
 import { postFtpAnonymousWritableCriticalWebhook } from './webhook-notify.js';
-import { createCappedOutputCollector, positiveIntEnv } from './module-runner.mjs';
+import { positiveIntEnv, runProcess } from './module-runner.mjs';
 
 const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt',
@@ -50,15 +49,24 @@ function sanitizeHost(h) {
   return t;
 }
 
-async function pathWhich(cmd) {
-  return new Promise((resolve) => {
-    const finder = process.platform === 'win32' ? 'where' : 'which';
-    const p = spawn(finder, [cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
-    // No Windows (e ambientes sem PATH completo), spawn pode falhar (ex.: "which" não existe).
-    // A detecção de ferramentas é opcional; não pode derrubar o servidor.
-    p.on('error', () => resolve(false));
-    p.on('close', (c) => resolve(c === 0));
-  });
+async function pathWhich(cmd, { signal = null } = {}) {
+  const finder = process.platform === 'win32' ? 'where' : 'which';
+  try {
+    const result = await runProcess(finder, [cmd], {
+      timeoutMs: 6_000,
+      signal,
+      rejectOnError: false,
+      rejectOnTimeout: false,
+      label: `${finder} ${cmd}`,
+      stdoutMaxBytes: 64 * 1024,
+      stderrMaxBytes: 64 * 1024,
+    });
+    return result.code === 0;
+  } catch (error) {
+    if (error?.name === 'AbortError' || error?.code === 'PROCESS_ABORTED') throw error;
+    // A detecção de ferramentas é opcional; falha local equivale a ausente.
+    return false;
+  }
 }
 
 /** `which` + caminhos absolutos (IDE/systemd por vezes não herdam PATH completo com ~/go/bin). */
@@ -72,8 +80,8 @@ function fileExecutableExists(absPath) {
   }
 }
 
-async function pathWhichOrPaths(cmd, absoluteCandidates = []) {
-  if (await pathWhich(cmd)) return true;
+async function pathWhichOrPaths(cmd, absoluteCandidates = [], opts = {}) {
+  if (await pathWhich(cmd, opts)) return true;
   for (const p of absoluteCandidates) {
     if (fileExecutableExists(p)) return true;
   }
@@ -111,7 +119,7 @@ function resolveDalfoxExecutableForSpawn() {
   return 'dalfox';
 }
 
-export async function getKaliCapabilities() {
+export async function getKaliCapabilities({ signal = null } = {}) {
   const force = process.env.GHOSTRECON_FORCE_KALI === '1';
   let distroKali = false;
   try {
@@ -123,24 +131,28 @@ export async function getKaliCapabilities() {
   }
 
   const qualifyDistro = distroKali || force;
-  const python3 = await pathWhich('python3');
-  const python = python3 ? false : await pathWhich('python');
+  const python3 = await pathWhich('python3', { signal });
+  const python = python3 ? false : await pathWhich('python', { signal });
   const home = process.env.HOME || process.env.USERPROFILE || '';
   const sqlmapAbs = ['/usr/bin/sqlmap', '/usr/local/bin/sqlmap', ...(home ? [join(home, '.local/bin/sqlmap')] : [])];
   const tools = {
-    nmap: await pathWhich('nmap'),
-    nuclei: await pathWhich('nuclei'),
-    ffuf: await pathWhich('ffuf'),
-    dirsearch: await pathWhich('dirsearch'),
-    searchsploit: await pathWhich('searchsploit'),
-    wpscan: await pathWhich('wpscan'),
-    whois: await pathWhich('whois'),
-    dalfox: await pathWhichOrPaths('dalfox', dalfoxCandidatePaths()),
-    sqlmap: await pathWhichOrPaths('sqlmap', sqlmapAbs),
-    smbclient: await pathWhich('smbclient'),
-    rpcclient: await pathWhich('rpcclient'),
-    proxychains: await pathWhichOrPaths('proxychains4', ['/usr/bin/proxychains4', '/usr/local/bin/proxychains4']),
-    tor: await pathWhich('tor'),
+    nmap: await pathWhich('nmap', { signal }),
+    nuclei: await pathWhich('nuclei', { signal }),
+    ffuf: await pathWhich('ffuf', { signal }),
+    dirsearch: await pathWhich('dirsearch', { signal }),
+    searchsploit: await pathWhich('searchsploit', { signal }),
+    wpscan: await pathWhich('wpscan', { signal }),
+    whois: await pathWhich('whois', { signal }),
+    dalfox: await pathWhichOrPaths('dalfox', dalfoxCandidatePaths(), { signal }),
+    sqlmap: await pathWhichOrPaths('sqlmap', sqlmapAbs, { signal }),
+    smbclient: await pathWhich('smbclient', { signal }),
+    rpcclient: await pathWhich('rpcclient', { signal }),
+    proxychains: await pathWhichOrPaths(
+      'proxychains4',
+      ['/usr/bin/proxychains4', '/usr/local/bin/proxychains4'],
+      { signal },
+    ),
+    tor: await pathWhich('tor', { signal }),
     python3,
     python,
     info_disclosure_hunter: (python3 || python) && fs.existsSync(INFO_DISCLOSURE_SCRIPT),
@@ -166,49 +178,59 @@ export async function getKaliCapabilities() {
 }
 
 function runProc(cmd, args, timeoutMs, spawnOpts = {}, execOpts = {}) {
-  return new Promise((resolve, reject) => {
-    const withProxy = buildProxychainsCommand(cmd, args, execOpts);
-    const child = spawn(withProxy.cmd, withProxy.args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...spawnOpts,
-    });
-    const out = createCappedOutputCollector({
-      maxBytes: TOOL_STDOUT_MAX_BYTES,
-      mode: 'head',
-      marker: '\n[ghostrecon: stdout truncated]\n',
-    });
-    const err = createCappedOutputCollector({
-      maxBytes: TOOL_STDERR_MAX_BYTES,
-      mode: 'tail',
-      marker: '\n[ghostrecon: stderr truncated]\n',
-    });
-    let killed = false;
-    const t = setTimeout(() => {
-      killed = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
-      reject(new Error(`${cmd} timeout (${timeoutMs}ms)`));
-    }, timeoutMs);
-    child.stdout.on('data', (d) => out.append(d));
-    child.stderr.on('data', (d) => err.append(d));
-    child.on('error', (e) => {
-      clearTimeout(t);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(t);
-      if (killed) return;
-      resolve({
-        code,
-        stdout: out.toString(),
-        stderr: err.toString(),
-        stdoutStats: out.stats(),
-        stderrStats: err.stats(),
-      });
-    });
+  const withProxy = buildProxychainsCommand(cmd, args, execOpts);
+  return runProcess(withProxy.cmd, withProxy.args, {
+    timeoutMs,
+    spawnOpts,
+    signal: execOpts.signal ?? null,
+    stdoutMaxBytes: TOOL_STDOUT_MAX_BYTES,
+    stderrMaxBytes: TOOL_STDERR_MAX_BYTES,
+    label: cmd,
+  });
+}
+
+function isProcessAbort(error) {
+  return error?.name === 'AbortError' || error?.code === 'PROCESS_ABORTED';
+}
+
+const AUTO_TCP_NMAP_CAPABILITIES = new Set([
+  'kali_nmap_aggressive',
+  'kali_nmap_udp',
+  'nmap_cve_match',
+  'nmap_backport_review',
+  'mysql_3306_intel',
+  'nmap_service_followups',
+]);
+
+/**
+ * O RUN manual mantém o nmap TCP base ligado quando entra no modo Kali.
+ * No Auto, `kaliMode` é apenas uma dependência de ambiente: o scan só pode
+ * ocorrer quando o plano congelado contém uma capacidade que depende dele.
+ */
+export function shouldRunKaliTcpBase({ autoModeExecution = false, modules = [] } = {}) {
+  if (autoModeExecution !== true) return true;
+  return (Array.isArray(modules) ? modules : []).some((id) =>
+    AUTO_TCP_NMAP_CAPABILITIES.has(String(id || '').trim().toLowerCase()),
+  );
+}
+
+export function resolveKaliExecutionPolicy({ autoModeExecution = false, modules = [] } = {}) {
+  const selected = new Set(
+    (Array.isArray(modules) ? modules : [])
+      .map((id) => String(id || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const manual = autoModeExecution !== true;
+  return Object.freeze({
+    runNmapBase: manual || [...AUTO_TCP_NMAP_CAPABILITIES].some((id) => selected.has(id)),
+    runWhois: manual || selected.has('kali_whois'),
+    runWpscan: manual || selected.has('kali_wpscan'),
+    runDalfox: manual || selected.has('kali_dalfox'),
+    runXssVibes: manual || selected.has('kali_xss_vibes'),
+    allowNmapServiceFollowups: manual || selected.has('nmap_service_followups'),
+    // Escrita remota permanece separada dos follow-ups de leitura.
+    // O Auto nunca recebe esta capacidade, mesmo se um override escapar ao catálogo.
+    allowFtpWriteProbe: manual && selected.has('ftp_write_probe'),
   });
 }
 
@@ -388,11 +410,11 @@ async function runNmapUdpOnHosts(hosts, log, opts = {}) {
   }
 }
 
-async function searchExploitDbOne(query, log) {
+async function searchExploitDbOne(query, log, execOpts = {}) {
   const q = query.slice(0, 100).trim();
   if (q.length < 2) return [];
   const tryJson = async (args) => {
-    const r = await runProc('searchsploit', args, 40000);
+    const r = await runProc('searchsploit', args, 40000, {}, execOpts);
     if (!r.stdout.trim()) return [];
     try {
       const j = JSON.parse(r.stdout);
@@ -411,6 +433,7 @@ async function searchExploitDbOne(query, log) {
     rows = await tryJson(['-j', q]);
     return rows;
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     log(`searchsploit "${q.slice(0, 40)}…": ${e.message}`, 'warn');
     return [];
   }
@@ -551,7 +574,12 @@ export function buildExploitVersionGoogleQuery(row) {
   return `site:exploit-db.com/exploits ${query} exploit`.replace(/\s+/g, ' ').trim();
 }
 
-async function searchExploitDbForNmapRow(row, { log, seenQueries, maxQueries = 18 }) {
+async function searchExploitDbForNmapRow(row, {
+  log,
+  seenQueries,
+  maxQueries = 18,
+  execOpts = {},
+}) {
   const queries = buildExploitDbQueries(row, {
     max: Math.max(1, Math.min(6, Number(process.env.GHOSTRECON_SEARCHSPLOIT_QUERIES_PER_SERVICE || 3))),
   });
@@ -563,7 +591,7 @@ async function searchExploitDbForNmapRow(row, { log, seenQueries, maxQueries = 1
     if (seenQueries.has(key)) continue;
     seenQueries.add(key);
     usedQueries.push(q);
-    const hits = await searchExploitDbOne(q, log);
+    const hits = await searchExploitDbOne(q, log, execOpts);
     for (const hit of hits) {
       const hk = exploitKey(hit);
       if (!hitsByKey.has(hk)) hitsByKey.set(hk, hit);
@@ -711,6 +739,7 @@ async function runFfuf200(baseUrl, log, execOpts = {}) {
     const j = JSON.parse(raw);
     return (j.results || []).map((r) => r.url).filter(Boolean);
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     log(`ffuf ${base}: ${e.message}`, 'warn');
     return [];
   } finally {
@@ -785,6 +814,7 @@ async function runDirsearchAll(baseUrl, log, execOpts = {}) {
     const raw = await readFile(out, 'utf8').catch(() => '');
     return parseDirsearchJsonResults(raw);
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     log(`dirsearch ${base}: ${e.message}`, 'warn');
     return [];
   } finally {
@@ -834,6 +864,7 @@ async function runNucleiList(urls, log, execOpts = {}) {
       })
       .filter(Boolean);
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     log(`nuclei: ${e.message}`, 'warn');
     return [];
   } finally {
@@ -890,6 +921,7 @@ async function runNucleiTags(urls, tagsCsv, log, execOpts = {}) {
       })
       .filter(Boolean);
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     log(`nuclei(${tagsCsv}): ${e.message}`, 'warn');
     return [];
   } finally {
@@ -965,14 +997,16 @@ function extractDalfoxJsonHits(text, limit = 10) {
 async function runDalfoxUrl(url, log, auth = null, execOpts = {}) {
   const timeoutMs = Number(process.env.GHOSTRECON_DALFOX_TIMEOUT_MS || 120000);
   const tail = ['--silence', '--skip-bav', '--skip-mining-all', '--worker', '40'];
-  const authArgs = [];
-  if (auth?.cookie) authArgs.push('--cookie', String(auth.cookie));
-  const ua = auth?.headers?.['User-Agent'] || auth?.headers?.['user-agent'];
-  if (ua) authArgs.push('--user-agent', String(ua));
+  // Dalfox só oferece cookie/headers por argv neste wrapper. Não copie material
+  // autenticado para a tabela de processos; execute sem sessão até existir um
+  // canal seguro suportado pela ferramenta.
+  if (auth?.cookie || auth?.headers) {
+    log?.('dalfox: contexto autenticado omitido (a ferramenta exigiria segredo em argv)', 'warn');
+  }
 
   const dalfoxBin = resolveDalfoxExecutableForSpawn();
     const runOnce = async (withJson) => {
-    const args = ['url', url, ...(withJson ? ['--format', 'json'] : []), ...tail, ...authArgs];
+    const args = ['url', url, ...(withJson ? ['--format', 'json'] : []), ...tail];
       const proc = await runProc(dalfoxBin, args, timeoutMs, {}, execOpts);
     const text = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
     return { proc, text };
@@ -993,6 +1027,7 @@ async function runDalfoxUrl(url, log, auth = null, execOpts = {}) {
     }
     return { ok: true, hits, stdoutFormat: hits.length && /^\s*\{/.test(String(proc.stdout || '').trim()) ? 'json' : 'mixed' };
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     return { ok: false, error: String(e?.message || e), hits: [] };
   }
 }
@@ -1039,11 +1074,9 @@ async function runXssVibesBatch({ urls, cap, log, auth = null, execOpts = {} }) 
   const outFile = join(dir, 'xss_vibes_hits.txt');
   await writeFile(inFile, selected.join('\n'), 'utf8');
   const args = [XSS_VIBES_MAIN, '-f', inFile, '-o', outFile, '-t', String(threads)];
-  const headerParts = [];
-  if (auth?.cookie) headerParts.push(`Cookie: ${String(auth.cookie).replace(/,/g, ';')}`);
-  const ua = auth?.headers?.['User-Agent'] || auth?.headers?.['user-agent'];
-  if (ua) headerParts.push(`User-Agent: ${String(ua).replace(/,/g, ' ')}`);
-  if (headerParts.length) args.push('-H', headerParts.join(','));
+  if (auth?.cookie || auth?.headers) {
+    log?.('[xss_vibes] contexto autenticado omitido (a ferramenta exigiria segredo em argv)', 'warn');
+  }
 
   if (typeof log === 'function') {
     log(`[xss_vibes] Executando ferramenta: ${pyCmd} main.py -f targets.txt -o xss_vibes_hits.txt -t ${threads}`, 'info');
@@ -1073,6 +1106,7 @@ async function runXssVibesBatch({ urls, cap, log, auth = null, execOpts = {} }) 
     }
     return { ok: true, hits, stdout: mixed.slice(0, 6000) };
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     return { ok: false, hits: [], error: String(e?.message || e) };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1127,6 +1161,7 @@ async function trySmbAnonymousList({ host, timeoutMs = 20_000, execOpts = {} }) 
     const denied = /NT_STATUS_ACCESS_DENIED|denied|logon failure/i.test(mixed);
     return { ok: proc.code === 0 && hasShares && !denied, code: proc.code, output: mixed.slice(0, 1200) };
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     return { ok: false, code: -1, output: String(e?.message || e) };
   }
 }
@@ -1138,6 +1173,7 @@ async function tryRpcNullSession({ host, timeoutMs = 20_000, execOpts = {} }) {
     const denied = /NT_STATUS_ACCESS_DENIED|denied|logon failure/i.test(mixed);
     return { ok: proc.code === 0 && !denied, code: proc.code, output: mixed.slice(0, 1200) };
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     return { ok: false, code: -1, output: String(e?.message || e) };
   }
 }
@@ -1147,8 +1183,15 @@ async function tryFtpAnonymousLogin({
   port = 21,
   timeoutMs = 12_000,
   passCandidates = ['', 'anonymous@ghostrecon.local'],
+  signal = null,
 }) {
-  return new Promise((resolve) => {
+  if (signal?.aborted) {
+    const error = signal.reason instanceof Error ? signal.reason : new Error('FTP probe cancelado');
+    error.name = 'AbortError';
+    error.code = 'PROCESS_ABORTED';
+    throw error;
+  }
+  return new Promise((resolve, reject) => {
     const sock = net.createConnection({ host, port: Number(port) || 21 });
     sock.setEncoding('utf8');
     sock.setTimeout(timeoutMs);
@@ -1177,13 +1220,33 @@ async function tryFtpAnonymousLogin({
     const finish = (result) => {
       if (done) return;
       done = true;
+      signal?.removeEventListener('abort', onAbort);
       try {
-        sock.end();
+        sock.destroy();
       } catch {
         /* ignore */
       }
       resolve(result);
     };
+    const onAbort = () => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener('abort', onAbort);
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      const error = signal?.reason instanceof Error ? signal.reason : new Error('FTP probe cancelado');
+      error.name = 'AbortError';
+      error.code = 'PROCESS_ABORTED';
+      reject(error);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
 
     const onLine = (line) => {
       const m = String(line).match(/^(\d{3})([\s-])(.*)$/);
@@ -1289,6 +1352,8 @@ async function ingestNmapScanRows(rows, ctx) {
     scanKind,
     domain: reconTarget,
     execOpts = {},
+    allowNmapServiceFollowups = true,
+    allowFtpWriteProbe = false,
   } = ctx;
   const label = scanKind === 'udp' ? 'nmap UDP' : 'nmap';
   log(`${label}: ${rows.length} serviço(s) em portas abertas`, 'success');
@@ -1320,7 +1385,12 @@ async function ingestNmapScanRows(rows, ctx) {
     }
 
     const exploitGq = buildExploitVersionGoogleQuery(row);
-    if (exploitGq && typeof emit === 'function' && seenExploitGoogle.size < exploitGoogleMax) {
+    if (
+      allowNmapServiceFollowups
+      && exploitGq
+      && typeof emit === 'function'
+      && seenExploitGoogle.size < exploitGoogleMax
+    ) {
       const gk = exploitGq.toLowerCase();
       if (!seenExploitGoogle.has(gk)) {
         seenExploitGoogle.add(gk);
@@ -1348,7 +1418,7 @@ async function ingestNmapScanRows(rows, ctx) {
       }
     }
 
-    if (isFtpServiceRow(row)) {
+    if (allowNmapServiceFollowups && isFtpServiceRow(row)) {
       const k = `${row.host}:${row.port}`;
       if (!ftpChecked.has(k)) {
         ftpChecked.add(k);
@@ -1359,17 +1429,30 @@ async function ingestNmapScanRows(rows, ctx) {
             host: row.host,
             port: Number(row.port) || 21,
             timeoutMs: ftpTimeout,
+            signal: execOpts.signal ?? null,
           });
           if (r.ok) {
             let w = { writable: false };
-            try {
-              w = await probeFtpAnonymousWritable({
-                host: row.host,
-                port: Number(row.port) || 21,
-                timeoutMs: Math.max(8000, Number(process.env.GHOSTRECON_FTP_WRITE_PROBE_TIMEOUT_MS || 15000)),
-              });
-            } catch (e) {
-              log(`[FTP] write probe: ${e?.message || e}`, 'warn');
+            if (allowFtpWriteProbe) {
+              try {
+                w = await probeFtpAnonymousWritable({
+                  host: row.host,
+                  port: Number(row.port) || 21,
+                  timeoutMs: Math.max(8000, Number(process.env.GHOSTRECON_FTP_WRITE_PROBE_TIMEOUT_MS || 15000)),
+                  signal: execOpts.signal ?? null,
+                });
+              } catch (e) {
+                if (isProcessAbort(e)) throw e;
+                log(`[FTP] write probe: ${e?.message || e}`, 'warn');
+              }
+              if (w.detail === 'probe_disabled') {
+                log(
+                  '[FTP] ftp_write_probe selecionado, mas o gate GHOSTRECON_FTP_WRITE_PROBE=1 não foi habilitado; nenhuma escrita foi enviada.',
+                  'warn',
+                );
+              }
+            } else {
+              w = { writable: false, detail: 'probe_disabled' };
             }
             if (w.writable) {
               addFinding({
@@ -1437,12 +1520,13 @@ async function ingestNmapScanRows(rows, ctx) {
             log(`[FTP] ${k} sem login anônimo (${String(why).slice(0, 120)})`, 'info');
           }
         } catch (e) {
+          if (isProcessAbort(e)) throw e;
           log(`[FTP] erro no teste ${k}: ${e?.message || e}`, 'warn');
         }
       }
     }
 
-    if (isSmbServiceRow(row) && cap.tools.smbclient) {
+    if (allowNmapServiceFollowups && isSmbServiceRow(row) && cap.tools.smbclient) {
       const k = `${row.host}:${row.port}`;
       if (!smbChecked.has(k)) {
         smbChecked.add(k);
@@ -1469,7 +1553,7 @@ async function ingestNmapScanRows(rows, ctx) {
       }
     }
 
-    if (isRpcServiceRow(row) && cap.tools.rpcclient) {
+    if (allowNmapServiceFollowups && isRpcServiceRow(row) && cap.tools.rpcclient) {
       const k = `${row.host}:${row.port}`;
       if (!rpcChecked.has(k)) {
         rpcChecked.add(k);
@@ -1496,11 +1580,16 @@ async function ingestNmapScanRows(rows, ctx) {
       }
     }
 
-    if (cap.tools.searchsploit && seenQueries.size < searchsploitMax) {
+    if (
+      allowNmapServiceFollowups
+      && cap.tools.searchsploit
+      && seenQueries.size < searchsploitMax
+    ) {
       const { queries, hits } = await searchExploitDbForNmapRow(row, {
         log,
         seenQueries,
         maxQueries: searchsploitMax,
+        execOpts,
       });
       const queryLabel = queries.length ? queries.join(' | ') : row.searchBlob || row.name || 'nmap';
       for (const hit of hits.slice(0, 4)) {
@@ -1739,6 +1828,7 @@ async function executeInfoDisclosureHunter({ targetUrl, cap, log, includeErrors 
     const findings = mapInfoDisclosureJsonToFindings(parsed, { targetUrl: target });
     return { ok: true, findings, stdout: mixed.slice(0, 6000), meta: parsed?.meta || null };
   } catch (e) {
+    if (isProcessAbort(e)) throw e;
     return { ok: false, findings: [], error: String(e?.message || e) };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1768,6 +1858,14 @@ export async function runKaliAggressiveScan({
    * substitui o perfil normal desta fase. Ver `GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS` e timeout.
    */
   runNmapAggressive = false,
+  /** Executa a passagem TCP base. No RUN manual permanece `true`. */
+  runNmapBase = true,
+  runWhois = true,
+  runWpscan = true,
+  runDalfox = true,
+  runXssVibes = true,
+  allowNmapServiceFollowups = true,
+  allowFtpWriteProbe = false,
   /**
    * Módulo UI `kali_nmap_udp`: segunda passagem nmap `-sU -A` só em portas UDP sensíveis
    * (lista curada ou `GHOSTRECON_NMAP_UDP_PORTS`). Corre após o nmap TCP desta fase.
@@ -1777,14 +1875,15 @@ export async function runKaliAggressiveScan({
   runNmapCveMatch = false,
   runNmapBackportReview = false,
   runMysql3306Intel = false,
-  /** Cookie / headers do recon (dalfox `--cookie`, xss_vibes `-H`). */
+  /** Contexto autenticado; não é entregue a ferramentas que só o aceitam por argv. */
   auth = null,
   /** NDJSON: eventos `dork` para fila de Google (Exploit-DB por produto/versão nmap). */
   emit = null,
   /** Módulo UI `kali_proxychains`: encadeia scanners Kali via proxychains-ng. */
   useProxychains = false,
+  signal = null,
 }) {
-  const execOpts = { useProxychains: Boolean(useProxychains) };
+  const execOpts = { useProxychains: Boolean(useProxychains), signal };
   const pipeTool = (name, state) => {
     if (typeof emit !== 'function') return;
     emit({ type: 'pipe', name, state });
@@ -1811,7 +1910,7 @@ export async function runKaliAggressiveScan({
       'warn',
     );
   }
-  log(`Alvos nmap (${hosts.length}): ${hosts.join(', ')}`, 'info');
+  if (runNmapBase) log(`Alvos nmap (${hosts.length}): ${hosts.join(', ')}`, 'info');
 
   const apexLit = hostLiteralForUrl(domain);
   const baseUrlsForFfuf = [`https://${apexLit}/`, `http://${apexLit}/`];
@@ -1829,7 +1928,7 @@ export async function runKaliAggressiveScan({
   const smbChecked = new Set();
   const rpcChecked = new Set();
 
-  if (cap.tools.nmap) {
+  if (cap.tools.nmap && runNmapBase) {
     pipeTool('nmap', 'active');
     let tcpNmapRows = [];
     try {
@@ -1849,6 +1948,8 @@ export async function runKaliAggressiveScan({
         baseUrlsForFfuf,
         domain,
         execOpts,
+        allowNmapServiceFollowups,
+        allowFtpWriteProbe,
       };
       await ingestNmapScanRows(tcpNmapRows, { ...ingestCtx, scanKind: 'tcp' });
       if (runNmapBackportReview && tcpNmapRows.length) {
@@ -1865,6 +1966,7 @@ export async function runKaliAggressiveScan({
         try {
           await runNmapCveMatchForRows(tcpNmapRows, { log, addFinding });
         } catch (e) {
+          if (isProcessAbort(e)) throw e;
           log(`Nmap CVE match: ${e?.message || e}`, 'warn');
         } finally {
           pipeTool('nmap_cve_match', 'done');
@@ -1880,6 +1982,7 @@ export async function runKaliAggressiveScan({
         }
       }
     } catch (e) {
+      if (isProcessAbort(e)) throw e;
       log(`nmap: ${e.message}`, 'error');
     } finally {
       pipeTool('nmap', 'done');
@@ -1908,6 +2011,8 @@ export async function runKaliAggressiveScan({
           baseUrlsForFfuf,
           domain,
           execOpts,
+          allowNmapServiceFollowups,
+          allowFtpWriteProbe,
           scanKind: 'udp',
         });
         if (runNmapBackportReview && udpRows.length) {
@@ -1916,6 +2021,7 @@ export async function runKaliAggressiveScan({
           if (backports.length) log(`Nmap UDP backport review: ${backports.length} contexto(s)`, 'info');
         }
       } catch (e) {
+        if (isProcessAbort(e)) throw e;
         log(`nmap UDP: ${e.message}`, 'error');
       } finally {
         pipeTool('nmap_udp', 'done');
@@ -1933,7 +2039,7 @@ export async function runKaliAggressiveScan({
   // ── WHOIS (Kali) ──
   // WHOIS é leitura externa (não é exploit), mas ainda assim é "ativo". Mantemos só quando ferramenta existe
   // e com amostra limitada de subdomínios para não explodir tempo.
-  if (cap.tools.whois) {
+  if (runWhois && cap.tools.whois) {
     pipeTool('whois', 'active');
     log('═══ whois (registo domínio) ═══', 'section');
 
@@ -1975,6 +2081,7 @@ export async function runKaliAggressiveScan({
           null,
         );
       } catch (e) {
+        if (isProcessAbort(e)) throw e;
         log(`whois ${t}: ${e.message}`, 'warn');
       }
     }
@@ -2113,6 +2220,7 @@ export async function runKaliAggressiveScan({
       }
       log(`nuclei: ${findings.length} finding(s)`, findings.length ? 'warn' : 'info');
     } catch (e) {
+      if (isProcessAbort(e)) throw e;
       log(`nuclei: ${e.message}`, 'warn');
     } finally {
       pipeTool('nuclei', 'done');
@@ -2152,6 +2260,7 @@ export async function runKaliAggressiveScan({
         }
         if (xss.length) log(`XSS: ${xss.length} finding(s)`, 'warn');
       } catch (e) {
+        if (isProcessAbort(e)) throw e;
         log(`XSS nuclei: ${e.message}`, 'warn');
       } finally {
         pipeTool('nuclei_xss', 'done');
@@ -2181,6 +2290,7 @@ export async function runKaliAggressiveScan({
         }
         if (sqli.length) log(`SQLi: ${sqli.length} finding(s)`, 'warn');
       } catch (e) {
+        if (isProcessAbort(e)) throw e;
         log(`SQLi nuclei: ${e.message}`, 'warn');
       } finally {
         pipeTool('nuclei_sqli', 'done');
@@ -2191,7 +2301,7 @@ export async function runKaliAggressiveScan({
     }
   }
 
-  if (cap.tools.wpscan) {
+  if (runWpscan && cap.tools.wpscan) {
     const detectionMode = process.env.GHOSTRECON_WPSCAN_DETECTION_MODE || 'mixed';
     const timeoutMs = Number(process.env.GHOSTRECON_WPSCAN_TIMEOUT_MS || 240000);
 
@@ -2224,7 +2334,13 @@ export async function runKaliAggressiveScan({
       log(`[WPScan] ${uniqTargets.length} alvo(s) WordPress — a iniciar wpscan em cada URL`, 'info');
       for (const t of uniqTargets) {
         log(`[WPScan] ▶︎ alvo: ${t}`, 'info');
-        const res = await runWpscanJson({ targetUrl: t, detectionMode, timeoutMs, log });
+        const res = await runWpscanJson({
+          targetUrl: t,
+          detectionMode,
+          timeoutMs,
+          log,
+          signal,
+        });
         if (res?.json) {
           const findings = extractWpscanFindings({ targetUrl: t, wpscanJson: res.json });
           const vulnN = Number.isFinite(res.vulnDbCount) ? res.vulnDbCount : countWpvulndbFindings(res.json);
@@ -2256,7 +2372,7 @@ export async function runKaliAggressiveScan({
     pipeTool('wpscan', 'skip');
   }
 
-  if (cap.tools.dalfox && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+  if (runDalfox && cap.tools.dalfox && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     pipeTool('dalfox', 'active');
     const targets = [...new Set(paramUrls)].slice(0, Number(process.env.GHOSTRECON_DALFOX_MAX_URLS || 12));
     log(`═══ dalfox (XSS) em URLs com parâmetros (${targets.length}) ═══`, 'section');
@@ -2282,7 +2398,7 @@ export async function runKaliAggressiveScan({
     } finally {
       pipeTool('dalfox', 'done');
     }
-  } else if (cap.tools.dalfox && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+  } else if (runDalfox && cap.tools.dalfox && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     log('dalfox: skip (sem sinais XSS passivos)', 'info');
     pipeTool('dalfox', 'skip');
   } else {
@@ -2290,7 +2406,7 @@ export async function runKaliAggressiveScan({
   }
 
   // Executa após a etapa XSS (nuclei/dalfox): scanner xss_vibes externo.
-  if (cap.tools.xss_vibes && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+  if (runXssVibes && cap.tools.xss_vibes && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     pipeTool('xss_vibes', 'active');
     log(`═══ xss_vibes (XSS) em URLs com parâmetros (${paramUrls.length}) ═══`, 'section');
     try {
@@ -2313,10 +2429,10 @@ export async function runKaliAggressiveScan({
     } finally {
       pipeTool('xss_vibes', 'done');
     }
-  } else if (cap.tools.xss_vibes && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
+  } else if (runXssVibes && cap.tools.xss_vibes && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
     log('[xss_vibes] skip (sem sinais XSS passivos)', 'info');
     pipeTool('xss_vibes', 'skip');
-  } else if (!cap.tools.xss_vibes) {
+  } else if (runXssVibes && !cap.tools.xss_vibes) {
     log('[xss_vibes] indisponível (python + Xss/xss_vibes/main.py/payloads.json)', 'info');
     pipeTool('xss_vibes', 'skip');
   } else {

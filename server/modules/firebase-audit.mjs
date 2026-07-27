@@ -17,6 +17,12 @@
 
 import https from 'node:https';
 import http from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  combineAbortSignals,
+  isAbortError,
+  throwIfAborted,
+} from './http-utils.js';
 
 const TIMEOUT_MS = 12_000;
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -47,12 +53,43 @@ function makeFinding({ type, value, score, url, meta, owasp, mitre, cvss }) {
   return { type, value, score, prio, url, meta: meta || {}, owasp, mitre, cvss: cvss || null, source: 'firebase_audit' };
 }
 
-async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {}) {
-  return new Promise((resolve) => {
+const requestImplContext = new AsyncLocalStorage();
+
+function abortReason(signal) {
+  return signal?.reason || new DOMException('The operation was aborted', 'AbortError');
+}
+
+async function networkRequest(
+  url,
+  { method = 'GET', headers = {}, body = null, signal = null } = {},
+) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
     let parsed;
     try { parsed = new URL(url); } catch { return resolve({ status: null, headers: {}, body: '', error: 'invalid_url' }); }
 
     const mod = parsed.protocol === 'https:' ? https : http;
+    let settled = false;
+    let req = null;
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      reject(error);
+    };
+    const onAbort = () => {
+      const reason = abortReason(signal);
+      req?.destroy(reason);
+      finishReject(reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) return onAbort();
     const opts = {
       hostname: parsed.hostname,
       port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
@@ -67,20 +104,52 @@ async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {
       },
     };
 
-    const req = mod.request(opts, (res) => {
+    req = mod.request(opts, (res) => {
       const resHeaders = {};
       for (const [k, v] of Object.entries(res.headers || {})) resHeaders[k.toLowerCase()] = v;
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; if (buf.length > 65536) req.destroy(); });
-      res.on('end', () => resolve({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
+      res.on('end', () => finishResolve({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
     });
 
-    req.on('error', (e) => resolve({ status: null, headers: {}, body: '', error: e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ status: null, headers: {}, body: '', error: 'timeout' }); });
+    req.on('error', (e) => {
+      if (isAbortError(e, signal)) finishReject(abortReason(signal));
+      else finishResolve({ status: null, headers: {}, body: '', error: e.message });
+    });
+    req.on('timeout', () => {
+      finishResolve({ status: null, headers: {}, body: '', error: 'timeout' });
+      req.destroy();
+    });
     if (body) req.write(body);
     req.end();
   });
+}
+
+async function rawRequest(url, options = {}) {
+  const context = requestImplContext.getStore() || {};
+  const requestImpl = typeof context === 'function' ? context : context.requestImpl;
+  const signal = options.signal || context.signal || null;
+  const urlAllowed = context.urlAllowed || null;
+  throwIfAborted(signal);
+  if (typeof urlAllowed === 'function' && urlAllowed(url) !== true) {
+    return { status: null, headers: {}, body: '', error: 'out_of_scope' };
+  }
+  const result = typeof requestImpl === 'function'
+    ? await requestImpl(url, { ...options, signal })
+    : await networkRequest(url, { ...options, signal });
+  throwIfAborted(signal);
+  return result;
+}
+
+function withRequestImpl(requestImpl, signal, urlAllowed, fn) {
+  throwIfAborted(signal);
+  return requestImplContext.run({ requestImpl, signal, urlAllowed }, fn);
+}
+
+function rethrowAbort(error) {
+  const signal = requestImplContext.getStore()?.signal || null;
+  if (isAbortError(error, signal)) throw error;
 }
 
 function collectMatches(re, text, group = 1) {
@@ -451,11 +520,13 @@ export function detectClientSideRbac(text) {
  * @param {object} context - { apiKey, projectId, databaseURL, firestoreUrl, storageUrl, authDomain, bundleText? }
  */
 export async function runFirebaseAudit(context, opts = {}) {
+  return withRequestImpl(opts.requestImpl, opts.signal, opts.urlAllowed, async () => {
   const {
     apiKey, projectId, databaseURL, firestoreUrl, storageUrl, storageBucket,
     targetOrigin, bundleText,
   } = context || {};
-  const { targetUrl = '', log = null, writeProbes = true } = opts;
+  const { targetUrl = '', log = null, writeProbes = false } = opts;
+  const allowWrites = writeProbes === true;
 
   if (!apiKey && !projectId && !databaseURL) {
     return { findings: [], summary: { skipped: 'sem config Firebase' } };
@@ -470,6 +541,22 @@ export async function runFirebaseAudit(context, opts = {}) {
     ? `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o`
     : null);
   const origin = targetOrigin || (targetUrl ? new URL(targetUrl).origin : null);
+  const networkTargets = [rtdb, fsUrl, stUrl].filter(Boolean);
+  if (
+    networkTargets.length > 0
+    && typeof opts.urlAllowed === 'function'
+    && networkTargets.every((url) => opts.urlAllowed(url) !== true)
+  ) {
+    log?.('[firebase-audit] Endpoints Firebase fora do escopo autorizado — probes ignorados', 'info');
+    return {
+      findings: [],
+      summary: {
+        skipped: 'firebase_out_of_scope',
+        projectId: projectId || null,
+        writeProbes: false,
+      },
+    };
+  }
 
   log?.(`[firebase-audit] Projeto=${projectId || '?'} RTDB=${rtdb ? 'sim' : 'não'} Firestore=${fsUrl ? 'sim' : 'não'}`, 'info');
 
@@ -487,16 +574,18 @@ export async function runFirebaseAudit(context, opts = {}) {
       if (finding) findings.push(finding);
       results.rtdbRead = finding ? 'vulneravel' : 'ok';
     } catch (e) {
+      rethrowAbort(e);
       log?.(`[firebase-audit] RTDB read erro: ${e.message}`, 'warn');
       results.rtdbRead = 'erro';
     }
 
-    if (writeProbes) {
+    if (allowWrites) {
       try {
         const { finding } = await probeRtdbWrite(rtdb, log);
         if (finding) findings.push(finding);
         results.rtdbWrite = finding ? 'vulneravel' : 'ok';
       } catch (e) {
+        rethrowAbort(e);
         log?.(`[firebase-audit] RTDB write erro: ${e.message}`, 'warn');
         results.rtdbWrite = 'erro';
       }
@@ -512,16 +601,20 @@ export async function runFirebaseAudit(context, opts = {}) {
           findings.push(f);
           exposedCollections.push(col);
         }
-      } catch { /* skip */ }
+      } catch (error) {
+        rethrowAbort(error);
+        /* skip */
+      }
     }
     results.firestoreRead = exposedCollections.length ? exposedCollections.join(',') : 'ok';
 
-    if (writeProbes) {
+    if (allowWrites) {
       try {
         const fw = await probeFirestoreWrite(fsUrl, key, log);
         if (fw) findings.push(fw);
         results.firestoreWrite = fw ? 'vulneravel' : 'ok';
       } catch (e) {
+        rethrowAbort(e);
         log?.(`[firebase-audit] Firestore write erro: ${e.message}`, 'warn');
       }
 
@@ -530,6 +623,7 @@ export async function runFirebaseAudit(context, opts = {}) {
         if (pe) findings.push(pe);
         results.privilegeEscalation = pe ? 'vulneravel' : 'ok';
       } catch (e) {
+        rethrowAbort(e);
         log?.(`[firebase-audit] Privilege escalation probe erro: ${e.message}`, 'warn');
       }
     }
@@ -541,16 +635,18 @@ export async function runFirebaseAudit(context, opts = {}) {
       if (f) findings.push(f);
       results.storage = f ? 'vulneravel' : 'ok';
     } catch (e) {
+      rethrowAbort(e);
       log?.(`[firebase-audit] Storage erro: ${e.message}`, 'warn');
     }
   }
 
-  if (key) {
+  if (key && allowWrites) {
     try {
       const su = await probePublicSignUp(key, origin, log);
       if (su) findings.push(su);
       results.signUp = su?.type || 'ok';
     } catch (e) {
+      rethrowAbort(e);
       log?.(`[firebase-audit] signUp probe erro: ${e.message}`, 'warn');
     }
   }
@@ -561,25 +657,46 @@ export async function runFirebaseAudit(context, opts = {}) {
 
   return {
     findings,
-    summary: { total: findings.length, critical, high, results, projectId: projectId || null },
+    summary: {
+      total: findings.length,
+      critical,
+      high,
+      results: { ...results, writeProbes: allowWrites ? 'enabled' : 'disabled' },
+      projectId: projectId || null,
+      writeProbes: allowWrites,
+    },
   };
+  });
 }
 
 /**
  * Busca homepage + bundles JS e extrai config Firebase.
  */
-export async function discoverFirebaseFromTarget(targetUrl, { fetchImpl = null, log = null } = {}) {
+export async function discoverFirebaseFromTarget(
+  targetUrl,
+  {
+    fetchImpl = null,
+    log = null,
+    signal = null,
+    urlAllowed = null,
+  } = {},
+) {
   const fetchFn = fetchImpl || globalThis.fetch;
   if (!fetchFn) return { config: null, bundleText: '' };
+  throwIfAborted(signal);
+  if (typeof urlAllowed === 'function' && urlAllowed(targetUrl) !== true) {
+    return { config: null, bundleText: '', jsUrls: [] };
+  }
 
   let html = '';
   try {
     const res = await fetchFn(targetUrl, {
       headers: { 'User-Agent': UA, Accept: 'text/html,*/*' },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: combineAbortSignals(signal, TIMEOUT_MS),
     });
     html = await res.text();
   } catch (e) {
+    if (isAbortError(e, signal)) throw e;
     log?.(`[firebase-audit] Falha ao buscar ${targetUrl}: ${e.message}`, 'warn');
     return { config: null, bundleText: html };
   }
@@ -598,13 +715,18 @@ export async function discoverFirebaseFromTarget(targetUrl, { fetchImpl = null, 
 
   let bundleText = html;
   for (const jsUrl of jsUrls) {
+    throwIfAborted(signal);
+    if (typeof urlAllowed === 'function' && urlAllowed(jsUrl) !== true) continue;
     try {
       const r = await fetchFn(jsUrl, {
         headers: { 'User-Agent': UA, Accept: '*/*' },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: combineAbortSignals(signal, TIMEOUT_MS),
       });
       if (r.ok) bundleText += `\n${await r.text()}`;
-    } catch { /* skip */ }
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
+      /* skip */
+    }
   }
 
   const config = extractFirebaseConfig(bundleText, { targetOrigin: origin });

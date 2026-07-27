@@ -93,6 +93,8 @@ test('ROLE_SCOPES tem expected role hierarchy', () => {
   assert.ok(ROLE_SCOPES.operator.includes('recon.run'));
   assert.ok(!ROLE_SCOPES.operator.includes('recon.intrusive'));
   assert.ok(ROLE_SCOPES.red.includes('recon.intrusive'));
+  assert.ok(ROLE_SCOPES.red.includes('forge.review'));
+  assert.ok(!ROLE_SCOPES.red.includes('forge.manage'));
   assert.deepEqual(ROLE_SCOPES.admin, ['*']);
 });
 
@@ -311,7 +313,14 @@ test('reconBodyIsIntrusive: engine Vigolium go/both -> true', () => {
 });
 test('reconBodyIsIntrusive: modulos/agent Vigolium -> true', () => {
   assert.equal(reconBodyIsIntrusive({ modules: ['vigolium_dast'] }), true);
+  assert.equal(reconBodyIsIntrusive({ vigoliumAgent: 'audit', modules: ['rdap'] }), true);
   assert.equal(reconBodyIsIntrusive({ vigoliumAgent: 'swarm', modules: ['rdap'] }), true);
+});
+
+test('reconBodyIsIntrusive usa a classificação OPSEC também para módulos sem prefixo Kali', () => {
+  assert.equal(reconBodyIsIntrusive({ modules: ['nmap-aggressive'] }), true);
+  assert.equal(reconBodyIsIntrusive({ modules: ['ffuf'] }), true);
+  assert.equal(reconBodyIsIntrusive({ modules: ['frameseven_authenticated'] }), true);
 });
 
 // ─── Audit log file is created ──────────────────────────────────────────────

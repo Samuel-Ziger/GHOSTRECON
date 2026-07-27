@@ -1,12 +1,19 @@
 import { UA, limits, interestingPathRe, sensitiveExtRe } from '../config.js';
-import { fetchWithBackoff } from './http-utils.js';
+import { combineAbortSignals, fetchWithBackoff } from './http-utils.js';
 
-export async function fetchWaybackUrls(domain) {
+export async function fetchWaybackUrls(
+  domain,
+  { signal = null, timeoutMs = 120000, fetchImpl = null } = {},
+) {
   const u = `https://web.archive.org/cdx/search/cdx?url=*.${encodeURIComponent(domain)}/*&output=json&fl=original&collapse=urlkey&filter=statuscode:200&limit=${limits.waybackCollapseLimit}`;
-  const res = await fetchWithBackoff(u, {
-    headers: { 'User-Agent': UA },
-    signal: AbortSignal.timeout(120000),
-  });
+  const res = await fetchWithBackoff(
+    u,
+    {
+      headers: { 'User-Agent': UA },
+      signal: combineAbortSignals(signal, timeoutMs),
+    },
+    { fetchImpl },
+  );
   if (!res.ok) throw new Error(`Wayback CDX HTTP ${res.status}`);
   const data = await res.json();
   if (!Array.isArray(data) || data.length < 2) return [];

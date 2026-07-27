@@ -94,13 +94,18 @@ export async function fetchDnsEnrichment(rootDomain, aliveHosts = [], opts = {})
   const maxHosts = Number(opts.maxHosts ?? limits.dnsEnrichMaxHosts ?? 20);
   const timeoutMs = Number(opts.timeoutMs ?? limits.dnsEnrichTimeoutMs ?? 8000);
   const concurrency = Number(opts.concurrency ?? limits.dnsEnrichConcurrency ?? 6);
+  const hostAllowed = typeof opts.hostAllowed === 'function' ? opts.hostAllowed : () => true;
 
-  const targets = uniq([rootDomain, ...(Array.isArray(aliveHosts) ? aliveHosts : [])]).slice(0, maxHosts);
+  const targets = uniq([rootDomain, ...(Array.isArray(aliveHosts) ? aliveHosts : [])])
+    .filter((host) => hostAllowed(host))
+    .slice(0, maxHosts);
 
   const findings = [];
 
   // SPF/DMARC são tipicamente no domínio raiz; buscamos uma vez para reduzir ruído.
-  const [mxRoot, txtRoot] = await Promise.all([resolveMxSafe(rootDomain, timeoutMs), resolveTxtSafe(rootDomain, timeoutMs)]);
+  const [mxRoot, txtRoot] = hostAllowed(rootDomain)
+    ? await Promise.all([resolveMxSafe(rootDomain, timeoutMs), resolveTxtSafe(rootDomain, timeoutMs)])
+    : [[], []];
   if (mxRoot.length) {
     const topMx = mxRoot.slice(0, limits.dnsMxMax);
     for (const m of topMx) {
@@ -127,7 +132,9 @@ export async function fetchDnsEnrichment(rootDomain, aliveHosts = [], opts = {})
   }
 
   const dmarcHost = `_dmarc.${rootDomain}`;
-  const dmarcTxt = await resolveTxtSafe(dmarcHost, timeoutMs);
+  const dmarcTxt = hostAllowed(dmarcHost)
+    ? await resolveTxtSafe(dmarcHost, timeoutMs)
+    : [];
   const dmarc = extractDmarcFromTxt(dmarcTxt);
   if (dmarc) {
     findings.push({
@@ -165,4 +172,3 @@ export async function fetchDnsEnrichment(rootDomain, aliveHosts = [], opts = {})
 
   return { findings };
 }
-

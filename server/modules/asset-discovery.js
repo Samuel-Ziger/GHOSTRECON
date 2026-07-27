@@ -17,11 +17,21 @@ async function fetchIpRdap(ip) {
   }
 }
 
-export async function discoverAssetHints(domain, subdomainsAlive = [], tlsSanHosts = []) {
+export async function discoverAssetHints(
+  domain,
+  subdomainsAlive = [],
+  tlsSanHosts = [],
+  {
+    ipAllowed = () => true,
+    resolveNsImpl = (host) => dns.resolveNs(host),
+    collectUniqueIpv4Impl = collectUniqueIpv4,
+    fetchIpRdapImpl = fetchIpRdap,
+  } = {},
+) {
   const hints = [];
 
   try {
-    const ns = await dns.resolveNs(domain);
+    const ns = await resolveNsImpl(domain);
     if (ns?.length) {
       hints.push({
         type: 'asset',
@@ -35,9 +45,10 @@ export async function discoverAssetHints(domain, subdomainsAlive = [], tlsSanHos
     /* ignore */
   }
 
-  const ips = await collectUniqueIpv4([domain, ...subdomainsAlive], 20, 12);
+  const ips = (await collectUniqueIpv4Impl([domain, ...subdomainsAlive], 20, 12))
+    .filter((ip) => ipAllowed(ip));
   for (const ip of ips.slice(0, 8)) {
-    const rd = await fetchIpRdap(ip);
+    const rd = await fetchIpRdapImpl(ip);
     hints.push({
       type: 'asset',
       prio: 'low',

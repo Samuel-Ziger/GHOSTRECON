@@ -12,65 +12,38 @@ import { runAssetDiscoveryPhase } from './phases/asset-discovery.mjs';
 import { runFinalizePhase } from './phases/finalize.mjs';
 import { ROOT } from './pipeline-shared.mjs';
 import { runActiveDynamicModules } from '../auto-agent/forge/runtime-loader.mjs';
+import { runPipelinePhases } from './phase-executor.mjs';
+
+const PIPELINE_PHASES = Object.freeze([
+  { name: 'input', run: runInputPhase, recoverable: false },
+  { name: 'fingerprint', run: runFingerprintPhase },
+  { name: 'discovery', run: runDiscoveryPhase },
+  { name: 'probe', run: runProbePhase },
+  { name: 'content_discovery', run: runContentDiscoveryPhase },
+  { name: 'go_engine', run: runGoEnginePhase },
+  { name: 'validation', run: runValidationPhase },
+  { name: 'aggressive', run: runAggressivePhase },
+  { name: 'asset_discovery', run: runAssetDiscoveryPhase },
+  {
+    name: 'dynamic_modules',
+    run: (state) => runActiveDynamicModules(state, {
+      root: state.ROOT,
+      isolatedRunner: state.forgeSandboxRunner,
+      canaryForgeId: state.forgeCanaryId,
+    }),
+  },
+  { name: 'go_agent', run: runGoAgentPhase },
+  { name: 'finalize', run: runFinalizePhase, recoverable: false },
+]);
 
 export async function runPipeline(ctx) {
   const s = createPipelineState(ctx);
   s.ROOT = ROOT;
 
-  s.throwIfAborted();
-  await runInputPhase(s);
-  s.throwIfAborted();
-  await runFingerprintPhase(s);
-  s.throwIfAborted();
-  await runDiscoveryPhase(s);
-  s.throwIfAborted();
-  await runProbePhase(s);
-  s.throwIfAborted();
-  await runContentDiscoveryPhase(s);
-  s.throwIfAborted();
-  await runGoEnginePhase(s);
-  s.throwIfAborted();
-  await runValidationPhase(s);
-  s.throwIfAborted();
-  await runAggressivePhase(s);
-  s.throwIfAborted();
-  await runAssetDiscoveryPhase(s);
-
-  await runActiveDynamicModules(s, { root: s.ROOT });
-
-  await runGoAgentPhase(s);
-  s.throwIfAborted();
-
-  await runFinalizePhase({
-    domain: s.domain,
-    exactMatch: s.exactMatch,
-    modules: s.modules,
-    emit: s.emit,
-    kaliMode: s.kaliMode,
-    auth: s.auth,
-    bountyCtx: s.bountyCtx,
-    outOfScopeList: s.outOfScopeList,
-    findings: s.findings,
-    stats: s.stats,
-    addFinding: s.addFinding,
-    log: s.log,
-    pipe: s.pipe,
-    progress: s.progress,
-    subdomainsAlive: s.subdomainsAlive,
-    paramRows: s.paramRows,
-    githubClonedItems: s.githubClonedItems,
-    projectNameRaw: s.projectNameRaw,
-    autoAiReports: s.autoAiReports,
-    aiProviderMode: s.aiProviderMode,
-    aiUseOpenrouter: s.aiUseOpenrouter,
-    aiOpenrouterOnly: s.aiOpenrouterOnly,
-    aiPrimaryCloud: s.aiPrimaryCloud,
-    shannonSkipDepsVerify: s.shannonSkipDepsVerify,
-    pentestgptUrlOverride: s.pentestgptUrlOverride,
-    engagementIdRaw: s.engagementIdRaw,
-    engagementOperatorRaw: s.engagementOperatorRaw,
-    ROOT: s.ROOT,
-    reconCoverageSnapshot: s.reconCoverageSnapshot,
-    pipelineAiOut: s.pipelineAiOut,
+  await runPipelinePhases(s, PIPELINE_PHASES, {
+    enabled: ctx.continueOnPhaseError === true || ctx.enablePhaseTimeouts === true,
+    continueOnPhaseError: ctx.continueOnPhaseError === true,
+    phaseTimeouts: ctx.phaseTimeoutsMs ?? ctx.phaseTimeouts ?? null,
+    phaseSettleGraceMs: ctx.phaseSettleGraceMs,
   });
 }

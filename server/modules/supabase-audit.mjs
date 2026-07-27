@@ -12,13 +12,19 @@
  *  6. Payment privilege esc. — PATCH plan_type=premium sem pagamento real
  *
  * Probes de leitura: usam anonKey extraída automaticamente do bundle do alvo.
- * Probes de escrita: obtêm authToken do bundle, signup anônimo/aberto ou GHOSTRECON_SUPABASE_AUTH_TOKEN.
+ * Probes de escrita: desligados por padrão e exigem writeProbes=true explícito.
  *
  * Todos os probes destrutivos tentam cleanup após a coleta de evidências.
  */
 
 import https from 'node:https';
 import http from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  abortableDelay,
+  isAbortError,
+  throwIfAborted,
+} from './http-utils.js';
 import {
   runSupabaseRlsAudit,
   detectServiceRoleExposure,
@@ -58,12 +64,43 @@ function makeFinding({ type, value, score, url, meta, owasp, mitre, cvss }) {
   return { type, value, score, prio, url, meta: meta || {}, owasp, mitre, cvss: cvss || null, source: 'supabase_audit' };
 }
 
-async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {}) {
-  return new Promise((resolve) => {
+const requestImplContext = new AsyncLocalStorage();
+
+function abortReason(signal) {
+  return signal?.reason || new DOMException('The operation was aborted', 'AbortError');
+}
+
+async function networkRequest(
+  url,
+  { method = 'GET', headers = {}, body = null, signal = null } = {},
+) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
     let parsed;
     try { parsed = new URL(url); } catch { return resolve({ status: null, headers: {}, body: '', error: 'invalid_url' }); }
 
     const mod = parsed.protocol === 'https:' ? https : http;
+    let settled = false;
+    let req = null;
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      reject(error);
+    };
+    const onAbort = () => {
+      const reason = abortReason(signal);
+      req?.destroy(reason);
+      finishReject(reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) return onAbort();
     const opts = {
       hostname: parsed.hostname,
       port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
@@ -78,20 +115,52 @@ async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {
       },
     };
 
-    const req = mod.request(opts, (res) => {
+    req = mod.request(opts, (res) => {
       const resHeaders = {};
       for (const [k, v] of Object.entries(res.headers || {})) resHeaders[k.toLowerCase()] = v;
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; if (buf.length > 32768) req.destroy(); });
-      res.on('end', () => resolve({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
+      res.on('end', () => finishResolve({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
     });
 
-    req.on('error', (e) => resolve({ status: null, headers: {}, body: '', error: e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ status: null, headers: {}, body: '', error: 'timeout' }); });
+    req.on('error', (e) => {
+      if (isAbortError(e, signal)) finishReject(abortReason(signal));
+      else finishResolve({ status: null, headers: {}, body: '', error: e.message });
+    });
+    req.on('timeout', () => {
+      finishResolve({ status: null, headers: {}, body: '', error: 'timeout' });
+      req.destroy();
+    });
     if (body) req.write(body);
     req.end();
   });
+}
+
+async function rawRequest(url, options = {}) {
+  const context = requestImplContext.getStore() || {};
+  const requestImpl = typeof context === 'function' ? context : context.requestImpl;
+  const signal = options.signal || context.signal || null;
+  const urlAllowed = context.urlAllowed || null;
+  throwIfAborted(signal);
+  if (typeof urlAllowed === 'function' && urlAllowed(url) !== true) {
+    return { status: null, headers: {}, body: '', error: 'out_of_scope' };
+  }
+  const result = typeof requestImpl === 'function'
+    ? await requestImpl(url, { ...options, signal })
+    : await networkRequest(url, { ...options, signal });
+  throwIfAborted(signal);
+  return result;
+}
+
+function withRequestImpl(requestImpl, signal, urlAllowed, fn) {
+  throwIfAborted(signal);
+  return requestImplContext.run({ requestImpl, signal, urlAllowed }, fn);
+}
+
+function rethrowAbort(error) {
+  const signal = requestImplContext.getStore()?.signal || null;
+  if (isAbortError(error, signal)) throw error;
 }
 
 function supabaseHeaders(key, authToken) {
@@ -103,7 +172,9 @@ function supabaseHeaders(key, authToken) {
   };
 }
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function sleep(ms) {
+  return abortableDelay(ms, requestImplContext.getStore()?.signal || null);
+}
 
 // ── PROBE 1: Rate Limiting ────────────────────────────────────────────────────
 
@@ -521,11 +592,25 @@ WITH CHECK (
  * @returns {Promise<{findings: object[], summary: object}>}
  */
 export async function runSupabaseAudit(context, opts = {}) {
+  return withRequestImpl(opts.requestImpl, opts.signal, opts.urlAllowed, async () => {
   let { supabaseUrl, anonKey, bundleText = '' } = context || {};
-  const { authToken: envAuthOverride = null, targetUrl = '', log = null, writeProbes = true } = opts;
+  const {
+    authToken: envAuthOverride = null,
+    targetUrl = '',
+    log = null,
+    writeProbes = false,
+    allowServiceRole = false,
+    requestImpl = null,
+  } = opts;
+  const allowWrites = writeProbes === true;
 
   if ((!supabaseUrl || !anonKey) && targetUrl) {
-    if (!bundleText) bundleText = await fetchClientBundleText(targetUrl);
+    if (!bundleText) {
+      bundleText = await fetchClientBundleText(targetUrl, {
+        signal: opts.signal,
+        urlAllowed: opts.urlAllowed,
+      });
+    }
     const extracted = extractSupabaseCredentials(bundleText);
     supabaseUrl = supabaseUrl || extracted.supabaseUrl;
     anonKey = anonKey || extracted.anonKey;
@@ -533,6 +618,18 @@ export async function runSupabaseAudit(context, opts = {}) {
 
   if (!supabaseUrl || !anonKey) {
     return { findings: [], summary: { skipped: 'sem supabaseUrl ou anonKey no alvo' } };
+  }
+  if (typeof opts.urlAllowed === 'function' && opts.urlAllowed(supabaseUrl) !== true) {
+    log?.('[supabase-audit] Endpoint Supabase descoberto fora do escopo autorizado — probes ignorados', 'info');
+    return {
+      findings: [],
+      summary: {
+        skipped: 'supabase_out_of_scope',
+        supabaseUrl,
+        targetUrl,
+        writeProbes: false,
+      },
+    };
   }
 
   log?.(`[supabase-audit] Iniciando auditoria em ${supabaseUrl}`, 'info');
@@ -546,6 +643,11 @@ export async function runSupabaseAudit(context, opts = {}) {
     bundleText,
     log,
     envToken,
+    writeProbes: allowWrites,
+    allowServiceRole: allowWrites && allowServiceRole === true,
+    requestImpl,
+    signal: opts.signal,
+    urlAllowed: opts.urlAllowed,
   });
   const authToken = resolved.authToken;
   const apiKey = resolved.apiKey || anonKey;
@@ -553,7 +655,7 @@ export async function runSupabaseAudit(context, opts = {}) {
   if (authToken) {
     const uid = extractUserId(authToken);
     log?.(
-      `[supabase-audit] Token autenticado obtido (fonte=${resolved.source}, user_id=${uid || 'service_role'}) — probes de escrita habilitados`,
+      `[supabase-audit] Token autenticado obtido (fonte=${resolved.source}, user_id=${uid || 'service_role'}) — ${allowWrites ? 'write probes autorizados' : 'somente probes de leitura'}`,
       resolved.source === 'bundle_service_role' ? 'warn' : 'info',
     );
   } else {
@@ -570,12 +672,16 @@ export async function runSupabaseAudit(context, opts = {}) {
       {
         log,
         targetUrl,
-        writeProbes: writeProbes && String(process.env.GHOSTRECON_SUPABASE_WRITE_PROBES || '1').trim() !== '0',
+        writeProbes: allowWrites,
+        requestImpl,
+        signal: opts.signal,
+        urlAllowed: opts.urlAllowed,
       },
     );
     findings.push(...(rlsAudit.findings || []));
     results.rlsAudit = rlsAudit.summary?.results || {};
   } catch (e) {
+    rethrowAbort(e);
     log?.(`[supabase-audit] RLS audit erro: ${e.message}`, 'warn');
     results.rlsAudit = 'erro';
   }
@@ -586,6 +692,7 @@ export async function runSupabaseAudit(context, opts = {}) {
     if (f) findings.push(f);
     results.rateLimiting = f ? 'vulneravel' : 'ok';
   } catch (e) {
+    rethrowAbort(e);
     log?.(`[supabase-audit] Rate limiting probe erro: ${e.message}`, 'warn');
     results.rateLimiting = 'erro';
   }
@@ -596,6 +703,7 @@ export async function runSupabaseAudit(context, opts = {}) {
     if (f) findings.push(f);
     results.mfa = f ? 'ausente' : 'ok_ou_desconhecido';
   } catch (e) {
+    rethrowAbort(e);
     log?.(`[supabase-audit] 2FA probe erro: ${e.message}`, 'warn');
     results.mfa = 'erro';
   }
@@ -606,38 +714,46 @@ export async function runSupabaseAudit(context, opts = {}) {
     findings.push(...fs);
     results.idorUserPlans = fs.length ? `${fs.length} achado(s)` : 'ok';
   } catch (e) {
+    rethrowAbort(e);
     log?.(`[supabase-audit] IDOR probe erro: ${e.message}`, 'warn');
     results.idorUserPlans = 'erro';
   }
 
-  // 4. Business Logic — study_records
-  try {
-    const f = await probeBusinessLogic(supabaseUrl, anonKey, authToken, log, apiKey);
-    if (f) findings.push(f);
-    results.businessLogic = f ? 'vulneravel' : (authToken ? 'ok' : 'ignorado_sem_token');
-  } catch (e) {
-    log?.(`[supabase-audit] Business logic probe erro: ${e.message}`, 'warn');
-    results.businessLogic = 'erro';
-  }
+  if (allowWrites) {
+    // 4. Business Logic — study_records
+    try {
+      const f = await probeBusinessLogic(supabaseUrl, anonKey, authToken, log, apiKey);
+      if (f) findings.push(f);
+      results.businessLogic = f ? 'vulneravel' : (authToken ? 'ok' : 'ignorado_sem_token');
+    } catch (e) {
+      rethrowAbort(e);
+      log?.(`[supabase-audit] Business logic probe erro: ${e.message}`, 'warn');
+      results.businessLogic = 'erro';
+    }
 
-  // 5. Stripe field manipulation
-  try {
-    const f = await probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log, apiKey);
-    if (f) findings.push(f);
-    results.stripeFields = f ? 'vulneravel' : (authToken ? 'ok' : 'ignorado_sem_token');
-  } catch (e) {
-    log?.(`[supabase-audit] Stripe fields probe erro: ${e.message}`, 'warn');
-    results.stripeFields = 'erro';
-  }
+    // 5. Stripe field manipulation
+    try {
+      const f = await probeStripeFieldManipulation(supabaseUrl, anonKey, authToken, log, apiKey);
+      if (f) findings.push(f);
+      results.stripeFields = f ? 'vulneravel' : (authToken ? 'ok' : 'ignorado_sem_token');
+    } catch (e) {
+      rethrowAbort(e);
+      log?.(`[supabase-audit] Stripe fields probe erro: ${e.message}`, 'warn');
+      results.stripeFields = 'erro';
+    }
 
-  // 6. Payment bypass — executado por último pois é o mais impactante
-  try {
-    const f = await probePaymentBypass(supabaseUrl, anonKey, authToken, log, apiKey);
-    if (f) findings.push(f);
-    results.paymentBypass = f ? 'CRITICO' : (authToken ? 'ok' : 'ignorado_sem_token');
-  } catch (e) {
-    log?.(`[supabase-audit] Payment bypass probe erro: ${e.message}`, 'warn');
-    results.paymentBypass = 'erro';
+    // 6. Payment bypass — executado por último pois é o mais impactante
+    try {
+      const f = await probePaymentBypass(supabaseUrl, anonKey, authToken, log, apiKey);
+      if (f) findings.push(f);
+      results.paymentBypass = f ? 'CRITICO' : (authToken ? 'ok' : 'ignorado_sem_token');
+    } catch (e) {
+      rethrowAbort(e);
+      log?.(`[supabase-audit] Payment bypass probe erro: ${e.message}`, 'warn');
+      results.paymentBypass = 'erro';
+    }
+  } else {
+    results.writeProbes = 'disabled';
   }
 
   const critical = findings.filter((f) => f.prio === 'critical').length;
@@ -652,6 +768,7 @@ export async function runSupabaseAudit(context, opts = {}) {
       targetUrl,
       authTokenPresent: Boolean(authToken),
       authTokenSource: resolved.source || null,
+      writeProbes: allowWrites,
       totalFindings: findings.length,
       critical,
       high,
@@ -659,6 +776,7 @@ export async function runSupabaseAudit(context, opts = {}) {
       probeResults: results,
     },
   };
+  });
 }
 
 export default runSupabaseAudit;

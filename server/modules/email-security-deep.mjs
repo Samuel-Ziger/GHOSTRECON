@@ -124,13 +124,22 @@ export function analyzeEmailSecurityRecords({
   bimi = null,
   mtaSts = null,
   tlsRpt = null,
+  checks = {},
 } = {}) {
   const findings = [];
   const hasMx = Array.isArray(mx) && mx.length > 0;
   const spfPolicy = parseSpfPolicy(spf);
   const dmarcPolicy = parseDmarcPolicy(dmarc);
+  const checked = {
+    root: checks.root !== false,
+    dmarc: checks.dmarc !== false,
+    dkim: checks.dkim !== false,
+    bimi: checks.bimi !== false,
+    mtaSts: checks.mtaSts !== false,
+    tlsRpt: checks.tlsRpt !== false,
+  };
 
-  if (hasMx) {
+  if (checked.root && hasMx) {
     findings.push(finding({
       issue: 'MX publicado',
       score: 18,
@@ -139,7 +148,7 @@ export function analyzeEmailSecurityRecords({
     }));
   }
 
-  if (!spfPolicy) {
+  if (checked.root && !spfPolicy) {
     findings.push(finding({
       issue: hasMx ? 'SPF ausente em dominio que recebe email' : 'SPF ausente',
       score: hasMx ? 58 : 34,
@@ -147,7 +156,7 @@ export function analyzeEmailSecurityRecords({
       host: domain,
       meta: ['control=spf'],
     }));
-  } else {
+  } else if (checked.root) {
     if (/^\+all$/i.test(spfPolicy.all)) {
       findings.push(finding({
         issue: 'SPF permite qualquer remetente (+all)',
@@ -193,7 +202,7 @@ export function analyzeEmailSecurityRecords({
     }
   }
 
-  if (!dmarcPolicy) {
+  if (checked.dmarc && !dmarcPolicy) {
     findings.push(finding({
       issue: hasMx ? 'DMARC ausente em dominio que recebe email' : 'DMARC ausente',
       score: hasMx ? 64 : 40,
@@ -201,7 +210,7 @@ export function analyzeEmailSecurityRecords({
       host: `_dmarc.${domain}`,
       meta: ['control=dmarc'],
     }));
-  } else {
+  } else if (checked.dmarc) {
     if (dmarcPolicy.policy === 'none') {
       findings.push(finding({
         issue: 'DMARC em modo monitoramento (p=none)',
@@ -248,7 +257,7 @@ export function analyzeEmailSecurityRecords({
     }
   }
 
-  if (hasMx && !dkimSelectors.length) {
+  if (checked.dkim && hasMx && !dkimSelectors.length) {
     findings.push(finding({
       issue: 'DKIM nao encontrado em seletores comuns',
       score: 32,
@@ -256,7 +265,7 @@ export function analyzeEmailSecurityRecords({
       host: `selector._domainkey.${domain}`,
       meta: ['note=heuristic_common_selectors_only'],
     }));
-  } else if (dkimSelectors.length) {
+  } else if (checked.dkim && dkimSelectors.length) {
     findings.push(finding({
       issue: 'DKIM encontrado em seletor comum',
       score: 20,
@@ -267,7 +276,7 @@ export function analyzeEmailSecurityRecords({
   }
 
   const dmarcStrong = dmarcPolicy && ['reject', 'quarantine'].includes(dmarcPolicy.policy);
-  if (bimi && !dmarcStrong) {
+  if (checked.bimi && bimi && !dmarcStrong) {
     findings.push(finding({
       issue: 'BIMI publicado sem DMARC forte',
       score: 38,
@@ -275,7 +284,7 @@ export function analyzeEmailSecurityRecords({
       host: `default._bimi.${domain}`,
       meta: ['risk=brand_indicator_without_enforcement'],
     }));
-  } else if (dmarcStrong && !bimi) {
+  } else if (checked.bimi && dmarcStrong && !bimi) {
     findings.push(finding({
       issue: 'BIMI ausente apesar de DMARC forte',
       score: 18,
@@ -285,7 +294,7 @@ export function analyzeEmailSecurityRecords({
     }));
   }
 
-  if (hasMx && !mtaSts) {
+  if (checked.mtaSts && hasMx && !mtaSts) {
     findings.push(finding({
       issue: 'MTA-STS ausente',
       score: 34,
@@ -294,7 +303,7 @@ export function analyzeEmailSecurityRecords({
       meta: ['control=smtp_tls_policy'],
     }));
   }
-  if (hasMx && !tlsRpt) {
+  if (checked.tlsRpt && hasMx && !tlsRpt) {
     findings.push(finding({
       issue: 'TLS-RPT ausente',
       score: 24,
@@ -311,23 +320,52 @@ function firstRecord(records, re) {
   return (records || []).find((txt) => re.test(txt)) || null;
 }
 
-export async function runEmailSecurityDeep(domain, { timeoutMs = limits.dnsEnrichTimeoutMs || 8000, log = () => {} } = {}) {
+export async function runEmailSecurityDeep(domain, {
+  timeoutMs = limits.dnsEnrichTimeoutMs || 8000,
+  log = () => {},
+  hostAllowed = () => true,
+} = {}) {
   const root = String(domain || '').trim().replace(/^\.+|\.+$/g, '').toLowerCase();
   if (!root) return { findings: [], records: {} };
+  const hosts = {
+    root,
+    dmarc: `_dmarc.${root}`,
+    bimi: `default._bimi.${root}`,
+    mtaSts: `_mta-sts.${root}`,
+    tlsRpt: `_smtp._tls.${root}`,
+  };
+  const checked = {
+    root: hostAllowed(hosts.root),
+    dmarc: hostAllowed(hosts.dmarc),
+    bimi: hostAllowed(hosts.bimi),
+    mtaSts: hostAllowed(hosts.mtaSts),
+    tlsRpt: hostAllowed(hosts.tlsRpt),
+  };
+  const txtIfAllowed = (hostname, allowed, localTimeout = timeoutMs) => (
+    allowed ? resolveTxtSafe(hostname, localTimeout) : Promise.resolve([])
+  );
 
   const [mx, txtRoot, txtDmarc, txtBimi, txtMtaSts, txtTlsRpt] = await Promise.all([
-    resolveMxSafe(root, timeoutMs),
-    resolveTxtSafe(root, timeoutMs),
-    resolveTxtSafe(`_dmarc.${root}`, timeoutMs),
-    resolveTxtSafe(`default._bimi.${root}`, timeoutMs),
-    resolveTxtSafe(`_mta-sts.${root}`, timeoutMs),
-    resolveTxtSafe(`_smtp._tls.${root}`, timeoutMs),
+    checked.root ? resolveMxSafe(root, timeoutMs) : Promise.resolve([]),
+    txtIfAllowed(root, checked.root),
+    txtIfAllowed(hosts.dmarc, checked.dmarc),
+    txtIfAllowed(hosts.bimi, checked.bimi),
+    txtIfAllowed(hosts.mtaSts, checked.mtaSts),
+    txtIfAllowed(hosts.tlsRpt, checked.tlsRpt),
   ]);
 
-  const dkimRows = await Promise.all(COMMON_DKIM_SELECTORS.map(async (selector) => ({
-    selector,
-    rows: await resolveTxtSafe(`${selector}._domainkey.${root}`, Math.min(timeoutMs, 3500)),
-  })));
+  const dkimRows = await Promise.all(COMMON_DKIM_SELECTORS.map(async (selector) => {
+    const hostname = `${selector}._domainkey.${root}`;
+    const allowed = hostAllowed(hostname);
+    return {
+      selector,
+      allowed,
+      rows: allowed
+        ? await resolveTxtSafe(hostname, Math.min(timeoutMs, 3500))
+        : [],
+    };
+  }));
+  checked.dkim = dkimRows.some(({ allowed }) => allowed);
   const dkimSelectors = dkimRows
     .filter(({ rows }) => rows.some((r) => /^v=DKIM1\b/i.test(r)))
     .map(({ selector }) => selector)
@@ -342,7 +380,11 @@ export async function runEmailSecurityDeep(domain, { timeoutMs = limits.dnsEnric
     mtaSts: firstRecord(txtMtaSts, /^v=STSv1\b/i),
     tlsRpt: firstRecord(txtTlsRpt, /^v=TLSRPTv1\b/i),
   };
-  const findings = analyzeEmailSecurityRecords({ domain: root, ...records });
+  const findings = analyzeEmailSecurityRecords({
+    domain: root,
+    ...records,
+    checks: checked,
+  });
   log(`Email security deep: MX=${mx.length} DKIM=${dkimSelectors.length} achado(s)=${findings.length}`, findings.some((f) => f.score >= 55) ? 'warn' : 'info');
   return { findings, records };
 }

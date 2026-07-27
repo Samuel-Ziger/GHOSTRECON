@@ -1,7 +1,13 @@
 import { AUTO_BASE_MODULES, AUTO_DEEP_PASSIVE_MODULES, AUTO_HEXSTRIKE_MODULES } from './tool-catalog.mjs';
+import { isCatalogModuleAllowed } from './providers/shared.mjs';
+import { normalizeModuleId } from '../modules/module-ids.mjs';
 
 function uniq(list) {
   return [...new Set((list || []).map((x) => String(x).trim()).filter(Boolean))];
+}
+
+function uniqModuleIds(list) {
+  return [...new Set((list || []).map(normalizeModuleId).filter(Boolean))];
 }
 
 function normalizeMode(mode) {
@@ -40,6 +46,33 @@ function shouldUseHexstrike({ requestedModules, catalog, mode }) {
   return Boolean(hx?.installed);
 }
 
+function catalogModuleIndex(catalog) {
+  return new Map((catalog?.modules || [])
+    .filter((item) => item?.id)
+    .map((item) => [normalizeModuleId(item.id), item]));
+}
+
+function selectAvailableModules(moduleIds, index, autonomyLevel) {
+  return uniqModuleIds(moduleIds).filter((id) => {
+    const item = index.get(id);
+    return Boolean(item && isCatalogModuleAllowed(item, {
+      autonomyLevel,
+      allowIntrusive: ['authorized', 'authorized_opsec'].includes(autonomyLevel),
+    }));
+  });
+}
+
+function moduleRejectionReason(id, index, autonomyLevel) {
+  const item = index.get(id);
+  if (!item) return 'module_not_in_catalog';
+  if (item.available === false) return 'module_unavailable';
+  if (!isCatalogModuleAllowed(item, {
+    autonomyLevel,
+    allowIntrusive: ['authorized', 'authorized_opsec'].includes(autonomyLevel),
+  })) return 'module_disallowed_by_autonomy';
+  return 'module_rejected';
+}
+
 export function createAutoPlan({
   target,
   mode = 'balanced',
@@ -47,44 +80,65 @@ export function createAutoPlan({
   providers = [],
   catalog = {},
   openrouterModel = null,
-  includeHexstrike = true,
+  includeHexstrike = false,
   includeDeepPassive = null,
   ragContext = null,
   agentDecision = null,
   autonomyLevel = 'observation',
 } = {}) {
   const selectedMode = normalizeMode(mode);
-  const requested = uniq(requestedModules);
+  const requested = uniqModuleIds(requestedModules);
   const deep = includeDeepPassive == null ? selectedMode === 'deep' : Boolean(includeDeepPassive);
   const modules = [];
+  const catalogIndex = catalogModuleIndex(catalog);
+  const operatorModules = selectAvailableModules(requested, catalogIndex, autonomyLevel);
+  const rejectedOperatorModules = requested
+    .filter((id) => !operatorModules.includes(id))
+    .map((id) => ({ id, reason: moduleRejectionReason(id, catalogIndex, autonomyLevel) }));
+  const decidedModules = uniqModuleIds(agentDecision?.requestedModules);
+  const agentModules = selectAvailableModules(decidedModules, catalogIndex, autonomyLevel);
+  const agentAction = agentDecision?.action || null;
+  const executesAgentDecision = ['run_modules', 'continue_with_context'].includes(agentAction);
+  const operatorOverridesTerminal = ['finish', 'abstain'].includes(agentAction)
+    && operatorModules.length > 0;
+  let baselineModules = [];
+  let selectionStrategy = 'deterministic_baseline';
 
-  const decidedModules = uniq(agentDecision?.requestedModules);
-  if (agentDecision && decidedModules.length) {
-    modules.push(...decidedModules);
-    if (['authorized', 'authorized_opsec'].includes(autonomyLevel)) {
-      modules.push(...(catalog.modules || []).filter((m) => m.available !== false && (m.class === 'intrusive' || m.manifest?.intrusive === true)).map((m) => m.id));
-    }
+  if (agentDecision && executesAgentDecision) {
+    selectionStrategy = 'agent_and_operator_allowlisted';
+    modules.push(...agentModules, ...operatorModules);
+  } else if (agentDecision && operatorOverridesTerminal) {
+    // Explicit, allowlisted operator intent has precedence over a terminal AI
+    // opinion. This is recorded as an override rather than hidden fallback.
+    selectionStrategy = `explicit_operator_override:${agentAction}`;
+    modules.push(...operatorModules);
+  } else if (agentDecision) {
+    // finish/abstain/ask_operator/forge_module are control decisions. They must
+    // not be silently converted into a deterministic scan.
+    selectionStrategy = `control_action:${agentAction || 'invalid'}`;
   } else {
-    modules.push(...AUTO_BASE_MODULES);
-    if (deep) modules.push(...AUTO_DEEP_PASSIVE_MODULES);
+    baselineModules.push(...AUTO_BASE_MODULES);
+    if (deep) baselineModules.push(...AUTO_DEEP_PASSIVE_MODULES);
     if (includeHexstrike && shouldUseHexstrike({ requestedModules: requested, catalog, mode: selectedMode })) {
-      modules.push(...AUTO_HEXSTRIKE_MODULES);
+      baselineModules.push(...AUTO_HEXSTRIKE_MODULES);
     }
-    modules.push(...requested.filter((m) => !/^kali_|sqlmap|vigolium_|cloud_bruteforce|cred_spray|race_/i.test(m)));
-    if (['authorized', 'authorized_opsec'].includes(autonomyLevel)) {
-      modules.push(...(catalog.modules || []).filter((m) => m.available !== false && (m.class === 'intrusive' || m.manifest?.intrusive === true)).map((m) => m.id));
-    }
+    baselineModules = selectAvailableModules(baselineModules, catalogIndex, autonomyLevel);
+    modules.push(...baselineModules, ...operatorModules);
   }
 
   const roles = commanderRoles(providers);
   const openrouter = (providers || []).find((p) => p.id === 'openrouter');
   const model = openrouterModel || openrouter?.defaultModel || null;
+  const planAction = operatorOverridesTerminal
+    ? 'run_modules'
+    : agentAction || (modules.length ? 'run_modules' : 'finish');
 
   return {
     schemaVersion: 1,
     kind: 'ghostrecon.auto.plan',
     target: String(target || '').trim(),
     mode: selectedMode,
+    action: planAction,
     objective: 'authorized_bug_bounty_recon',
     commanders: {
       selected: (providers || []).filter((p) => p.selected).map((p) => p.id),
@@ -116,10 +170,28 @@ export function createAutoPlan({
       },
     ],
     modules: uniq(modules),
+    moduleSelection: {
+      strategy: selectionStrategy,
+      explicitOperatorOverride: operatorOverridesTerminal,
+      baseline: uniq(baselineModules),
+      operator: {
+        requested,
+        accepted: operatorModules,
+        rejected: rejectedOperatorModules,
+      },
+      agent: {
+        action: agentAction,
+        requested: decidedModules,
+        accepted: agentModules,
+        rejected: decidedModules
+          .filter((id) => !agentModules.includes(id))
+          .map((id) => ({ id, reason: moduleRejectionReason(id, catalogIndex, autonomyLevel) })),
+      },
+    },
     agentDecision: agentDecision || null,
     policy: {
       intrusiveAllowed: ['authorized', 'authorized_opsec'].includes(autonomyLevel),
-      moduleForge: 'disabled_in_phase_1',
+      moduleForge: 'pending_validation_and_operator_approval',
       hexstrikeTools: 'intelligence_only',
     },
     memory: {
@@ -139,19 +211,34 @@ export function createAutoPlan({
 export function evaluateAutoRun({ events = [], plan = null } = {}) {
   const findings = events.filter((e) => e?.type === 'finding').length;
   const errors = events.filter((e) => e?.type === 'error');
+  const fatalErrors = errors.filter((e) => e?.recoverable !== true);
+  const recoverableErrors = errors.filter((e) => e?.recoverable === true);
+  const phaseFailures = events.filter((e) => e?.type === 'phase_outcome'
+    && !['done', 'skipped'].includes(String(e?.status || '')));
   const warnings = events.filter((e) => e?.type === 'log' && e.level === 'warn');
   const highSignals = events.filter((e) => e?.type === 'finding' && ['high', 'critical'].includes(String(e.finding?.prio || e.prio || '').toLowerCase())).length;
+  const partial = recoverableErrors.length > 0 || phaseFailures.length > 0;
   return {
     schemaVersion: 1,
     kind: 'ghostrecon.auto.evaluation',
     target: plan?.target || null,
-    ok: errors.length === 0,
+    ok: fatalErrors.length === 0,
+    status: fatalErrors.length ? 'failed' : partial ? 'partial' : 'completed',
     findings,
     highSignals,
-    warnings: warnings.length,
-    errors: errors.map((e) => e.message || e.msg || 'erro'),
-    next: errors.length
+    warnings: warnings.length + recoverableErrors.length,
+    errors: fatalErrors.map((e) => e.message || e.msg || 'erro'),
+    recoverableErrors: recoverableErrors.map((e) => e.message || e.msg || 'erro recuperável'),
+    phaseFailures: phaseFailures.map((e) => ({
+      phase: e.phase || null,
+      status: e.status || 'failed',
+      recoverable: e.recoverable === true,
+      error: e.error || null,
+    })),
+    next: fatalErrors.length
       ? 'review_errors_before_next_iteration'
+      : partial
+        ? 'review_partial_results_and_recoverable_failures'
       : findings
         ? 'review_findings_and_consider_deep_or_module_forge'
         : 'consider_deep_mode_or_additional_context',

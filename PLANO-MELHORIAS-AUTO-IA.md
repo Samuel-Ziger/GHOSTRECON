@@ -1,313 +1,440 @@
-# Plano de melhorias do Modo AUTO e integração das IAs
+# Plano de melhorias do Modo Auto e integração das IAs
 
-Documento de investigação, arquitetura alvo e roteiro de implementação para transformar o Modo AUTO em um orquestrador no qual somente as IAs selecionadas tomam decisões reais, justificam essas decisões, persistem a trilha no RAG e podem propor novos módulos com validação segura.
+Documento de investigação, decisões e evolução do Modo Auto.
 
 Criado em: 2026-07-14
 
-## Estado de implementação em 2026-07-14
+Última revisão: 2026-07-26
 
-Implementado nesta primeira evolução:
-
-- correção de papéis para considerar somente IAs selecionadas;
-- JSON Schema e validação local de decisões;
-- adaptador Codex via `codex exec`, efêmero e read-only;
-- redução do ambiente herdado pelo processo Codex para evitar vazamento cruzado de chaves;
-- adaptador OpenRouter real via Chat Completions;
-- adaptador Skynet/GHOST via endpoint OpenAI-compatible local;
-- redação de segredos antes de montar contexto de agente;
-- conselho em dois turnos: propostas independentes e revisão cruzada;
-- veredito determinístico por quórum sobre módulos;
-- persistência de cada turno no Auto RAG;
-- busca RAG priorizando memórias do mesmo alvo;
-- pasta RAG exclusiva para solicitações de Module Forge;
-- storage `dynamic/by-model/<autor>/<modelo>/pending/<forgeId>`;
-- preservação de request, proveniência, transcript e veredito;
-- eventos de conselho e Module Forge na UI;
-- testes offline dos adaptadores, conselho, redação e storage.
-- provider Claude Code não interativo com JSON Schema, `permission-mode=plan` e tools desabilitadas;
-- observation bundle redigido com findings, warnings, erros e módulos executados;
-- segunda rodada do conselho após o pipeline;
-- decisão pós-pipeline persistida por agente no RAG;
-- geração estruturada de `module.mjs`, `module.test.js`, `manifest.json` e notas em `pending`;
-- geração de código sem permitir que Codex/Claude escrevam diretamente no projeto;
-- validação estática conservadora de imports, rede, filesystem, subprocessos e código dinâmico;
-- syntax check do módulo e do teste;
-- execução de testes com Node permission model sem rede, escrita ou subprocessos;
-- review formal `approve/request_changes/reject/abstain` pelas IAs selecionadas;
-- quórum para liberar um pacote à aprovação humana;
-- API para listar pacotes Forge e aprovar/rejeitar um pacote;
-- movimentação auditável de `pending` para `active` ou `rejected`;
-- loader dinâmico restrito a módulos ativos, por `forgeId` e alvo original;
-- aprovação humana ativa o módulo e dispara a primeira execução imediatamente no alvo registrado;
-- falha na primeira execução desabilita o módulo e registra `activation_failed`;
-- correção automática de módulos após `request_changes`, devolvendo ao autor os pareceres completos;
-- snapshots imutáveis em `revisions/revision-NN` antes de cada correção;
-- nova validação, novos testes e nova votação após cada correção;
-- limite configurável de correções e estado auditável `correction_attempts_exhausted`;
-- rota autenticada de detalhe do pacote, limitada aos artefatos conhecidos do Forge;
-- painel visual no Modo AUTO para consultar código, testes, gates e votos;
-- aprovação/rejeição humana com justificativa e CSRF diretamente no painel;
-
-Ainda pendente:
-
-- teste real de credenciais e conectividade com os provedores configurados pelo operador;
-
-## Estado de implementação em 2026-07-16
-
-Concluído na segunda evolução:
-
-- probes separados para instalação, configuração, autenticação, alcance e usabilidade;
-- verificação de sessão do Codex e Claude Code, `/health` + `/v1/models` do GHOST e `/models` autenticado do OpenRouter;
-- adaptador OpenAI-compatible para LM Studio/Ollama;
-- rejeição de referências de evidência inexistentes e requisitos completos para Forge;
-- sessão persistente com limites de iteração, tempo, chamadas, contexto e custo;
-- cancelamento do stream propagado para conselho, CLIs, HTTP e pipeline;
-- loop iterativo real, sem repetir módulos já executados;
-- consenso ponderado por confiança e evidência, com pergunta ao operador em conflito entre concluir e continuar;
-- snapshot reproduzível com `sessionId`, `promptVersion`, hash do catálogo, memórias e usage;
-- recuperação RAG isolada pelo alvo, sem injeção indiscriminada de memórias recentes globais;
-- versionamento de pacotes ativos, canary percentual, promoção, desativação e rollback auditável;
-- API e painel para administrar todo o lifecycle do Module Forge;
-- Codex App Server persistente por sessão, com uma thread reutilizada entre turnos e fallback para `codex exec`;
-- Cursor Agent executável quando habilitado e autenticado, mantendo handoff como fallback;
-- checkpoints retomáveis, heartbeat e cancelamento cooperativo entre fases;
-- reparo de JSON limitado a uma tentativa;
-- ranking RAG híbrido por alvo, tecnologia, módulo, decisão, resultado, recência e embedding local;
-- estimativa configurável de custo para providers sem custo reportado;
-- comparação automática de versões e canary determinístico por execução;
-
-## Estado operacional em 2026-07-20
-
-O conjunto arquitetural planejado foi implementado e os testes automatizados do Auto estão aprovados. A primeira execução real, porém, revelou diferença entre timeout sinalizado e cancelamento efetivo dentro de um módulo. O CORS foi corrigido para respeitar o sinal compartilhado, o fallback `codex exec` passou a executar com stdin fechado e falhas do App Server/fallback passaram a preservar ambas as causas.
-
-Também foram adicionados registro em memória e endpoints autenticados para listar e cancelar sessões individuais. A operação ainda é classificada como **beta supervisionado**, pois faltam controles visuais, reconciliação de snapshots órfãos, watchdog de progresso e propagação uniforme de cancelamento para todos os módulos.
-
-O backlog operacional atualizado está em `MELHORIAS-PENDENTES-MODO-AUTO.md`.
-
-O FrameSeven está integrado no RUN comum e no Modo Auto. O fluxo usa autenticação opcional, Vigolium obrigatório, deduplicação conjunta e o template HTML original do FrameSeven para o relatório final. Melhorias futuras permanecem documentadas em `FRAMESEVEN-INTEGRACAO-FUTURA.md`.
+> Este arquivo preserva a sequência da investigação. O contrato operacional
+> vigente está em `MODO-AUTO-GHOSTRECON.md` e o backlog em
+> `MELHORIAS-PENDENTES-MODO-AUTO.md`. Afirmações históricas sobre o que “não
+> funciona” não prevalecem sobre o código e os testes atuais.
 
 ## Resumo executivo
 
-O Modo AUTO atual ainda é uma fase inicial. Ele detecta provedores, monta uma lista fixa de módulos, executa o pipeline e grava snapshots Markdown. As IAs Codex, Claude Code, Skynet/GHOST, modelo local e OpenRouter não são consultadas pelo orquestrador para criar o plano ou avaliar a execução. Cursor recebe somente um handoff Markdown por padrão.
+O problema original tinha duas partes:
 
-O próximo objetivo do projeto é:
+1. as IAs eram detectadas, mas não participavam de uma decisão estruturada e
+   auditável;
+2. mesmo depois da integração dos providers, o plano visto pelos gates não
+   correspondia necessariamente a todas as fases e engines que o pipeline podia
+   habilitar.
 
-> As IAs escolhidas pelo operador devem participar de uma sessão real de decisão, produzir respostas estruturadas e auditáveis, selecionar módulos com base nas evidências, avaliar os resultados de cada iteração, salvar suas decisões no Auto RAG e abrir uma solicitação de Module Forge quando detectarem uma lacuna de cobertura.
+A primeira parte foi tratada nas evoluções de 14 e 16 de julho: providers reais,
+contrato JSON, conselho, RAG, sessão iterativa e Module Forge. Execuções reais de
+20 de julho revelaram problemas adicionais de timeout, cancelamento e progresso.
 
-O GHOSTRECON continua sendo a autoridade de execução. Nenhuma IA pode ignorar escopo, OPSEC, timeouts, permissões, testes ou aprovação.
+A evolução de 25 de julho trata a segunda parte e endurece o ciclo de vida:
 
-## Diagnóstico confirmado do estado atual
+- catálogo híbrido ampliado;
+- política explícita para quatro autonomias;
+- plano efetivo expandido, congelado e identificado por hash;
+- RBAC, ownership, engagement/ROE, OPSEC e aprovação sobre o plano completo;
+- engines externas opt-in;
+- gates explícitos dentro das fases para impedir ações legadas implícitas;
+- classificação conservadora entre manifests e catálogo legado;
+- timeout com encerramento real de processos;
+- resiliência por fase sem sobreposição de trabalho;
+- RAG redigido e limitado;
+- findings de segredo protegidos e validação online explicitamente intrusiva;
+- write probes Supabase/Firebase/FTP separados e desligados por padrão;
+- Forge isolado e selado contra adulteração;
+- outcomes por fase, módulo e engine;
+- status `partial` para resultado útil com falhas recuperáveis.
 
-### O que já funciona
+A evolução de 26 de julho reforça as fronteiras que ainda permitiam replay ou
+ambiguidade operacional:
 
-- Endpoint NDJSON `POST /api/recon/auto/stream`.
-- Detecção de CLIs e serviços configurados.
-- Catálogo inicial de módulos AUTO.
-- Gate de OPSEC antes de executar o pipeline.
-- Execução do pipeline normal com os módulos planejados.
-- Persistência Markdown em `data/auto-rag/`.
-- Busca textual, listagem e leitura das memórias.
-- Handoff Markdown para Cursor.
-- Cliente OpenRouter, cliente Anthropic e cliente OpenAI-compatible/LM Studio no subsistema de relatórios.
-- Endpoint OpenAI-compatible do GHOST em `POST /v1/chat/completions`.
-- Contrato de módulos, registry e dispatcher para parte dos módulos modernos.
-- Testes unitários do esqueleto AUTO e de módulos.
+- checkpoint v2 somente nas fronteiras prontas, com claim atômico durável;
+- identidade dos engines e integridade Forge vinculadas ao catálogo/plano e
+  revalidadas antes de cada processo;
+- runner Forge forte Bubblewrap em Linux e ativação exclusiva por
+  `activationId`;
+- CAS de alvo, artefato e engagement sob lock, com revalidação antes/depois do
+  canário dinâmico isolado;
+- redação central de eventos antes da sessão e do NDJSON;
+- cancelamento propagado também no RUN manual;
+- engagement formal e confirmação obrigatórios para todo plano intrusivo
+  expandido no RUN; o antigo `tools all` FrameSeven foi substituído por perfis
+  explícitos e o perfil ofensivo continua sujeito aos mesmos gates;
+- deadlines FrameSeven separados por captura, aprovação, `before_scan` e scan;
+- normalização, dedupe e merge do `report.json` FrameSeven antes do terminal;
+- relatórios FrameSeven regenerados de findings redigidos e rota autenticada,
+  vinculada a owner/engagement, com leitura por descritor seguro.
 
-### O que ainda não funciona
+O Auto continua beta supervisionado. A implementação foi validada localmente
+com mocks e fixtures; esta entrega não inclui scan real de rede, browser
+autenticado, DAST ou ferramentas Kali.
 
-- Codex não é chamado pelo AUTO.
-- Claude Code não é chamado pelo AUTO.
-- OpenRouter não é chamado pelo AUTO.
-- Skynet/GHOST tem apenas o `/health` consultado.
-- Modelo local é apenas detectado.
-- Cursor, por padrão, apenas recebe um arquivo de tarefa.
-- A lista de módulos é fixa e não é resultado de raciocínio de uma IA.
-- A avaliação final somente conta eventos, warnings e findings.
-- Provedores não selecionados podem receber papéis.
-- Não existe protocolo de conselho multi-IA.
-- Não existe schema validado para decisões.
-- O Forge usa `dynamic/by-model/<autor>/<modelo>/pending`; após aprovação, o pacote vai para `active/<moduleId>/<forgeId>` e é carregado somente quando seu ID estiver nos módulos da execução e o alvo coincidir.
-- O RAG atual recupera arquivos recentes ou usa busca textual; não há recuperação direcionada por alvo, tecnologia, módulo e tipo de decisão.
-- Não existe controle de budget por provedor, quantidade de turnos ou custo.
-- Não existe cancelamento compartilhado entre stream, chamadas de IA e pipeline.
+## Estado atual versus diagnóstico histórico
 
-## Princípios obrigatórios
+As seguintes afirmações pertenciam ao diagnóstico de 2026-07-14 e estão
+**superadas**:
 
-1. Somente provedores explicitamente selecionados podem receber papéis.
-2. `instalado`, `configurado`, `autenticado`, `alcançável` e `selecionado` são estados diferentes.
-3. Uma IA indisponível deve produzir degradação explícita; nunca ser apresentada como participante real.
-4. Toda decisão deve possuir autor, entrada resumida, justificativa, confiança e saída estruturada.
-5. Toda ação proposta deve ser validada pelo GHOSTRECON antes da execução.
-6. Respostas de modelo são dados não confiáveis, mesmo quando produzidas por uma CLI local.
-7. Conteúdo encontrado no alvo não pode virar instrução para a IA; deve ser marcado como evidência não confiável para reduzir prompt injection.
-8. Segredos, cookies, tokens e corpos sensíveis devem ser redigidos antes de qualquer provedor cloud.
-9. Uma IA pode propor código. O GHOSTRECON decide se grava, testa, aprova e ativa.
-10. Módulo gerado nunca entra automaticamente no registry principal na primeira versão.
-11. Todas as decisões precisam ser reproduzíveis a partir de `runId`, modelo, promptVersion, catálogo e memórias utilizadas.
+| Afirmação antiga | Estado atual |
+| --- | --- |
+| “Codex não é chamado pelo Auto” | Codex possui App Server por sessão e fallback `codex exec` |
+| “OpenRouter/Skynet/modelo local só são detectados” | Há adaptadores de decisão estruturada e probes de usabilidade |
+| “A lista de módulos é fixa” | O catálogo combina registry, legado, Forge e engines |
+| “Não existe schema de decisão” | Schema e normalizador validam ações, campos e evidências |
+| “Não existe conselho” | Propostas e revisão passam por arbitragem determinística |
+| “Não existe cancelamento compartilhado” | Sessão, providers, pipeline e processos recebem cancelamento |
+| “RAG só usa recentes globais” | Recuperação e observações são orientadas ao alvo, redigidas e limitadas |
+| “Forge é apenas uma pasta pending” | Há lifecycle, review, aprovação, canário Bubblewrap, ativação hash-bound e integridade |
 
-## Arquitetura alvo
+Fatos operacionais que permanecem verdadeiros:
+
+- Cursor em modo handoff não conta como decisão em tempo real;
+- nenhum provider pode ignorar catálogo, RBAC, scope, engagement ou OPSEC;
+- recomendação HexStrike não equivale a execução;
+- ferramentas externas dependem de instalação e configuração;
+- checkpoints v2 retomam apenas fronteiras `ready`; não retomar
+  mid-engine/mid-evaluation é o comportamento fail-closed deliberado;
+- Forge requer o runner forte Bubblewrap/Linux e falha fechado sem ele.
+
+Limitações ainda abertas:
+
+- módulos legados ainda compartilham deadlines no nível da fase;
+- catálogo e classificação ainda são híbridos;
+- o adapter FrameSeven ainda não propaga Tor/proxy estrito;
+- RUN normal e Auto ainda precisam de paridade residual de autenticação,
+  proveniência e relatório, inclusive E2E com navegador real controlado.
+
+## Objetivo de produto
+
+Somente as IAs escolhidas pelo operador podem propor decisões reais. Cada
+proposta precisa ser:
+
+- estruturada;
+- atribuída a provider/modelo/papel;
+- limitada às evidências permitidas;
+- validada contra o catálogo da sessão;
+- transformada em um plano efetivo determinístico;
+- aprovada quando necessário;
+- reproduzível por hash e snapshot;
+- avaliada depois da execução.
+
+O GHOSTRECON, e não a IA, é a autoridade de execução.
+
+## Ameaças consideradas
+
+### Elevação por catálogo incompleto
+
+Uma IA via apenas módulos passivos enquanto o pipeline podia habilitar Kali,
+Vigolium ou fases implícitas por perfil. A correção é catalogar o legado e
+expandir tudo antes dos gates.
+
+### Elevação por fallback
+
+Uma saída inválida podia cair em plano determinístico mais amplo. O fallback
+agora precisa permanecer dentro da autonomia, opt-ins e classes permitidas.
+
+### Ação desconhecida e contrato parcial
+
+Modelos retornaram `request_modules`, `execute_modules`, `objective` ausente e
+`confidence` inválida. Aliases conhecidos são normalizados; campos e invariantes
+continuam obrigatórios; ações desconhecidas falham.
+
+### Timeout sem encerramento
+
+Um `Promise.race` podia devolver timeout enquanto App Server, CORS ou subprocesso
+continuava ativo. O timeout agora aborta, envia `SIGTERM`, escala para `SIGKILL`
+e espera settle. Sem settle, a run para.
+
+### Desconexão no RUN manual
+
+O stream manual podia fechar sem uma autoridade comum de cancelamento. A rota
+agora cria um `AbortController` por request e propaga o sinal ao pipeline e às
+integrações. O comportamento continua fail-fast, mas desconexão não deixa o
+trabalho deliberadamente solto.
+
+### Intrusivo manual sem autorização formal
+
+RBAC e confirmação isolados não provavam escopo, janela nem ROE. O RUN manual
+agora expande módulos, engines e dependências antes do preflight; se qualquer
+item efetivo for intrusivo, exige cumulativamente `recon.intrusive`, engagement
+formal ativo, ROE assinado, alvo dentro do escopo/janela e `confirmActive`. O
+FrameSeven é o único motor que mantém perfil ofensivo no Auto; esse perfil é
+explícito, read-oriented e não inclui `tools all` nem `-active-scan`.
+
+### Troca de engine depois da aprovação
+
+Validar apenas o caminho do binário permitia TOCTOU entre catálogo/plano e
+`spawn`. FrameSeven e Vigolium agora selam hash, tamanho e metadados do arquivo
+regular no catálogo/plano e revalidam essa identidade imediatamente antes de
+cada processo. O executor não aceita uma identidade nova implicitamente.
+
+### Confusão entre heartbeat e progresso
+
+Heartbeat ativo mascarava fase travada. A sessão registra atividade atual,
+timestamps e outcomes; watchdog usa falta de progresso, não a mera existência
+de heartbeat.
+
+### Sessão acessível por outro operador
+
+Listagem, cancelamento e aprovação precisavam de vínculo com o principal. O
+ownership agora é persistido e conferido nas rotas e na retomada.
+
+### Replay de checkpoint
+
+Um snapshot antigo podia ser restaurado depois de uma iteração já ter começado,
+repetindo providers ou engines. Checkpoints v2 agora descrevem apenas planos
+prontos e são consumidos por claim `wx` durável. Apenas
+`ready_for_iteration`/`ready_for_next_iteration` são retomáveis; v1 continua
+legível, mas não retomável, e não há retomada mid-engine/mid-evaluation.
+
+### Persistência de segredos
+
+Findings, URLs, headers e RAG podem conter cookies e tokens. A redação agora é
+central, recursiva e aplicada antes das principais gravações do Auto. Eventos
+também são sanitizados antes de atualizar a sessão e atravessar o NDJSON.
+
+### Execução implícita dentro de uma fase
+
+Mesmo com um plano correto, fases legadas ainda podiam disparar HTTP/WAF,
+verificação, descoberta ativa de parâmetros, takeover, recheck HIGH ou
+ferramentas Kali apenas por perfil/entrada na fase. O caminho Auto passou a
+exigir IDs explícitos no runtime para essas capacidades. Fontes passivas de URL
+também deixaram de autorizar implicitamente o fetch de bundles do alvo.
+
+### Escrita habilitada por credencial descoberta
+
+Token de ambiente, anon key, `service_role` ou configuração pública não podem
+ser tratados como autorização para signup, insert, update, delete, upload, RPC
+mutável ou FTP `STOR`. Esses writes foram separados dos probes de leitura e
+permanecem desligados por padrão.
+
+### Código Forge adulterado
+
+Um pacote aprovado podia mudar antes da execução. O lifecycle sela código,
+teste e manifest; o runtime verifica a integridade e falha fechado.
+
+Também havia uma janela entre a autorização mostrada ao operador e o primeiro
+canário. A transição agora compara, sob lock, alvo + artefato + binding/version
+do engagement e revalida o engagement antes e depois da execução. O canário usa
+somente o runner dinâmico; fases legadas, DNS e finalize não participam.
+
+### Relatório trocado ou bruto exposto
+
+Resolver caminho e ler depois permitia corrida com symlink/substituição; servir
+o relatório bruto também podia expor material não redigido. A API passou a
+regenerar apenas HTML/JSON/Markdown a partir de findings normalizados/redigidos,
+abrir com `O_NOFOLLOW`, ler pelo mesmo FD e comparar `fstat`. Owner, engagement e
+CSP sem scripts são conferidos na rota protegida.
+
+## Decisões de arquitetura
+
+### 1. Catálogo híbrido temporário
+
+Ainda não é viável migrar todo o pipeline legado para o registry numa única
+mudança. O Auto constrói uma visão unificada a partir de:
+
+- `listModuleManifests()`;
+- capacidades legadas declaradas em `pipeline-capabilities.mjs`;
+- manifests Forge ativos;
+- capacidades explícitas de FrameSeven;
+- disponibilidade do Vigolium;
+- disponibilidade do HexStrike.
+
+Essa é uma ponte. A direção futura é eliminar duplicação e tornar o manifest a
+fonte única.
+
+### 2. Classes de risco, não nomes de perfil
+
+O planner escolhe IDs classificados como:
+
+- `passive`;
+- `deep_passive`;
+- `active`;
+- `intrusive`;
+- `hexstrike_intel`.
+
+Classe `destructive` é excluída. O perfil de execução (`quick`, `standard`,
+`deep`) não substitui classe de risco, OPSEC ou aprovação.
+
+### 3. Quatro autonomias limitadas
+
+| Autonomia | Limite |
+| --- | --- |
+| `observation` | passivo/deep-passive/inteligência |
+| `assisted` | inclui ativo não intrusivo, após aprovação |
+| `authorized` | inclui intrusivo, com `recon.intrusive` e gates |
+| `authorized_opsec` | mesmo limite de risco, OPSEC agressivo |
+
+Níveis 2–4 exigem confirmação do plano. Níveis 3/4 não são “modo sem limites” e
+jamais incluem destrutivo.
+
+### 4. Opt-ins independentes
+
+HexStrike, Vigolium e FrameSeven não entram apenas porque estão instalados.
+Cada um exige opt-in da sessão. FrameSeven autenticado e Vigolium/Codex possuem
+controles adicionais. Recusar qualquer aprovação encerra sem executar
+pipeline, módulo ou engine; não há reexpansão automática de “restante seguro”.
+
+### 5. Plano efetivo imutável
+
+O plano efetivo contém:
+
+- alvo e ação;
+- autonomia e perfis;
+- módulos solicitados;
+- módulos de pipeline;
+- lista expandida;
+- módulos intrusivos;
+- engines e agentes;
+- flags Kali/confirm;
+- engagement;
+- política aplicada;
+- identidades seladas de FrameSeven/Vigolium quando habilitados;
+- hash SHA-256.
+
+Ele é congelado antes da execução. A UI e a trilha exibem o mesmo hash. Se o
+plano mudar, os gates precisam rodar novamente.
+
+Quando manifest e capacidade legada divergem, prevalece a classe de maior
+risco, e requisitos como Kali/autenticação são combinados. Depois do freeze,
+gates internos das fases conferem novamente capacidades sensíveis para impedir
+execução implícita por compatibilidade legada.
+
+### 6. Resiliência somente quando segura
+
+O usuário solicitou que um módulo em timeout fosse registrado e o próximo
+continuasse. Isso é correto apenas quando o módulo realmente encerrou e o
+estado da pipeline ainda é íntegro.
+
+Por isso:
+
+- erro/timeout recuperável + settle: registra e continua;
+- cancelamento do operador: encerra;
+- fase crítica: encerra;
+- processo/fase sem settle: encerra;
+- resultado com falha recuperável: `partial`.
+
+O RUN manual permanece fail-fast por padrão.
+
+Fail-fast não significa sem cancelamento. A rota manual possui
+`AbortController` próprio e encaminha o sinal ao pipeline, Vigolium e
+FrameSeven quando o request é abortado ou o stream fecha.
+
+### 7. Engines em ordem determinística
+
+Quando selecionados, os motores executam em:
 
 ```text
-Operador
-  -> cria Auto Session e escolhe provedores
-  -> Provider Registry valida capacidade real
-  -> Role Resolver usa somente selecionados e saudáveis
-  -> Context Builder redige e limita o contexto
-  -> RAG Retriever busca memórias relevantes
-  -> Agent Council executa turnos estruturados
-       planner -> critic/reviewer -> arbiter
-  -> Decision Validator valida schema, escopo e OPSEC
-  -> Pipeline Executor executa módulos aprovados
-  -> Observation Builder resume resultados
-  -> Agent Council avalia lacunas e próxima iteração
-       continuar | concluir | pedir operador | forge_module
-  -> Memory Writer persiste decisões e resultados
-  -> Module Forge, quando necessário
-       request -> draft -> static checks -> tests -> review -> pending approval
+GHOSTRECON → Vigolium → FrameSeven
 ```
 
-### Componentes novos propostos
+Cada um produz outcome próprio. O FrameSeven não é executado se o pipeline
+anterior ainda estiver vivo após um deadline.
 
-```text
-server/auto-agent/
-  schemas/
-    decision-schema.mjs
-    council-schema.mjs
-    forge-schema.mjs
-  providers/
-    base-provider.mjs
-    openrouter.mjs
-    ghost-openai.mjs
-    lmstudio.mjs
-    codex.mjs
-    claude-code.mjs
-    cursor.mjs
-  council/
-    role-resolver.mjs
-    context-builder.mjs
-    prompt-templates.mjs
-    council-runner.mjs
-    consensus.mjs
-  forge/
-    forge-manager.mjs
-    policy-validator.mjs
-    static-validator.mjs
-    test-runner.mjs
-    pending-registry.mjs
-  session-store.mjs
-  orchestrator.mjs
-```
+O FrameSeven só emite sucesso depois de validar e mesclar seu `report.json`.
+Resultado de scan aproveitável, relatório incompleto ou falha recuperável de
+merge vira um único `partial`; fontes e evidências são agregadas durante a
+deduplicação.
 
-Essa estrutura deve ser introduzida incrementalmente. O pipeline atual não precisa ser reescrito para iniciar a integração das IAs.
+No RUN manual, qualquer item intrusivo do plano expandido exige
+`recon.intrusive`, engagement formal ativo com ROE/escopo/janela e
+`confirmActive`. O perfil ofensivo FrameSeven usa a lista explícita
+`recon,access,redirect,misconfig,cve,crawler,content,subdomain,ports,nmap,bannergrab`
+e continua intrusivo mesmo sem auth; `tools all`, `-active-scan` e write probes
+ficam de fora. Captura auth, aprovação, `before_scan` e scan do FrameSeven
+possuem deadlines separados; timeout/cancelamento faz TERM→KILL e espera
+settle/cleanup.
 
-## Contrato unificado de provedor
+Somente `report.html`, `report.json` e `report.md`, regenerados dos findings
+redigidos, são servidos por rota `recon.read`. PDF/raw são recusados; owner e
+engagement são validados, e a leitura usa `O_NOFOLLOW` + FD/`fstat`, com CSP
+sandbox sem scripts.
 
-Todos os provedores devem implementar a mesma interface conceitual:
+### 8. Forge fail-closed
 
-```js
-{
-  id,
-  kind,                  // cli | openai-compatible | anthropic | handoff
-  capabilities: {
-    plan: true,
-    review: true,
-    evaluate: true,
-    generateCode: false,
-    applyPatch: false,
-    structuredOutput: true
-  },
-  async probe(ctx),
-  async decide(request, ctx),
-  async cancel(reason)
-}
-```
+Forge continua limitado a módulos não intrusivos. Geração, validação e testes
+não autorizam ativação; há review e aprovação humana. O runtime usa worker
+forte Bubblewrap em Linux e verifica hashes. Sem esse sandbox, o módulo fica
+indisponível e o canário falha fechado.
 
-O resultado de `probe()` deve separar:
+Pacotes antigos sem `runtimeIntegrity` não recebem exceção: precisam de nova
+revisão e aprovação.
 
-```json
-{
-  "installed": true,
-  "configured": true,
-  "authenticated": true,
-  "reachable": true,
-  "usable": true,
-  "mode": "exec",
-  "reason": null
-}
-```
+Uma aprovação entra em `active_pending_first_run`, ainda com
+`pipelineEnabled=false`, e recebe `activationId`. A aprovação faz CAS de alvo,
+integridade do artefato e binding/version/hash do engagement sob lock; o
+engagement é revalidado dentro do lock e imediatamente antes/depois do canário.
 
-Encontrar um binário com `which` não comprova autenticação nem capacidade de executar uma tarefa.
+O primeiro canário chama somente o runner do módulo dinâmico aprovado, com
+timeout/abort, zero pipeline legado, DNS, finalize ou engine implícita. Cada
+operação do sandbox deve devolver atestação ligada ao `operationId`/challenge;
+acknowledgement de kill sem o processo assentar não libera a operação. Somente o
+resultado dessa ativação e dos hashes aprovados pode habilitar o pacote;
+resultados obsoletos não reativam estado.
 
-## Adaptação por IA
+### 9. Segredos e writes fail-closed
 
-### OpenRouter
+Findings de segredo são mascarados e recebem fingerprint antes de serialização.
+O valor cru necessário a uma validação autorizada permanece apenas em memória e
+não é enumerável. Captura é opt-in e os artefatos são redigidos/restritos.
 
-- Reaproveitar a lógica HTTP existente em `ai-dual-report.js`, extraindo um cliente compartilhado.
-- Aceitar `baseUrl`, modelo, timeout, retries e `AbortSignal`.
-- Exigir JSON estruturado e validar localmente.
-- Consultar modelos dinamicamente, mantendo fallback configurável.
-- Registrar modelo real, latência, tentativas e usage retornado.
+`secret_validation` é uma capacidade intrusiva explícita; sua ausência impede
+probe online. Supabase/Firebase não fazem writes/signup no pipeline, ainda que
+uma variável de ambiente ou token exista. FTP `STOR` também depende de gate
+separado e fica desligado por padrão.
 
-### Skynet/GHOST local
+## Componentes envolvidos
 
-- Usar `POST /v1/chat/completions`, já disponível no GHOST.
-- Antes de marcar como utilizável, consultar `/health` e `/v1/models`.
-- Configurar modelo explicitamente; não assumir que `ghost` está carregado no Ollama.
-- Evitar duplicar o Auto RAG dentro do RAG interno do GHOST sem registrar quais contextos foram usados.
-
-### LM Studio/modelo local
-
-- Usar endpoint OpenAI-compatible configurado.
-- Detectar modelo real por `/models`.
-- Aplicar budget de contexto menor e resumo hierárquico quando necessário.
-- Degradar para planner simples quando o modelo não seguir o schema após reparo controlado.
-
-### Codex
-
-- Primeira integração: modo não interativo com saída JSON/JSONL e schema.
-- Executar com cwd controlado e prompt versionado.
-- Para planejamento, preferir modo somente leitura.
-- Edição deve existir apenas dentro do Module Forge e em diretório pending.
-- Nunca entregar ao processo uma chave, cookie ou arquivo fora do conjunto explicitamente permitido.
-- Capturar eventos, exit code, stderr redigido, timeout e cancelamento.
-
-### Claude Code
-
-- Mesmo contrato do Codex, com adaptador CLI separado.
-- Planejamento deve ser read-only.
-- Geração de módulo deve usar workspace pending isolado.
-- Uma segunda chamada de review não pode reutilizar instruções ocultas do turno de implementação sem registro.
-
-### Cursor
-
-- Manter handoff como fallback oficial.
-- Só declarar participação em tempo real quando existir Agent CLI utilizável e autenticado.
-- Handoff não conta como decisão concluída; conta como `awaiting_human`.
+| Área | Fonte principal |
+| --- | --- |
+| Catálogo | `server/auto-agent/tool-catalog.mjs` |
+| Capacidades legadas/engines | `server/auto-agent/pipeline-capabilities.mjs` |
+| Plano efetivo | `server/auto-agent/effective-plan.mjs` |
+| Orquestração | `server/auto-agent/orchestrator.mjs` |
+| Contrato | `server/auto-agent/decision-contract.mjs` e `schemas/decision.schema.json` |
+| Conselho | `server/auto-agent/council.mjs` |
+| Providers | `server/auto-agent/providers/` |
+| Sessões/claims | `session-store.mjs` e `active-sessions.mjs` |
+| Rotas Auto/Forge/report | `server/routes/auto-recon.mjs` |
+| RUN manual/cancelamento | `server/routes/recon-stream.mjs` |
+| RAG/eventos/redação | `rag-memory.mjs`, `observation-builder.mjs`, `redaction.mjs` e `orchestrator.mjs` |
+| Forge lifecycle/runtime | `server/auto-agent/forge/lifecycle.mjs`, `runtime-loader.mjs`, `sandbox-policy.mjs`, `runtime-worker.mjs` e `bwrap-runner.mjs` |
+| Resiliência | `server/pipeline/phase-executor.mjs` |
+| Processos gerenciados | `server/lib/process-execution-context.mjs` e module runner |
+| Segredos/writes | `server/modules/secret-safety.js`, `secret-validation.js`, audits Supabase/Firebase e política Kali |
+| Vigolium auth/identidade | `bridge/vigolium-auth-transport.mjs` e `vigolium-binary-integrity.mjs` |
+| FrameSeven execução/report | `server/integrations/frameseven-*.mjs` |
+| UI | `public/index.html` |
 
 ## Contrato de decisão
 
-Cada turno de IA deve devolver um envelope equivalente a:
+Ações canônicas:
+
+```text
+run_modules
+continue_with_context
+finish
+ask_operator
+forge_module
+abstain
+```
+
+Aliases conhecidos:
+
+```text
+request_modules → run_modules
+execute_modules → run_modules
+```
+
+Envelope mínimo:
 
 ```json
 {
-  "schemaVersion": 1,
-  "decisionId": "dec_...",
-  "sessionId": "auto_...",
-  "iteration": 1,
-  "provider": "codex",
-  "model": "provider-specific-model",
-  "role": "planner",
   "action": "run_modules",
   "objective": "Mapear a superfície HTTP autorizada",
   "reasoningSummary": [
-    "O alvo respondeu em HTTPS.",
-    "Foram encontrados artefatos JavaScript ainda não analisados."
+    "O catálogo oferece módulos não intrusivos adequados ao objetivo."
   ],
-  "evidenceRefs": ["event:42", "finding:17", "memory:lessons/example.md"],
-  "requestedModules": ["js_intel", "api_contract_diff"],
-  "rejectedModules": [
-    {"id": "sqlmap", "reason": "intrusivo e fora da política desta sessão"}
-  ],
+  "evidenceRefs": [],
+  "requestedModules": ["security_headers"],
+  "rejectedModules": [],
   "confidence": 0.82,
   "assumptions": [],
   "operatorQuestion": null,
@@ -315,351 +442,296 @@ Cada turno de IA deve devolver um envelope equivalente a:
 }
 ```
 
-Ações permitidas inicialmente:
+O normalizador não inventa objetivo ou confiança para aceitar qualquer saída.
+Ele aplica aliases limitados, formato e invariantes. Módulos inexistentes,
+indisponíveis, fora da autonomia ou sem opt-in não chegam ao pipeline.
 
-- `run_modules`
-- `continue_with_context`
-- `finish`
-- `ask_operator`
-- `forge_module`
-- `abstain`
+## Provider e conselho
 
-O schema deve rejeitar módulo inexistente, módulo fora do catálogo, ação desconhecida, confiança inválida e referência de evidência inexistente.
+O probe separa:
 
-## Conselho multi-IA
-
-### Regra de papéis
-
-- Resolver papéis somente entre selecionados com `usable=true`.
-- Respeitar líder escolhido manualmente.
-- Sem líder manual, escolher pelo conjunto de capacidades da tarefa, não apenas por uma prioridade fixa.
-- Um provedor em handoff não bloqueia o conselho; registra `awaiting_human`.
-- Um provedor indisponível não é substituído silenciosamente por um não selecionado.
-
-### Protocolo inicial recomendado
-
-1. Planner produz proposta independente.
-2. Reviewer recebe proposta, catálogo, política e evidências, mas não recebe raciocínio privado irrestrito.
-3. Reviewer aprova, rejeita ou solicita mudanças em JSON.
-4. Arbiter determinístico do GHOSTRECON combina apenas itens válidos.
-5. Em conflito de alto impacto, o sistema pergunta ao operador.
-
-Não usar votação cega. Duas IAs podem repetir o mesmo erro. Evidência, policy e capacidade têm precedência sobre quantidade de votos.
-
-## RAG de decisões
-
-### Estrutura proposta
-
-```text
-data/auto-rag/
-  sessions/<sessionId>/session.json
-  decisions/<timestamp>-<decisionId>.md
-  observations/<timestamp>-<iteration>.md
-  lessons/<timestamp>-<lesson>.md
-  forge-requests/<forgeId>.md
-  provider-events/<sessionId>.ndjson
-  cursor-tasks/
+```json
+{
+  "installed": true,
+  "configured": true,
+  "authenticated": true,
+  "reachable": true,
+  "usable": true
+}
 ```
 
-### Campos obrigatórios da memória
+Somente `selected && usable` participa. O App Server Codex é reutilizado por
+sessão e fechado no timeout/cancelamento; fallback executa com stdin fechado e
+timeout independente.
 
-- `sessionId`, `decisionId`, `iteration` e `target`.
-- Provedor, modelo, papel e versão do prompt.
-- Hash ou identificador do catálogo usado.
-- Memórias lidas para tomar a decisão.
-- Evidências referenciadas.
-- Proposta original validada e decisão efetivamente executada.
-- Resultado: concluído, rejeitado, timeout, cancelado ou aguardando aprovação.
-- Lição posterior vinculada à decisão.
-- Usage/custo quando o provedor fornecer esses dados.
+O conselho usa proposta e revisão estruturadas. Evidência e policy têm poder de
+veto. Maioria não torna um módulo inválido aceitável. Empate de alto impacto
+pergunta ao operador. O fallback não pode ampliar autonomia.
 
-### Recuperação
+## Segurança da sessão
 
-A primeira versão pode continuar sem banco vetorial, mas deve pontuar por:
+O principal autenticado é persistido de forma mínima como proprietário. As
+rotas aplicam:
 
-- mesmo alvo ou domínio raiz;
-- mesmas tecnologias;
-- mesmos módulos;
-- mesmo tipo de decisão;
-- lessons com resultado conhecido;
-- recência.
+- `recon.run` para iniciar/cancelar/aprovar;
+- `recon.read` para listar;
+- `recon.intrusive` para níveis 3/4 e aprovação intrusiva;
+- CSRF nas operações mutáveis;
+- ownership em listagem, cancelamento, aprovação e retomada.
 
-Memórias globais não devem ser injetadas indiscriminadamente em todos os alvos. Isso reduz contaminação de contexto e decisões irrelevantes.
+Snapshots são atômicos e restritos. Uma sessão ativa duplicada falha. O
+checkpoint v2 vincula alvo, proprietário, autonomia, política, `catalogHash`,
+`promptVersion`, `resumePolicyHash`, plano pronto e cadeia de hashes. Somente
+fronteiras `ready` são retomáveis e cada hash é consumido por claim atômico
+durável. Checkpoint v1 é legível, mas não retomável; execução ou avaliação
+interrompida não continua do meio.
 
-## Module Forge
+## Segurança dos dados
 
-### Objetivo
+Antes de RAG e observation bundle:
 
-Module Forge cobre uma lacuna comprovada. Ele não deve ser acionado apenas porque uma IA imaginou um módulo interessante.
+- segredos são redigidos em strings, arrays e objetos;
+- objetos têm profundidade e quantidade de chaves limitadas;
+- findings são deduplicados;
+- previews e arquivos têm limite de bytes;
+- escrita usa arquivo temporário restrito e rename atômico.
 
-### Requisitos para abrir uma solicitação
+Antes de eventos e persistência comum, findings `secret` também são protegidos
+por máscara + fingerprint. Material cru não é campo JSON. Contexto auth
+compartilhado com Vigolium usa `--auth-file` temporário `0600` em diretório
+`0700`, redação de argv/log e cleanup em `finally`.
 
-- Evidência observada na sessão.
-- Declaração da lacuna no catálogo atual.
-- Benefício esperado.
-- Classificação passiva/intrusiva.
-- Entradas e saídas propostas.
-- Estratégia de teste sem rede real.
-- Riscos e limites.
+Antes de tocar a sessão ou enviar NDJSON, cada evento Auto passa por sanitização
+recursiva. Segredos são redigidos, o root local é substituído e campos de
+artefato com caminho absoluto são removidos. Relatórios brutos de engines
+externas ainda exigem validação própria e teste ponta a ponta.
 
-### Estados
+RAG é dado não confiável. Nenhuma instrução encontrada num alvo ou numa memória
+histórica é promovida para system prompt.
 
-```text
-proposed
-  -> approved_for_draft
-  -> generated
-  -> static_validation_failed | test_failed | review_failed
-  -> pending_operator_approval
-  -> approved
-  -> enabled_for_canary
-  -> promoted | rolled_back
+## Segurança do Forge
+
+Requisitos de uma solicitação:
+
+- lacuna comprovada;
+- evidência permitida;
+- benefício;
+- entradas e saídas;
+- estratégia offline;
+- riscos;
+- `intrusive: false`.
+
+O pacote passa por validação estática, syntax check, testes restritos, review,
+aprovação e canary. Na execução Bubblewrap:
+
+- não há namespace de rede do host;
+- ambiente, imports e filesystem são limitados;
+- artefatos são montados somente para leitura e `/tmp` é efêmero;
+- subprocessos são bloqueados;
+- tempo, memória e output são limitados;
+- findings são normalizados/redigidos;
+- hashes do pacote são verificados;
+- cada operação recebe `operationId`/challenge próprios e precisa atestar o
+  sandbox forte;
+- timeout/cancelamento exige acknowledgement e settle real do processo.
+
+Sem Linux/Bubblewrap o Forge fica indisponível. O canário inicial não recebe o
+perfil manual amplo: chama diretamente apenas o ID aprovado no runner dinâmico,
+sem fases legadas/DNS/finalize, com deadline próprio e cancelamento por
+desconexão. Alvo, artefato e engagement são comparados sob lock e a autorização
+é revalidada antes/depois. A ativação continua desabilitada globalmente até o
+canário com `activationId` e hashes correspondentes concluir.
+
+## Implementação por etapas
+
+### Etapa 1 — providers reais (concluída em 2026-07-14)
+
+- [x] seleção somente entre providers marcados;
+- [x] contrato comum;
+- [x] Codex/OpenRouter/GHOST;
+- [x] Claude Code read-only;
+- [x] redação de contexto;
+- [x] testes offline.
+
+### Etapa 2 — decisão e RAG (concluída)
+
+- [x] schema;
+- [x] prompts versionados;
+- [x] evidências permitidas;
+- [x] decisões persistidas;
+- [x] RAG orientado ao alvo;
+- [x] observações pós-pipeline.
+
+### Etapa 3 — conselho (concluída)
+
+- [x] planner/reviewer;
+- [x] arbitragem determinística;
+- [x] confiança/evidência;
+- [x] conflito e `ask_operator`;
+- [x] nenhuma participação de provider não selecionado.
+
+### Etapa 4 — sessão iterativa (concluída)
+
+- [x] limites;
+- [x] checkpoints v2 nas fronteiras `ready`;
+- [x] claim durável anti-replay;
+- [x] v1 legível, mas não retomável;
+- [x] retomada mid-engine/evaluation recusada;
+- [x] avaliação pós-pipeline;
+- [x] não repetir módulos;
+- [x] cancelamento;
+- [x] snapshots e RAG.
+
+### Etapa 5 — Forge e lifecycle (concluída localmente)
+
+- [x] pending e proveniência;
+- [x] validação/teste/review;
+- [x] aprovação;
+- [x] canary/rollback;
+- [x] Bubblewrap forte em Linux e indisponibilidade fail-closed;
+- [x] `active_pending_first_run` + `activationId` hash-bound;
+- [x] selo e detecção de adulteração;
+- [x] CAS de alvo/artefato/engagement sob lock;
+- [x] revalidação de engagement antes/depois do canário;
+- [x] canário somente dinâmico e atestação por operação com kill ack + settle.
+
+### Etapa 6 — plano efetivo e políticas (concluída localmente em 2026-07-25)
+
+- [x] catálogo híbrido;
+- [x] classes de risco;
+- [x] autonomia 1–4;
+- [x] plano expandido/hash;
+- [x] engines opt-in;
+- [x] RBAC e ownership;
+- [x] aprovação 2–4.
+- [x] classificação conservadora entre manifest/legado;
+- [x] gates explícitos por capacidade dentro das fases Auto;
+- [x] recusa encerra tudo sem “restante seguro”.
+
+### Etapa 7 — robustez de runtime (parcialmente concluída)
+
+- [x] App Server e CLI com TERM→KILL;
+- [x] deadline/settle por fase;
+- [x] outcomes e status `partial`;
+- [x] cancelamento não recuperável;
+- [x] probes/pausas e subprocessos direcionados abort-aware;
+- [x] segredos mascarados, `secret_validation` explícito e writes desligados;
+- [x] canário Forge restrito;
+- [x] redação central de eventos Auto/NDJSON;
+- [x] FrameSeven normalizado/mesclado com terminal único `done`/`partial`;
+- [x] RUN manual com AbortController e cancelamento propagado;
+- [x] gate formal/confirmado para todo plano intrusivo expandido no RUN;
+- [x] perfil ofensivo FrameSeven explícito coberto por engagement/ROE,
+      `recon.intrusive` e confirmação, sem `tools all` ou `-active-scan`;
+- [x] identidade FrameSeven/Vigolium revalidada antes de cada spawn;
+- [x] deadlines FrameSeven separados por etapa e TERM→KILL/settle;
+- [x] rota owner/engagement para relatórios FrameSeven regenerados,
+      HTML/JSON/Markdown e lidos por FD seguro;
+- [ ] deadline individual para cada módulo legado;
+- [ ] E2E autenticado com navegador real controlado.
+
+### Etapa 8 — paridade residual (pendente)
+
+- [x] normalizador/merge de `report.json` compartilhado entre RUN e Auto;
+- [ ] fechar diferenças restantes de plano, auth, proveniência e relatório entre
+      RUN e Auto;
+- [ ] transportar política Tor/proxy estrita ao FrameSeven;
+- [ ] promoção dos níveis 3/4 após canários.
+
+## Testes de regressão
+
+Arquivos centrais:
+
+- `server/tests/auto-agent.test.js`;
+- `server/tests/auto-planner-contract.test.js`;
+- `server/tests/auto-effective-plan.test.js`;
+- `server/tests/auto-session-security.test.js`;
+- `server/tests/auto-resume-checkpoint.test.js`;
+- `server/tests/auto-event-redaction.test.js`;
+- `server/tests/auto-route-public-data.test.js`;
+- `server/tests/auto-rag-runtime-security.test.js`;
+- `server/tests/auto-strict-phase-gates.test.js`;
+- `server/tests/auto-content-network-gates.test.js`;
+- `server/tests/pipeline-resilience.test.js`;
+- `server/tests/process-cancellation.test.js`;
+- `server/tests/probe-cancellation.test.js`;
+- `server/tests/kali-execution-policy.test.js`;
+- `server/tests/secret-safety.test.js`;
+- `server/tests/write-probes-safety.test.js`;
+- `server/tests/forge-security.test.js`;
+- `server/tests/recon-stream-route.test.js`;
+- `server/tests/frameseven-integration.test.js`;
+- `server/tests/vigolium-bridge.test.js`;
+- `server/tests/vigolium-agent.test.js`.
+
+Comando local:
+
+```bash
+node --test \
+  server/tests/auto-agent.test.js \
+  server/tests/auto-planner-contract.test.js \
+  server/tests/auto-effective-plan.test.js \
+  server/tests/auto-session-security.test.js \
+  server/tests/auto-resume-checkpoint.test.js \
+  server/tests/auto-event-redaction.test.js \
+  server/tests/auto-route-public-data.test.js \
+  server/tests/auto-rag-runtime-security.test.js \
+  server/tests/auto-strict-phase-gates.test.js \
+  server/tests/auto-content-network-gates.test.js \
+  server/tests/pipeline-resilience.test.js \
+  server/tests/process-cancellation.test.js \
+  server/tests/probe-cancellation.test.js \
+  server/tests/kali-execution-policy.test.js \
+  server/tests/secret-safety.test.js \
+  server/tests/write-probes-safety.test.js \
+  server/tests/forge-security.test.js \
+  server/tests/recon-stream-route.test.js \
+  server/tests/frameseven-integration.test.js \
+  server/tests/vigolium-bridge.test.js \
+  server/tests/vigolium-agent.test.js
 ```
 
-### Diretórios propostos
+Também são relevantes `auth.test.js`, `opsec.test.js`,
+`engagement.test.js`, `scope.test.js` e `module-runner.test.js`.
 
-```text
-dynamic/
-  by-model/
-    codex/
-      approved/<moduleId>/<version>/
-      rejected/<moduleId>/<version>/
-      pending/<forgeId>/
-    claude-code/
-      approved/<moduleId>/<version>/
-      rejected/<moduleId>/<version>/
-      pending/<forgeId>/
-    openrouter/<modelSlug>/
-      approved/<moduleId>/<version>/
-      rejected/<moduleId>/<version>/
-      pending/<forgeId>/
-    skynet/<modelSlug>/
-      approved/<moduleId>/<version>/
-      rejected/<moduleId>/<version>/
-      pending/<forgeId>/
-    cursor/<modelSlug>/
-      approved/<moduleId>/<version>/
-      rejected/<moduleId>/<version>/
-      pending/<forgeId>/
-```
+Esses testes devem permanecer sem rede real. A suíte completa `npm test` contém
+cenários potencialmente não herméticos e só deve ser executada depois de revisar
+o ambiente.
 
-Cada diretório de versão deve conter `module.mjs`, `module.test.js`, `manifest.json`, `provenance.json`, `council-transcript.ndjson`, `verdict.json` e `test-results.json`. A autoria é sempre preservada, mesmo quando outra IA melhora o código: `provenance.json` registra autor original, contribuidores e revisor.
+## Critério de conclusão desta evolução
 
-Módulo rejeitado nunca é apagado. Ele é movido para a pasta `rejected` do modelo autor com o código integral, testes, veredito, votos, justificativas e possibilidade de nova versão futura. Somente artefatos em `active` com `pipelineEnabled=true` podem ser considerados pelo loader do pipeline.
+A evolução local está pronta para revisão quando:
 
-### Veredito entre modelos
+1. o catálogo expõe apenas classes e engines autorizáveis;
+2. o hash aprovado é o hash executado;
+3. níveis 2–4 abrem confirmação e níveis 3/4 exigem
+   `recon.intrusive`;
+4. qualquer recusa encerra sem executar pipeline, módulo ou engine;
+5. timeout encerra o processo ou interrompe a run como unsettled;
+6. falhas recuperáveis geram `partial`;
+7. ownership impede controle cruzado de sessões;
+8. checkpoint v2 claimed não pode ser reproduzido;
+9. RAG, eventos Auto e Forge não persistem segredos das fixtures;
+10. Forge compara alvo/artefato/engagement, executa somente o módulo dinâmico e
+    falha se atestação/settle forem inválidos;
+11. FrameSeven/Vigolium recusam identidade diferente da selada;
+12. RUN manual propaga cancelamento e bloqueia qualquer plano intrusivo
+    expandido — inclusive o perfil ofensivo FrameSeven explícito — sem
+    autorização formal/confirmada;
+13. FrameSeven só finaliza após o merge e a rota expõe somente relatórios
+    redigidos HTML/JSON/Markdown por owner/engagement;
+14. os testes direcionados passam.
 
-Quando mais de uma IA estiver selecionada, o Module Forge deve executar uma conversa registrada:
-
-1. A IA autora apresenta lacuna, evidência, desenho, código e testes.
-2. Cada outra IA faz uma revisão independente.
-3. A autora recebe as críticas e pode gerar uma nova versão.
-4. Os revisores emitem veredito final estruturado: `approve`, `request_changes`, `reject` ou `abstain`.
-5. O GHOSTRECON valida policy e testes, que possuem poder de veto mesmo com unanimidade das IAs.
-6. A aprovação técnica do conselho ainda exige confirmação humana para entrar em `active`.
-
-O quórum padrão proposto é maioria simples dos revisores aptos, sem contar a IA autora. Um único modelo selecionado deve fazer dois turnos separados, autor e revisor, mas o resultado permanece `pending_operator_approval` por não existir revisão independente.
-
-### Política da primeira versão
-
-- Somente módulos `intrusive: false` podem chegar a canary.
-- Sem `child_process`, `eval`, `Function`, imports dinâmicos arbitrários ou escrita fora do diretório de artifacts.
-- Rede somente via `fetchImpl` injetado.
-- Processos externos somente via executor permitido, inicialmente desabilitado para módulo gerado.
-- Testes obrigatoriamente offline.
-- Manifesto deve seguir `docs/MODULE-CONTRACT.md`.
-- Ativação exige aprovação humana na primeira fase.
-- Canary executa com timeout curto e alvo de teste controlado.
-- Promoção ao registry principal é uma etapa separada.
-
-## Fluxo da sessão AUTO
-
-```text
-1. Validar alvo, escopo e seleção.
-2. Criar sessionId persistente.
-3. Probar somente os provedores selecionados.
-4. Mostrar ao operador quais selecionados estão realmente utilizáveis.
-5. Criar snapshot do catálogo e da policy.
-6. Recuperar RAG relevante.
-7. Solicitar plano estruturado ao planner.
-8. Revisar plano quando houver outro participante apto.
-9. Validar deterministicamente o plano.
-10. Persistir proposta, revisão e plano efetivo.
-11. Executar uma iteração limitada do pipeline.
-12. Resumir observações sem expor segredos.
-13. Solicitar avaliação estruturada.
-14. Persistir avaliação e resultado.
-15. Continuar, concluir, perguntar ao operador ou abrir Module Forge.
-16. Aplicar limites de iteração, tempo e custo.
-17. Encerrar sessão com resumo reproduzível.
-```
-
-## Observabilidade e interface
-
-Eventos novos sugeridos:
-
-- `auto_session`
-- `auto_provider_probe`
-- `auto_agent_turn_started`
-- `auto_agent_turn_completed`
-- `auto_agent_turn_failed`
-- `auto_decision_validated`
-- `auto_decision_rejected`
-- `auto_council_review`
-- `auto_iteration_started`
-- `auto_iteration_completed`
-- `auto_memory_written`
-- `auto_forge_requested`
-- `auto_forge_status`
-- `auto_heartbeat`
-
-A interface deve diferenciar:
-
-- selecionado;
-- online e autenticado;
-- participando agora;
-- handoff pendente;
-- falhou e foi removido da sessão;
-- decisão proposta versus decisão executada.
-
-## Limites de segurança e operação
-
-Configurações sugeridas:
-
-```env
-GHOSTRECON_AUTO_MAX_ITERATIONS=3
-GHOSTRECON_AUTO_SESSION_TIMEOUT_MS=1800000
-GHOSTRECON_AUTO_AGENT_TIMEOUT_MS=180000
-GHOSTRECON_AUTO_MAX_AGENT_CALLS=12
-GHOSTRECON_AUTO_MAX_CONTEXT_CHARS=120000
-GHOSTRECON_AUTO_CLOUD_REDACTION=1
-GHOSTRECON_AUTO_FORGE_ENABLED=0
-GHOSTRECON_AUTO_FORGE_REQUIRE_APPROVAL=1
-GHOSTRECON_AUTO_FORGE_CANARY=0
-```
-
-Cada limite deve aparecer no snapshot da sessão e no documento de decisão.
-
-## Plano de implementação por etapas
-
-### Etapa 1 — Base confiável de provedores
-
-- Corrigir a seleção de papéis.
-- Criar contrato comum de provider.
-- Separar disponibilidade de usabilidade/autenticação.
-- Implementar adaptadores OpenRouter e GHOST/OpenAI-compatible.
-- Adicionar timeouts, retries, cancelamento e redação.
-- Testar com clientes injetáveis, sem rede real.
-
-Critério de aceite: selecionar `codex,cursor` nunca inclui Skynet/OpenRouter; selecionar OpenRouter faz uma chamada real mockável e salva a resposta validada.
-
-### Etapa 2 — Decisão real e RAG auditável
-
-- Criar schema de decisão.
-- Criar prompts versionados.
-- Criar context builder e recuperação RAG direcionada.
-- Persistir cada turno, revisão e decisão efetiva.
-- Usar o plano validado para escolher módulos.
-
-Critério de aceite: o plano deixa de ser lista fixa; existe fallback determinístico explicitamente marcado quando nenhum agente responde.
-
-### Etapa 3 — Conselho multi-IA
-
-- Implementar planner, reviewer e arbiter.
-- Resolver capacidades por tarefa.
-- Implementar conflito, abstention e pergunta ao operador.
-- Medir latência, chamadas e custo.
-
-Critério de aceite: cada IA selecionada tem participação rastreável ou estado de falha/handoff; nenhuma IA não selecionada participa.
-
-### Etapa 4 — Loop iterativo
-
-- Executar plano por iterações limitadas.
-- Construir observation bundles compactos.
-- Permitir continuar/concluir/perguntar/forge.
-- Implementar cancelamento e heartbeat da sessão.
-
-Critério de aceite: uma IA pode adaptar a segunda iteração aos findings da primeira sem repetir módulos inutilmente.
-
-### Etapa 5 — Module Forge pending
-
-- Criar schema e lifecycle do forge.
-- Criar diretórios isolados.
-- Implementar validação estática e testes offline.
-- Implementar revisão por outra IA quando disponível.
-- Exigir aprovação humana.
-
-Critério de aceite: uma lacuna comprovada gera pacote completo em pending, mas não altera automaticamente o registry principal.
-
-### Etapa 6 — Canary e promoção
-
-- Loader dinâmico limitado.
-- Canary controlado.
-- Rollback e quarentena.
-- Promoção auditável ao arsenal.
-
-Critério de aceite: falha no canary desabilita o módulo e preserva evidências; promoção exige todos os gates.
-
-### Etapa 7 — Robustez geral do AUTO
-
-- Corrigir progresso do CORS e separar ALIVE/SURFACE.
-- Concorrência e budget global por módulo.
-- Watchdog e cancelamento do recon.
-- Checkpoints e retomada.
-- Corrigir supervisão do GHOST/GhostTrace.
-
-## Testes obrigatórios
-
-- Papéis usam somente selecionados.
-- Provedor instalado mas não autenticado não é `usable`.
-- Timeout e cancelamento de cada adaptador.
-- Resposta inválida da IA não chega ao pipeline.
-- Reparo de JSON limitado a uma tentativa.
-- Módulo inexistente é rejeitado.
-- Módulo intrusivo é bloqueado pela policy.
-- Prompt injection presente em HTML permanece como dado citado.
-- Redação remove tokens antes de provedor cloud.
-- Toda decisão executada gera memória.
-- Falha ao gravar RAG aparece na sessão e não é silenciosa.
-- Conselho trata aprovação, rejeição, conflito e abstention.
-- Forge não escreve fora de `dynamic/pending/<forgeId>`.
-- Forge não ativa módulo sem aprovação.
-- Limites de iteração, chamadas, tempo e custo encerram a sessão corretamente.
-
-## Definição de pronto do objetivo principal
-
-O objetivo "IAs selecionadas tomam decisões e salvam no RAG" estará concluído somente quando:
-
-1. Cada provedor selecionado for comprovadamente utilizável ou marcado com falha clara.
-2. Pelo menos OpenRouter e GHOST local produzirem planos reais pelo contrato comum.
-3. Codex e Claude Code tiverem adaptadores CLI testáveis e com timeout.
-4. O plano efetivamente executado vier de uma decisão validada.
-5. Cada turno e decisão efetiva estiver persistido no RAG com proveniência.
-6. O conselho multi-IA não incluir provedores não selecionados.
-7. Resultados da primeira iteração puderem alterar a seguinte.
-8. Uma lacuna puder gerar um `forge_request` persistido.
-9. Código gerado permanecer em pending até passar por policy, testes, review e aprovação.
-10. Os testes de integração cobrirem sucesso, timeout, resposta inválida, cancelamento e fallback.
-
-## Decisões tomadas nesta investigação
-
-- Reutilizar os clientes de IA existentes, mas extraí-los do módulo de relatórios para evitar acoplamento.
-- Usar o endpoint OpenAI-compatible existente do GHOST como adaptador Skynet inicial.
-- Preservar o pipeline atual como executor; o conselho decide e o pipeline executa.
-- Evoluir o RAG Markdown antes de introduzir obrigatoriamente embeddings.
-- Implementar Module Forge em pending, com ativação somente após revisão, aprovação humana e primeira execução controlada.
-- Tratar Cursor handoff como participação humana pendente, não como decisão da IA.
-- Fazer OpenRouter e GHOST local primeiro, pois já existem protocolos HTTP utilizáveis e testáveis.
-- Implementar Codex e Claude Code depois sobre o mesmo contrato, sem colocar comandos específicos dentro do orquestrador.
+Isso autoriza um canário local controlado; não transforma automaticamente os
+níveis 3/4 em recurso estável para alvos externos.
 
 ## Próxima entrega recomendada
 
-O FrameSeven está operacional no RUN comum e no AUTO; o backlog restante é de endurecimento de cancelamento e testes ponta a ponta, conforme `FRAMESEVEN-INTEGRACAO-FUTURA.md`.
-
-A próxima evolução do Auto é:
-
-1. cancelamento visível e individual na UI;
-2. reconciliação de sessões órfãs;
-3. watchdog e progresso por módulo;
-4. cancelamento cooperativo em todos os módulos;
-5. teste real passivo de ponta a ponta;
-6. depois, rollback, canary e integração de novos executores.
+1. executar o E2E autenticado do RUN e do Auto num laboratório autorizado com
+   navegador real controlado;
+2. migrar módulos legados de maior risco para manifests/runners com deadline
+   individual e reduzir a duplicação do catálogo;
+3. transportar a política Tor/proxy estrita ao FrameSeven;
+4. fechar a paridade residual de plano, auth, proveniência e relatório entre
+   RUN e Auto;
+5. somente então avaliar a promoção das autonomias 3/4.

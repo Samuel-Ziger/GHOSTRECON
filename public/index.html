@@ -3285,10 +3285,14 @@
           <div class="toggle-label" style="margin:8px 0 6px">Cookie (opcional)</div>
           <input id="authCookieInput" class="domain-input" type="text" placeholder="session=abc123" style="padding:8px 10px">
           <div class="toggle-row" style="margin-top:10px">
-            <span class="toggle-label">FrameSeven autenticado (fluxo normal)</span>
-            <label class="toggle"><input type="checkbox" id="frameSevenAuthToggle"><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+            <span class="toggle-label">Incluir FrameSeven no RUN</span>
+            <label class="toggle"><input type="checkbox" id="includeFrameSevenToggle"><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
           </div>
-          <p class="auto-hint" style="margin:6px 0">Quando marcado, o navegador do FrameSeven abre durante o RUN normal; após o login, confirme o popup para executar GHOSTRECON → Vigolium → FrameSeven.</p>
+          <div class="toggle-row" id="frameSevenAuthRow" style="margin-top:10px;opacity:.55">
+            <span class="toggle-label">FrameSeven autenticado</span>
+            <label class="toggle"><input type="checkbox" id="frameSevenAuthToggle" disabled><div class="toggle-track"><div class="toggle-thumb"></div></div></label>
+          </div>
+          <p class="auto-hint" style="margin:6px 0">FrameSeven é opcional. O navegador só abre quando ambos os controles estão marcados; a sessão capturada ainda exige confirmação humana.</p>
           <div class="toggle-row" style="margin-top:10px">
             <span class="toggle-label" title="Headers de identificação exigidos por alguns programas de bug bounty">Headers de programa (bug bounty)</span>
             <label class="toggle">
@@ -3392,7 +3396,7 @@
                   <option value="authorized">3 — Autorizado</option>
                   <option value="authorized_opsec">4 — Autorização completa OPSEC</option>
                 </select>
-                <small class="auto-hint">Ações destrutivas sempre exigem confirmação humana.</small>
+                <small class="auto-hint" id="autoAutonomyHint">Módulos destrutivos não são executados pelo Auto; ações intrusivas exigem confirmação humana.</small>
               </div>
               <div class="auto-field">
                 <label for="autoOpenrouterModelSelect">OpenRouter model</label>
@@ -3412,6 +3416,11 @@
               <label for="autoResumeSessionInput">Retomar sessão (opcional)</label>
               <input id="autoResumeSessionInput" class="domain-input" type="text" placeholder="session-..." autocomplete="off" spellcheck="false">
             </div>
+            <div class="auto-field">
+              <label for="autoEngagementIdInput">Engagement autorizado (necessário para plano intrusivo)</label>
+              <input id="autoEngagementIdInput" class="domain-input" type="text" placeholder="uuid ou id do engagement" autocomplete="off" spellcheck="false">
+              <small class="auto-hint">Precisa estar aberto, no escopo e com ROE assinado. Autonomia não substitui autorização.</small>
+            </div>
 
             <div class="auto-grid" id="autoCommanderGrid">
               <label class="auto-choice"><input type="checkbox" class="auto-commander" value="codex"><div><strong>Codex</strong><span>Planeja, decide modulo novo e coordena o arsenal.</span></div></label>
@@ -3423,10 +3432,12 @@
             </div>
 
             <div class="auto-grid">
-              <label class="auto-choice"><input type="checkbox" id="autoHexstrikeToggle" checked><div><strong>HexStrike</strong><span>Permite usar capacidades e MCP/bridge HexStrike no plano.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoHexstrikeToggle"><div><strong>HexStrike</strong><span>Integração opcional: permite usar capacidades e MCP/bridge HexStrike no plano.</span></div></label>
               <label class="auto-choice"><input type="checkbox" id="autoDeepPassiveToggle" checked><div><strong>Deep passive</strong><span>Inclui catalogo passivo profundo antes de sugerir ativo.</span></div></label>
-              <label class="auto-choice"><input type="checkbox" id="autoFrameSevenAuthToggle"><div><strong>FrameSeven autenticado</strong><span>Abre o navegador para login e exige confirmação antes de iniciar a auditoria autenticada.</span></div></label>
-              <label class="auto-choice"><input type="checkbox" id="autoVigoliumCodexToggle"><div><strong>Vigolium com Codex</strong><span>Permite que o Codex configure a auditoria obrigatória do Vigolium.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoIncludeFrameSevenToggle"><div><strong>Incluir FrameSeven</strong><span>Executa o motor FrameSeven como etapa opcional do Auto.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoFrameSevenAuthToggle" disabled><div><strong>FrameSeven autenticado</strong><span>Abre o navegador somente com FrameSeven incluído e exige confirmação antes de compartilhar a sessão.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoIncludeVigoliumToggle"><div><strong>Incluir Vigolium</strong><span>Executa o motor Vigolium como etapa opcional do Auto.</span></div></label>
+              <label class="auto-choice"><input type="checkbox" id="autoVigoliumCodexToggle" disabled><div><strong>Vigolium com Codex</strong><span>Permite usar Codex no Vigolium somente quando o motor estiver incluído.</span></div></label>
             </div>
 
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -3456,7 +3467,7 @@
       <div class="hub-actions-wrap">
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         <button class="run-btn" id="runBtn" onclick="startRecon()">▶ RUN RECON</button>
-        <button class="run-btn auto-run-btn" id="autoRunBtn" type="button" onclick="openAutoModeModal()">AUTO MODE</button>
+        <button class="run-btn auto-run-btn" id="autoRunBtn" type="button" onclick="handleAutoModeButton()">AUTO MODE</button>
         <div class="auto-rag-status-card" id="autoRagStatusCard" title="Status do vault Markdown do Modo Auto">
           <div class="auto-rag-status-main">
             <span class="auto-rag-status-title">Auto RAG</span>
@@ -3856,7 +3867,7 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="rdap"><div class="checkbox-box"></div><span class="checkbox-text">RDAP (registo domínio)</span><span class="tag tag-low">WHOIS+</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="lovable_fingerprint"><div class="checkbox-box"></div><span class="checkbox-text">Lovable fingerprint (RLS/secrets/auth)</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item" title="Auditoria Supabase: extrai anon key e token do alvo automaticamente; testa RLS, Storage, Auth, GraphQL, RPC, service_role, rate limiting, IDOR e bypass de pagamento. Override opcional: GHOSTRECON_SUPABASE_AUTH_TOKEN."><input type="checkbox" class="mod" value="supabase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Supabase audit (auto token / RLS / payment)</span><span class="tag tag-high">CRIT</span></label>
-        <label class="checkbox-item" title="Auditoria Firebase: RTDB/Firestore/Storage anônimos, cadastro Auth público, escalação users/{uid}. Probes de escrita com cleanup (GHOSTRECON_FIREBASE_WRITE_PROBES=0 para desligar)."><input type="checkbox" class="mod" value="firebase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Firebase audit (RTDB/Firestore/Storage rules)</span><span class="tag tag-high">CRIT</span></label>
+        <label class="checkbox-item" title="Auditoria Firebase somente leitura no pipeline. Probes de escrita e criação de conta ficam desligados e exigem fluxo dedicado de autorização."><input type="checkbox" class="mod" value="firebase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Firebase audit (RTDB/Firestore/Storage rules)</span><span class="tag tag-high">CRIT</span></label>
         <label class="checkbox-item" title="Detecta credenciais hardcoded, bypass sessionStorage/localStorage, painéis admin no bundle público."><input type="checkbox" class="mod" value="client_auth_audit"><div class="checkbox-box"></div><span class="checkbox-text">Client auth audit (hardcoded / storage bypass)</span><span class="tag tag-high">CRIT</span></label>
         <label class="checkbox-item" title="Auditoria generalista client-side: DOM XSS sinks, postMessage, prototype pollution, JSONP, WebSocket, Service Worker, SRI, CSRF forms, CSP fraca, source maps, OIDC, tabnabbing, mixed content."><input type="checkbox" class="mod" value="client_surface_audit"><div class="checkbox-box"></div><span class="checkbox-text">Client surface audit (XSS/CSP/postMessage/SRI/…)</span><span class="tag tag-high">CRIT</span></label>
         <label class="checkbox-item" title="Auditoria CORS ativa: wildcard *, credenciais+Origin refletida, HTTP 500 em Origin desconhecida, preflight OPTIONS."><input type="checkbox" class="mod" value="cors_audit"><div class="checkbox-box"></div><span class="checkbox-text">CORS audit (wildcard / 500 / credentials)</span><span class="tag tag-high">CRIT</span></label>
@@ -3944,7 +3955,7 @@
         <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Liga <strong>Wayback</strong> e/ou <strong>Common Crawl</strong> para o corpus trazer URLs; o GraphQL só corre se existir URL com <code>graphql</code> nesse corpus (máx. 10). OpenAPI tenta paths típicos em cada origem HTTPS viva.</p>
         <label class="checkbox-item" title="Analisa HTML/JS ja coletados em busca de id/name perigosos, duplicados e acessos DOM dinamicos. Passivo."><input type="checkbox" class="mod" value="dom_clobbering_audit"><div class="checkbox-box"></div><span class="checkbox-text">DOM clobbering audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="openapi_specs" id="modOpenapiSpecs"><div class="checkbox-box"></div><span class="checkbox-text">OpenAPI / Swagger leak</span><span class="tag tag-med">API</span></label>
-        <label class="checkbox-item" title="Gera snapshot da spec OpenAPI/Swagger e compara com snapshot de runs anteriores do mesmo alvo. Passivo."><input type="checkbox" class="mod" value="api_contract_diff"><div class="checkbox-box"></div><span class="checkbox-text">API contract diff (snapshot)</span><span class="tag tag-med">PASS</span></label>
+        <label class="checkbox-item" title="Busca specs OpenAPI/Swagger em paths autorizados, gera snapshot e compara com runs anteriores. Ativo e sujeito aos gates do plano."><input type="checkbox" class="mod" value="api_contract_diff"><div class="checkbox-box"></div><span class="checkbox-text">API contract diff (snapshot)</span><span class="tag tag-high">ACT</span></label>
         <label class="checkbox-item" title="Descobre JWKS via OIDC e paths comuns; detecta kid duplicado, kty=oct publico, alg HS/none e RSA fraco. Passivo."><input type="checkbox" class="mod" value="jwt_jwks_audit"><div class="checkbox-box"></div><span class="checkbox-text">JWT/JWKS audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Analisa corpus de URLs para parametros duplicados e nomes sensiveis sujeitos a HTTP Parameter Pollution. Passivo."><input type="checkbox" class="mod" value="hpp_param_pollution"><div class="checkbox-box"></div><span class="checkbox-text">HPP param pollution audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Extrai WebSockets de HTML/JS/URLs e prioriza ws://, token em query e paths sensiveis. Passivo."><input type="checkbox" class="mod" value="websocket_recon"><div class="checkbox-box"></div><span class="checkbox-text">WebSocket recon</span><span class="tag tag-med">PASS</span></label>
@@ -3978,6 +3989,7 @@
         <div class="module-group-title">// Sensitive Data</div>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="passwords" checked><div class="checkbox-box"></div><span class="checkbox-text">Passwords & credentials</span><span class="tag tag-high">HIGH</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="sensitive" checked><div class="checkbox-box"></div><span class="checkbox-text">Sensitive exposure</span><span class="tag tag-high">HIGH</span></label>
+        <label class="checkbox-item" title="Valida tokens encontrados com probes autenticados de leitura. É intrusivo, fica desligado por padrão e exige seleção/confirmação explícita."><input type="checkbox" class="mod" value="secret_validation"><div class="checkbox-box"></div><span class="checkbox-text">Validar tokens encontrados</span><span class="tag tag-high">ACT</span></label>
         <label class="checkbox-item" title="Reclassifica secrets encontrados por contexto: tipo do token, URL de origem, GitHub, sourcemap, prod/test. Passivo."><input type="checkbox" class="mod" value="secrets_context_ranker"><div class="checkbox-box"></div><span class="checkbox-text">Secrets context ranker</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="So com Modo Kali + python + tools/info-disclosure/information_disclosure.py. Faz probes ativos de headers, arquivos sensiveis, listing, comentarios e metadados; nao executa invasao.">
           <input type="checkbox" class="mod" value="info_disclosure_hunter" id="modInfoDisclosureHunter">
@@ -4537,6 +4549,7 @@ let isRunning = false;
 let activeAutoController = null;
 let activeAutoSessionId = null;
 let autoCancelRequested = false;
+let autoCancelFallbackTimer = null;
 let stats = { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 };
 let targetDomain = '';
 const MITRE_LIVE_SESSION_STORAGE_KEY = 'ghostrecon_mitre_live_session_id';
@@ -5185,7 +5198,7 @@ async function refreshAutoRagStatus({ quiet = false } = {}) {
       el.textContent = parts.join(' | ') || '0 memorias';
       if (data?.dir) el.title = data.dir;
     }
-    if (!quiet && data?.dir) addLog(`AUTO RAG: ${data.count || 0} memorias em ${data.dir}`, 'info');
+    if (!quiet) addLog(`AUTO RAG: ${data.count || 0} memorias no vault ${data.vault || 'auto-rag'}`, 'info');
     return data;
   } catch (e) {
     if (el) el.textContent = 'RAG indisponivel';
@@ -5194,20 +5207,78 @@ async function refreshAutoRagStatus({ quiet = false } = {}) {
   }
 }
 
+function syncOptionalEngineToggles() {
+  const normalFrameSeven = document.getElementById('includeFrameSevenToggle')?.checked === true;
+  const normalFrameSevenAuth = document.getElementById('frameSevenAuthToggle');
+  if (normalFrameSevenAuth) {
+    normalFrameSevenAuth.disabled = !normalFrameSeven;
+    if (!normalFrameSeven) normalFrameSevenAuth.checked = false;
+  }
+  const normalAuthRow = document.getElementById('frameSevenAuthRow');
+  if (normalAuthRow) normalAuthRow.style.opacity = normalFrameSeven ? '1' : '.55';
+
+  const autonomy = document.getElementById('autoAutonomyLevelSelect')?.value || 'observation';
+  const canUseFrameSeven = autonomy !== 'observation';
+  const canUseIntrusive = ['authorized', 'authorized_opsec'].includes(autonomy);
+  const autoFrameSevenToggle = document.getElementById('autoIncludeFrameSevenToggle');
+  if (autoFrameSevenToggle) {
+    autoFrameSevenToggle.disabled = !canUseFrameSeven;
+    if (!canUseFrameSeven) autoFrameSevenToggle.checked = false;
+    const choice = autoFrameSevenToggle.closest('.auto-choice');
+    if (choice) choice.style.opacity = canUseFrameSeven ? '1' : '.55';
+  }
+  const autoFrameSeven = canUseFrameSeven && autoFrameSevenToggle?.checked === true;
+  const autoFrameSevenAuth = document.getElementById('autoFrameSevenAuthToggle');
+  if (autoFrameSevenAuth) {
+    autoFrameSevenAuth.disabled = !autoFrameSeven || !canUseIntrusive;
+    if (!autoFrameSeven || !canUseIntrusive) autoFrameSevenAuth.checked = false;
+    const choice = autoFrameSevenAuth.closest('.auto-choice');
+    if (choice) choice.style.opacity = autoFrameSeven && canUseIntrusive ? '1' : '.55';
+  }
+
+  const autoVigoliumToggle = document.getElementById('autoIncludeVigoliumToggle');
+  if (autoVigoliumToggle) {
+    autoVigoliumToggle.disabled = !canUseIntrusive;
+    if (!canUseIntrusive) autoVigoliumToggle.checked = false;
+    const choice = autoVigoliumToggle.closest('.auto-choice');
+    if (choice) choice.style.opacity = canUseIntrusive ? '1' : '.55';
+  }
+  const autoVigolium = canUseIntrusive && autoVigoliumToggle?.checked === true;
+  const autoVigoliumCodex = document.getElementById('autoVigoliumCodexToggle');
+  if (autoVigoliumCodex) {
+    autoVigoliumCodex.disabled = !autoVigolium;
+    if (!autoVigolium) autoVigoliumCodex.checked = false;
+    const choice = autoVigoliumCodex.closest('.auto-choice');
+    if (choice) choice.style.opacity = autoVigolium ? '1' : '.55';
+  }
+}
+
 function openAutoModeModal() {
   const modal = document.getElementById('autoModeModal');
   const target = document.getElementById('autoTargetInput');
   const mainTarget = document.getElementById('domainInput')?.value || '';
   if (target && !target.value.trim()) target.value = mainTarget.trim();
+  const autoEngagement = document.getElementById('autoEngagementIdInput');
+  const mainEngagement = document.getElementById('engagementIdInput')?.value || '';
+  if (autoEngagement && !autoEngagement.value.trim()) autoEngagement.value = mainEngagement.trim();
   const profile = getReconProfile();
   const mode = document.getElementById('autoModeSelect');
   if (mode) mode.value = profile === 'deep' ? 'deep' : profile === 'quick' ? 'quick' : 'balanced';
   const status = document.getElementById('autoModeStatus');
   if (status) status.textContent = 'Escolha uma ou mais IAs comandantes para iniciar.';
+  syncOptionalEngineToggles();
   syncAutoOpenrouterUi();
   refreshAutoRagStatus({ quiet: true });
   if (modal) modal.style.display = 'flex';
   setTimeout(() => target?.focus(), 0);
+}
+
+function handleAutoModeButton() {
+  if (isRunning && activeAutoController) {
+    void cancelAutoModeRecon();
+    return;
+  }
+  openAutoModeModal();
 }
 
 function closeAutoModeModal() {
@@ -5220,6 +5291,22 @@ function autoApiHeaders(json = false) {
   const authConfig = getOptionalAuthConfig();
   if (authConfig?.ghostreconApiKey) headers['X-API-Key'] = authConfig.ghostreconApiKey;
   return headers;
+}
+
+async function postAutoApiJson(pathname, body) {
+  const token = await ensureCsrfToken();
+  const headers = autoApiHeaders(true);
+  headers['X-CSRF-Token'] = token;
+  const res = await fetch(apiUrl(pathname), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || `HTTP ${res.status}`);
+  }
+  return data;
 }
 
 async function refreshAutoForge() {
@@ -5337,12 +5424,25 @@ async function lifecycleAutoForge(forgeId, action) {
 async function decideAutoForge(forgeId, decision) {
   const reason = window.prompt(decision === 'approve' ? 'Justificativa da aprovação:' : 'Motivo da rejeição:');
   if (reason == null || !reason.trim()) return;
+  const engagementId = decision === 'approve'
+    ? String(
+        document.getElementById('autoEngagementIdInput')?.value
+          || document.getElementById('engagementIdInput')?.value
+          || '',
+      ).trim()
+    : '';
+  if (decision === 'approve' && !engagementId) {
+    addLog('AUTO Module Forge: aprovação exige um engagement autorizado e no escopo.', 'warn');
+    return;
+  }
   try {
     const token = await ensureCsrfToken();
     const headers = autoApiHeaders(true);
     headers['X-CSRF-Token'] = token;
     const res = await fetch(apiUrl(`/api/auto-forge/${encodeURIComponent(forgeId)}/verdict`), {
-      method: 'POST', headers, body: JSON.stringify({ decision, reason: reason.trim() }),
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ decision, reason: reason.trim(), engagementId: engagementId || undefined }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -5365,7 +5465,15 @@ function summarizeAutoEvent(ev) {
     const commanders = Array.isArray(ev.commanders) && ev.commanders.length ? ev.commanders.join(', ') : 'ghostrecon';
     return { msg: `AUTO: sessão ${ev.sessionId || ev.requestRunId || '?'} | modo ${ev.mode || 'balanced'} | comandantes: ${commanders}`, level: 'section' };
   }
-  if (ev.type === 'auto_session' && ['cancelled', 'interrupted', 'failed', 'completed'].includes(ev.phase)) {
+  if (ev.type === 'auto_session' && [
+    'cancelled',
+    'interrupted',
+    'failed',
+    'timed_out',
+    'stalled',
+    'budget_exceeded',
+    'completed',
+  ].includes(ev.phase)) {
     if (ev.phase !== 'completed') addLog(`AUTO sessão ${ev.phase}: ${ev.error || ev.session?.error || ''}`.trim(), ev.phase === 'failed' ? 'error' : 'warn');
     if (ev.phase !== 'completed') activeAutoSessionId = null;
     return null;
@@ -5469,6 +5577,62 @@ function summarizeAutoEvent(ev) {
     const level = ev.status === 'blocked' ? 'warn' : ev.status === 'done' ? 'success' : 'info';
     return { msg: `AUTO etapa ${ev.step || '?'}: ${ev.status || '?'}`, level };
   }
+  if (ev.type === 'auto_effective_plan' && ev.effectivePlan) {
+    const selected = Array.isArray(ev.effectivePlan.selectedModules)
+      ? ev.effectivePlan.selectedModules.join(', ')
+      : '(nenhum)';
+    return {
+      msg: `AUTO plano efetivo ${String(ev.effectivePlan.hash || '').slice(0, 12)}: ${selected} | OPSEC=${ev.effectivePlan.opsecProfile || '-'} | aprovação=${ev.effectivePlan.requiresHumanApproval ? 'sim' : 'não'}`,
+      level: 'section',
+    };
+  }
+  if (ev.type === 'phase_outcome') {
+    const level = ev.status === 'done' ? 'success'
+      : ev.status === 'skipped' ? 'info'
+        : ev.recoverable ? 'warn' : 'error';
+    return {
+      msg: `AUTO fase ${ev.phase || '?'}: ${ev.status || '?'}${ev.error ? ` — ${ev.error}` : ''}${ev.recoverable && !['done', 'skipped'].includes(ev.status) ? ' (pipeline continuou)' : ''}`,
+      level,
+    };
+  }
+  if (ev.type === 'auto_module_outcome') {
+    const level = ev.status === 'done' ? 'success'
+      : ev.status === 'skipped' ? 'info' : 'warn';
+    return {
+      msg: `AUTO módulo ${ev.moduleId || '?'} [${ev.engine || '?'}]: ${ev.status || '?'}${ev.error ? ` — ${ev.error}` : ''}`,
+      level,
+    };
+  }
+  if (ev.type === 'engine_started') {
+    return { msg: `Motor ${ev.engine || '?'}: iniciado.`, level: 'info' };
+  }
+  if (ev.type === 'engine_done') {
+    return { msg: `Motor ${ev.engine || '?'}: concluído.`, level: 'success' };
+  }
+  if (ev.type === 'engine_partial') {
+    return {
+      msg: `Motor ${ev.engine || '?'}: concluído parcialmente${ev.phase ? ` (${ev.phase})` : ''}${ev.error ? ` — ${ev.error}` : ''}.`,
+      level: 'warn',
+    };
+  }
+  if (ev.type === 'engine_timeout') {
+    return {
+      msg: `Motor ${ev.engine || '?'}: timeout${ev.error ? ` — ${ev.error}` : ''}; os demais motores podem continuar quando o processo tiver sido encerrado.`,
+      level: 'warn',
+    };
+  }
+  if (ev.type === 'engine_skipped' || ev.type === 'engine_unavailable') {
+    return { msg: `Motor ${ev.engine || '?'}: omitido (${ev.reason || 'indisponível'}).`, level: 'warn' };
+  }
+  if (ev.type === 'engine_cancelled') {
+    return { msg: `Motor ${ev.engine || '?'}: cancelado.`, level: 'warn' };
+  }
+  if (ev.type === 'engine_failed') {
+    return {
+      msg: `Motor ${ev.engine || '?'}: falhou${ev.timeout ? ' por timeout' : ''}${ev.error ? ` — ${ev.error}` : ''}.`,
+      level: 'error',
+    };
+  }
   if (ev.type === 'auto_evaluation' && ev.evaluation) {
     window.__ghostreconLastAutoEvaluation = ev.evaluation;
     return {
@@ -5512,6 +5676,8 @@ async function startAutoModeRecon() {
   activeAutoController = new AbortController();
   autoCancelRequested = false;
   activeAutoSessionId = null;
+  if (autoCancelFallbackTimer) clearTimeout(autoCancelFallbackTimer);
+  autoCancelFallbackTimer = null;
 
   isRunning = true;
   if (cancelBtn) cancelBtn.disabled = false;
@@ -5539,35 +5705,50 @@ async function startAutoModeRecon() {
   updateProgressDetail();
   document.getElementById('statusText').textContent = 'AUTO ATIVO';
   if (autoBtn) {
-    autoBtn.textContent = 'AUTO RODANDO...';
+    autoBtn.textContent = 'PARAR AUTO';
     autoBtn.classList.add('running');
+    autoBtn.disabled = false;
   }
   if (runBtn) runBtn.disabled = true;
   if (startBtn) startBtn.disabled = true;
   if (status) status.textContent = 'Modo Auto em execucao...';
   closeAutoModeModal();
 
-  const finish = (ok, msg = '') => {
+  const finish = (outcome, msg = '') => {
+    const completed = outcome === 'completed';
+    const cancelled = ['cancelled', 'interrupted', 'cancel_requested_unconfirmed'].includes(outcome);
     closeMitreLive();
+    if (autoCancelFallbackTimer) clearTimeout(autoCancelFallbackTimer);
+    autoCancelFallbackTimer = null;
     if (autoBtn) {
       autoBtn.textContent = previousAutoText;
       autoBtn.classList.remove('running');
+      autoBtn.disabled = false;
     }
     activeAutoController = null;
     activeAutoSessionId = null;
     if (runBtn) runBtn.disabled = false;
     if (startBtn) startBtn.disabled = false;
     if (cancelBtn) cancelBtn.disabled = true;
-    document.getElementById('statusText').textContent = ok ? 'AUTO COMPLETO' : 'ERRO';
-    currentPipeDetail = ok ? 'auto concluido' : 'auto erro';
+    document.getElementById('statusText').textContent = completed ? 'AUTO COMPLETO' : cancelled ? 'AUTO CANCELADO' : 'ERRO';
+    currentPipeDetail = completed ? 'auto concluido' : cancelled ? 'auto cancelado' : 'auto erro';
     updateProgressDetail();
     isRunning = false;
-    if (msg) addLog(msg, ok ? 'success' : 'error');
+    if (status) status.textContent = completed ? 'Modo Auto concluído.' : cancelled ? 'Modo Auto cancelado.' : 'Modo Auto encerrou com erro.';
+    if (msg) addLog(msg, completed ? 'success' : cancelled ? 'warn' : 'error');
   };
 
   try {
+    const includeFrameSeven = document.getElementById('autoIncludeFrameSevenToggle')?.checked === true;
+    const includeVigolium = document.getElementById('autoIncludeVigoliumToggle')?.checked === true;
+    const frameSevenAuth = includeFrameSeven && document.getElementById('autoFrameSevenAuthToggle')?.checked === true;
+    const vigoliumUseCodex = includeVigolium && document.getElementById('autoVigoliumCodexToggle')?.checked === true;
     addLog(`AUTO: iniciando agente para ${target}`, 'section');
     addLog(`AUTO comandantes: ${commanders.join(', ')}`, 'info');
+    addLog(
+      `AUTO motores opcionais: FrameSeven=${includeFrameSeven ? (frameSevenAuth ? 'sim (autenticado)' : 'sim') : 'não'} | Vigolium=${includeVigolium ? (vigoliumUseCodex ? 'sim (Codex)' : 'sim') : 'não'}`,
+      'info',
+    );
     const token = await ensureCsrfToken();
     const authConfig = getOptionalAuthConfig();
     const fetchHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
@@ -5578,14 +5759,19 @@ async function startAutoModeRecon() {
       domain: target,
       mode: document.getElementById('autoModeSelect')?.value || 'balanced',
       commanders,
-      includeHexstrike: document.getElementById('autoHexstrikeToggle')?.checked !== false,
+      includeHexstrike: document.getElementById('autoHexstrikeToggle')?.checked === true,
       includeDeepPassive: document.getElementById('autoDeepPassiveToggle')?.checked !== false,
       autonomyLevel: document.getElementById('autoAutonomyLevelSelect')?.value || 'observation',
-      frameSevenAuth: document.getElementById('autoFrameSevenAuthToggle')?.checked === true,
-      vigoliumUseCodex: document.getElementById('autoVigoliumCodexToggle')?.checked === true,
+      includeFrameSeven,
+      frameSevenAuth,
+      includeVigolium,
+      vigoliumUseCodex,
       resumeSessionId: document.getElementById('autoResumeSessionInput')?.value?.trim() || null,
-      auth: authConfig,
     };
+    const engagementId = document.getElementById('autoEngagementIdInput')?.value?.trim()
+      || document.getElementById('engagementIdInput')?.value?.trim()
+      || '';
+    if (engagementId) body.engagementId = engagementId;
     if (commanders.includes('openrouter')) {
       body.openrouterModel = document.getElementById('autoOpenrouterModelSelect')?.value || '';
     }
@@ -5597,39 +5783,57 @@ async function startAutoModeRecon() {
       signal: activeAutoController.signal,
     });
     if (!res.ok) {
-      finish(false, `AUTO: HTTP ${res.status} - confira se o servidor esta rodando e autenticado.`);
+      finish('failed', `AUTO: HTTP ${res.status} - confira se o servidor esta rodando e autenticado.`);
       return;
     }
-    const ok = await consumeReconStreamFromResponse(res, 0, null, null);
-    if (autoCancelRequested) {
-      finish(true, 'AUTO: cancelamento concluído.');
+    const outcome = await consumeReconStreamFromResponse(res, 0, null, null, { requireAutoTerminal: true });
+    if (outcome.status === 'completed') finish('completed', 'AUTO: execução concluída.');
+    else if (outcome.status === 'cancelled') finish('cancelled', 'AUTO: cancelamento confirmado pelo servidor.');
+    else if (outcome.status === 'interrupted') finish('interrupted', 'AUTO: sessão interrompida.');
+    else if (outcome.status === 'cancel_requested_unconfirmed') {
+      finish('cancel_requested_unconfirmed', 'AUTO: stream encerrado sem confirmação terminal do cancelamento.');
     } else {
-      finish(ok, ok ? 'AUTO: execucao concluida.' : 'AUTO: pipeline terminou com erro.');
+      finish('failed', `AUTO: sessão encerrou com status ${outcome.status || 'desconhecido'}.`);
     }
   } catch (e) {
-    finish(false, autoCancelRequested ? 'AUTO: cancelamento solicitado.' : `AUTO: ${e?.message || e}`);
+    finish(
+      autoCancelRequested ? 'cancel_requested_unconfirmed' : 'failed',
+      autoCancelRequested
+        ? 'AUTO: stream encerrado sem confirmação terminal do cancelamento.'
+        : `AUTO: ${e?.message || e}`,
+    );
   }
 }
 
 async function cancelAutoModeRecon() {
-  if (!isRunning) return;
+  if (!isRunning || !activeAutoController || autoCancelRequested) return;
   autoCancelRequested = true;
   const sessionId = activeAutoSessionId;
   const status = document.getElementById('autoModeStatus');
+  const autoBtn = document.getElementById('autoRunBtn');
+  if (autoBtn) {
+    autoBtn.textContent = 'CANCELANDO...';
+    autoBtn.disabled = true;
+  }
   if (status) status.textContent = sessionId ? `Cancelando sessão ${sessionId}...` : 'Cancelando sessão...';
   try {
-    if (sessionId) {
-      const token = await ensureCsrfToken();
-      const headers = autoApiHeaders(true);
-      headers['X-CSRF-Token'] = token;
-      await fetch(apiUrl(`/api/recon/auto/${encodeURIComponent(sessionId)}/cancel`), {
-        method: 'POST', headers, body: JSON.stringify({ reason: 'operator_ui' }),
-      });
+    if (!sessionId) {
+      activeAutoController.abort(new Error('AUTO cancelado localmente antes da criação da sessão'));
+      return;
     }
+    await postAutoApiJson(`/api/recon/auto/${encodeURIComponent(sessionId)}/cancel`, { reason: 'operator_ui' });
+    addLog(`AUTO: cancelamento aceito para ${sessionId}; aguardando estado terminal.`, 'warn');
+    autoCancelFallbackTimer = setTimeout(() => {
+      activeAutoController?.abort(new Error('Timeout aguardando confirmação do cancelamento AUTO'));
+    }, 10_000);
   } catch (e) {
-    addLog(`AUTO: falha ao solicitar cancelamento no servidor: ${e?.message || e}`, 'warn');
-  } finally {
-    activeAutoController?.abort();
+    autoCancelRequested = false;
+    if (autoBtn) {
+      autoBtn.textContent = 'PARAR AUTO';
+      autoBtn.disabled = false;
+    }
+    if (status) status.textContent = 'Falha ao cancelar; a sessão continua em execução.';
+    addLog(`AUTO: falha ao solicitar cancelamento no servidor: ${e?.message || e}`, 'error');
   }
 }
 
@@ -5637,6 +5841,14 @@ async function cancelAutoModeRecon() {
 /** Nomes emitidos pelo servidor → nó visual na barra */
 document.addEventListener('change', (e) => {
   if (e.target?.classList?.contains('auto-commander')) syncAutoOpenrouterUi();
+  if ([
+    'includeFrameSevenToggle',
+    'autoIncludeFrameSevenToggle',
+    'autoIncludeVigoliumToggle',
+    'autoAutonomyLevelSelect',
+  ].includes(e.target?.id)) {
+    syncOptionalEngineToggles();
+  }
 });
 
 document.addEventListener('click', (e) => {
@@ -6215,7 +6427,13 @@ async function refreshServerToolPath() {
       headers: fetchHeaders,
       body: '{}',
     });
-    if (!res.ok) throw new Error(String(res.status));
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data?.error === 'PATH_REFRESH_RESTART_REQUIRED') {
+        addLog(data.message || 'Configure o PATH e reinicie a stack.', 'warn');
+      }
+      throw new Error(data?.error || String(res.status));
+    }
   } catch (e) {
     if (btn) btn.textContent = prev;
     if (btn) btn.disabled = false;
@@ -6936,11 +7154,13 @@ function applyVigoliumKaliDeepPreset() {
   setInputChecked('vigoliumPreferPathToggle', true);
   setInputChecked('modVigoliumDast', true);
   setInputChecked('vigoliumHtmlReportToggle', true);
-  setInputChecked('confirmActiveToggle', true);
   const reportOnly = document.getElementById('vigoliumReportOnlyInput');
   if (reportOnly && !reportOnly.value.trim()) reportOnly.value = 'discovery';
   renderVigoliumGuardrails();
-  addLog('Preset Vigolium Kali Deep aplicado: PATH + both + DAST + deep + HTML report.', 'info');
+  addLog(
+    'Preset Vigolium Kali Deep aplicado. Revise o plano e marque «Confirmar ativo» manualmente somente se o escopo estiver autorizado.',
+    'warn',
+  );
 }
 
 function appendUniqueLines(textareaId, lines) {
@@ -6997,7 +7217,6 @@ function applyVigoliumAuthComparePreset() {
   setInputChecked('vigoliumPreferPathToggle', true);
   setInputChecked('modVigoliumDast', true);
   setInputChecked('vigoliumHtmlReportToggle', true);
-  setInputChecked('confirmActiveToggle', true);
   mergeCsvInput('vigoliumModuleTagsInput', ['access-control', 'idor', 'bola', 'authz']);
   const reportOnly = document.getElementById('vigoliumReportOnlyInput');
   if (reportOnly && !reportOnly.value.trim()) reportOnly.value = 'discovery';
@@ -7007,6 +7226,10 @@ function applyVigoliumAuthComparePreset() {
       ? 'Vigolium Auth Compare aplicado: admin/user + tags IDOR/BOLA + report HTML.'
       : 'Vigolium Auth Compare aplicado sem credenciais inline; preencha admin/user para comparar papeis.',
     entries.length ? 'info' : 'warn',
+  );
+  addLog(
+    'O preset não concede consentimento ativo. Revise o plano e marque «Confirmar ativo» manualmente somente se o escopo estiver autorizado.',
+    'warn',
   );
 }
 
@@ -7231,12 +7454,18 @@ function openGhostmapAndReporteOnReconStartSync() {
  * @param batchPosition null ou { index, total } para mensagens de fila
  * @param statsBaseline null (recon único) ou snapshot `{ subs, endpoints, … }` antes deste stream — na fila, soma baseline + stats do servidor
  */
-async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosition, statsBaseline = null) {
-  if (!res.ok) return false;
+async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosition, statsBaseline = null, streamOptions = null) {
+  const requireAutoTerminal = streamOptions?.requireAutoTerminal === true;
+  if (!res.ok) {
+    return requireAutoTerminal ? { ok: false, status: 'http_error', terminalPhase: null } : false;
+  }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
   let failed = false;
+  let autoTerminalPhase = null;
+  let sawAutoSession = false;
+  let streamInterrupted = false;
   outer: while (true) {
     let chunk;
     try {
@@ -7245,7 +7474,8 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       if (autoCancelRequested) {
         addLog('AUTO: stream encerrado após cancelamento solicitado.', 'warn');
         mitreLivePost({ type: 'run_end' });
-        return true;
+        streamInterrupted = true;
+        break outer;
       }
       addLog(
         `Stream NDJSON interrompida (${e?.message || e}). Mantém a aba aberta durante Shannon longo; evita suspender o portátil. Recarrega e tenta de novo se o servidor ainda corre.`,
@@ -7256,43 +7486,70 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       break outer;
     }
     const { done, value } = chunk;
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
+    if (done) {
+      buf += dec.decode();
+      if (buf.trim()) buf += '\n';
+    }
+    else buf += dec.decode(value, { stream: true });
     let idx;
     while ((idx = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, idx).trim();
       buf = buf.slice(idx + 1);
       if (!line) continue;
       let ev;
-      try { ev = JSON.parse(line); } catch { continue; }
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        if (requireAutoTerminal) {
+          failed = true;
+          addLog('AUTO: evento NDJSON inválido recebido; o estado terminal não é confiável.', 'error');
+        }
+        continue;
+      }
 
       const autoSummary = summarizeAutoEvent(ev);
       if (autoSummary) addLog(autoSummary.msg, autoSummary.level || 'info');
+      if (ev.type === 'auto_session') {
+        sawAutoSession = true;
+        if (['completed', 'cancelled', 'interrupted', 'failed', 'timed_out', 'stalled', 'budget_exceeded'].includes(ev.phase)) {
+          autoTerminalPhase = ev.phase;
+          if (['failed', 'timed_out', 'stalled', 'budget_exceeded'].includes(ev.phase)) failed = true;
+        }
+      }
 
       if (ev.type === 'auto_approval_required' && ev.approval) {
         const a = ev.approval;
         const isAuthentication = a.kind === 'authentication';
+        const isIntrusive = a.intrusive === true || a.kind === 'intrusive_plan';
+        const moduleLimits = Array.isArray(a.limits?.modules)
+          ? a.limits.modules.map((item) => {
+            const timeout = Number(item?.timeoutMs || 0);
+            return `${item?.id || 'módulo'}: timeout=${timeout > 0 ? `${Math.ceil(timeout / 1000)}s` : 'n/d'}, concorrência=${item?.concurrency || 'n/d'}, fase=${item?.phase || 'externa'}`;
+          }).join('\n')
+          : '';
+        const limitsText = a.limits
+          ? `Perfil=${a.limits.profile || 'n/d'}; OPSEC=${a.limits.opsecProfile || 'n/d'}`
+            + `${a.limits.enforcement ? `\nPolítica: ${a.limits.enforcement}` : ''}`
+            + `${moduleLimits ? `\n${moduleLimits}` : ''}`
+          : 'n/d';
         const prompt = isAuthentication
-          ? `AUTENTICAÇÃO CONCLUÍDA\n\nAlvo: ${a.target || 'sessão atual'}\n\nFechar o navegador e iniciar as auditorias GHOSTRECON, Vigolium e FrameSeven?`
-          : `AÇÃO DESTRUTIVA SOLICITADA\n\nMódulo: ${a.module || a.tool || 'desconhecido'}\nAlvo: ${a.target || 'sessão atual'}\nAção: ${a.action || a.description || 'não especificada'}\nRisco: ${a.risk || 'ação ativa/destrutiva'}\n\nDeseja confirmar?`;
+          ? `AUTENTICAÇÃO CAPTURADA\n\nAlvo: ${a.target || 'sessão atual'}\n\nCompartilhar a sessão temporária e iniciar as auditorias GHOSTRECON, Vigolium e FrameSeven?`
+          : `${isIntrusive ? 'AÇÃO INTRUSIVA SOLICITADA' : 'CONFIRMAÇÃO DO PLANO AUTO'}\n\nMódulo(s): ${a.module || a.tool || 'plano atual'}\nAlvo: ${a.target || 'sessão atual'}\nAção: ${a.action || a.description || 'não especificada'}\nRisco: ${a.risk || (isIntrusive ? 'ação intrusiva autorizada' : 'execução não intrusiva')}\nPlano: ${a.planHash || 'n/d'}\nLimites:\n${limitsText}\nAo recusar: ${a.denialBehavior || 'o plano não será executado'}\n\nDeseja confirmar?`;
         const approved = window.confirm(prompt);
         try {
-          const csrf = await ensureCsrfToken();
-          await fetch(apiUrl(`/api/recon/auto/${encodeURIComponent(ev.sessionId)}/approval`), {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-            body: JSON.stringify({ approvalId: a.approvalId, approved, reason: approved ? 'operador confirmou' : 'operador recusou' }),
+          if (!ev.sessionId || !a.approvalId) throw new Error('identificador de aprovação ausente');
+          await postAutoApiJson(`/api/recon/auto/${encodeURIComponent(ev.sessionId)}/approval`, {
+            approvalId: a.approvalId,
+            approved,
+            reason: approved ? 'operador confirmou' : 'operador recusou',
           });
           addLog(`AUTO: ação ${approved ? 'confirmada' : 'recusada'} pelo operador.`, approved ? 'warn' : 'info');
         } catch (e) { addLog(`AUTO: falha ao responder aprovação (${e?.message || e})`, 'error'); }
       }
       if (ev.type === 'auth_required' && ev.approvalId) {
-        const approved = window.confirm(`AUTENTICAÇÃO DO FRAMESEVEN\n\nConclua o login na janela do navegador para ${ev.target || 'o alvo'} e clique em OK para iniciar GHOSTRECON, Vigolium e FrameSeven.`);
+        const approved = window.confirm(`AUTENTICAÇÃO DO FRAMESEVEN CAPTURADA\n\nAlvo: ${ev.target || 'sessão atual'}\n\nCompartilhar a sessão temporária e iniciar GHOSTRECON, Vigolium e FrameSeven?`);
         try {
-          const csrf = await ensureCsrfToken();
-          await fetch(apiUrl(`/api/recon/frameseven/${encodeURIComponent(ev.approvalId)}/approval`), {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-            body: JSON.stringify({ approved }),
-          });
+          await postAutoApiJson(`/api/recon/frameseven/${encodeURIComponent(ev.approvalId)}/approval`, { approved });
           addLog(`FrameSeven: autenticação ${approved ? 'confirmada' : 'recusada'}.`, approved ? 'info' : 'warn');
         } catch (e) { addLog(`FrameSeven: falha ao confirmar autenticação (${e?.message || e})`, 'error'); }
       }
@@ -7509,8 +7766,104 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         };
       }
     }
+    if (done) break;
+  }
+  if (requireAutoTerminal) {
+    let status = autoTerminalPhase;
+    if (failed && !autoTerminalPhase) status = 'failed';
+    else if (!status && autoCancelRequested) status = 'cancel_requested_unconfirmed';
+    else if (!status && streamInterrupted) status = 'interrupted_unconfirmed';
+    else if (!status) status = sawAutoSession ? 'incomplete' : 'session_not_started';
+    return {
+      ok: status === 'completed',
+      status,
+      terminalPhase: autoTerminalPhase,
+      sawAutoSession,
+    };
   }
   return !failed;
+}
+
+async function prepareManualReconApproval(streamBody) {
+  const token = await ensureCsrfToken();
+  const authConfig = getOptionalAuthConfig();
+  const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
+  if (authConfig?.ghostreconApiKey) headers['X-API-Key'] = authConfig.ghostreconApiKey;
+
+  // O preflight não precisa receber credenciais. Esses campos são usados
+  // somente pelo stream depois que o plano sem segredos foi aprovado.
+  const preflightBody = { ...streamBody };
+  delete preflightBody.auth;
+  delete preflightBody.vigoliumAuth;
+  delete preflightBody.vigoliumAuthEntries;
+  delete preflightBody.vigoliumAuthFile;
+  delete preflightBody.vigoliumAuthFiles;
+
+  const preflightResponse = await fetch(apiUrl('/api/recon/preflight'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(preflightBody),
+  });
+  const preflight = await preflightResponse.json().catch(() => ({}));
+  if (!preflightResponse.ok || !preflight?.ok) {
+    throw new Error(preflight?.error || `preflight HTTP ${preflightResponse.status}`);
+  }
+  if (!preflight.requiresApproval) return streamBody;
+  if (streamBody.confirmActive !== true) {
+    throw new Error('O plano é intrusivo: marque “Confirmar ativo” antes de solicitar a aprovação.');
+  }
+
+  const plan = preflight.plan || {};
+  const frameSeven = plan.engines?.frameseven || {};
+  const vigolium = plan.engines?.vigolium || {};
+  const tools = Array.isArray(frameSeven.tools) && frameSeven.tools.length
+    ? frameSeven.tools.join(', ')
+    : '(não incluído)';
+  const limits = frameSeven.enabled
+    ? `FrameSeven: timeout=${frameSeven.timeoutMs}ms · tool-timeout=${frameSeven.toolTimeoutMs}ms · concorrência=${frameSeven.concurrency} · rate=${frameSeven.rate}`
+    : 'FrameSeven: não incluído';
+  const engines = [
+    frameSeven.enabled ? `FrameSeven ${frameSeven.authenticated ? 'autenticado' : 'ofensivo'}` : null,
+    vigolium.enabled ? `Vigolium ${vigolium.agent || 'sem agente'}` : null,
+  ].filter(Boolean).join(', ') || 'pipeline GHOSTRECON';
+  const approved = window.confirm(
+    `CONFIRMAÇÃO DO PLANO MANUAL\n\n`
+    + `Alvo: ${plan.target || streamBody.domain}\n`
+    + `Engagement: ${plan.engagement?.id || 'n/d'}\n`
+    + `Módulos efetivos: ${(plan.expandedModules || []).join(', ') || '(nenhum)'}\n`
+    + `Módulos intrusivos: ${(plan.intrusiveModules || []).join(', ') || '(nenhum)'}\n`
+    + `Motores: ${engines}\n`
+    + `Ferramentas FrameSeven: ${tools}\n`
+    + `Limites: ${limits}\n`
+    + `OPSEC: ${plan.execution?.opsecProfile || 'standard'}\n`
+    + `Hash do plano: ${plan.hash || 'n/d'}\n\n`
+    + 'A aprovação vale somente para este alvo, engagement, conjunto de módulos, ferramentas, limites e identidades de binário. '
+    + 'Qualquer mudança invalida o plano. Ao recusar, nada será executado.\n\n'
+    + 'Deseja aprovar este plano?',
+  );
+
+  const decisionResponse = await fetch(apiUrl('/api/recon/approval'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      approvalId: preflight.approval?.approvalId,
+      planHash: plan.hash,
+      approved,
+    }),
+  });
+  const decision = await decisionResponse.json().catch(() => ({}));
+  if (!decisionResponse.ok || !decision?.ok) {
+    throw new Error(decision?.error || `aprovação HTTP ${decisionResponse.status}`);
+  }
+  if (!approved) return null;
+
+  return {
+    ...streamBody,
+    manualApproval: {
+      approvalId: preflight.approval.approvalId,
+      planHash: plan.hash,
+    },
+  };
 }
 
 async function startRecon() {
@@ -7616,6 +7969,10 @@ async function startRecon() {
 
   const exact = document.getElementById('exactMatch').checked;
   const selectedMods = [...document.querySelectorAll('.mod:checked')].map(x => x.value);
+  const includeFrameSeven = document.getElementById('includeFrameSevenToggle')?.checked === true;
+  const frameSevenAuth = includeFrameSeven && document.getElementById('frameSevenAuthToggle')?.checked === true;
+  const vigoliumSelected = selectedMods.some((id) => String(id).startsWith('vigolium_'))
+    || ['go', 'both'].includes(String(document.getElementById('vigoliumEngineSelect')?.value || '').toLowerCase());
   if (!validateVigoliumGuardrailsBeforeRun(selectedMods)) {
     btn.textContent = '▶ RUN RECON';
     btn.classList.remove('running');
@@ -7633,6 +7990,10 @@ async function startRecon() {
     'section',
   );
   addLog(`Módulos ativos: ${selectedMods.join(', ') || '(nenhum)' }`, 'info');
+  addLog(
+    `Motores opcionais: FrameSeven=${includeFrameSeven ? (frameSevenAuth ? 'sim (autenticado)' : 'sim') : 'não'} | Vigolium=${vigoliumSelected ? 'sim' : 'não'}`,
+    'info',
+  );
   addLog(`Modo: ${exact ? 'Exact Match (aspas nos dorks)' : 'Broad Match'}`, 'info');
   addLog(`Perfil de execução: ${getReconProfile()}`, 'info');
   addLog('Conectando ao pipeline local (servidor Node)...', 'info');
@@ -7767,7 +8128,8 @@ async function startRecon() {
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
         profile: getReconProfile(),
         auth: getOptionalAuthConfig(),
-        frameSevenAuth: document.getElementById('frameSevenAuthToggle')?.checked === true,
+        includeFrameSeven,
+        frameSevenAuth,
         autoAiReports: aiReportsEnabled,
         aiProviderMode: lmStudioOnly ? 'lmstudio_only' : 'auto',
         shannonPrecheck,
@@ -7789,7 +8151,7 @@ async function startRecon() {
       if (engId) streamBody.engagementId = engId;
       const opHand = (document.getElementById('engagementOperatorInput')?.value || '').trim();
       if (opHand) streamBody.operator = opHand;
-      if (document.getElementById('confirmActiveToggle')?.checked || streamBody.profile === 'deep') streamBody.confirmActive = true;
+      if (document.getElementById('confirmActiveToggle')?.checked) streamBody.confirmActive = true;
       const opsecV = String(document.getElementById('opsecProfileSelect')?.value || 'standard')
         .trim()
         .toLowerCase();
@@ -7941,10 +8303,30 @@ async function startRecon() {
       if (authConfig?.ghostreconApiKey) {
         fetchHeaders['X-API-Key'] = authConfig.ghostreconApiKey;
       }
+      let approvedStreamBody;
+      try {
+        approvedStreamBody = await prepareManualReconApproval(makeStreamBody(rootHost));
+      } catch (approvalError) {
+        const message = `Plano manual recusado pelo servidor: ${approvalError?.message || approvalError}`;
+        if (targets.length === 1) {
+          finishErr(message);
+          return;
+        }
+        addLog(`${message} (a saltar para o próximo alvo)`, 'error');
+        continue;
+      }
+      if (!approvedStreamBody) {
+        addLog(`Plano manual recusado pelo operador — ${rootHost} não foi executado.`, 'warn');
+        if (targets.length === 1) {
+          finishOk();
+          return;
+        }
+        continue;
+      }
       const res = await fetch(apiUrl('/api/recon/stream'), {
         method: 'POST',
         headers: fetchHeaders,
-        body: JSON.stringify(makeStreamBody(rootHost)),
+        body: JSON.stringify(approvedStreamBody),
       });
 
       if (!res.ok) {
@@ -8013,10 +8395,24 @@ async function startRecon() {
           if (authConfigSub?.ghostreconApiKey) {
             fetchHeadersSub['X-API-Key'] = authConfigSub.ghostreconApiKey;
           }
+          let approvedSubBody;
+          try {
+            approvedSubBody = await prepareManualReconApproval(makeStreamBody(subHost));
+          } catch (approvalError) {
+            addLog(
+              `Plano da cascata ${subHost} bloqueado: ${approvalError?.message || approvalError}`,
+              'error',
+            );
+            continue;
+          }
+          if (!approvedSubBody) {
+            addLog(`Plano da cascata ${subHost} recusado — alvo não executado.`, 'warn');
+            continue;
+          }
           const resSub = await fetch(apiUrl('/api/recon/stream'), {
             method: 'POST',
             headers: fetchHeadersSub,
-            body: JSON.stringify(makeStreamBody(subHost)),
+            body: JSON.stringify(approvedSubBody),
           });
           if (!resSub.ok) {
             addLog(`HTTP ${resSub.status} — cascata ${subHost} (a saltar)`, 'error');
@@ -8913,6 +9309,7 @@ document.getElementById('vigoliumCatalogBox')?.addEventListener('click', (ev) =>
 
 loadVigoliumRunProfile({ silent: true });
 renderVigoliumGuardrails();
+syncOptionalEngineToggles();
 
 document.getElementById('shannonPrepPullBtn')?.addEventListener('click', async () => {
   const btn = document.getElementById('shannonPrepPullBtn');
@@ -9264,16 +9661,15 @@ function closeXssHelpModal() {
 }
   const deepProfileSelect = document.getElementById('reconProfileSelect');
   deepProfileSelect?.addEventListener('change', () => {
-    const active = document.getElementById('confirmActiveToggle');
-    if (deepProfileSelect.value !== 'deep' || !active) return;
-    active.checked = true;
-    active.dispatchEvent(new Event('change', { bubbles: true }));
-    addLog('Perfil deep: Confirmar ativo habilitado automaticamente para permitir sqlmap e outros módulos intrusivos.', 'warn');
+    if (deepProfileSelect.value !== 'deep') return;
+    const activeConfirmed = document.getElementById('confirmActiveToggle')?.checked === true;
+    if (!activeConfirmed) {
+      addLog(
+        'Perfil deep selecionado. Ele não concede consentimento: revise o plano e marque «Confirmar ativo» manualmente se houver autorização.',
+        'warn',
+      );
+    }
   });
-  if (deepProfileSelect?.value === 'deep') {
-    const active = document.getElementById('confirmActiveToggle');
-    if (active) active.checked = true;
-  }
 </script>
 
 <div

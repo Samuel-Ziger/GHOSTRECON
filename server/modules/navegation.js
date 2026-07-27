@@ -226,9 +226,10 @@ export async function getNavegationTunnelStatus(rootDir) {
   };
 }
 
-function runSimple(cmd, args, timeoutMs = 20_000) {
+function runSimple(cmd, args, timeoutMs = 20_000, signal = null) {
   return runProcess(cmd, args, {
     timeoutMs,
+    signal,
     rejectOnError: false,
     rejectOnTimeout: false,
     label: cmd,
@@ -268,16 +269,22 @@ async function resolveDirect(host) {
   }
 }
 
-async function curlSocks(url, timeoutSec = 15) {
-  return runSimple('curl', ['-sS', '--max-time', String(timeoutSec), '--socks5-hostname', '127.0.0.1:9050', url]);
+async function curlSocks(url, timeoutSec = 15, signal = null) {
+  return runSimple(
+    'curl',
+    ['-sS', '--max-time', String(timeoutSec), '--socks5-hostname', '127.0.0.1:9050', url],
+    Math.max(1_000, timeoutSec * 1_000 + 1_000),
+    signal,
+  );
 }
 
 /**
  * Tenta cada endpoint até obter um JSON válido com IP via SOCKS5h.
  */
-async function torIpProbe() {
+async function torIpProbe(signal = null) {
   for (const ep of TOR_IP_CHECKS) {
-    const res = await curlSocks(ep.url);
+    if (signal?.aborted) throw signal.reason || new Error('Tor IP probe cancelado');
+    const res = await curlSocks(ep.url, 15, signal);
     const json = safeJsonParse(res.stdout);
     if (!json) continue;
     const x = ep.extract(json) || {};
@@ -374,12 +381,21 @@ export async function validateNavegationTorPath(rootDir, opts = {}) {
  * Não corre o systemctl status (que precisa de spawn) — usa apenas tor-control.js
  * + um único IP-check via SOCKS. Falha rápida.
  */
-export async function quickValidateTor({ timeoutMs = 8_000 } = {}) {
+export async function quickValidateTor({ timeoutMs = 8_000, signal = null } = {}) {
   const t0 = Date.now();
-  const torIp = await torIpProbe();
+  const torIp = await torIpProbe(signal);
+  if (signal?.aborted) throw signal.reason || new Error('Validação Tor cancelada');
   let control;
-  try { control = await torHealth(); } catch (e) { control = { error: e?.message || String(e) }; }
-  const directRes = await runSimple('curl', ['-sS', '--max-time', '6', 'https://api.ipify.org?format=json'], 7_000);
+  try { control = await torHealth({ signal }); } catch (e) {
+    if (signal?.aborted) throw signal.reason || e;
+    control = { error: e?.message || String(e) };
+  }
+  const directRes = await runSimple(
+    'curl',
+    ['-sS', '--max-time', '6', 'https://api.ipify.org?format=json'],
+    Math.min(7_000, Math.max(1_000, Number(timeoutMs) || 8_000)),
+    signal,
+  );
   const directJson = safeJsonParse(directRes.stdout) || {};
   const directIp = String(directJson.ip || '').trim() || null;
   const validated = Boolean(
@@ -394,4 +410,3 @@ export async function quickValidateTor({ timeoutMs = 8_000 } = {}) {
     control,
   };
 }
-

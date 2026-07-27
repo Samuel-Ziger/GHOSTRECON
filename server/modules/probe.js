@@ -70,20 +70,50 @@ function detectWaf(headers, bodySnippet = '') {
 }
 
 export async function probeHttp(url, opts = {}) {
-  const { auth, modules = [], identityCtrl = null } = opts;
-  if (!identityCtrl?.enabled) await stealthPause(modules);
+  const {
+    auth,
+    modules = [],
+    identityCtrl = null,
+    signal = null,
+    fetchImpl = globalThis.fetch,
+    urlAllowed = () => true,
+  } = opts;
+  if (signal?.aborted) throw signal.reason || new DOMException('cancelado', 'AbortError');
+  if (!urlAllowed(url)) {
+    return { ok: false, url, error: 'fora do escopo autorizado' };
+  }
+  if (!identityCtrl?.enabled) await stealthPause(modules, signal);
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), limits.probeTimeoutMs);
+  let timedOut = false;
+  const forwardAbort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal?.reason || new DOMException('cancelado', 'AbortError'));
+    }
+  };
+  signal?.addEventListener('abort', forwardAbort, { once: true });
+  if (signal?.aborted) forwardAbort();
+  const t = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException('timeout', 'TimeoutError'));
+  }, limits.probeTimeoutMs);
   try {
+    if (controller.signal.aborted) {
+      throw signal?.reason || controller.signal.reason || new DOMException('cancelado', 'AbortError');
+    }
     const fetchInit = {
       method: 'GET',
-      redirect: 'follow',
+      // Redirect automático poderia enviar credenciais/probe para outra
+      // origem antes de a política de escopo validar o Location.
+      redirect: 'manual',
       signal: controller.signal,
       headers: buildRequestHeaders(auth, modules),
     };
     const res = identityCtrl?.enabled
       ? await identityCtrl.fetchHtmlProbe(url, fetchInit)
-      : await fetch(url, fetchInit);
+      : await fetchImpl(url, fetchInit);
+    if (!urlAllowed(res.url || url)) {
+      return { ok: false, url, error: 'redirect fora do escopo autorizado' };
+    }
     const text = await readResponseSnippet(res, limits.maxBodySnippet);
     const title = extractTitle(text);
     const tech = detectTech(res.headers, text);
@@ -115,13 +145,15 @@ export async function probeHttp(url, opts = {}) {
     }
     return out;
   } catch (e) {
+    if (signal?.aborted) throw signal.reason || e;
     return {
       ok: false,
       url,
-      error: e.name === 'AbortError' ? 'timeout' : String(e.message || e),
+      error: timedOut || e.name === 'TimeoutError' ? 'timeout' : String(e.message || e),
     };
   } finally {
     clearTimeout(t);
+    signal?.removeEventListener('abort', forwardAbort);
   }
 }
 

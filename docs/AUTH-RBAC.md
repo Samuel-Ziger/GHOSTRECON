@@ -44,9 +44,10 @@ calculado pelo endereço real do socket; `X-Forwarded-For` só é considerado qu
 viewer    → recon.read
 operator  → viewer + [recon.run, brain.write, notes.write, validation.write,
                       evidence.capture, cve.enrich]
-red       → operator + [recon.intrusive, ai.run, shannon.run,
+red       → operator + [recon.intrusive, forge.review, ai.run, shannon.run,
                         project.write, engagement.write, team.lock]
-admin     → '*'  (wildcard, inclui acções destrutivas)
+admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujeitas
+                  aos gates próprios e ao escopo autorizado)
 ```
 
 ## Scope × Rota
@@ -55,10 +56,15 @@ admin     → '*'  (wildcard, inclui acções destrutivas)
 |---------------------|---------------------------------------------------------------------------------------------|--------|
 | _(allowlist)_       | `/api/health`, `/api/csrf-token`, `/api/inbound/*` (auth própria)                           | GET/POST |
 | `recon.read`        | `/api/runs`, `/api/runs/:id`, `/api/runs/:newer/diff/:base`, `/api/runs/:id/diff-summary/:b`, `/api/runs/:id/narrative`, `/api/runs/:id/purple`, `/api/intel/:target`, `/api/playbooks*`, `/api/projects` (GET), `/api/engagements` (GET), `/api/team/locks`, `/api/team/trail`, `/api/brain/*` (GET), `/api/manual-validations/:target` (GET), `/api/anotacao-handoff/:id` (GET), `/api/capabilities`, `/api/project-secret-peers`, `/api/ai/lmstudio-check` | GET |
+| `recon.read` (Auto) | `/api/recon/auto/sessions`, `/api/auto-rag/status`, `/api/auto-rag/search`, `/api/frameseven/reports/:reportId/:file` | GET |
 | `recon.run`         | `/api/recon/stream`                                                                         | POST   |
-| `recon.intrusive`   | _Escala_ aplicada a `/api/recon/stream` quando o body indica `kaliMode=true`, `opsecProfile='aggressive'`, ou `modules` inclui `kali_*`, `sqlmap`, `sandbox_exec`, `cloud_bruteforce`, `browser_xss_verify`, `race_*`, `cred_spray`, `shannon_whitebox` | POST |
+| `recon.run` (Auto)  | `/api/recon/auto/stream`, cancelamento/aprovação da própria sessão Auto, aprovação FrameSeven e verdict Forge quando combinado com `forge.review` | POST |
+| `recon.intrusive`   | _Escala_ aplicada a `/api/recon/stream` sobre o plano expandido (aliases, engines e dependências), incluindo Kali, módulos intrusivos, Vigolium/DAST e o perfil FrameSeven `offensive_v1`; exige também engagement formal/ROE/escopo/janela e confirmação ativa | POST |
+| `recon.intrusive` (Auto) | _Escala_ aplicada ao stream Auto nos níveis 3/4, Vigolium, FrameSeven autenticado ou plano intrusivo; também é exigida ao resolver aprovação Auto/FrameSeven marcada como intrusiva | POST |
+| `forge.review`      | Ler/comparar pacotes Forge; decidir aprovação/rejeição exige cumulativamente `recon.run`, CSRF e engagement formal válido para o canário | GET/POST |
+| `forge.manage`      | Promover, habilitar, desabilitar, definir canary e fazer rollback de pacote Forge global | POST |
 | `brain.write`       | `/api/brain/categories`, `/api/brain/categories/:id/description`, `/api/brain/link`         | POST   |
-| `notes.write`       | `/api/anotacao-handoff`                                                                     | POST   |
+| `notes.write`       | `/api/anotacao-handoff`, `/api/auto-rag/note`                                               | POST   |
 | `validation.write`  | `/api/manual-validations`                                                                   | POST   |
 | `ai.run`            | `/api/ai-reports`, `/api/manual-validations/ai-report`, `/api/manual-validations/annotations-ai`, `/api/pentestgpt-ping` | POST |
 | `shannon.run`       | `/api/shannon/prep`                                                                         | POST   |
@@ -72,7 +78,37 @@ admin     → '*'  (wildcard, inclui acções destrutivas)
 > Nota: A escalação `recon.intrusive` é aplicada via `intrusiveCheck` no
 > middleware `requireScope` — se um operator (sem `recon.intrusive`) chamar o
 > stream apenas com módulos passivos (DNS, probe, wayback…), passa. Se incluir
-> qualquer módulo intrusivo, recebe 403.
+> qualquer módulo intrusivo, recebe 403. Depois da expansão do plano, qualquer
+> módulo intrusivo também exige engagement formal ativo, ROE assinado, alvo
+> dentro do escopo/janela e `confirmActive`; `aggressive` não substitui esses
+> controles.
+
+## Auto, Forge e relatórios FrameSeven
+
+As proteções são cumulativas:
+
+- ownership limita listagem, cancelamento, aprovação e retomada à identidade que
+  criou a sessão;
+- checkpoint v2 e claim anti-replay protegem o ciclo de execução, mas não
+  substituem RBAC, CSRF, scope, engagement ou OPSEC;
+- verdict Forge exige `forge.review` **e** `recon.run`; aprovação não habilita o
+  pacote globalmente, pois o primeiro canário continua
+  `active_pending_first_run`/`pipelineEnabled=false` até concluir com o
+  `activationId` e os hashes aprovados;
+- o canário Forge depende do runner forte Bubblewrap em Linux e falha fechado
+  quando ele não está disponível;
+- `GET /api/frameseven/reports/:reportId/:file` exige `recon.read` e aplica
+  allowlist de HTML/JSON/Markdown públicos regenerados, owner e engagement,
+  abertura `O_NOFOLLOW`, leitura pelo mesmo descritor com `fstat`, limite de
+  tamanho, `Cache-Control: private, no-store`, `nosniff`, `Referrer-Policy` e
+  CSP sandbox para HTML;
+- identidades FrameSeven/Vigolium observadas no preflight são seladas no plano
+  e revalidadas imediatamente antes dos processos; troca posterior falha
+  fechado.
+
+Eventos produzidos pelo orquestrador Auto são redigidos antes de entrar na
+sessão e no NDJSON. Essa fronteira não transforma relatórios brutos de
+ferramentas externas em dados públicos nem substitui a política de retenção.
 
 ## Formato JWT esperado
 
@@ -145,6 +181,11 @@ para reforçar que este setup não é o perfil padrão.
 - O CSRF token continua a ser emitido sem auth — é defesa-em-profundidade
   contra cross-site, não substituto da auth. Para uma UI multi-utilizador
   considerar emitir CSRF apenas após login bem-sucedido.
-- `recon.intrusive` ainda é granularidade média; quando vier o sandbox de
-  tooling (P0 sandbox), partir em `recon.kali`, `recon.sqlmap`,
-  `recon.cloud-bruteforce` etc. para auditoria mais fina.
+- O Bubblewrap isola especificamente o Forge em Linux.
+  `recon.intrusive` ainda é granularidade média para as demais ferramentas;
+  partir em `recon.kali`, `recon.sqlmap`, `recon.cloud-bruteforce` etc. continua
+  pendente.
+- A retomada Auto é intencionalmente limitada a checkpoints v2 `ready`; não há
+  retomada mid-engine/mid-evaluation.
+- O adapter FrameSeven ainda não propaga Tor/proxy estrito, e o fluxo
+  autenticado real continua pendente de teste ponta a ponta controlado.

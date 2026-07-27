@@ -8,6 +8,7 @@ import path from 'node:path';
 import {
   upsertEngagement, getEngagement, listEngagements, closeEngagement,
   attachRunToEngagement, preRunChecklist, buildOperationalReport,
+  computeEngagementAuthorizationBinding,
 } from '../modules/engagement.mjs';
 
 function isolate() {
@@ -64,6 +65,22 @@ test('engagement: preRunChecklist bloqueia exclusions', () => {
   assert.ok(r.errors.some((x) => /exclusions/.test(x)));
 });
 
+test('engagement: exclusão de hostname também bloqueia seus descendentes', () => {
+  const eng = {
+    status: 'active',
+    roeSigned: true,
+    scopeDomains: ['*.acme.com'],
+    scopeIps: [],
+    exclusions: ['blocked.acme.com'],
+  };
+  const result = preRunChecklist({
+    engagement: eng,
+    target: 'child.blocked.acme.com',
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => /exclusions/.test(error)));
+});
+
 test('engagement: preRunChecklist bloqueia CLOSED', () => {
   const eng = { id: 'E', status: 'closed', closedAt: '2024-01-01', scopeDomains: [], roeSigned: true };
   const r = preRunChecklist({ engagement: eng, target: 'acme.com' });
@@ -75,6 +92,125 @@ test('engagement: preRunChecklist warn em módulos intrusivos', () => {
   const r = preRunChecklist({ engagement: null, target: 'acme.com', modules: ['crtsh', 'sqlmap', 'nuclei'] });
   assert.ok(r.warnings.some((w) => /INTRUSIVOS/.test(w)));
   assert.deepEqual(r.intrusiveModules.sort(), ['nuclei', 'sqlmap']);
+});
+
+test('engagement: autorização formal exige engagement ativo, ROE e escopo explícito', () => {
+  const missing = preRunChecklist({
+    engagement: null,
+    target: 'lab.acme.com',
+    modules: ['sqlmap'],
+    intrusiveModules: ['sqlmap'],
+    requireFormalAuthorization: true,
+  });
+  assert.equal(missing.ok, false);
+  assert.ok(missing.errors.some((error) => /engagement formal obrigatório/.test(error)));
+
+  const incomplete = preRunChecklist({
+    engagement: {
+      id: 'E-FORMAL',
+      status: 'paused',
+      roeSigned: false,
+      scopeDomains: [],
+      scopeIps: [],
+      exclusions: [],
+    },
+    target: 'lab.acme.com',
+    modules: ['sqlmap'],
+    intrusiveModules: ['sqlmap'],
+    requireFormalAuthorization: true,
+  });
+  assert.equal(incomplete.ok, false);
+  assert.ok(incomplete.errors.some((error) => /não está ativo/.test(error)));
+  assert.ok(incomplete.errors.some((error) => /ROE assinado obrigatório/.test(error)));
+  assert.ok(incomplete.errors.some((error) => /sem scopeDomains\/scopeIps/.test(error)));
+
+  const valid = preRunChecklist({
+    engagement: {
+      id: 'E-FORMAL',
+      status: 'active',
+      roeSigned: true,
+      scopeDomains: ['*.acme.com'],
+      scopeIps: [],
+      exclusions: [],
+    },
+    target: 'lab.acme.com',
+    modules: ['sqlmap'],
+    intrusiveModules: ['sqlmap'],
+    requireFormalAuthorization: true,
+  });
+  assert.equal(valid.ok, true);
+});
+
+test('engagement: allowlist vazia falha também em recon passivo', () => {
+  const result = preRunChecklist({
+    engagement: {
+      id: 'E-PASSIVE-EMPTY',
+      status: 'active',
+      roeSigned: true,
+      scopeDomains: [],
+      scopeIps: [],
+      exclusions: [],
+    },
+    target: 'lab.acme.com',
+    modules: ['security_headers'],
+    requireFormalAuthorization: false,
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => /allowlist/i.test(error)));
+  assert.equal(result.warnings.some((warning) => /qualquer alvo aceito/i.test(warning)), false);
+});
+
+test('engagement: preRunChecklist aceita CIDR IPv4 arbitrário e respeita exclusão', () => {
+  const engagement = {
+    id: 'E-CIDR',
+    status: 'active',
+    roeSigned: true,
+    scopeDomains: [],
+    scopeIps: ['192.0.0.0/16'],
+    exclusions: ['192.0.2.128/25'],
+  };
+  assert.equal(
+    preRunChecklist({
+      engagement,
+      target: '192.0.2.10',
+      modules: ['security_headers'],
+    }).ok,
+    true,
+  );
+  const excluded = preRunChecklist({
+    engagement,
+    target: '192.0.2.200',
+    modules: ['security_headers'],
+  });
+  assert.equal(excluded.ok, false);
+  assert.ok(excluded.errors.some((error) => /exclusions/.test(error)));
+});
+
+test('engagement: binding muda somente quando campo autorizativo muda', () => {
+  const base = {
+    id: 'E-BINDING',
+    status: 'active',
+    roeSigned: true,
+    scopeDomains: ['*.acme.com'],
+    scopeIps: [],
+    exclusions: [],
+    notes: [{ text: 'nota operacional' }],
+  };
+  const first = computeEngagementAuthorizationBinding(base, base.id);
+  assert.equal(
+    computeEngagementAuthorizationBinding({
+      ...base,
+      notes: [{ text: 'nota não autorizativa alterada' }],
+    }, base.id),
+    first,
+  );
+  assert.notEqual(
+    computeEngagementAuthorizationBinding({
+      ...base,
+      exclusions: ['blocked.acme.com'],
+    }, base.id),
+    first,
+  );
 });
 
 test('engagement: preRunChecklist respeita janela de tempo', () => {

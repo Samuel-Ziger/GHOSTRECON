@@ -32,6 +32,7 @@ import { createHmac, createPublicKey, createVerify, timingSafeEqual, randomBytes
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { expandIntrusiveRunModules, isIntrusive } from './opsec.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..', '..');
@@ -54,6 +55,7 @@ export const ROLE_SCOPES = Object.freeze({
     'recon.read',
     'recon.run',
     'recon.intrusive',
+    'forge.review',
     'brain.write',
     'notes.write',
     'validation.write',
@@ -544,48 +546,17 @@ export function requireRole(role) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers exported for the recon route to derive intrusive flag
 // ─────────────────────────────────────────────────────────────────────────────
-const INTRUSIVE_MODULE_PREFIXES = [
-  'kali_',
-  'sqlmap',
-  'sandbox_exec',
-  'sandbox-exec',
-  'cloud_bruteforce',
-  'cloud-bruteforce',
-  'browser_xss',
-  'browser-xss',
-  'race_',
-  'cred_spray',
-  'cred-spray',
-  'shannon_whitebox',
-  'vigolium_',
-  'vigolium-',
-];
-const INTRUSIVE_MODULES_EXACT = new Set([
-  'sqlmap',
-  'shannon_whitebox',
-  'browser_xss_verify',
-  'sandbox_exec',
-  'vigolium_dast',
-  'vigolium_swarm',
-  'vigolium_audit',
-]);
-
 export function reconBodyIsIntrusive(body = {}) {
   if (!body || typeof body !== 'object') return false;
   if (body.kaliMode === true) return true;
   const profile = String(body.opsecProfile || '').toLowerCase();
   if (profile === 'aggressive') return true;
-  const engine = String(body.engine || '').toLowerCase();
-  if (engine === 'go' || engine === 'both') return true;
-  const vigoliumAgent = String(body.vigoliumAgent || '').toLowerCase();
-  if (vigoliumAgent && vigoliumAgent !== 'none') return true;
-  const modules = Array.isArray(body.modules) ? body.modules : [];
-  for (const m of modules) {
-    const n = String(m || '').toLowerCase();
-    if (INTRUSIVE_MODULES_EXACT.has(n)) return true;
-    if (INTRUSIVE_MODULE_PREFIXES.some((p) => n.startsWith(p))) return true;
-  }
-  return false;
+  const effectiveModules = expandIntrusiveRunModules({
+    modules: Array.isArray(body.modules) ? body.modules : [],
+    engine: body.engine,
+    vigoliumAgent: body.vigoliumAgent,
+  });
+  return effectiveModules.some((moduleId) => isIntrusive(moduleId));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

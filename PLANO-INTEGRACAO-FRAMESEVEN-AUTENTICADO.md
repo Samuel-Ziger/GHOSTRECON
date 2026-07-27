@@ -2,6 +2,10 @@
 
 ## Prompt original do operador
 
+O bloco abaixo é preservado como requisito histórico. A seleção `-tools all`
+foi substituída no contrato atual pelos perfis explícitos descritos em
+`MODO-AUTO-GHOSTRECON.md`; ela não deve ser copiada para o executor.
+
 ```text
 certo vamos fazer a integração do frameseven ok ? vamos usar ele com ./bin/frameseven/cli/v1 \
     -url  \
@@ -47,7 +51,7 @@ Integrar o FrameSeven como executor autenticado opcional do GHOSTRECON, comparti
 ```bash
 ./bin/frameseven/cli/v1 \
   -url <alvo> \
-  -tools all \
+  -tools recon,access,redirect,misconfig,cve,crawler,content,subdomain,ports,nmap,bannergrab \
   -auth-browser \
   -timeout 30s \
   -tool-timeout 5m \
@@ -58,6 +62,8 @@ Integrar o FrameSeven como executor autenticado opcional do GHOSTRECON, comparti
 ```
 
 O comando deve ser montado pelo executor, não concatenado com entrada não validada do usuário. O alvo precisa passar pelo mesmo parser e gate de escopo do GHOSTRECON.
+O perfil acima é ofensivo, read-oriented e intrusivo. Ele não inclui
+`-active-scan`, write probes nem uma seleção genérica `tools all`.
 
 ## Ordem dos motores
 
@@ -76,7 +82,9 @@ O comando deve ser montado pelo executor, não concatenado com entrada não vali
 
 ### 3. FrameSeven
 
-- Executar `tools all` conforme catálogo e limites.
+- Executar somente o perfil ofensivo explícito congelado no plano.
+- Manter `tools all`, `-active-scan` e ferramentas com efeitos mutáveis fora
+  deste fluxo.
 - Reutilizar a sessão autenticada criada pelo próprio fluxo.
 - Gravar relatórios em diretório isolado por sessão.
 - Emitir progresso, timeout, cancelamento e resumo normalizados para o GHOSTRECON.

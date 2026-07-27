@@ -149,7 +149,7 @@ export async function runCommand(argv) {
     gate = gateModules({
       modules: modulesForOpsecGate,
       profile: opsecProfile,
-      confirm: Boolean(opts['confirm-active']) || process.env.GHOSTRECON_CONFIRM_ACTIVE === '1',
+      confirm: Boolean(opts['confirm-active']),
       engagement,
     });
   } catch (e) {
@@ -158,9 +158,9 @@ export async function runCommand(argv) {
   }
   if (!gate.ok) {
     process.stderr.write(
-      `run: OPSEC — ${gate.reason || 'bloqueado'}\n` +
+        `run: OPSEC — ${gate.reason || 'bloqueado'}\n` +
         `  perfil=${gate.profile} blocked=${(gate.blocked || []).join(', ') || '—'}\n` +
-        `  (use --confirm-active ou GHOSTRECON_CONFIRM_ACTIVE=1 se aplicável)\n`,
+        '  (use --confirm-active nesta invocação, com engagement/ROE válido)\n',
     );
     return 5;
   }
@@ -184,7 +184,7 @@ export async function runCommand(argv) {
     autoAiReports: !opts['no-auto-reports'],
     engagementId: engagementId || undefined,
     operator: opts.operator != null ? String(opts.operator).trim() || undefined : undefined,
-    confirmActive: Boolean(opts['confirm-active']) || process.env.GHOSTRECON_CONFIRM_ACTIVE === '1',
+    confirmActive: Boolean(opts['confirm-active']),
     playbook: playbookNameForCheck || undefined,
     auth:
       Object.keys(headers).length || opts['auth-cookie']
@@ -209,6 +209,40 @@ export async function runCommand(argv) {
   if (opts['vigolium-source']) body.vigoliumSource = String(opts['vigolium-source']).trim();
   if (opts['vigolium-agent']) body.vigoliumAgent = String(opts['vigolium-agent']).trim().toLowerCase();
   if (opts['vigolium-audit-mode']) body.vigoliumAuditMode = String(opts['vigolium-audit-mode']).trim().toLowerCase();
+
+  if (Array.isArray(gate.acknowledged) && gate.acknowledged.length > 0) {
+    try {
+      const preflightBody = { ...body };
+      delete preflightBody.auth;
+      delete preflightBody.vigoliumAuth;
+      delete preflightBody.vigoliumAuthEntries;
+      delete preflightBody.vigoliumAuthFile;
+      delete preflightBody.vigoliumAuthFiles;
+      const preflight = await client.postJson('/api/recon/preflight', preflightBody);
+      if (!preflight?.requiresApproval || !preflight?.approval?.approvalId || !preflight?.plan?.hash) {
+        throw new Error('servidor não emitiu uma aprovação vinculada ao plano intrusivo');
+      }
+      log(
+        `[approval] plano=${preflight.plan.hash} target=${preflight.plan.target} `
+        + `intrusive=${(preflight.plan.intrusiveModules || []).join(',')}`,
+      );
+      const decision = await client.postJson('/api/recon/approval', {
+        approvalId: preflight.approval.approvalId,
+        planHash: preflight.plan.hash,
+        approved: true,
+      });
+      if (decision?.approval?.status !== 'approved') {
+        throw new Error('servidor não confirmou a aprovação do plano');
+      }
+      body.manualApproval = {
+        approvalId: preflight.approval.approvalId,
+        planHash: preflight.plan.hash,
+      };
+    } catch (error) {
+      process.stderr.write(`run: aprovação do plano falhou: ${error?.message || error}\n`);
+      return 5;
+    }
+  }
 
   log(`[run] target=${opts.target} modules=${modules.length} profile=${opts.profile}`);
   const collected = { events: [], runId: null, finalStats: null, errors: [] };

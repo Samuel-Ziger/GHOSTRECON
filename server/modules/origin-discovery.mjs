@@ -53,11 +53,17 @@ export const FORGOTTEN_SUBS = [
   'ftp', 'sftp',
 ];
 
-export async function resolveSubsForOrigin(apex, { resolver = new Resolver(), subs = FORGOTTEN_SUBS, timeoutMs = 3000 } = {}) {
+export async function resolveSubsForOrigin(apex, {
+  resolver = new Resolver(),
+  subs = FORGOTTEN_SUBS,
+  timeoutMs = 3000,
+  hostAllowed = () => true,
+} = {}) {
   resolver.setServers(['1.1.1.1', '8.8.8.8']);
   const out = {};
   await Promise.all(subs.map(async (s) => {
     const host = `${s}.${apex}`;
+    if (!hostAllowed(host)) return;
     try {
       const ips = await Promise.race([
         resolver.resolve4(host),

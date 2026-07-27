@@ -2,6 +2,7 @@ import { runVigoliumScan } from '../../../bridge/vigolium-runner.mjs';
 import { shouldRunGoEngine } from '../../../bridge/vigolium-config.mjs';
 import { getVigoliumCapabilities } from '../../../bridge/vigolium-capabilities.mjs';
 import { logVigoliumFindingsSummary } from '../../../bridge/vigolium-log.mjs';
+import { rethrowFatalVigoliumExecutionError } from '../../../bridge/vigolium-errors.mjs';
 
 /**
  * Fase Go — motor Vigolium (DAST). Corre após content-discovery quando engine=go|both
@@ -71,6 +72,7 @@ export async function runGoEnginePhase(s) {
       });
     }
   } catch (e) {
+    rethrowFatalVigoliumExecutionError(e, s.signal);
     log(`Vigolium: ${e?.message || e}`, 'warn');
     pipe('vigolium_dast', 'skip');
     pipe('vigolium_engine', 'skip');

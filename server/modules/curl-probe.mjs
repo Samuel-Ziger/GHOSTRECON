@@ -1,10 +1,9 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
-import { createCappedOutputCollector, positiveIntEnv } from './module-runner.mjs';
+import { positiveIntEnv, runProcess } from './module-runner.mjs';
 
 const METHODS = ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const CORS_ORIGINS = ['https://attacker.tld', 'null', 'https://evil.example'];
@@ -16,51 +15,24 @@ const TOOL_STDERR_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDERR_MAX_BYTES',
   max: 32 * 1024 * 1024,
 });
 
-function runProc(cmd, args, timeoutMs) {
+function runProc(cmd, args, timeoutMs, { signal = null } = {}) {
   if (isStrict()) {
     const w = torStrictWrap(cmd, args);
     if (w.refuse) return Promise.reject(new Error(`tor-strict: ${w.reason}`));
     cmd = w.cmd;
     args = w.args;
   }
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = createCappedOutputCollector({
-      maxBytes: TOOL_STDOUT_MAX_BYTES,
-      mode: 'head',
-      marker: '\n[ghostrecon: stdout truncated]\n',
-    });
-    const err = createCappedOutputCollector({
-      maxBytes: TOOL_STDERR_MAX_BYTES,
-      mode: 'tail',
-      marker: '\n[ghostrecon: stderr truncated]\n',
-    });
-    let killed = false;
-    const t = setTimeout(() => {
-      killed = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {}
-      reject(new Error(`${cmd} timeout (${timeoutMs}ms)`));
-    }, timeoutMs);
-    child.stdout.on('data', (d) => out.append(d));
-    child.stderr.on('data', (d) => err.append(d));
-    child.on('error', (e) => {
-      clearTimeout(t);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(t);
-      if (killed) return;
-      resolve({
-        code,
-        stdout: out.toString(),
-        stderr: err.toString(),
-        stdoutStats: out.stats(),
-        stderrStats: err.stats(),
-      });
-    });
+  return runProcess(cmd, args, {
+    timeoutMs,
+    signal,
+    stdoutMaxBytes: TOOL_STDOUT_MAX_BYTES,
+    stderrMaxBytes: TOOL_STDERR_MAX_BYTES,
+    label: cmd,
   });
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.code === 'PROCESS_ABORTED';
 }
 
 function resolveCurlProfile(profile = 'standard') {
@@ -119,11 +91,11 @@ function bodyHash(s) {
 
 function oneLineCurl({ method, url, auth, extraHeaders = {}, body = null }) {
   const parts = ['curl', '-sS', '-X', method];
-  if (auth?.cookie) parts.push('-H', `"Cookie: ${String(auth.cookie).replace(/"/g, '\\"')}"`);
+  if (auth?.cookie) parts.push('-H', '"Cookie: <redacted>"');
   if (auth?.headers && typeof auth.headers === 'object') {
     for (const [k, v] of Object.entries(auth.headers)) {
       if (!k || v == null) continue;
-      parts.push('-H', `"${String(k)}: ${String(v).replace(/"/g, '\\"')}"`);
+      parts.push('-H', `"${String(k)}: <redacted>"`);
     }
   }
   for (const [k, v] of Object.entries(extraHeaders || {})) {
@@ -134,6 +106,28 @@ function oneLineCurl({ method, url, auth, extraHeaders = {}, body = null }) {
   return parts.join(' ');
 }
 
+function curlConfigQuote(value) {
+  return String(value ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+}
+
+function buildAuthCurlConfig(auth) {
+  const lines = [];
+  if (auth?.cookie) {
+    lines.push(`header = "Cookie: ${curlConfigQuote(auth.cookie)}"`);
+  }
+  if (auth?.headers && typeof auth.headers === 'object') {
+    for (const [rawName, rawValue] of Object.entries(auth.headers)) {
+      const name = String(rawName || '').trim().replace(/[^A-Za-z0-9!#$%&'*+.^_`|~-]/g, '');
+      if (!name || rawValue == null) continue;
+      lines.push(`header = "${name}: ${curlConfigQuote(rawValue)}"`);
+    }
+  }
+  return lines.join('\n');
+}
+
 async function execCurl({
   url,
   method = 'GET',
@@ -142,12 +136,14 @@ async function execCurl({
   proxy = null,
   extraHeaders = {},
   body = null,
+  signal = null,
 }) {
   const cfg = resolveCurlProfile(profile);
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-curl-probe-'));
   const headersFile = path.join(tmpDir, 'headers.txt');
   const bodyFile = path.join(tmpDir, 'body.txt');
   try {
+    await fs.chmod(tmpDir, 0o700);
     const args = [
       '-sS',
       '--fail-with-body',
@@ -177,19 +173,28 @@ async function execCurl({
     ];
     if (cfg.useHttp2) args.push('--http2');
     if (proxy) args.push('--proxy', String(proxy));
-    if (auth?.cookie) args.push('-H', `Cookie: ${String(auth.cookie)}`);
-    if (auth?.headers && typeof auth.headers === 'object') {
-      for (const [k, v] of Object.entries(auth.headers)) {
-        if (!k || v == null) continue;
-        args.push('-H', `${k}: ${String(v)}`);
-      }
+    const authConfig = buildAuthCurlConfig(auth);
+    if (authConfig) {
+      const authConfigFile = path.join(tmpDir, 'auth.curlrc');
+      await fs.writeFile(authConfigFile, `${authConfig}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      });
+      await fs.chmod(authConfigFile, 0o600);
+      args.push('--config', authConfigFile);
     }
     for (const [k, v] of Object.entries(extraHeaders || {})) args.push('-H', `${k}: ${v}`);
     if (body != null) args.push('--data-raw', String(body));
     else if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') args.push('--data', '{}');
     args.push(url);
 
-    const proc = await runProc('curl', args, Math.max(20_000, cfg.timeoutSec * 1000 + 5000));
+    const proc = await runProc(
+      'curl',
+      args,
+      Math.max(20_000, cfg.timeoutSec * 1000 + 5000),
+      { signal },
+    );
     const body = await fs.readFile(bodyFile, 'utf8').catch(() => '');
     const headerRaw = await fs.readFile(headersFile, 'utf8').catch(() => '');
     const parsed = parseHeaderBlocks(headerRaw);
@@ -213,6 +218,7 @@ async function execCurl({
       curlTemplate: oneLineCurl({ method, url, auth, extraHeaders, body }),
     };
   } catch (e) {
+    if (isAbortError(e)) throw e;
     return { ok: false, status: 0, body: '', bodyHash: bodyHash(''), bodySize: 0, headers: {}, metrics: {}, error: e?.message || String(e) };
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -255,14 +261,14 @@ function toFormUrlEncoded(obj = {}) {
     .join('&');
 }
 
-async function runLoginSqliProbe({ url, auth, profile, proxy }) {
+async function runLoginSqliProbe({ url, auth, profile, proxy, execCurlImpl = execCurl }) {
   if (!looksLikeLoginUrl(url)) return null;
   const payloads = [
     { user: "admin' OR '1'='1' -- ", pass: 'x' },
     { user: "' OR '1'='1' -- ", pass: "' OR '1'='1' -- " },
   ];
   const baselineBody = toFormUrlEncoded({ user: 'ghostrecon_invalid_user', password: 'ghostrecon_invalid_pass' });
-  const base = await execCurl({
+  const base = await execCurlImpl({
     url,
     method: 'POST',
     auth,
@@ -277,7 +283,7 @@ async function runLoginSqliProbe({ url, auth, profile, proxy }) {
     const formB = toFormUrlEncoded({ username: p.user, password: p.pass });
     const formC = toFormUrlEncoded({ email: p.user, password: p.pass });
     for (const body of [formA, formB, formC]) {
-      const r = await execCurl({
+      const r = await execCurlImpl({
         url,
         method: 'POST',
         auth,
@@ -300,8 +306,24 @@ async function runLoginSqliProbe({ url, auth, profile, proxy }) {
   return candidates.find((c) => c.suspicious) || null;
 }
 
-export async function runCurlProbeModule({ target, findings = [], auth = null, profile = 'standard', identityCtrl = null, log = null }) {
+export async function runCurlProbeModule({
+  target,
+  findings = [],
+  auth = null,
+  profile = 'standard',
+  identityCtrl = null,
+  log = null,
+  signal = null,
+  execCurlImpl = execCurl,
+}) {
   const logFn = typeof log === 'function' ? log : () => {};
+  if (signal?.aborted) {
+    const error = signal.reason instanceof Error ? signal.reason : new Error('curl_probe cancelado');
+    if (!error.name || error.name === 'Error') error.name = 'AbortError';
+    if (!error.code) error.code = 'PROCESS_ABORTED';
+    throw error;
+  }
+  const exec = (options) => execCurlImpl({ ...options, signal });
   const urls = collectProbeUrls(target, findings);
   if (!urls.length) return [];
   const proxy = resolveCurlProxy(identityCtrl);
@@ -309,9 +331,9 @@ export async function runCurlProbeModule({ target, findings = [], auth = null, p
   const evidenceRows = [];
   for (const url of urls) {
     logFn(`curl_probe: ${url}`, 'info');
-    const baseAuth = await execCurl({ url, method: 'GET', auth, profile, proxy });
-    const baseNoAuth = await execCurl({ url, method: 'GET', auth: null, profile, proxy });
-    const withOrigin = await execCurl({
+    const baseAuth = await exec({ url, method: 'GET', auth, profile, proxy });
+    const baseNoAuth = await exec({ url, method: 'GET', auth: null, profile, proxy });
+    const withOrigin = await exec({
       url,
       method: 'GET',
       auth,
@@ -321,7 +343,7 @@ export async function runCurlProbeModule({ target, findings = [], auth = null, p
     });
     const methodRows = [];
     for (const m of METHODS) {
-      const r = await execCurl({ url, method: m, auth, profile, proxy });
+      const r = await exec({ url, method: m, auth, profile, proxy });
       methodRows.push({ method: m, status: r.status, size: r.bodySize });
       if (['PUT', 'PATCH', 'DELETE'].includes(m) && r.status >= 200 && r.status < 300) {
         out.push({
@@ -404,7 +426,7 @@ export async function runCurlProbeModule({ target, findings = [], auth = null, p
       if (u.searchParams.size) {
         const first = [...u.searchParams.keys()][0];
         u.searchParams.set(first, `${u.searchParams.get(first) || '1'}'`);
-        const mut = await execCurl({ url: u.href, method: 'GET', auth, profile, proxy });
+        const mut = await exec({ url: u.href, method: 'GET', auth, profile, proxy });
         const hdrDiff = ['content-type', 'location', 'server']
           .filter((k) => String(mut.headers?.[k] || '') !== String(baseAuth.headers?.[k] || ''));
         const changed = mut.status !== baseAuth.status || mut.bodyHash !== baseAuth.bodyHash || hdrDiff.length;
@@ -437,7 +459,13 @@ export async function runCurlProbeModule({ target, findings = [], auth = null, p
     if (diffFinding) out.push(diffFinding);
 
     if (String(process.env.GHOSTRECON_CURL_PROBE_LOGIN_SQLI || '1') !== '0') {
-      const loginProbe = await runLoginSqliProbe({ url, auth, profile, proxy });
+      const loginProbe = await runLoginSqliProbe({
+        url,
+        auth,
+        profile,
+        proxy,
+        execCurlImpl: exec,
+      });
       if (loginProbe) {
         const bp = loginProbe.baseline;
         const rp = loginProbe.probe;
@@ -498,4 +526,3 @@ export async function runCurlProbeModule({ target, findings = [], auth = null, p
   if (evidenceFile) logFn(`curl_probe: evidências em ${evidenceFile}`, 'info');
   return out;
 }
-

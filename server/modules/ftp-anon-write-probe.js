@@ -6,8 +6,8 @@ import net from 'net';
 import { randomBytes } from 'crypto';
 
 function ftpWriteProbeEnabled() {
-  const v = String(process.env.GHOSTRECON_FTP_WRITE_PROBE ?? '1').trim().toLowerCase();
-  return !['0', 'false', 'no', 'off'].includes(v);
+  const v = String(process.env.GHOSTRECON_FTP_WRITE_PROBE ?? '0').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(v);
 }
 
 function isPrivateIPv4(h) {
@@ -85,30 +85,68 @@ function writeCmd(sock, cmd) {
 /**
  * @returns {Promise<{ writable: boolean, probeFile?: string, detail?: string, error?: string }>}
  */
-export async function probeFtpAnonymousWritable({ host, port = 21, timeoutMs = 15000 }) {
+export async function probeFtpAnonymousWritable({
+  host,
+  port = 21,
+  timeoutMs = 15000,
+  signal = null,
+}) {
   if (!ftpWriteProbeEnabled()) {
     return { writable: false, detail: 'probe_disabled' };
+  }
+  if (signal?.aborted) {
+    const error = signal.reason instanceof Error ? signal.reason : new Error('FTP write probe cancelado');
+    error.name = 'AbortError';
+    error.code = 'PROCESS_ABORTED';
+    throw error;
   }
   const t = Math.max(8000, Number(timeoutMs) || 15000);
   const probeFile = `.ghr_w_${Date.now()}_${randomBytes(4).toString('hex')}.txt`;
   const payload = Buffer.from('GHOSTRECON write probe — safe to delete\n', 'utf8');
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const sock = net.createConnection({ host, port: Number(port) || 21 });
     sock.setEncoding('utf8');
 
-    const finish = (out) => {
+    let phase = 'banner';
+    let dataSock = null;
+    let settled = false;
+    const cleanupSockets = () => {
       try {
         sock.destroy();
       } catch {
         /* ignore */
       }
+      try {
+        dataSock?.destroy();
+      } catch {
+        /* ignore */
+      }
+    };
+    const finish = (out) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      cleanupSockets();
       resolve(out);
     };
-
-    let phase = 'banner';
-    let dataSock = null;
-
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      cleanupSockets();
+      const error = signal?.reason instanceof Error
+        ? signal.reason
+        : new Error('FTP write probe cancelado');
+      error.name = 'AbortError';
+      error.code = 'PROCESS_ABORTED';
+      reject(error);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
     const fail = (error, detail) => finish({ writable: false, error, detail });
 
     sock.setTimeout(t + 5000, () => fail('timeout', phase));

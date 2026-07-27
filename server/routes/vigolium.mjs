@@ -1,8 +1,18 @@
 import fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { requireScope } from '../modules/auth.js';
+import { redactAutoText } from '../auto-agent/redaction.mjs';
+import {
+  redactFindingForPublic,
+  redactLocalPathsForPublic,
+} from '../modules/finding-redaction.mjs';
 import { listVigoliumModules } from '../../bridge/vigolium-catalog.mjs';
-import { buildVigoliumAuthConfig, saveVigoliumAuthConfig } from '../../bridge/vigolium-auth-config.mjs';
+import {
+  buildVigoliumAuthConfig,
+  publicVigoliumAuthConfig,
+  saveVigoliumAuthConfig,
+} from '../../bridge/vigolium-auth-config.mjs';
 import {
   getVigoliumServerStatus,
   serverEndpointFor,
@@ -55,7 +65,41 @@ function reportDir(root) {
   return path.resolve(root, '.runtime', 'vigolium-reports');
 }
 
-async function reportRowForPath(root, full) {
+const MAX_REPORT_BYTES = 50 * 1024 * 1024;
+
+async function readSanitizedVigoliumReport(full, { root = null } = {}) {
+  const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await fs.open(full, fsConstants.O_RDONLY | noFollow);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('report informado nao e arquivo');
+    if (stat.size > MAX_REPORT_BYTES) throw new Error('report maior que 50MB');
+    return redactLocalPathsForPublic(
+      redactAutoText(await handle.readFile('utf8')),
+      { paths: [root, full].filter(Boolean) },
+    );
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeSanitizedVigoliumReport(dest, html, { root = null } = {}) {
+  const safe = redactLocalPathsForPublic(
+    redactAutoText(String(html ?? '')),
+    { paths: [root, dest].filter(Boolean) },
+  );
+  if (Buffer.byteLength(safe, 'utf8') > MAX_REPORT_BYTES) {
+    throw new Error('report maior que 50MB');
+  }
+  await fs.writeFile(dest, safe, {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  });
+  await fs.chmod(dest, 0o600);
+}
+
+async function reportRowForPath(root, full, { origin = 'runtime' } = {}) {
   const dir = reportDir(root);
   const resolved = path.resolve(full);
   if (resolved !== dir && !resolved.startsWith(`${dir}${path.sep}`)) return null;
@@ -64,9 +108,9 @@ async function reportRowForPath(root, full) {
   return {
     file,
     url: `/api/vigolium/reports/${encodeURIComponent(file)}`,
-    path: resolved,
     size: st.size,
     mtime: st.mtime.toISOString(),
+    origin,
   };
 }
 
@@ -87,9 +131,9 @@ async function listVigoliumReports(root) {
       rows.push({
         file: ent.name,
         url: `/api/vigolium/reports/${encodeURIComponent(ent.name)}`,
-        path: full,
         size: st.size,
         mtime: st.mtime.toISOString(),
+        origin: 'runtime',
       });
     } catch {
       // ignore files removed while listing
@@ -110,23 +154,38 @@ async function importVigoliumReport(root, body = {}) {
 
   if (sourcePath) {
     const src = path.resolve(root, sourcePath);
-    const st = await fs.stat(src);
-    if (!st.isFile()) throw new Error('report informado nao e arquivo');
     if (!/\.html?$/i.test(src)) throw new Error('report precisa ser .html/.htm');
-    if (st.size > 50 * 1024 * 1024) throw new Error('report maior que 50MB');
-    await fs.copyFile(src, dest);
-    return { ok: true, report: await reportRowForPath(root, dest), importedFrom: src };
+    await writeSanitizedVigoliumReport(
+      dest,
+      await readSanitizedVigoliumReport(src, { root }),
+      { root },
+    );
+    return {
+      ok: true,
+      report: await reportRowForPath(root, dest, { origin: 'imported-local-file' }),
+      importedFrom: 'local-file',
+    };
   }
 
   if (!html.trim()) throw new Error('informe sourcePath/path ou html');
-  if (Buffer.byteLength(html, 'utf8') > 50 * 1024 * 1024) throw new Error('report maior que 50MB');
-  await fs.writeFile(dest, html, 'utf8');
-  return { ok: true, report: await reportRowForPath(root, dest), importedFrom: 'inline-html' };
+  await writeSanitizedVigoliumReport(dest, html, { root });
+  return {
+    ok: true,
+    report: await reportRowForPath(root, dest, { origin: 'imported-inline-html' }),
+    importedFrom: 'inline-html',
+  };
 }
 
 async function proxyAgentMode(req, res, mode) {
   const out = await vigoliumServerFetch(`/api/agent/run/${mode}`, { method: 'POST', body: req.body || {} });
-  res.status(out.ok ? 200 : (out.status || 502)).json(out);
+  res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
+}
+
+function publicVigoliumResponse(value) {
+  return redactFindingForPublic(value) || {
+    ok: false,
+    error: 'resposta Vigolium invalida',
+  };
 }
 
 export function registerVigoliumRoutes(app, { ROOT }) {
@@ -143,26 +202,42 @@ export function registerVigoliumRoutes(app, { ROOT }) {
       const modules = out.modules.slice(offset, offset + limit);
       out.page = { limit, offset, returned: modules.length };
       out.modules = modules;
-      res.json(out);
+      res.json(publicVigoliumResponse(out));
     } catch (e) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      res.status(500).json(publicVigoliumResponse({
+        ok: false,
+        error: e?.message || String(e),
+      }));
     }
   });
 
   app.post('/api/vigolium/auth-config', requireScope('recon.run'), async (req, res) => {
     try {
       if (boolParam(req.body?.save)) {
-        res.json(await saveVigoliumAuthConfig(req.body || {}, { root: ROOT }));
+        const saved = await saveVigoliumAuthConfig(req.body || {}, { root: ROOT });
+        res.json({
+          ok: true,
+          file: saved.file,
+          origin: 'restricted-runtime-file',
+          config: publicVigoliumAuthConfig(saved.config),
+        });
       } else {
-        res.json({ ok: true, config: buildVigoliumAuthConfig(req.body || {}) });
+        res.json({
+          ok: true,
+          origin: 'preview',
+          config: publicVigoliumAuthConfig(buildVigoliumAuthConfig(req.body || {})),
+        });
       }
     } catch (e) {
-      res.status(400).json({ ok: false, error: e?.message || String(e) });
+      res.status(400).json(publicVigoliumResponse({
+        ok: false,
+        error: e?.message || String(e),
+      }));
     }
   });
 
   app.get('/api/vigolium/server/status', async (_req, res) => {
-    res.json(await getVigoliumServerStatus());
+    res.json(publicVigoliumResponse(await getVigoliumServerStatus()));
   });
 
   app.get('/api/vigolium/reports', requireScope('recon.read'), async (_req, res) => {
@@ -170,7 +245,10 @@ export function registerVigoliumRoutes(app, { ROOT }) {
       const reports = await listVigoliumReports(ROOT);
       res.json({ ok: true, reports, total: reports.length });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      res.status(500).json(publicVigoliumResponse({
+        ok: false,
+        error: e?.message || String(e),
+      }));
     }
   });
 
@@ -178,7 +256,10 @@ export function registerVigoliumRoutes(app, { ROOT }) {
     try {
       res.json(await importVigoliumReport(ROOT, req.body || {}));
     } catch (e) {
-      res.status(400).json({ ok: false, error: e?.message || String(e) });
+      res.status(400).json(publicVigoliumResponse({
+        ok: false,
+        error: e?.message || String(e),
+      }));
     }
   });
 
@@ -189,10 +270,16 @@ export function registerVigoliumRoutes(app, { ROOT }) {
       return;
     }
     try {
-      await fs.access(reportPath);
+      const report = await readSanitizedVigoliumReport(reportPath, { root: ROOT });
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Content-Disposition', `inline; filename="${path.basename(reportPath).replace(/"/g, '')}"`);
-      res.sendFile(reportPath);
+      res.setHeader(
+        'Content-Security-Policy',
+        "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+      );
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(report);
     } catch {
       res.status(404).type('text/plain').send('report not found');
     }
@@ -205,7 +292,7 @@ export function registerVigoliumRoutes(app, { ROOT }) {
       return;
     }
     const out = await vigoliumServerFetch(endpoint, { query: forwardQuery(req) });
-    res.status(out.ok ? 200 : (out.status || 502)).json(out);
+    res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
   });
 
   app.get('/api/vigolium/server/:kind/:id', requireScope('recon.read'), async (req, res) => {
@@ -215,7 +302,7 @@ export function registerVigoliumRoutes(app, { ROOT }) {
       return;
     }
     const out = await vigoliumServerFetch(appendPathPart(endpoint, req.params.id), { query: forwardQuery(req) });
-    res.status(out.ok ? 200 : (out.status || 502)).json(out);
+    res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
   });
 
   app.get('/api/vigolium/server/:kind/:id/:tail', requireScope('recon.read'), async (req, res) => {
@@ -228,27 +315,27 @@ export function registerVigoliumRoutes(app, { ROOT }) {
     const out = await vigoliumServerFetch(appendPathPart(appendPathPart(endpoint, req.params.id), tail), {
       query: forwardQuery(req),
     });
-    res.status(out.ok ? 200 : (out.status || 502)).json(out);
+    res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
   });
 
   app.post('/api/vigolium/server/scan-url', requireScope('recon.intrusive'), async (req, res) => {
     const out = await vigoliumServerFetch('/api/scan-url', { method: 'POST', body: req.body || {} });
-    res.status(out.ok ? 200 : (out.status || 502)).json(out);
+    res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
   });
 
   app.post('/api/vigolium/server/scan-request', requireScope('recon.intrusive'), async (req, res) => {
     const out = await vigoliumServerFetch('/api/scan-request', { method: 'POST', body: req.body || {} });
-    res.status(out.ok ? 200 : (out.status || 502)).json(out);
+    res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
   });
 
   app.post('/api/vigolium/server/scans-run', requireScope('recon.intrusive'), async (req, res) => {
     const out = await vigoliumServerFetch('/api/scans/run', { method: 'POST', body: req.body || {} });
-    res.status(out.ok ? 200 : (out.status || 502)).json(out);
+    res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
   });
 
   app.post('/api/vigolium/ingest-http', requireScope('recon.run'), async (req, res) => {
     const out = await vigoliumServerFetch('/api/ingest-http', { method: 'POST', body: req.body || {} });
-    res.status(out.ok ? 200 : (out.status || 502)).json(out);
+    res.status(out.ok ? 200 : (out.status || 502)).json(publicVigoliumResponse(out));
   });
 
   app.post('/api/vigolium/agent/query', requireScope('recon.run'), async (req, res) => {

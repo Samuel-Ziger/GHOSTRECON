@@ -1,7 +1,7 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeAutoRagNote } from '../rag-memory.mjs';
-import { parseAgentDecisionText, validateAgentDecision } from '../decision-contract.mjs';
+import { normalizeAndValidateAgentDecision, parseAgentDecisionText } from '../decision-contract.mjs';
 import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt } from './shared.mjs';
 
 const execFileDefault = promisify(execFileCb);
@@ -139,16 +139,28 @@ function cursorArgs(env, root, prompt) {
 export async function decideWithCursor({
   target, mode, catalog, ragContext, root, role = 'planner', iteration = 1,
   peerDecisions = [], observationBundle = null, env = process.env,
-  execFileImpl = execFileDefault, signal, maxContextChars = 120_000, allowIntrusive = false,
+  execFileImpl = execFileDefault, signal, maxContextChars = 120_000,
+  allowIntrusive = false, autonomyLevel = 'observation',
 } = {}) {
   if (!envFlag(env, 'GHOSTRECON_CURSOR_PROVIDER_EXEC')) throw new Error('Cursor Agent exec desabilitado');
-  const prompt = buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars, allowIntrusive });
+  const prompt = buildAgentPrompt({
+    target, mode, catalog, ragContext, role, iteration, peerDecisions,
+    observationBundle, maxContextChars, allowIntrusive, autonomyLevel,
+  });
   const command = String(env.GHOSTRECON_CURSOR_AGENT_COMMAND || 'agent');
   const startedAt = Date.now();
-  const result = await execFileImpl(command, cursorArgs(env, root, prompt), {
-    cwd: root, timeout: Number(env.GHOSTRECON_AUTO_AGENT_TIMEOUT_MS || 180_000),
-    maxBuffer: 8 * 1024 * 1024, windowsHide: true, signal,
-  });
+  let result;
+  try {
+    result = await execFileImpl(command, cursorArgs(env, root, prompt), {
+      cwd: root, timeout: Number(env.GHOSTRECON_AUTO_AGENT_TIMEOUT_MS || 180_000),
+      maxBuffer: 8 * 1024 * 1024, windowsHide: true, signal,
+    });
+  } catch (error) {
+    const code = error?.code == null ? '' : ` (exit ${error.code})`;
+    throw Object.assign(new Error(`Cursor Agent falhou${code}`), {
+      code: error?.code,
+    });
+  }
   const raw = String(result?.stdout || '').trim();
   let output = raw;
   try {
@@ -156,8 +168,10 @@ export async function decideWithCursor({
     output = envelope.result || envelope.message || envelope.content || envelope;
   } catch { /* parser comum tratará texto/JSON fenced */ }
   const parsed = typeof output === 'object' ? output : parseAgentDecisionText(output);
-  const validated = validateAgentDecision(parsed, {
-    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive }),
+  const validated = normalizeAndValidateAgentDecision(parsed, {
+    repairEnvelope: true,
+    repairOptions: { objective: `authorized_recon:${target || 'target'}` },
+    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive, autonomyLevel }),
     availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
   });
   if (!validated.ok) throw new Error(`decisão Cursor rejeitada: ${validated.errors.join('; ')}`);

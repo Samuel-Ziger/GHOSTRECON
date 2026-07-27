@@ -118,6 +118,15 @@ import { dispatchRegistryModule } from '../dispatcher.mjs';
 
 
 
+export function filterDiscoveredHostsInScope(hosts, state) {
+  const allowed = typeof state?.hostInScope === 'function'
+    ? (host) => state.hostInScope(host)
+    : () => false;
+  return [...new Set((Array.isArray(hosts) ? hosts : [])
+    .map((host) => String(host || '').trim().toLowerCase())
+    .filter((host) => host && allowed(host)))];
+}
+
 export async function runDiscoveryPhase(s) {
   const {
     domain,
@@ -156,7 +165,7 @@ export async function runDiscoveryPhase(s) {
     if (!apexHostIsIp && modules.includes('virustotal')) {
       const vt = await fetchVirustotalSubdomains(domain, process.env.VIRUSTOTAL_API_KEY);
       if (vt.ok && vt.items?.length) {
-        s.vtHostnames = vt.items;
+        s.vtHostnames = vt.items.filter((host) => s.hostInScope(host));
         log(`VirusTotal: ${s.vtHostnames.length} hostname(s)`, 'success');
       } else {
         log(vt.note || 'VirusTotal: sem dados', vt.ok ? 'info' : 'warn');
@@ -180,9 +189,10 @@ export async function runDiscoveryPhase(s) {
         if (runCrtSubdomains) {
           log('Consultando crt.sh (Certificate Transparency)...', 'info');
           try {
-            s.allSubs = await fetchCrtShSubdomains(domain);
+            s.allSubs = await fetchCrtShSubdomains(domain, { signal: s.signal });
             log(`${s.allSubs.length} nomes únicos em CT logs`, 'success');
           } catch (e) {
+            if (s.signal?.aborted) throw s.signal.reason || e;
             log(`crt.sh: ${e.message}`, 'warn');
           }
           if (s.vtHostnames.length) {
@@ -222,7 +232,16 @@ export async function runDiscoveryPhase(s) {
         }
       }
 
-      const capped = s.allSubs.filter((s) => s !== domain).slice(0, 150);
+      const discoveredCount = s.allSubs.length;
+      s.allSubs = filterDiscoveredHostsInScope(s.allSubs, s);
+      const scopeRejected = discoveredCount - s.allSubs.length;
+      if (scopeRejected > 0) {
+        log(
+          `Escopo formal: ${scopeRejected} hostname(s) descoberto(s) ignorado(s) antes de DNS`,
+          'info',
+        );
+      }
+      const capped = s.allSubs.filter((candidate) => candidate !== domain).slice(0, 150);
       const vtHostSet = new Set(s.vtHostnames.map((h) => String(h).trim().toLowerCase()));
       log(`Resolvendo DNS (máx. ${capped.length} hosts)...`, 'info');
       for (const host of capped) {
@@ -284,7 +303,11 @@ export async function runDiscoveryPhase(s) {
             return r.ok ? r.json() : [];
           },
         });
-        for (const f of ct.findings || []) {
+        const scopedFresh = (ct.fresh || []).filter((host) => s.hostInScope(host));
+        const scopedFindings = (ct.findings || []).filter(
+          (finding) => s.hostInScope(finding?.evidence?.host),
+        );
+        for (const f of scopedFindings) {
           addFinding({
             type: 'intel',
             prio: sevToPrio(f.severity),
@@ -294,11 +317,11 @@ export async function runDiscoveryPhase(s) {
             url: f.evidence?.host ? `https://${hostLiteralForUrl(f.evidence.host)}/` : undefined,
           });
         }
-        const hot = classifyNewSubs(ct.fresh || []).filter((x) => x.hot);
+        const hot = classifyNewSubs(scopedFresh).filter((x) => x.hot);
         if (hot.length) {
-          log(`CT monitor: ${ct.fresh.length} novo(s), ${hot.length} subdomínio(s) sensível(is)`, 'warn');
+          log(`CT monitor: ${scopedFresh.length} novo(s) no escopo, ${hot.length} subdomínio(s) sensível(is)`, 'warn');
         } else {
-          log(`CT monitor: ${ct.fresh.length} novo(s)`, 'info');
+          log(`CT monitor: ${scopedFresh.length} novo(s) no escopo`, 'info');
         }
       } catch (e) {
         log(`CT monitor: ${e.message}`, 'warn');
@@ -309,7 +332,9 @@ export async function runDiscoveryPhase(s) {
     if (!apexHostIsIp && modules.includes('origin_discovery')) {
       pipe('origin_discovery', 'active');
       try {
-        const discovered = await resolveSubsForOrigin(domain);
+        const discovered = await resolveSubsForOrigin(domain, {
+          hostAllowed: (host) => s.hostInScope(host),
+        });
         const report = detectOriginCandidates({ apex: domain, subdomainIps: discovered });
         for (const f of originDiscoveryToFindings(report, { target: domain })) {
           addFinding({
@@ -334,7 +359,10 @@ export async function runDiscoveryPhase(s) {
       progress(14);
       log('Enriquecimento DNS (MX/TXT/SPF/DMARC)...', 'info');
       try {
-        const { findings } = await fetchDnsEnrichment(domain, subdomainsAlive, { maxHosts: limits.dnsEnrichMaxHosts });
+        const { findings } = await fetchDnsEnrichment(domain, subdomainsAlive, {
+          maxHosts: limits.dnsEnrichMaxHosts,
+          hostAllowed: (host) => s.hostInScope(host),
+        });
         if (findings.length) log(`DNS intel: ${findings.length} achado(s)`, 'success');
         for (const f of findings) addFinding(f, null);
       } catch (e) {

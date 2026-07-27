@@ -25,11 +25,20 @@ export function scanSecrets(text, maxPerKind = 3) {
     let n = 0;
     while ((m = re.exec(text)) !== null && n < maxPerKind) {
       const raw = m[2] ?? m[1] ?? m[0];
-      findings.push({
+      const finding = {
         kind: name,
         masked: typeof mask === 'function' ? mask(raw) : String(raw).slice(0, 12) + '…',
         correlationFp: secretMaterialFingerprint(name, raw),
+      };
+      // Disponível apenas em memória para secret_validation explicitamente
+      // selecionado; JSON/NDJSON/persistência nunca enumeram o material cru.
+      Object.defineProperty(finding, 'rawMaterial', {
+        value: raw,
+        enumerable: false,
+        configurable: false,
+        writable: false,
       });
+      findings.push(finding);
       n++;
     }
   }

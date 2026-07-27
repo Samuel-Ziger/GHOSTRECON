@@ -37,10 +37,19 @@ function extractJsInsights(text) {
   return insights;
 }
 
-export async function analyzeJsUrl(jsUrl, { modules = [] } = {}) {
+export async function analyzeJsUrl(jsUrl, { modules = [], signal = null } = {}) {
   await stealthPause(modules);
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), limits.probeTimeoutMs);
+  const abortFromParent = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal?.reason || new Error('JS analysis cancelled'));
+    }
+  };
+  if (signal?.aborted) abortFromParent();
+  else signal?.addEventListener('abort', abortFromParent, { once: true });
+  const t = setTimeout(() => {
+    if (!controller.signal.aborted) controller.abort(new Error('JS analysis timeout'));
+  }, limits.probeTimeoutMs);
   try {
     const res = await fetch(jsUrl, {
       signal: controller.signal,
@@ -64,5 +73,6 @@ export async function analyzeJsUrl(jsUrl, { modules = [] } = {}) {
     return { ok: false, error: e.name === 'AbortError' ? 'timeout' : String(e.message || e), endpoints: [], body: '', insights: [] };
   } finally {
     clearTimeout(t);
+    signal?.removeEventListener('abort', abortFromParent);
   }
 }

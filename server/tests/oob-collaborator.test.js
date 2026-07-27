@@ -1,6 +1,61 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { parseDnsQuery, buildOobPayloads, startCatcher } from '../modules/oob-collaborator.mjs';
+
+function createHttpServerHarness() {
+  let handler = null;
+  const server = {
+    once() {
+      return server;
+    },
+    listen(port, _host, callback) {
+      server.port = port || 18054;
+      queueMicrotask(callback);
+      return server;
+    },
+    address() {
+      return { port: server.port };
+    },
+    close(callback) {
+      queueMicrotask(callback);
+    },
+  };
+
+  return {
+    factory(nextHandler) {
+      handler = nextHandler;
+      return server;
+    },
+    async request({ method = 'GET', url = '/', headers = {}, body = '' } = {}) {
+      assert.equal(typeof handler, 'function');
+      const req = new EventEmitter();
+      req.method = method;
+      req.url = url;
+      req.headers = headers;
+      return new Promise((resolve) => {
+        const res = {
+          statusCode: null,
+          headers: null,
+          body: '',
+          writeHead(statusCode, responseHeaders) {
+            res.statusCode = statusCode;
+            res.headers = responseHeaders;
+          },
+          end(chunk = '') {
+            res.body += String(chunk);
+            resolve(res);
+          },
+        };
+        handler(req, res);
+        queueMicrotask(() => {
+          if (body) req.emit('data', body);
+          req.emit('end');
+        });
+      });
+    },
+  };
+}
 
 test('oob: parseDnsQuery parseia nome simples', () => {
   // header (12 bytes) + label "abc" (3) + label "com" (3) + null + qtype (2) + qclass (2)
@@ -23,20 +78,27 @@ test('oob: buildOobPayloads gera URLs e payloads canônicos', () => {
 });
 
 test('oob: catcher mintToken e waitForToken (HTTP)', async () => {
-  const cat = await startCatcher({ port: 0, httpPort: 0, host: '127.0.0.1', startDns: false });
-  const t = cat.mintToken({ note: 'test' });
-  // Disparar request manual
-  const port = cat.httpPort;
-  const http = await import('node:http');
-  await new Promise((res) => {
-    http.get({ host: '127.0.0.1', port, path: `/?t=${t.token}` }, (r) => {
-      r.on('data', () => {});
-      r.on('end', res);
-    });
+  const harness = createHttpServerHarness();
+  const cat = await startCatcher({
+    port: 0,
+    httpPort: 0,
+    host: '127.0.0.1',
+    startDns: false,
+    httpServerFactory: harness.factory,
   });
+  const t = cat.mintToken({ note: 'test' });
+  const response = await harness.request({
+    url: `/?t=${t.token}`,
+    headers: {
+      host: `127.0.0.1:${cat.httpPort}`,
+      cookie: 'session=synthetic-secret',
+    },
+  });
+  assert.equal(response.statusCode, 200);
   const hits = await cat.waitForToken(t.token, { timeoutMs: 2000 });
   assert.ok(hits.length >= 1);
   assert.equal(hits[0].kind, 'http');
+  assert.equal(hits[0].headers.cookie, '<redacted>');
   await cat.stop();
 });
 

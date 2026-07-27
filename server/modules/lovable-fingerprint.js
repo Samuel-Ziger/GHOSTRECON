@@ -3,6 +3,11 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { parseSourceMap } from './js-intel.mjs';
 import { detectCatchAll, matchesCatchAll } from './catchall-detect.mjs';
+import {
+  combineAbortSignals,
+  isAbortError,
+  throwIfAborted,
+} from './http-utils.js';
 
 /**
  * lovable-fingerprint.js
@@ -108,7 +113,7 @@ function snippetAround(text, index, secret, span = 340) {
   return body.slice(start, end).replaceAll(String(secret || ''), maskSecret(secret));
 }
 
-function collectSupabaseJwtEvidence({ targetUrl, rootText, bundles, storeRawSecrets = false }) {
+function collectSupabaseJwtEvidence({ targetUrl, rootText, bundles }) {
   const sources = [
     { label: 'HTML inicial', url: targetUrl, text: rootText || '' },
     ...(bundles || []).map((b) => ({ label: 'JS bundle', url: b.url || b.path || targetUrl, text: b.text || '' })),
@@ -131,7 +136,6 @@ function collectSupabaseJwtEvidence({ targetUrl, rootText, bundles, storeRawSecr
         hash,
         claims,
         snippet: snippetAround(source.text, m.index, token),
-        raw: storeRawSecrets ? token : undefined,
       });
     }
   }
@@ -144,10 +148,12 @@ async function writeSupabasePocPage({
   supabaseUrl,
   context,
   evidence,
-  storeRawSecrets = false,
+  signal = null,
 }) {
   if (!outputDir) return null;
-  await fs.mkdir(outputDir, { recursive: true });
+  throwIfAborted(signal);
+  await fs.mkdir(outputDir, { recursive: true, mode: 0o700 });
+  await fs.chmod(outputDir, 0o700);
   let host = 'target';
   try {
     host = new URL(targetUrl).hostname;
@@ -177,7 +183,7 @@ async function writeSupabasePocPage({
     secretsFound: context?.secretsFound || [],
     rlsBrokenTables: rlsRows,
     evidence,
-    storesRawSecrets: Boolean(storeRawSecrets),
+    storesRawSecrets: false,
   };
   const json = JSON.stringify(payload, null, 2);
   const evidenceBlocks = evidence.map((ev) => `
@@ -234,7 +240,7 @@ async function writeSupabasePocPage({
       <div class="kv"><strong>Alvo</strong><a href="${htmlEscape(targetUrl)}">${htmlEscape(targetUrl)}</a></div>
       <div class="kv"><strong>Supabase</strong><a href="${htmlEscape(supabaseUrl || '')}">${htmlEscape(supabaseUrl || 'nao identificado')}</a></div>
       <div class="kv"><strong>Bundles lidos</strong><span>${htmlEscape(context?.bundlesScanned || 0)}</span></div>
-      <div class="kv"><strong>Segredos crus</strong><span class="pill">${storeRawSecrets ? 'armazenados por env' : 'nao armazenados'}</span></div>
+      <div class="kv"><strong>Segredos crus</strong><span class="pill">nao armazenados</span></div>
     </section>
 
     <h2>JWT encontrado</h2>
@@ -253,37 +259,56 @@ async function writeSupabasePocPage({
 </body>
 </html>
 `;
-  await fs.writeFile(fullPath, html, 'utf8');
+  throwIfAborted(signal);
+  await fs.writeFile(fullPath, html, { encoding: 'utf8', mode: 0o600 });
+  await fs.chmod(fullPath, 0o600);
   return { path: fullPath, file };
 }
 
-async function safeFetch(url, opts, fetchImpl) {
+function withParentSignal(fetchImpl, signal) {
   const f = fetchImpl || globalThis.fetch;
-  if (!f) throw new Error('fetch indisponivel - passe opts.fetch');
-  const ac = new AbortController();
-  const timeout = setTimeout(() => ac.abort(), opts?.timeout ?? 12000);
-  try {
-    return await f(url, { ...(opts || {}), signal: ac.signal });
-  } finally {
-    clearTimeout(timeout);
+  if (!signal) return f;
+  return (url, init = {}) => {
+    const signals = [signal, init?.signal].filter(Boolean);
+    const mergedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+    return f(url, { ...init, signal: mergedSignal });
+  };
+}
+
+function ensureUrlAllowed(url, urlAllowed) {
+  if (typeof urlAllowed === 'function' && urlAllowed(url) !== true) {
+    const error = new Error(`out_of_scope: ${url}`);
+    error.code = 'OUT_OF_SCOPE';
+    throw error;
   }
 }
 
-async function fetchText(url, fetchImpl, headers) {
+async function safeFetch(url, opts, fetchImpl, signal = null, urlAllowed = null) {
+  const f = fetchImpl || globalThis.fetch;
+  if (!f) throw new Error('fetch indisponivel - passe opts.fetch');
+  throwIfAborted(signal);
+  ensureUrlAllowed(url, urlAllowed);
+  const requestSignal = combineAbortSignals(signal, opts?.timeout ?? 12000);
+  return f(url, { ...(opts || {}), signal: requestSignal });
+}
+
+async function fetchText(url, fetchImpl, headers, signal = null, urlAllowed = null) {
   try {
-    const res = await safeFetch(url, { headers: headers || {} }, fetchImpl);
+    const res = await safeFetch(url, { headers: headers || {} }, fetchImpl, signal, urlAllowed);
     if (!res.ok) return { status: res.status, text: '' };
     return { status: res.status, text: await res.text() };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     return { status: 0, text: '' };
   }
 }
 
-async function fetchWithHeaders(url, fetchImpl, headers) {
+async function fetchWithHeaders(url, fetchImpl, headers, signal = null, urlAllowed = null) {
   try {
-    const res = await safeFetch(url, { headers: headers || {} }, fetchImpl);
+    const res = await safeFetch(url, { headers: headers || {} }, fetchImpl, signal, urlAllowed);
     return { status: res.status, headers: res.headers, text: await res.text() };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     return { status: 0, headers: null, text: '' };
   }
 }
@@ -316,15 +341,24 @@ function makeFinding({ type, value, score = 50, url, meta, owasp, mitre }) {
   return { type, value, score, prio, url, meta, owasp, mitre, source: 'lovable-fingerprint' };
 }
 
-async function fetchBundlesFromHtml(targetUrl, html, fetchImpl, maxBundles = 8) {
+async function fetchBundlesFromHtml(
+  targetUrl,
+  html,
+  fetchImpl,
+  maxBundles = 8,
+  signal = null,
+  urlAllowed = null,
+) {
   const bundlePaths = extractMatches(html || '', JS_BUNDLE_RE).slice(0, Math.max(1, maxBundles));
   const out = [];
   for (const path of bundlePaths) {
+    throwIfAborted(signal);
     try {
       const url = new URL(path, targetUrl).href;
-      const { status, text } = await fetchText(url, fetchImpl);
+      const { status, text } = await fetchText(url, fetchImpl, null, signal, urlAllowed);
       if (status === 200 && text) out.push({ path, url, text });
-    } catch {
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       // ignore URL parse/fetch failures
     }
   }
@@ -349,14 +383,22 @@ function scanForSecrets(content, targetUrl) {
   return findings;
 }
 
-async function probeSupabaseTables({ supabaseUrl, anonKey, fetchImpl, tables }) {
+async function probeSupabaseTables({
+  supabaseUrl,
+  anonKey,
+  fetchImpl,
+  tables,
+  signal = null,
+  urlAllowed = null,
+}) {
   const out = [];
   for (const table of (tables || COMMON_TABLES)) {
+    throwIfAborted(signal);
     const url = `${supabaseUrl}/rest/v1/${encodeURIComponent(table)}?select=*&limit=1`;
     try {
       const res = await safeFetch(url, {
         headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Accept-Profile': 'public' },
-      }, fetchImpl);
+      }, fetchImpl, signal, urlAllowed);
       if (res.status === 200) {
         const text = await res.text();
         let rows = [];
@@ -369,37 +411,60 @@ async function probeSupabaseTables({ supabaseUrl, anonKey, fetchImpl, tables }) 
         const columns = rows[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]).slice(0, 24) : [];
         out.push({ table, status: 200, url, rowCount: rows.length, columns });
       }
-    } catch {
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       // ignore request failures
     }
   }
   return out;
 }
 
-async function probeDotfiles({ targetUrl, fetchImpl }) {
+async function probeDotfiles({ targetUrl, fetchImpl, signal = null, urlAllowed = null }) {
   const out = [];
   for (const entry of COMMON_DOTFILES) {
+    throwIfAborted(signal);
     try {
       const url = new URL(entry.path, targetUrl).href;
-      const res = await safeFetch(url, { headers: { Accept: '*/*' } }, fetchImpl);
+      const res = await safeFetch(
+        url,
+        { headers: { Accept: '*/*' } },
+        fetchImpl,
+        signal,
+        urlAllowed,
+      );
       if (res.status !== 200) continue;
       const body = await res.text();
       if (/<html[\s>]/i.test(body)) continue;
       out.push({ ...entry, url, bodySize: body.length, contentType: (res.headers?.get?.('content-type') || '').toLowerCase() });
-    } catch {
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       // ignore
     }
   }
   return out;
 }
 
-async function probeSourceMaps({ targetUrl, fetchImpl, bundles, catchAllSig = null }) {
+async function probeSourceMaps({
+  targetUrl,
+  fetchImpl,
+  bundles,
+  catchAllSig = null,
+  signal = null,
+  urlAllowed = null,
+}) {
   const out = [];
   for (const b of bundles || []) {
+    throwIfAborted(signal);
     try {
       const mapPath = `${b.path}.map`;
       const mapUrl = new URL(mapPath, targetUrl).href;
-      const res = await safeFetch(mapUrl, { headers: { Accept: 'application/json,*/*' } }, fetchImpl);
+      const res = await safeFetch(
+        mapUrl,
+        { headers: { Accept: 'application/json,*/*' } },
+        fetchImpl,
+        signal,
+        urlAllowed,
+      );
       if (res.status !== 200) continue;
       const body = await res.text();
       const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
@@ -415,17 +480,29 @@ async function probeSourceMaps({ targetUrl, fetchImpl, bundles, catchAllSig = nu
         sources: parsed.sources.length,
         internal: parsed.internal.slice(0, 5),
       });
-    } catch {
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       // ignore
     }
   }
   return out;
 }
 
-async function probeCorsPermissive({ targetUrl, fetchImpl }) {
+async function probeCorsPermissive({
+  targetUrl,
+  fetchImpl,
+  signal = null,
+  urlAllowed = null,
+}) {
   try {
     const origin = 'https://evil.example';
-    const res = await safeFetch(targetUrl, { headers: { Origin: origin } }, fetchImpl);
+    const res = await safeFetch(
+      targetUrl,
+      { headers: { Origin: origin } },
+      fetchImpl,
+      signal,
+      urlAllowed,
+    );
     const acao = res.headers?.get?.('access-control-allow-origin') || '';
     const acc = (res.headers?.get?.('access-control-allow-credentials') || '').toLowerCase() === 'true';
     return {
@@ -434,17 +511,31 @@ async function probeCorsPermissive({ targetUrl, fetchImpl }) {
       originReflected: acao === origin ? origin : null,
       allowCredentials: acc,
     };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     return { wildcard: false, reflected: false, originReflected: null, allowCredentials: false };
   }
 }
 
-async function probeAuthlessEndpoints({ targetUrl, fetchImpl, catchAllSig = null }) {
+async function probeAuthlessEndpoints({
+  targetUrl,
+  fetchImpl,
+  catchAllSig = null,
+  signal = null,
+  urlAllowed = null,
+}) {
   const out = [];
   for (const path of COMMON_AUTHLESS_ENDPOINTS) {
+    throwIfAborted(signal);
     try {
       const url = new URL(path, targetUrl).href;
-      const res = await safeFetch(url, { headers: { Accept: 'application/json,*/*' } }, fetchImpl);
+      const res = await safeFetch(
+        url,
+        { headers: { Accept: 'application/json,*/*' } },
+        fetchImpl,
+        signal,
+        urlAllowed,
+      );
       if (res.status >= 200 && res.status < 300) {
         const body = await res.text();
         const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
@@ -453,7 +544,8 @@ async function probeAuthlessEndpoints({ targetUrl, fetchImpl, catchAllSig = null
         if (/text\/html/.test(ct) || /^\s*<(?:!doctype|html)/i.test(body)) continue;
         out.push({ path, url, status: res.status, bodySize: body.length, contentType: ct });
       }
-    } catch {
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       // ignore
     }
   }
@@ -475,9 +567,13 @@ function analyzeSecurityHeadersFromResponse(rootHeaders) {
 
 export async function fingerprintLovable(targetUrl, opts = {}) {
   const fetchImpl = opts.fetch || globalThis.fetch;
+  const signal = opts.signal || null;
+  const urlAllowed = opts.urlAllowed || null;
   const probeRls = opts.probeRls !== false;
   const probeMisconfig = opts.probeMisconfig !== false;
   const maxBundles = Math.max(1, Math.min(20, opts.maxJsBundles ?? 8));
+  throwIfAborted(signal);
+  ensureUrlAllowed(targetUrl, urlAllowed);
 
   const findings = [];
   const context = {
@@ -499,7 +595,7 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     pocFile: null,
   };
 
-  const rootFull = await fetchWithHeaders(targetUrl, fetchImpl);
+  const rootFull = await fetchWithHeaders(targetUrl, fetchImpl, null, signal, urlAllowed);
   if (!rootFull.text && !isLovableHost(targetUrl)) return { isLovable: false, findings, context };
 
   context.isLovable = isLovableMarkup(rootFull.text) || isLovableHost(targetUrl);
@@ -515,7 +611,14 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     }));
   }
 
-  const bundles = await fetchBundlesFromHtml(targetUrl, rootFull.text, fetchImpl, maxBundles);
+  const bundles = await fetchBundlesFromHtml(
+    targetUrl,
+    rootFull.text,
+    fetchImpl,
+    maxBundles,
+    signal,
+    urlAllowed,
+  );
   context.bundlesScanned = bundles.length;
   const joined = `${rootFull.text}\n${bundles.map((b) => b.text).join('\n')}`;
 
@@ -566,8 +669,19 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     }));
   }
 
-  if (probeRls && supabaseUrl && anonKey) {
-    const broken = await probeSupabaseTables({ supabaseUrl, anonKey, fetchImpl, tables: opts.tables || COMMON_TABLES });
+  const supabaseProbeAllowed =
+    !supabaseUrl
+    || typeof urlAllowed !== 'function'
+    || urlAllowed(supabaseUrl) === true;
+  if (probeRls && supabaseUrl && anonKey && supabaseProbeAllowed) {
+    const broken = await probeSupabaseTables({
+      supabaseUrl,
+      anonKey,
+      fetchImpl,
+      tables: opts.tables || COMMON_TABLES,
+      signal,
+      urlAllowed,
+    });
     context.rlsBrokenTables = broken.map((b) => b.table);
     context.rlsBrokenDetails = broken;
     if (broken.length) {
@@ -585,10 +699,15 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
 
   if (probeMisconfig) {
     // Assinatura de catch-all/soft-404: evita FP em probes baseados em status 200.
-    const catchAllSig = await detectCatchAll(targetUrl, fetchImpl).catch(() => null);
+    const scopedFetch = withParentSignal(fetchImpl, signal);
+    const catchAllSig = await detectCatchAll(targetUrl, scopedFetch).catch((error) => {
+      if (isAbortError(error, signal)) throw error;
+      return null;
+    });
+    throwIfAborted(signal);
     context.catchAll = !!(catchAllSig && catchAllSig.catchAll);
 
-    const dotfiles = await probeDotfiles({ targetUrl, fetchImpl });
+    const dotfiles = await probeDotfiles({ targetUrl, fetchImpl, signal, urlAllowed });
     context.dotfilesExposed = dotfiles.map((d) => d.path);
     findings.push(...dotfiles.map((d) => makeFinding({
       type: 'dotfile_exposed',
@@ -600,7 +719,14 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
       mitre: 'T1083',
     })));
 
-    const maps = await probeSourceMaps({ targetUrl, fetchImpl, bundles, catchAllSig });
+    const maps = await probeSourceMaps({
+      targetUrl,
+      fetchImpl,
+      bundles,
+      catchAllSig,
+      signal,
+      urlAllowed,
+    });
     context.sourceMapsExposed = maps.map((m) => m.mapPath);
     findings.push(...maps.map((m) => makeFinding({
       type: 'source_map_exposed',
@@ -612,7 +738,7 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
       mitre: 'T1592',
     })));
 
-    const cors = await probeCorsPermissive({ targetUrl, fetchImpl });
+    const cors = await probeCorsPermissive({ targetUrl, fetchImpl, signal, urlAllowed });
     context.corsPermissive = cors;
     if (cors.wildcard || cors.reflected) {
       findings.push(makeFinding({
@@ -626,7 +752,13 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
       }));
     }
 
-    const authless = await probeAuthlessEndpoints({ targetUrl, fetchImpl, catchAllSig });
+    const authless = await probeAuthlessEndpoints({
+      targetUrl,
+      fetchImpl,
+      catchAllSig,
+      signal,
+      urlAllowed,
+    });
     context.authlessEndpoints = authless.map((a) => a.path);
     findings.push(...authless.map((a) => makeFinding({
       type: 'auth_missing_endpoint',
@@ -659,7 +791,6 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
         targetUrl,
         rootText: rootFull.text,
         bundles,
-        storeRawSecrets: opts.storeRawSecrets === true,
       });
       if (evidence.length || supabaseUrl) {
         const poc = await writeSupabasePocPage({
@@ -668,7 +799,7 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
           supabaseUrl,
           context,
           evidence,
-          storeRawSecrets: opts.storeRawSecrets === true,
+          signal,
         });
         if (poc?.path) {
           context.pocPath = poc.path;
@@ -685,6 +816,7 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
         }
       }
     } catch (e) {
+      if (isAbortError(e, signal)) throw e;
       context.pocError = e?.message || String(e);
     }
   }

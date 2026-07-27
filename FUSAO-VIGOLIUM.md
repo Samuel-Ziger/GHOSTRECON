@@ -8,6 +8,32 @@ Documento técnico e estratégico para incorporar o motor Vigolium (Go) no monor
 
 ---
 
+## Atualização operacional verificada em 2026-07-26
+
+Este arquivo preserva o plano histórico da fusão. Para comportamento vigente,
+prevalecem `bridge/`, `server/routes/recon-stream.mjs`, os testes e
+`MODO-AUTO-GHOSTRECON.md`.
+
+No estado atual:
+
+- o RUN expande módulos, engines e dependências antes dos gates; se o plano
+  efetivo contiver Vigolium/DAST ou qualquer outra capacidade intrusiva, exige
+  `recon.intrusive`, engagement formal ativo, ROE assinado, escopo/janela
+  válidos e `confirmActive`;
+- o binário Vigolium é inspecionado por descritor regular, sua identidade é
+  selada no preflight/plano e revalidada imediatamente antes de cada scan,
+  consulta de findings e execução do agente;
+- o bridge propaga `AbortSignal` aos subprocessos e transporta autenticação por
+  arquivo temporário restrito, sem cookies ou `Authorization` em argv/log;
+- os testes locais de bridge, agente, rota manual, FrameSeven, Auto e Forge usam
+  mocks/fixtures. Não foi executado nesta evolução E2E externo, DAST real ou
+  navegador autenticado real.
+
+Essas salvaguardas não tornam Vigolium passivo nem substituem autorização do
+alvo. As seções marcadas como proposta abaixo continuam históricas.
+
+---
+
 ## 1. Visão e objectivo
 
 ### O que queres
@@ -429,6 +455,14 @@ ghostrecon run -t https://alvo.com   # mantém comportamento actual até flag --
 | `--auth-file` | path | — | Sessões YAML (formato Vigolium) |
 | `--vigolium-modules` | csv | — | Filtro `-m` no Go |
 | `--skip-go-phases` | csv | — | ex: `spidering,external-harvest` |
+
+**Transporte de credenciais implementado:** valores de autenticação inline e o
+contexto autenticado do GHOSTRECON são convertidos pelo bridge num bundle JSON
+temporário. O diretório usa permissão `0700`, o arquivo `0600`, o subprocesso
+recebe somente `--auth-file` e o bundle é removido em `finally`. Cookies e
+headers `Authorization` não entram em argv nem no log de comando. De forma
+equivalente, clones GitHub usam URL limpa e um `credential-store` temporário;
+o PAT não é incorporado à URL, ao ambiente do filho ou aos logs.
 
 ### 6.3 Implementação CLI
 

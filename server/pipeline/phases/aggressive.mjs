@@ -45,7 +45,11 @@ import { limits } from '../../config.js';
 import { listRuns } from '../../modules/db.js';
 import { collectUniqueIpv4, shodanHostSummary } from '../../modules/ip-intel.js';
 import { googleCseSearch } from '../../modules/google-cse.js';
-import { getKaliCapabilities, runKaliAggressiveScan } from '../../modules/kali-scan.js';
+import {
+  getKaliCapabilities,
+  resolveKaliExecutionPolicy,
+  runKaliAggressiveScan,
+} from '../../modules/kali-scan.js';
 import {
   augmentProcessPathFromCommonDirs,
   prependExtraPathToEnvPath,
@@ -149,13 +153,15 @@ export async function runAggressivePhase(s) {
     seenEp,
     tlsSanHosts,
     dnsAForHost,
+    signal,
+    autoModeExecution,
   } = s;
 
     // ── KALI: nmap / searchsploit / ffuf / nuclei ──
     if (kaliMode) {
       pipe('kali', 'active');
       progress(86);
-      const cap = await getKaliCapabilities();
+      const cap = await getKaliCapabilities({ signal });
       if (cap.kali) {
         // Só roda wpscan se o passivo já indicou WordPress.
         // Evidência vem de findings do tipo "tech" (geradas no probeHttp).
@@ -178,14 +184,15 @@ export async function runAggressivePhase(s) {
             return [`https://${hl}/`, `http://${hl}/`];
           })
           .flat()
-          .filter(Boolean);
+          .filter((url) => Boolean(url) && s.urlInScope(url));
 
         let xssSignals = false;
         let sqliSignals = false;
         const xssParamRe = /[?&](q|query|search|s|keyword|term|message|comment|title|name)=/i;
         const sqliParamRe =
           /[?&](id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where|username|email|passwd|pwd|login)=/i;
-        for (const u of s.paramUrlsForKali) {
+        const scopedParamUrls = s.paramUrlsForKali.filter((url) => s.urlInScope(url));
+        for (const u of scopedParamUrls) {
           if (xssParamRe.test(u)) xssSignals = true;
           if (sqliParamRe.test(u)) sqliSignals = true;
           if (xssSignals && sqliSignals) break;
@@ -219,6 +226,7 @@ export async function runAggressivePhase(s) {
         const runKaliProxychains = Boolean(modules.includes('kali_proxychains'));
         const runInfoDisclosureErrors = Boolean(modules.includes('info_disclosure_errors'));
         const runInfoDisclosureHunter = Boolean(modules.includes('info_disclosure_hunter') || runInfoDisclosureErrors);
+        const kaliPolicy = resolveKaliExecutionPolicy({ autoModeExecution, modules });
 
         await runKaliAggressiveScan({
           domain,
@@ -227,13 +235,20 @@ export async function runAggressivePhase(s) {
           log,
           addFinding,
           wordpressTargets,
-          paramUrls: s.paramUrlsForKali,
+          paramUrls: scopedParamUrls,
           xssSignals,
           sqliSignals,
           runNuclei: runKaliNuclei,
           runFfuf: runKaliFfuf,
           runDirsearch: runKaliDirsearch,
           runNmapAggressive: runKaliNmapAggressive,
+          runNmapBase: kaliPolicy.runNmapBase,
+          runWhois: kaliPolicy.runWhois,
+          runWpscan: kaliPolicy.runWpscan,
+          runDalfox: kaliPolicy.runDalfox,
+          runXssVibes: kaliPolicy.runXssVibes,
+          allowNmapServiceFollowups: kaliPolicy.allowNmapServiceFollowups,
+          allowFtpWriteProbe: kaliPolicy.allowFtpWriteProbe,
           runNmapUdp: runKaliNmapUdp,
           runNmapCveMatch,
           runNmapBackportReview,
@@ -243,6 +258,7 @@ export async function runAggressivePhase(s) {
           useProxychains: runKaliProxychains,
           auth,
           emit,
+          signal,
         });
       } else {
         log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');

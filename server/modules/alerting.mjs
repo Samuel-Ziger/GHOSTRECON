@@ -68,7 +68,7 @@ function postRaw(urlStr, body, { timeoutMs = 10_000, headers = {} } = {}) {
  * Envia `payload` (texto Markdown + metadata) para o webhook apropriado.
  * `payload.content` → texto curto preferido por todos.
  */
-export async function postAlert(webhookUrl, payload) {
+export async function postAlert(webhookUrl, payload, { postImpl = postRaw } = {}) {
   const u = String(webhookUrl || '').trim();
   if (!u) throw new Error('webhook vazio');
   const text = payload?.content || 'GHOSTRECON alert';
@@ -82,18 +82,18 @@ export async function postAlert(webhookUrl, payload) {
       timestamp: new Date().toISOString(),
       footer: { text: 'ghostrecon schedule' },
     };
-    const res = await postRaw(u, { embeds: [embed] });
+    const res = await postImpl(u, { embeds: [embed] });
     if (!res.ok) throw new Error(`Discord HTTP ${res.statusCode}: ${res.body}`);
     return res;
   }
 
   if (isSlack(u)) {
-    const res = await postRaw(u, { text: text.slice(0, 3800), mrkdwn: true });
+    const res = await postImpl(u, { text: text.slice(0, 3800), mrkdwn: true });
     if (!res.ok) throw new Error(`Slack HTTP ${res.statusCode}: ${res.body}`);
     return res;
   }
 
-  const res = await postRaw(u, payload);
+  const res = await postImpl(u, payload);
   if (!res.ok) throw new Error(`webhook HTTP ${res.statusCode}: ${res.body}`);
   return res;
 }

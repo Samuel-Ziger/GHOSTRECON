@@ -1,3 +1,5 @@
+import { redactFindingsForPublic } from './finding-redaction.mjs';
+
 function classifyFix(type) {
   switch (type) {
     case 'xss':
@@ -17,7 +19,7 @@ function classifyFix(type) {
 
 export function buildReportTemplates(findings = [], target = '') {
   const out = [];
-  const candidates = findings
+  const candidates = redactFindingsForPublic(findings)
     .filter((f) => ['xss', 'sqli', 'open_redirect', 'idor', 'lfi'].includes(String(f.type)))
     .filter((f) => ['confirmed', 'probable'].includes(String(f?.verification?.classification || '')))
     .slice(0, 24);

@@ -1,4 +1,112 @@
 import { sevToPrio, sevToScore } from '../server/lib/severity.mjs';
+import {
+  redactFindingForPublic,
+  redactLocalPathsForPublic,
+} from '../server/modules/finding-redaction.mjs';
+import { redactAutoValue } from '../server/auto-agent/redaction.mjs';
+
+const MAX_EXTERNAL_DEPTH = 12;
+const MAX_EXTERNAL_ITEMS = 500;
+const EXTERNAL_PATH_KEYS_TO_PRESERVE = new Set([
+  'file',
+  'filePath',
+  'filepath',
+  'metadataPath',
+  'metadatapath',
+  'repoPath',
+  'repopath',
+  'path',
+  'location',
+  'localPath',
+  'localpath',
+  'reportPath',
+  'reportpath',
+  'sessionDir',
+  'sessiondir',
+  'session_dir',
+  'sourceDir',
+  'sourcedir',
+  'source_dir',
+  'outputDir',
+  'outputdir',
+  'output_dir',
+  'root',
+  'dir',
+  'directory',
+  'binary',
+  'source',
+]);
+const ALWAYS_PRIVATE_EXTERNAL_PATH_KEYS = new Set([
+  'metadatapath',
+  'repopath',
+  'localpath',
+  'reportpath',
+  'sessiondir',
+  'sourcedir',
+  'outputdir',
+  'root',
+  'directory',
+  'binary',
+]);
+
+function isAbsoluteLocalPath(value) {
+  const text = String(value ?? '').trim();
+  return (
+    text.startsWith('/')
+    || /^[A-Za-z]:[\\/]/.test(text)
+    || /^\\\\[^\\]/.test(text)
+  );
+}
+
+function exactRedactValue(value, redact, depth = 0, seen = new WeakSet(), key = '') {
+  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'bigint') return String(value);
+  if (typeof value === 'string') {
+    const redacted = typeof redact === 'function' ? redact(value) : value;
+    const normalizedKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (
+      /^(?:file|filepath|metadatapath|repopath|path|location|localpath|reportpath|sessiondir|sourcedir|outputdir|root|dir|directory|binary|source|error|reason|message)$/i
+        .test(normalizedKey)
+    ) {
+      if (ALWAYS_PRIVATE_EXTERNAL_PATH_KEYS.has(normalizedKey) && redacted.trim()) {
+        return '[LOCAL_PATH]';
+      }
+      return isAbsoluteLocalPath(redacted)
+        ? '[LOCAL_PATH]'
+        : redactLocalPathsForPublic(redacted);
+    }
+    return redacted;
+  }
+  if (typeof value !== 'object') return String(value);
+  if (depth >= MAX_EXTERNAL_DEPTH) return '[TRUNCATED_DEPTH]';
+  if (seen.has(value)) return '[CIRCULAR]';
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value
+        .slice(0, MAX_EXTERNAL_ITEMS)
+        .map((item) => exactRedactValue(item, redact, depth + 1, seen, key));
+    }
+    const out = {};
+    for (const [key, item] of Object.entries(value).slice(0, MAX_EXTERNAL_ITEMS)) {
+      out[key] = exactRedactValue(item, redact, depth + 1, seen, key);
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/**
+ * Fronteira para qualquer JSON emitido pelo processo externo. O redactor do
+ * transporte conhece os valores exatos da sessão autenticada; a segunda
+ * camada remove padrões sensíveis mesmo quando não pertencem à sessão.
+ */
+export function redactVigoliumExternalValue(value, { redact } = {}) {
+  return redactAutoValue(exactRedactValue(value, redact), {
+    preserveSensitiveKeys: EXTERNAL_PATH_KEYS_TO_PRESERVE,
+  });
+}
 
 function compactJson(value, max = 900) {
   if (value == null) return '';
@@ -29,7 +137,8 @@ function evidenceFromRow(row) {
   if (row.request) evidence.request = compactJson(row.request, 4000);
   if (row.response) evidence.response = compactJson(row.response, 4000);
   if (row['curl-command']) evidence.curl = String(row['curl-command']).slice(0, 2000);
-  return Object.keys(evidence).length ? evidence : undefined;
+  if (!Object.keys(evidence).length) return undefined;
+  return redactFindingForPublic({ evidence })?.evidence;
 }
 
 /**
@@ -37,8 +146,9 @@ function evidenceFromRow(row) {
  * @param {object} row
  * @returns {object|null}
  */
-export function vigoliumRowToFinding(row) {
+export function vigoliumRowToFinding(row, options = {}) {
   if (!row || typeof row !== 'object') return null;
+  row = redactVigoliumExternalValue(row, options);
 
   const rawModuleId = firstString(row['template-id'], row.templateId, row.module_id, row.moduleId);
   const hasDastShape = Boolean(rawModuleId || row.info || row.url || row.matched || row.host || row['matched-at'] || row.matchedAt);
@@ -66,7 +176,7 @@ export function vigoliumRowToFinding(row) {
   const value = matched || name || moduleId;
   const displayUrl = url || (matched && /^https?:\/\//i.test(matched) ? matched : '');
 
-  return {
+  return redactFindingForPublic({
     type: 'vuln',
     prio: sevToPrio(severity),
     score: sevToScore(severity),
@@ -79,7 +189,7 @@ export function vigoliumRowToFinding(row) {
     moduleName: name,
     confidence: confidence || undefined,
     evidence,
-  };
+  });
 }
 
 function inferOwaspFromTags(tags, moduleId) {
@@ -95,7 +205,7 @@ function inferOwaspFromTags(tags, moduleId) {
  * @param {string} text — conteúdo JSONL (uma linha = um evento)
  * @returns {object[]}
  */
-export function parseVigoliumJsonl(text) {
+export function parseVigoliumJsonl(text, options = {}) {
   const findings = [];
   const lines = String(text || '').split(/\r?\n/);
   for (const line of lines) {
@@ -114,24 +224,24 @@ export function parseVigoliumJsonl(text) {
         : null;
     if (nestedFindings) {
       for (const nested of nestedFindings) {
-        const f = vigoliumRowToFinding(nested) || auditRowToFinding({
+        const f = vigoliumRowToFinding(nested, options) || auditRowToFinding({
           ...nested,
           agentic_scan_uuid: row.agentic_scan_uuid,
           session_dir: row.session_dir,
-        });
+        }, options);
         if (f) findings.push(f);
       }
       continue;
     }
     if (row?.type === 'finding' || row?.data?.title) {
-      const auditF = auditRowToFinding(row.data || row);
+      const auditF = auditRowToFinding(row.data || row, options);
       if (auditF) findings.push(auditF);
       continue;
     }
     if (row?.type && row.type !== 'http' && row.type !== 'finding' && !row['template-id']) {
       continue;
     }
-    const f = vigoliumRowToFinding(row) || auditRowToFinding(row);
+    const f = vigoliumRowToFinding(row, options) || auditRowToFinding(row, options);
     if (f) findings.push(f);
   }
   return findings;
@@ -140,15 +250,16 @@ export function parseVigoliumJsonl(text) {
 /**
  * Findings do vigolium-audit / agent (schema mais livre).
  */
-export function auditRowToFinding(row) {
+export function auditRowToFinding(row, options = {}) {
   if (!row || typeof row !== 'object') return null;
+  row = redactVigoliumExternalValue(row, options);
   const title = String(row.title || row.name || row.summary || row.id || '').trim();
   if (!title) return null;
   const severity = String(row.severity || row.priority || 'medium').toLowerCase();
   const file = String(row.file || row.path || row.location || '').trim();
   const description = String(row.description || row.detail || row.rationale || '').trim();
 
-  return {
+  return redactFindingForPublic({
     type: 'code_audit',
     prio: sevToPrio(severity),
     score: sevToScore(severity),
@@ -171,5 +282,5 @@ export function auditRowToFinding(row) {
       description: description || undefined,
       raw: compactJson(row, 1200),
     },
-  };
+  });
 }

@@ -223,7 +223,7 @@ function diffFinding(diff, current, previousMeta = {}) {
 async function fetchSpec(url, { fetchImpl = fetch, timeoutMs = 10_000, headers = {} } = {}) {
   const res = await fetchImpl(url, {
     method: 'GET',
-    redirect: 'follow',
+    redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
     headers: {
       Accept: 'application/json,*/*;q=0.8',
@@ -244,6 +244,7 @@ export async function fetchOpenApiContracts({
   origins = [],
   domain = '',
   outOfScopeList = [],
+  scopePolicy = null,
   modules = [],
   fetchImpl = fetch,
   log = () => {},
@@ -258,7 +259,7 @@ export async function fetchOpenApiContracts({
     for (const p of SPEC_PATHS) {
       let u;
       try { u = new URL(p, `${origin}/`).href; } catch { continue; }
-      if (!urlInReconScope(u, domain, outOfScopeList)) continue;
+      if (!urlInReconScope(u, domain, outOfScopeList, scopePolicy)) continue;
       await stealthPause(modules);
       const fetched = await fetchSpec(u, {
         fetchImpl,
@@ -323,12 +324,21 @@ export async function runApiContractDiff({
   origins = [],
   domain = '',
   outOfScopeList = [],
+  scopePolicy = null,
   modules = [],
   previousSnapshots = [],
   fetchImpl = fetch,
   log = () => {},
 } = {}) {
-  const summaries = await fetchOpenApiContracts({ origins, domain, outOfScopeList, modules, fetchImpl, log });
+  const summaries = await fetchOpenApiContracts({
+    origins,
+    domain,
+    outOfScopeList,
+    scopePolicy,
+    modules,
+    fetchImpl,
+    log,
+  });
   const findings = [];
   for (const current of summaries) {
     findings.push(snapshotFinding(current));

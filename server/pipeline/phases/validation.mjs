@@ -112,6 +112,7 @@ import {
 } from '../../modules/tor-strict.js';
 import { newnym as torNewnym } from '../../modules/tor-control.js';
 import { dispatchRegistryModule } from '../dispatcher.mjs';
+import { pipelineCapabilityAllowed } from '../pipeline-state.mjs';
 
 import path from 'path';
 import { ROOT, firstIpv4FromDnsRecords, sleep } from '../pipeline-shared.mjs';
@@ -151,35 +152,48 @@ export async function runValidationPhase(s) {
     tlsSanHosts,
     dnsAForHost,
   } = s;
+    const findingsInScope = () => findings.filter((finding) => {
+      const candidates = [
+        finding?.url,
+        /^https?:\/\//i.test(String(finding?.value || '')) ? finding.value : null,
+        finding?.verification?.evidence?.url,
+      ].filter(Boolean);
+      return candidates.length === 0 || candidates.every((url) => s.urlInScope(url));
+    });
 
     // ── VERIFY (evidence-guided) ─────────────────
-    pipe('verify', 'active');
+    const runImplicitVerification = pipelineCapabilityAllowed(s, 'evidence_verification');
+    pipe('verify', runImplicitVerification ? 'active' : 'skip');
     progress(84);
-    try {
-      if (identityCtrl?.enabled) {
-        const st = identityCtrl.getStats();
-        log(
-          `Rotação de identidade: ativa (proxies=${st.proxies}, backoff≈${st.backoffMul.toFixed(1)})`,
-          'info',
-        );
+    if (runImplicitVerification) {
+      try {
+        if (identityCtrl?.enabled) {
+          const st = identityCtrl.getStats();
+          log(
+            `Rotação de identidade: ativa (proxies=${st.proxies}, backoff≈${st.backoffMul.toFixed(1)})`,
+            'info',
+          );
+        }
+        const verified = await runEvidenceVerification({
+          findings: findingsInScope(),
+          auth,
+          log,
+          maxEndpoints: runtimeProfile.maxVerifyEndpoints,
+          modules,
+          identityCtrl,
+        });
+        for (const vf of verified) addFinding(vf, null);
+        if (verified.length) log(`Verify: ${verified.length} resultado(s) xss/sqli/open_redirect/idor/lfi`, 'success');
+      } catch (e) {
+        log(`Verify: ${e.message}`, 'warn');
       }
-      const verified = await runEvidenceVerification({
-        findings,
-        auth,
-        log,
-        maxEndpoints: runtimeProfile.maxVerifyEndpoints,
-        modules,
-        identityCtrl,
-      });
-      for (const vf of verified) addFinding(vf, null);
-      if (verified.length) log(`Verify: ${verified.length} resultado(s) xss/sqli/open_redirect/idor/lfi`, 'success');
-    } catch (e) {
-      log(`Verify: ${e.message}`, 'warn');
+    } else {
+      log('Verify implícito omitido no Auto: capacidade evidence_verification não aprovada.', 'info');
     }
     if (modules.includes('micro_exploit')) {
       try {
         const micro = await runMicroExploitVariants({
-          findings,
+          findings: findingsInScope(),
           auth,
           log,
           modules,
@@ -199,7 +213,7 @@ export async function runValidationPhase(s) {
         const seenO = new Set();
         for (const [, v] of s.originByHost) {
           const o = String(v?.origin || '').trim();
-          if (!o || seenO.has(o) || origins.length >= 11) continue;
+          if (!o || !s.urlInScope(o) || seenO.has(o) || origins.length >= 11) continue;
           seenO.add(o);
           origins.push(o.endsWith('/') ? o : `${o}/`);
         }
@@ -207,7 +221,7 @@ export async function runValidationPhase(s) {
           const hl = hostLiteralForUrl(domain);
           for (const scheme of ['https', 'http']) {
             const o = `${scheme}://${hl}/`;
-            if (!seenO.has(o) && origins.length < 12) {
+            if (s.urlInScope(o) && !seenO.has(o) && origins.length < 12) {
               seenO.add(o);
               origins.push(o);
             }
@@ -227,32 +241,40 @@ export async function runValidationPhase(s) {
       pipe('webshell_probe', 'skip');
     }
 
-    // Param discovery ativo (fase 2): tentar em endpoints sem query
-    try {
-      const candidates = findings
-        .filter((f) => f.type === 'endpoint' && typeof f.value === 'string' && /^https?:\/\//i.test(f.value))
-        .filter((f) => !/\?/.test(String(f.value)))
-        .slice(0, Math.max(6, Math.round(runtimeProfile.maxVerifyEndpoints / 3)));
-      for (const ep of candidates) {
-        const r = await discoverParamsActive(ep.value, { timeoutMs: 70000 });
-        const ps = [...new Set(r.params || [])].slice(0, 20);
-        for (const p of ps) {
-          addFinding(
-            {
-              type: 'param',
-              prio: 'med',
-              score: 62,
-              value: `?${p}=`,
-              meta: `active_discovery • tool=${r.tool || 'n/a'}`,
-              url: `${ep.value}${ep.value.includes('?') ? '&' : '?'}${p}=X`,
-            },
-            'params',
-          );
+    const runActiveParamDiscovery = pipelineCapabilityAllowed(s, 'active_param_discovery');
+    if (s.autoModeExecution === true) {
+      pipe('active_param_discovery', runActiveParamDiscovery ? 'active' : 'skip');
+    }
+    if (runActiveParamDiscovery) {
+      // Param discovery ativo (fase 2): tentar em endpoints sem query
+      try {
+        const candidates = findings
+          .filter((f) => f.type === 'endpoint' && typeof f.value === 'string' && /^https?:\/\//i.test(f.value))
+          .filter((f) => s.urlInScope(f.value))
+          .filter((f) => !/\?/.test(String(f.value)))
+          .slice(0, Math.max(6, Math.round(runtimeProfile.maxVerifyEndpoints / 3)));
+        for (const ep of candidates) {
+          const r = await discoverParamsActive(ep.value, { timeoutMs: 70000 });
+          const ps = [...new Set(r.params || [])].slice(0, 20);
+          for (const p of ps) {
+            addFinding(
+              {
+                type: 'param',
+                prio: 'med',
+                score: 62,
+                value: `?${p}=`,
+                meta: `active_discovery • tool=${r.tool || 'n/a'}`,
+                url: `${ep.value}${ep.value.includes('?') ? '&' : '?'}${p}=X`,
+              },
+              'params',
+            );
+          }
+          if (ps.length) log(`Param discovery: ${ps.length} em ${ep.value}`, 'info');
         }
-        if (ps.length) log(`Param discovery: ${ps.length} em ${ep.value}`, 'info');
+      } catch (e) {
+        log(`Param discovery: ${e.message}`, 'warn');
       }
-    } catch (e) {
-      log(`Param discovery: ${e.message}`, 'warn');
+      if (s.autoModeExecution === true) pipe('active_param_discovery', 'done');
     }
 
     if (modules.includes('sqlmap')) {
@@ -260,16 +282,22 @@ export async function runValidationPhase(s) {
       try {
         const maxT = Math.max(1, Math.min(6, Number(process.env.GHOSTRECON_SQLMAP_TARGETS) || 2));
         const sm = await runSqlmapModule({
-          findings,
+          findings: findingsInScope(),
           auth,
           log,
           maxTargets: maxT,
           profile: runtimeProfile.name,
           identityCtrl,
+          signal,
+          // Auto valida sem enumerar bases, mesmo que uma variável global do
+          // RUN manual tenha habilitado `--dbs`.
+          allowDatabaseEnumeration: s.autoModeExecution !== true
+            && process.env.GHOSTRECON_SQLMAP_AUTO_DBS === '1',
         });
         for (const x of sm) addFinding(x, null);
         if (sm.length) log(`sqlmap: ${sm.length} achado(s) SQLi (ferramenta) registado(s)`, 'success');
       } catch (e) {
+        if (signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
         log(`sqlmap: ${e.message}`, 'warn');
       }
       pipe('sqlmap', 'done');
@@ -282,16 +310,18 @@ export async function runValidationPhase(s) {
       try {
         const cp = await runCurlProbeModule({
           target: domain,
-          findings,
+          findings: findingsInScope(),
           auth,
           profile: runtimeProfile.name,
           identityCtrl,
           log,
+          signal: s.signal,
         });
         for (const x of cp) addFinding(x, null);
         if (cp.length) log(`curl_probe: ${cp.length} achado(s)`, 'success');
         else log('curl_probe: sem achados relevantes', 'info');
       } catch (e) {
+        if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
         log(`curl_probe: ${e?.message || e}`, 'warn');
       }
       pipe('curl_probe', 'done');
@@ -299,12 +329,15 @@ export async function runValidationPhase(s) {
       pipe('curl_probe', 'skip');
     }
 
-    pipe('verify', 'done');
+    if (runImplicitVerification) pipe('verify', 'done');
 
     if (modules.includes('authz_matrix')) {
       pipe('authz_matrix', 'active');
       try {
-        const endpointUrls = [...new Set(findings.filter((f) => f.type === 'endpoint' && /^https?:\/\//i.test(String(f.value || ''))).map((f) => f.value))].slice(0, 8);
+        const endpointUrls = [...new Set(findings
+          .filter((f) => f.type === 'endpoint' && /^https?:\/\//i.test(String(f.value || '')))
+          .map((f) => f.value)
+          .filter((url) => s.urlInScope(url)))].slice(0, 8);
         const requests = [];
         const reqSeen = new Set();
         const pushReq = (r) => {
@@ -353,6 +386,9 @@ export async function runValidationPhase(s) {
                 try { return new URL(u).pathname === reqShape.path; } catch { return false; }
               });
               if (!picked) return { status: 0, fingerprint: null, bodyLen: 0 };
+              if (!s.urlInScope(picked)) {
+                return { status: 0, fingerprint: null, bodyLen: 0 };
+              }
               const mergedHeaders = { ...(persona.headers || {}), ...(reqShape.headers || {}) };
               const reqBody =
                 reqShape.method === 'POST' || reqShape.method === 'PUT'
@@ -360,6 +396,7 @@ export async function runValidationPhase(s) {
                   : undefined;
               const r = await fetch(picked, {
                 method: reqShape.method || 'GET',
+                redirect: 'manual',
                 headers: mergedHeaders,
                 body: reqBody,
                 signal: AbortSignal.timeout(12000),

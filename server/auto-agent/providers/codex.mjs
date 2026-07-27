@@ -3,26 +3,46 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseAgentDecisionText, repairDecisionEnvelope, validateAgentDecision } from '../decision-contract.mjs';
+import { normalizeAndValidateAgentDecision, parseAgentDecisionText } from '../decision-contract.mjs';
 import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt } from './shared.mjs';
 
 export function execFileClosedStdin(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const detached = process.platform !== 'win32';
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
       windowsHide: options.windowsHide,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.input == null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      detached,
     });
     const chunks = { stdout: [], stderr: [] };
     const maxBuffer = Number(options.maxBuffer || 1024 * 1024);
     let size = 0;
     let settled = false;
     let timer = null;
+    let killTimer = null;
+    let forceSettleTimer = null;
+    let terminationError = null;
+    const killGraceMs = Math.max(100, Math.min(10_000, Number(options.killGraceMs || 1_500)));
+    const signalProcess = (signalName) => {
+      const pid = Number(child.pid);
+      if (detached && Number.isInteger(pid) && pid > 1 && pid !== process.pid) {
+        try {
+          process.kill(-pid, signalName);
+          return;
+        } catch {
+          // Pode já ter encerrado; tentamos o handle individual abaixo.
+        }
+      }
+      try { child.kill(signalName); } catch { /* já encerrado */ }
+    };
     const finish = (error = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
+      clearTimeout(forceSettleTimer);
       options.signal?.removeEventListener('abort', onAbort);
       const stdout = Buffer.concat(chunks.stdout).toString(options.encoding || 'utf8');
       const stderr = Buffer.concat(chunks.stderr).toString(options.encoding || 'utf8');
@@ -32,30 +52,49 @@ export function execFileClosedStdin(command, args, options = {}) {
         reject(error);
       } else resolve({ stdout, stderr });
     };
+    const terminate = (error) => {
+      if (settled || terminationError) return;
+      terminationError = error;
+      signalProcess(options.killSignal || 'SIGTERM');
+      killTimer = setTimeout(() => signalProcess('SIGKILL'), killGraceMs);
+      // Libera o fallback apenas depois de tentar encerrar todo o grupo. Um
+      // handle quebrado não pode manter o planner indefinidamente em running.
+      forceSettleTimer = setTimeout(() => finish(terminationError), killGraceMs + 1_000);
+      killTimer.unref?.();
+      forceSettleTimer.unref?.();
+    };
     const collect = (stream) => (chunk) => {
       size += chunk.length;
       chunks[stream].push(chunk);
       if (size > maxBuffer) {
-        child.kill(options.killSignal || 'SIGTERM');
-        finish(Object.assign(new Error('stdout/stderr excedeu maxBuffer'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }));
+        terminate(Object.assign(new Error('stdout/stderr excedeu maxBuffer'), {
+          code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+        }));
       }
     };
     child.stdout.on('data', collect('stdout'));
     child.stderr.on('data', collect('stderr'));
     child.once('error', finish);
     child.once('close', (code, childSignal) => {
-      if (code === 0) finish();
-      else finish(Object.assign(new Error(`Command failed: ${command} ${args.join(' ')}`), { code, signal: childSignal }));
+      if (terminationError) finish(terminationError);
+      else if (code === 0) finish();
+      else finish(Object.assign(new Error(`Command failed: ${command} (exit ${code ?? 'unknown'})`), { code, signal: childSignal }));
     });
     const onAbort = () => {
-      child.kill(options.killSignal || 'SIGTERM');
-      finish(options.signal?.reason || Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+      terminate(options.signal?.reason || Object.assign(new Error('The operation was aborted'), {
+        name: 'AbortError',
+      }));
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
-    timer = options.timeout > 0 ? setTimeout(() => {
-      child.kill(options.killSignal || 'SIGTERM');
-      finish(Object.assign(new Error(`Command timed out after ${options.timeout}ms`), { code: 'ETIMEDOUT', killed: true }));
+    if (options.input != null && !settled) {
+      child.stdin.end(String(options.input));
+    }
+    timer = !settled && options.timeout > 0 ? setTimeout(() => {
+      terminate(Object.assign(new Error(`Command timed out after ${options.timeout}ms`), {
+        code: 'ETIMEDOUT',
+        killed: true,
+      }));
     }, options.timeout) : null;
     timer?.unref?.();
   });
@@ -97,10 +136,15 @@ export async function decideWithCodex({
   signal,
   maxContextChars = 120_000,
   allowIntrusive = false,
+  autonomyLevel = 'observation',
 } = {}) {
   const timeoutMs = Math.max(30_000, Math.min(900_000, Number(env.GHOSTRECON_CODEX_TIMEOUT_MS || 240_000)));
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-codex-'));
   const outputFile = path.join(tmpDir, 'decision.json');
+  const prompt = buildAgentPrompt({
+    target, mode, catalog, ragContext, role, iteration, peerDecisions,
+    observationBundle, maxContextChars, allowIntrusive, autonomyLevel,
+  });
   const args = [
     'exec',
     '--json',
@@ -109,7 +153,7 @@ export async function decideWithCodex({
     '--output-last-message', outputFile,
     '--cd', root,
     '--ephemeral',
-    buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars }),
+    '-',
   ];
   const startedAt = Date.now();
   try {
@@ -120,15 +164,14 @@ export async function decideWithCodex({
       maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
       signal,
+      input: prompt,
     });
     const output = await fs.readFile(outputFile, 'utf8').catch(() => '');
     const rawParsed = parseAgentDecisionText(output || result?.stdout || '');
-    const parsed = repairDecisionEnvelope(rawParsed, {
-      objective: `authorized_recon:${target || 'target'}`,
-    });
-    const catalogModuleIds = availableCatalogIds(catalog, { allowIntrusive });
-    const validated = validateAgentDecision(parsed, {
-      catalogModuleIds,
+    const validated = normalizeAndValidateAgentDecision(rawParsed, {
+      repairEnvelope: true,
+      repairOptions: { objective: `authorized_recon:${target || 'target'}` },
+      catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive, autonomyLevel }),
       availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
     });
     if (!validated.ok) throw new Error(`decisão Codex rejeitada: ${validated.errors.join('; ')}`);
@@ -141,7 +184,7 @@ export async function decideWithCodex({
       latencyMs: Date.now() - startedAt,
       decision: validated.decision,
       transport: {
-        command: 'codex exec', sandbox: 'read-only', ephemeral: true,
+        command: 'codex exec', sandbox: 'read-only', ephemeral: true, promptTransport: 'stdin',
         repaired: rawParsed?.action == null || rawParsed?.objective == null || rawParsed?.confidence == null,
       },
     };

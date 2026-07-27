@@ -66,14 +66,29 @@ export const INTRUSIVE_MODULES = new Set([
   'dirsearch', 'gobuster', 'nmap-aggressive', 'nmap-port-scan', 'nikto',
   'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe', 'kali-active',
   'info_disclosure_hunter', 'info-disclosure-hunter', 'info_disclosure_errors', 'info-disclosure-errors',
+  'authz_matrix', 'cloud_bruteforce', 'cred_spray', 'dom_xss_verify',
+  'active_param_discovery', 'browser_xss_verify', 'evidence_verification',
+  'secret_validation',
+  'ftp_write_probe', 'kali_dalfox', 'kali_dirsearch', 'kali_ffuf',
+  'kali_nmap', 'kali_nmap_aggressive', 'kali_nmap_udp', 'kali_nuclei', 'kali_proxychains',
+  'kali_wpscan', 'kali_xss_vibes', 'micro_exploit', 'mysql_3306_intel',
+  'nmap_backport_review', 'nmap_cve_match', 'nmap_service_followups', 'race_harness',
+  'sandbox_exec', 'sandbox-exec', 'secret_validation', 'shannon_whitebox', 'verify_sqli_deep',
   'naabu-active', 'masscan',
   'vigolium-dast', 'vigolium_dast', 'vigolium-swarm', 'vigolium_swarm',
-  'vigolium-audit', 'vigolium_audit', 'vigolium-agent', 'vigolium_agent',
+  'vigolium-audit', 'vigolium_audit',
+  'vigolium-agent', 'vigolium_agent',
   'vigolium-autopilot', 'vigolium_autopilot',
+  'frameseven-active', 'frameseven_active',
+  'frameseven-authenticated', 'frameseven_authenticated',
 ]);
 
 export function isIntrusive(mod) {
-  return INTRUSIVE_MODULES.has(String(mod || '').toLowerCase());
+  const raw = String(mod || '').trim().toLowerCase();
+  if (!raw) return false;
+  return INTRUSIVE_MODULES.has(raw)
+    || INTRUSIVE_MODULES.has(raw.replace(/-/g, '_'))
+    || INTRUSIVE_MODULES.has(raw.replace(/_/g, '-'));
 }
 
 export function expandIntrusiveRunModules({
@@ -109,13 +124,21 @@ export function gateModules({ modules = [], profile, confirm = false, engagement
     };
   }
 
-  // Engagement com ROE não assinado → requer confirm mesmo em standard/aggressive.
+  // Um engagement explicitamente informado sem ROE assinado é inválido para
+  // intrusivos. Confirmação do popup não substitui a autorização formal.
   if (engagement && !engagement.roeSigned) {
-    if (!confirm) return { ok: false, blocked: hits, needsConfirm: true, profile: p.name, reason: 'ROE não assinado — require --confirm-active' };
+    return {
+      ok: false,
+      blocked: hits,
+      needsConfirm: false,
+      profile: p.name,
+      reason: 'ROE não assinado — módulos intrusivos bloqueados',
+    };
   }
 
-  // Modo stealth/standard: requer confirm para intrusivos.
-  if ((p.name === 'stealth' || p.name === 'standard') && !confirm) {
+  // Perfil regula taxa/concorrência; nunca representa consentimento. Inclusive
+  // `aggressive` depende do ack humano explícito sobre o plano efetivo.
+  if (!confirm) {
     return { ok: false, blocked: hits, needsConfirm: true, profile: p.name, reason: `requer --confirm-active para: ${hits.join(', ')}` };
   }
 

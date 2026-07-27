@@ -5,9 +5,10 @@ import { SQLI_PARAM_RE, responseLooksLikeSqlError, evidenceHash } from './verify
 import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
 import { runProcess } from './module-runner.mjs';
 
-function runProc(cmd, args, timeoutMs) {
+function runProc(cmd, args, timeoutMs, { signal = null } = {}) {
   return runProcess(cmd, args, {
     timeoutMs,
+    signal,
     label: cmd,
     wrapCommand: (currentCmd, currentArgs) => {
       if (!isStrict()) return { cmd: currentCmd, args: currentArgs };
@@ -15,6 +16,51 @@ function runProc(cmd, args, timeoutMs) {
       return w.refuse ? { refuse: true, reason: `tor-strict: ${w.reason}` } : w;
     },
   });
+}
+
+function isAbortError(error, signal = null) {
+  return signal?.aborted === true
+    || error?.name === 'AbortError'
+    || error?.code === 'PROCESS_ABORTED';
+}
+
+function rethrowIfAborted(error, signal = null) {
+  if (!isAbortError(error, signal)) return;
+  if (signal?.reason instanceof Error) throw signal.reason;
+  throw error;
+}
+
+function safeHeaderName(value) {
+  return String(value || '').trim().replace(/[^A-Za-z0-9!#$%&'*+.^_`|~-]/g, '');
+}
+
+function oneLineHeaderValue(value) {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ');
+}
+
+function authHeaderEntries(auth = null) {
+  const entries = new Map();
+  if (auth?.cookie) entries.set('cookie', ['Cookie', oneLineHeaderValue(auth.cookie)]);
+  if (auth?.headers && typeof auth.headers === 'object') {
+    for (const [rawName, rawValue] of Object.entries(auth.headers)) {
+      const name = safeHeaderName(rawName);
+      if (!name || rawValue == null) continue;
+      entries.set(name.toLowerCase(), [name, oneLineHeaderValue(rawValue)]);
+    }
+  }
+  return [...entries.values()];
+}
+
+function curlConfigQuote(value) {
+  return oneLineHeaderValue(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+}
+
+export function buildSqlmapCurlAuthConfig(auth = null) {
+  return authHeaderEntries(auth)
+    .map(([name, value]) => `header = "${name}: ${curlConfigQuote(value)}"`)
+    .join('\n');
 }
 
 /** Heurísticas para `--dbms` e `-D` a partir do corpo HTML/JSON (curl). */
@@ -54,7 +100,14 @@ function resolveCurlProfile(profile = 'standard') {
   return { timeoutSec: 14, retry: 2, retryDelaySec: 1, useHttp2: true };
 }
 
-function buildCurlArgs({ url, auth, profile = 'standard', proxy = null, headerFile, bodyFile }) {
+export function buildSqlmapPreflightCurlArgs({
+  url,
+  authConfigFile = null,
+  profile = 'standard',
+  proxy = null,
+  headerFile,
+  bodyFile,
+}) {
   const cfg = resolveCurlProfile(profile);
   const args = [
     '-sS',
@@ -85,13 +138,7 @@ function buildCurlArgs({ url, auth, profile = 'standard', proxy = null, headerFi
   // Em strict, não passamos --proxy ao curl: o proxychains4 já intercepta o
   // connect e direciona para o Tor SOCKS — duplicar leva a SOCKS-over-SOCKS.
   if (proxy && !isStrict()) args.push('--proxy', String(proxy));
-  if (auth?.cookie) args.push('-H', `Cookie: ${String(auth.cookie)}`);
-  if (auth?.headers && typeof auth.headers === 'object') {
-    for (const [k, v] of Object.entries(auth.headers)) {
-      if (!k || v == null) continue;
-      args.push('-H', `${k}: ${String(v)}`);
-    }
-  }
+  if (authConfigFile) args.push('--config', authConfigFile);
   args.push(url);
   return args;
 }
@@ -109,16 +156,41 @@ function resolveCurlProxy(identityCtrl = null) {
   return null;
 }
 
-async function curlGet(url, auth, { timeoutMs = 16000, profile = 'standard', identityCtrl = null } = {}) {
+async function curlGet(url, auth, {
+  timeoutMs = 16000,
+  profile = 'standard',
+  identityCtrl = null,
+  signal = null,
+} = {}) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-curl-sqlmap-'));
   const headerFile = path.join(tmpDir, 'headers.txt');
   const bodyFile = path.join(tmpDir, 'body.txt');
   const proxy = resolveCurlProxy(identityCtrl);
   try {
+    await fs.chmod(tmpDir, 0o700);
+    const authConfig = buildSqlmapCurlAuthConfig(auth);
+    let authConfigFile = null;
+    if (authConfig) {
+      authConfigFile = path.join(tmpDir, 'auth.curlrc');
+      await fs.writeFile(authConfigFile, `${authConfig}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      });
+      await fs.chmod(authConfigFile, 0o600);
+    }
     const r = await runProc(
       'curl',
-      buildCurlArgs({ url, auth, profile, proxy, headerFile, bodyFile }),
+      buildSqlmapPreflightCurlArgs({
+        url,
+        authConfigFile,
+        profile,
+        proxy,
+        headerFile,
+        bodyFile,
+      }),
       timeoutMs,
+      { signal },
     );
     const body = await fs.readFile(bodyFile, 'utf8').catch(() => '');
     const headersRaw = await fs.readFile(headerFile, 'utf8').catch(() => '');
@@ -139,6 +211,7 @@ async function curlGet(url, auth, { timeoutMs = 16000, profile = 'standard', ide
       proxyUsed: proxy || null,
     };
   } catch (e) {
+    rethrowIfAborted(e, signal);
     return { ok: false, error: e?.message || String(e), body: '', stderr: '', code: -1, metrics: {}, proxyUsed: proxy || null };
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -200,12 +273,65 @@ function setSearchParam(urlStr, param, value) {
   return u.href;
 }
 
-function buildSqlmapArgs(targetUrl, param, auth, hints, runDbsEnumeration) {
+export function buildSqlmapRawRequest(targetUrl, auth = null) {
+  const target = new URL(targetUrl);
+  const requestTarget = `${target.pathname || '/'}${target.search || ''}`;
+  const lines = [
+    `GET ${requestTarget} HTTP/1.1`,
+    `Host: ${target.host}`,
+    'User-Agent: GhostRecon-sqlmap/1.1',
+    'Accept: */*',
+    'Connection: close',
+  ];
+  for (const [name, value] of authHeaderEntries(auth)) lines.push(`${name}: ${value}`);
+  return `${lines.join('\r\n')}\r\n\r\n`;
+}
+
+export async function createSqlmapAuthTransport({
+  targetUrl,
+  auth = null,
+  tempRoot = os.tmpdir(),
+} = {}) {
+  if (!authHeaderEntries(auth).length) {
+    return Object.freeze({
+      requestFile: null,
+      async cleanup() {},
+    });
+  }
+  let dirPath = null;
+  try {
+    dirPath = await fs.mkdtemp(path.join(tempRoot, 'ghostrecon-sqlmap-auth-'));
+    await fs.chmod(dirPath, 0o700);
+    const requestFile = path.join(dirPath, 'request.txt');
+    await fs.writeFile(requestFile, buildSqlmapRawRequest(targetUrl, auth), {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    await fs.chmod(requestFile, 0o600);
+    let cleaned = false;
+    return Object.freeze({
+      requestFile,
+      async cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        await fs.rm(dirPath, { recursive: true, force: true });
+      },
+    });
+  } catch (error) {
+    if (dirPath) await fs.rm(dirPath, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+export function buildSqlmapArgs(targetUrl, param, hints, runDbsEnumeration, {
+  requestFile = null,
+} = {}) {
   const args = [
-    '-u',
-    targetUrl,
-    '-p',
-    param,
+    ...(requestFile
+      ? ['-r', requestFile, ...(new URL(targetUrl).protocol === 'https:' ? ['--force-ssl'] : [])]
+      : ['-u', targetUrl]),
+    '-p', param,
     '--batch',
     '--risk=2',
     '--level=3',
@@ -215,14 +341,36 @@ function buildSqlmapArgs(targetUrl, param, auth, hints, runDbsEnumeration) {
   if (hints?.dbms) args.push(`--dbms=${hints.dbms}`);
   if (hints?.database) args.push('-D', hints.database);
   if (runDbsEnumeration) args.push('--dbs');
-  if (auth?.cookie) args.push('--cookie', String(auth.cookie));
-  if (auth?.headers && typeof auth.headers === 'object') {
-    for (const [k, v] of Object.entries(auth.headers)) {
-      if (!k || v == null) continue;
-      args.push('--header', `${k}: ${String(v)}`);
-    }
-  }
   return args;
+}
+
+function safeUrlForLog(value) {
+  try {
+    const url = new URL(value);
+    for (const key of [...url.searchParams.keys()]) url.searchParams.set(key, '<redacted>');
+    return url.href;
+  } catch {
+    return '<invalid-url>';
+  }
+}
+
+export function formatSqlmapCommandForLog(args = []) {
+  const safe = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = String(args[index]);
+    if (value === '-u') {
+      safe.push(value, '<target-url>');
+      index += 1;
+      continue;
+    }
+    if (value === '-r') {
+      safe.push(value, '<restricted-request-file>');
+      index += 1;
+      continue;
+    }
+    safe.push(/\s/.test(value) ? JSON.stringify(value) : value);
+  }
+  return `sqlmap ${safe.join(' ')}`;
 }
 
 function sqlmapOutputSuggestsInjection(combined) {
@@ -244,22 +392,33 @@ function sqlmapOutputSuggestsInjection(combined) {
  * @param {function} opts.log
  * @param {number} [opts.maxTargets]
  */
-export async function runSqlmapModule({ findings, auth, log, maxTargets = 2, profile = 'standard', identityCtrl = null }) {
+export async function runSqlmapModule({
+  findings,
+  auth,
+  log,
+  maxTargets = 2,
+  profile = 'standard',
+  identityCtrl = null,
+  allowDatabaseEnumeration = process.env.GHOSTRECON_SQLMAP_AUTO_DBS === '1',
+  signal = null,
+}) {
   const outFindings = [];
   const logFn = typeof log === 'function' ? log : () => {};
 
   let hasSqlmap = false;
   try {
-    const chk = await runProc('which', ['sqlmap'], 4000);
+    const chk = await runProc('which', ['sqlmap'], 4000, { signal });
     hasSqlmap = chk.code === 0 && /sqlmap/.test(chk.stdout);
-  } catch {
+  } catch (error) {
+    rethrowIfAborted(error, signal);
     hasSqlmap = false;
   }
   if (!hasSqlmap) {
     try {
-      await runProc('sqlmap', ['--version'], 6000);
+      await runProc('sqlmap', ['--version'], 6000, { signal });
       hasSqlmap = true;
-    } catch {
+    } catch (error) {
+      rethrowIfAborted(error, signal);
       hasSqlmap = false;
     }
   }
@@ -282,15 +441,16 @@ export async function runSqlmapModule({ findings, auth, log, maxTargets = 2, pro
   );
 
   for (const t of targets) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('sqlmap cancelado');
     const baseUrl = setSearchParam(t.url, t.param, t.baseVal);
     const tickUrl = setSearchParam(t.url, t.param, `${t.baseVal}'`);
 
-    logFn(`sqlmap: curl baseline → ${baseUrl.slice(0, 120)}${baseUrl.length > 120 ? '…' : ''}`, 'info');
-    const c0 = await curlGet(baseUrl, auth, { profile, identityCtrl });
+    logFn(`sqlmap: curl baseline → ${safeUrlForLog(baseUrl)}`, 'info');
+    const c0 = await curlGet(baseUrl, auth, { profile, identityCtrl, signal });
     if (!c0.ok) logFn(`sqlmap: curl baseline falhou: ${c0.error || c0.stderr}`, 'warn');
 
     logFn(`sqlmap: curl com aspas → ?${t.param}=…'`, 'info');
-    const c1 = await curlGet(tickUrl, auth, { profile, identityCtrl });
+    const c1 = await curlGet(tickUrl, auth, { profile, identityCtrl, signal });
     if (!c1.ok) logFn(`sqlmap: curl (') falhou: ${c1.error || c1.stderr}`, 'warn');
 
     const errBase = responseLooksLikeSqlError(c0.body);
@@ -321,13 +481,12 @@ export async function runSqlmapModule({ findings, auth, log, maxTargets = 2, pro
     };
 
     const runDbs = Boolean(hints.database || hints.dbms);
-    const argsProbe = buildSqlmapArgs(baseUrl, t.param, auth, hints, false);
-    logFn(`sqlmap: a correr (timeout ${timeoutMs}ms): sqlmap ${argsProbe.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`, 'info');
-
-    let combined = '';
+    const authTransport = await createSqlmapAuthTransport({ targetUrl: baseUrl, auth });
     try {
-      const run = await runProc('sqlmap', argsProbe, timeoutMs);
-      combined = `${run.stdout}\n${run.stderr}`;
+      const argsProbe = buildSqlmapArgs(baseUrl, t.param, hints, false, authTransport);
+      logFn(`sqlmap: a correr (timeout ${timeoutMs}ms): ${formatSqlmapCommandForLog(argsProbe)}`, 'info');
+      const run = await runProc('sqlmap', argsProbe, timeoutMs, { signal });
+      const combined = `${run.stdout}\n${run.stderr}`;
       const inj = sqlmapOutputSuggestsInjection(combined);
       logFn(
         inj
@@ -370,24 +529,38 @@ export async function runSqlmapModule({ findings, auth, log, maxTargets = 2, pro
         },
       });
 
-      if (runDbs && process.env.GHOSTRECON_SQLMAP_AUTO_DBS === '1') {
-        const argsDbs = buildSqlmapArgs(baseUrl, t.param, auth, { dbms: hints.dbms, database: null }, true);
+      if (runDbs && allowDatabaseEnumeration === true) {
+        const argsDbs = buildSqlmapArgs(
+          baseUrl,
+          t.param,
+          { dbms: hints.dbms, database: null },
+          true,
+          authTransport,
+        );
         logFn(`sqlmap: GHOSTRECON_SQLMAP_AUTO_DBS=1 — segunda fase --dbs…`, 'warn');
         try {
-          const run2 = await runProc('sqlmap', argsDbs, timeoutMs);
+          const run2 = await runProc('sqlmap', argsDbs, timeoutMs, { signal });
           const c2 = `${run2.stdout}\n${run2.stderr}`;
           logFn(`sqlmap --dbs: ${c2.replace(/\s+/g, ' ').trim().slice(0, 360)}`, 'info');
         } catch (e2) {
+          rethrowIfAborted(e2, signal);
           logFn(`sqlmap --dbs: ${e2.message}`, 'warn');
         }
       } else if (hints.database || hints.dbms) {
-        const suggest = buildSqlmapArgs(baseUrl, t.param, auth, { dbms: hints.dbms, database: null }, true)
-          .map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))
-          .join(' ');
-        logFn(`sqlmap: para listar bases manualmente: sqlmap ${suggest}`, 'info');
+        logFn(
+          authTransport.requestFile
+            ? 'sqlmap: enumeração de bases continua desligada; credenciais não são reproduzidas no comando sugerido.'
+            : `sqlmap: para listar bases manualmente, repita o alvo autorizado com --dbs (${formatSqlmapCommandForLog(
+              buildSqlmapArgs(baseUrl, t.param, { dbms: hints.dbms, database: null }, true),
+            )}).`,
+          'info',
+        );
       }
     } catch (e) {
+      rethrowIfAborted(e, signal);
       logFn(`sqlmap: erro ou timeout: ${e.message}`, 'warn');
+    } finally {
+      await authTransport.cleanup();
     }
   }
 

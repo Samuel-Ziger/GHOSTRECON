@@ -44,6 +44,7 @@ export async function startCatcher({
   publicHost = '127.0.0.1',
   startDns = true,
   startHttp = true,
+  httpServerFactory = (handler) => http.createServer(handler),
 } = {}) {
   const tokens = new Map();
   const waiters = new Map();
@@ -93,7 +94,7 @@ export async function startCatcher({
   }
 
   if (startHttp) {
-    httpSrv = http.createServer((req, res) => {
+    httpSrv = httpServerFactory((req, res) => {
       const tok = tokenFromHost(req.headers.host) || tokenFromUrl(req.url);
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 8192) body = body.slice(0, 8192); });

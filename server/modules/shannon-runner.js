@@ -1,14 +1,49 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { spawn } from 'child_process';
 import { resolveShannonHome } from './shannon-capabilities.js';
 import { hostLiteralForUrl } from './recon-target.js';
+import { getProcessExecutionContext } from '../lib/process-execution-context.mjs';
+import { runProcess } from './module-runner.mjs';
 
 /** Igual ao `apps/cli/src/commands/logs.ts` — fim do workflow no ficheiro append-only. */
 const WORKFLOW_DONE_RE = /^Workflow (COMPLETED|FAILED)$/m;
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+function processAbortError(signal, label = 'Shannon') {
+  const cause = signal?.reason instanceof Error ? signal.reason : null;
+  const error = new Error(
+    `${label} cancelado${cause?.message ? `: ${cause.message}` : ''}`,
+    cause ? { cause } : undefined,
+  );
+  error.name = 'AbortError';
+  error.code = 'PROCESS_ABORTED';
+  return error;
+}
+
+function throwIfAborted(signal, label = 'Shannon') {
+  if (signal?.aborted) throw processAbortError(signal, label);
+}
+
+function isProcessAbort(error) {
+  return error?.name === 'AbortError' || error?.code === 'PROCESS_ABORTED';
+}
+
+function sleep(ms, signal = null) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const onAbort = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(processAbortError(signal));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 export function shannonStartTimeoutMs() {
@@ -121,13 +156,24 @@ export function shannonReportPath(clonePath) {
  * Espera até `workflow.log` conter COMPLETED ou FAILED, ou timeout.
  * @param {(msg: string, level?: string) => void} [onLog]
  */
-export async function waitForShannonWorkflowEnd(shannonHome, workspaceId, onLog) {
+export async function waitForShannonWorkflowEnd(
+  shannonHome,
+  workspaceId,
+  onLog,
+  {
+    signal = null,
+    pollIntervalMs = 2500,
+    timeoutMs = shannonWorkflowWaitTimeoutMs(),
+  } = {},
+) {
+  throwIfAborted(signal);
   const logFile = workflowLogPath(shannonHome, workspaceId);
-  const deadline = Date.now() + shannonWorkflowWaitTimeoutMs();
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || shannonWorkflowWaitTimeoutMs());
   let lastSize = 0;
   let lastKeepalive = Date.now();
 
   while (Date.now() < deadline) {
+    throwIfAborted(signal);
     try {
       const txt = await fs.readFile(logFile, 'utf8');
       if (WORKFLOW_DONE_RE.test(txt)) {
@@ -148,7 +194,8 @@ export async function waitForShannonWorkflowEnd(shannonHome, workspaceId, onLog)
     } catch {
       /* ficheiro ainda não existe */
     }
-    await sleep(2500);
+    const pollDelay = Math.max(1, Number(pollIntervalMs) || 2500);
+    await sleep(Math.min(pollDelay, Math.max(1, deadline - Date.now())), signal);
     if (onLog && Date.now() - lastKeepalive > 45000) {
       lastKeepalive = Date.now();
       onLog(
@@ -177,6 +224,40 @@ export async function readShannonComprehensiveReport(clonePath) {
 
 let shannonChain = Promise.resolve();
 
+function enqueueShannonTask(task, signal) {
+  throwIfAborted(signal);
+  let started = false;
+  let settled = false;
+  let onQueuedAbort = null;
+
+  const execution = shannonChain.then(async () => {
+    started = true;
+    if (onQueuedAbort) signal?.removeEventListener('abort', onQueuedAbort);
+    throwIfAborted(signal);
+    return task();
+  });
+  shannonChain = execution.catch(() => {});
+
+  return new Promise((resolve, reject) => {
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (onQueuedAbort) signal?.removeEventListener('abort', onQueuedAbort);
+      fn(value);
+    };
+    onQueuedAbort = () => {
+      if (started) return;
+      finish(reject, processAbortError(signal));
+    };
+    signal?.addEventListener('abort', onQueuedAbort, { once: true });
+    if (signal?.aborted) onQueuedAbort();
+    execution.then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
+}
+
 /**
  * Corre `./shannon start` (cwd = Shannon home), depois faz poll de `workflow.log`.
  * Serializado globalmente (um scan de cada vez) para não sobrecarregar Docker/Temporal.
@@ -188,11 +269,28 @@ let shannonChain = Promise.resolve();
  *   repoFullName?: string,
  *   log?: (msg: string, level?: string) => void,
  *   emit?: (obj: Record<string, unknown>) => void,
+ *   signal?: AbortSignal,
+ *   processRunner?: typeof runProcess,
+ *   waitForWorkflowImpl?: typeof waitForShannonWorkflowEnd,
+ *   readReportImpl?: typeof readShannonComprehensiveReport,
  * }} opts
  */
 export async function runShannonOnClone(opts) {
+  const inheritedSignal = getProcessExecutionContext()?.signal ?? null;
+  const signal = opts?.signal ?? inheritedSignal;
   const task = async () => {
-    const { ghostRoot, domain, clonePath, repoFullName = 'repo', log, emit } = opts;
+    throwIfAborted(signal);
+    const {
+      ghostRoot,
+      domain,
+      clonePath,
+      repoFullName = 'repo',
+      log,
+      emit,
+      processRunner = runProcess,
+      waitForWorkflowImpl = waitForShannonWorkflowEnd,
+      readReportImpl = readShannonComprehensiveReport,
+    } = opts;
     const shannonHome = resolveShannonHome(ghostRoot);
     const slug = String(repoFullName)
       .replace(/[/\\]/g, '__')
@@ -227,18 +325,12 @@ export async function runShannonOnClone(opts) {
       emit({ type: 'log', msg: '── Shannon CLI (espelho stdout/stderr) ──', level: 'section' });
     }
 
-    const child = spawn(process.execPath, [shannonScript, ...args], {
-      cwd: shannonHome,
-      env: { ...process.env, SHANNON_LOCAL: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
+    let temporalBuffer = '';
     const temporalUrlsSeen = new Set();
-    const tryEmitTemporalFromChildOutput = () => {
+    const tryEmitTemporalFromChildOutput = (chunk) => {
       if (!shannonEmitOpenTemporalUrl() || !emit) return;
-      const url = extractTemporalWebUiUrl(`${stdout}\n${stderr}`, temporalUrlsSeen);
+      temporalBuffer = `${temporalBuffer}${String(chunk || '')}`.slice(-64 * 1024);
+      const url = extractTemporalWebUiUrl(temporalBuffer, temporalUrlsSeen);
       if (!url) return;
       emit({
         type: 'open_url',
@@ -249,53 +341,66 @@ export async function runShannonOnClone(opts) {
       log?.(`Shannon: monitor Temporal (abre no browser) → ${url}`, 'success');
     };
 
-    child.stdout?.on('data', (d) => {
+    const onStdout = (d) => {
       const s = String(d);
-      stdout += s;
       fwdOut?.push(s);
-      tryEmitTemporalFromChildOutput();
-    });
-    child.stderr?.on('data', (d) => {
+      tryEmitTemporalFromChildOutput(s);
+    };
+    const onStderr = (d) => {
       const s = String(d);
-      stderr += s;
       fwdErr?.push(s);
-      tryEmitTemporalFromChildOutput();
-    });
+      tryEmitTemporalFromChildOutput(s);
+    };
 
-    const startExit = await new Promise((resolve) => {
-      const t = setTimeout(() => {
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          /* ignore */
-        }
-        resolve(-2);
-      }, shannonStartTimeoutMs());
-      child.on('error', () => {
-        clearTimeout(t);
-        resolve(-1);
+    let startResult;
+    try {
+      startResult = await processRunner(process.execPath, [shannonScript, ...args], {
+        cwd: shannonHome,
+        timeoutMs: shannonStartTimeoutMs(),
+        signal,
+        spawnOpts: {
+          cwd: shannonHome,
+          env: { ...process.env, SHANNON_LOCAL: '1' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+        stdoutMaxBytes: 2 * 1024 * 1024,
+        stderrMaxBytes: 2 * 1024 * 1024,
+        onStdout,
+        onStderr,
+        label: 'Shannon start',
       });
-      child.on('close', (code) => {
-        clearTimeout(t);
-        resolve(code ?? 0);
-      });
-    });
-
-    fwdOut?.flush();
-    fwdErr?.flush();
-
-    if (startExit !== 0) {
-      const tail = `${stderr}\n${stdout}`.trim().slice(-4000);
+    } catch (error) {
+      fwdOut?.flush();
+      fwdErr?.flush();
+      if (isProcessAbort(error)) throw error;
+      const timedOut = error?.code === 'PROCESS_TIMEOUT';
+      const detail = `${error?.result?.stderr || ''}\n${error?.result?.stdout || ''}`
+        .trim()
+        .slice(-4000);
       return {
         ok: false,
         workspaceId,
         phase: 'start',
-        exitCode: startExit,
-        detail: tail || `exit ${startExit}`,
+        exitCode: timedOut ? -2 : -1,
+        detail: detail || error?.message || (timedOut ? 'timeout' : 'falha ao iniciar'),
       };
     }
 
-    const wf = await waitForShannonWorkflowEnd(shannonHome, workspaceId, log);
+    fwdOut?.flush();
+    fwdErr?.flush();
+
+    if (startResult.code !== 0) {
+      const tail = `${startResult.stderr}\n${startResult.stdout}`.trim().slice(-4000);
+      return {
+        ok: false,
+        workspaceId,
+        phase: 'start',
+        exitCode: startResult.code,
+        detail: tail || `exit ${startResult.code}`,
+      };
+    }
+
+    const wf = await waitForWorkflowImpl(shannonHome, workspaceId, log, { signal });
     if (wf.outcome === 'timeout') {
       log?.('Shannon: timeout a aguardar workflow.log (aumenta GHOSTRECON_SHANNON_WORKFLOW_TIMEOUT_MS)', 'warn');
       return { ok: false, workspaceId, phase: 'workflow', outcome: 'timeout', logPath: wf.logPath };
@@ -312,10 +417,10 @@ export async function runShannonOnClone(opts) {
       };
     }
 
-    let report = await readShannonComprehensiveReport(clonePath);
+    let report = await readReportImpl(clonePath);
     for (let attempt = 0; !report.ok && attempt < 10; attempt++) {
-      await sleep(2000);
-      report = await readShannonComprehensiveReport(clonePath);
+      await sleep(2000, signal);
+      report = await readReportImpl(clonePath);
     }
     if (!report.ok) {
       log?.(`Shannon: workflow COMPLETED mas relatório ainda não disponível em ${report.path}`, 'warn');
@@ -332,7 +437,5 @@ export async function runShannonOnClone(opts) {
     };
   };
 
-  const p = shannonChain.then(task);
-  shannonChain = p.catch(() => {});
-  return p;
+  return enqueueShannonTask(task, signal);
 }

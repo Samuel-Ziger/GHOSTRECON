@@ -14,6 +14,27 @@ const ENGINE_MODES = new Set(['node', 'go', 'both']);
 const STRATEGIES = new Set(['lite', 'balanced', 'deep']);
 const PATH_LOOKUP_TIMEOUT_MS = 3_000;
 const TRUTHY = new Set(['1', 'true', 'yes', 'y', 'on']);
+const VIGOLIUM_CHILD_ENV_KEYS = Object.freeze([
+  // Necessárias para localizar subprocessos e diretórios temporários sem
+  // encaminhar o restante do ambiente da API (tokens, DB, JWT, cookies etc.).
+  'PATH',
+  'HOME',
+  'USERPROFILE',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'SYSTEMROOT',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  // Localidade/terminal não carregam credenciais e evitam diferenças de parse.
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'TERM',
+  'NO_COLOR',
+]);
 
 /** Raiz do monorepo (onde vive vigolium/). */
 export function ghostreconRoot() {
@@ -113,12 +134,15 @@ export function shouldPreferVigoliumPath(ctx = {}) {
 }
 
 export function resolveVigoliumInputFile(ctx = {}) {
-  const raw = String(ctx.vigoliumInputFile || process.env.GHOSTRECON_VIGOLIUM_INPUT_FILE || '').trim();
+  // Nunca reabra esta capacidade pelo ambiente. Um arquivo `-T` pode conter
+  // múltiplos alvos (por exemplo `servers` OpenAPI) e precisa de um contrato
+  // selado/validado antes de voltar a ser executável.
+  const raw = String(ctx.vigoliumInputFile || '').trim();
   return raw || null;
 }
 
 export function resolveVigoliumInputType(ctx = {}) {
-  const raw = String(ctx.vigoliumInputType || process.env.GHOSTRECON_VIGOLIUM_INPUT_TYPE || '').trim();
+  const raw = String(ctx.vigoliumInputType || '').trim();
   return raw || null;
 }
 
@@ -151,7 +175,37 @@ export function resolveVigoliumReportOnly(ctx = {}) {
 }
 
 export function shouldUseVigoliumCodex(ctx = {}) {
-  return Boolean(ctx.vigoliumUseCodex === true || truthy(process.env.GHOSTRECON_VIGOLIUM_USE_CODEX));
+  // Uma escolha explícita no plano selado prevalece inclusive sobre o
+  // ambiente do servidor. Isso impede que uma variável de boot reative o
+  // provider depois de o operador/Auto ter aprovado `false`.
+  if (ctx.vigoliumUseCodex === true) return true;
+  if (ctx.vigoliumUseCodex === false) return false;
+  return truthy(process.env.GHOSTRECON_VIGOLIUM_USE_CODEX);
+}
+
+/**
+ * Ambiente mínimo entregue ao binário Vigolium e aos subprocessos do agente.
+ * A configuração que muda o plano continua em argv/estado selado; o ambiente
+ * filho não herda chaves, cookies, URLs de banco, JWTs ou tokens da API.
+ */
+export function buildVigoliumChildEnv(ctx = {}, sourceEnv = process.env) {
+  const child = {};
+  for (const key of VIGOLIUM_CHILD_ENV_KEYS) {
+    const value = sourceEnv?.[key];
+    if (value == null || String(value).includes('\0')) continue;
+    child[key] = String(value);
+  }
+  if (shouldUseVigoliumCodex(ctx)) {
+    child.GHOSTRECON_VIGOLIUM_USE_CODEX = '1';
+    // O provider faz parte da opção explícita "usar Codex"; não aceite um
+    // provider diferente injetado pelo ambiente após a aprovação.
+    child.VIGOLIUM_PROVIDER = 'openai-codex-oauth';
+  }
+  if (shouldUseVigoliumVpsProfile(ctx)) {
+    child.SKIP_EXTERNAL_HARVEST = '1';
+    child.VIGOLIUM_STRATEGY = resolveVigoliumStrategy(ctx);
+  }
+  return child;
 }
 
 export function vigoliumTimeoutMs() {

@@ -1,14 +1,26 @@
 import { UA, limits } from '../config.js';
-import { fetchWithBackoff } from './http-utils.js';
+import { combineAbortSignals, fetchWithBackoff } from './http-utils.js';
 
 /**
  * URLs históricas via índice CDX do Common Crawl (complemento ao Wayback).
  */
-export async function fetchCommonCrawlUrls(domain) {
-  const collRes = await fetchWithBackoff('https://index.commoncrawl.org/collinfo.json', {
-    headers: { 'User-Agent': UA },
-    signal: AbortSignal.timeout(limits.commonCrawlCollinfoTimeoutMs),
-  });
+export async function fetchCommonCrawlUrls(
+  domain,
+  {
+    signal = null,
+    collinfoTimeoutMs = limits.commonCrawlCollinfoTimeoutMs,
+    queryTimeoutMs = limits.commonCrawlQueryTimeoutMs,
+    fetchImpl = null,
+  } = {},
+) {
+  const collRes = await fetchWithBackoff(
+    'https://index.commoncrawl.org/collinfo.json',
+    {
+      headers: { 'User-Agent': UA },
+      signal: combineAbortSignals(signal, collinfoTimeoutMs),
+    },
+    { fetchImpl },
+  );
   if (!collRes.ok) throw new Error(`Common Crawl collinfo HTTP ${collRes.status}`);
   const colls = await collRes.json();
   if (!Array.isArray(colls) || colls.length === 0) throw new Error('collinfo vazio');
@@ -27,10 +39,14 @@ export async function fetchCommonCrawlUrls(domain) {
   const urlParam = `*.${domain}/*`;
   const q = `${apiBase}?url=${encodeURIComponent(urlParam)}&output=json&filter=status:200&limit=${lim}`;
 
-  const res = await fetchWithBackoff(q, {
-    headers: { 'User-Agent': UA },
-    signal: AbortSignal.timeout(limits.commonCrawlQueryTimeoutMs),
-  });
+  const res = await fetchWithBackoff(
+    q,
+    {
+      headers: { 'User-Agent': UA },
+      signal: combineAbortSignals(signal, queryTimeoutMs),
+    },
+    { fetchImpl },
+  );
   if (!res.ok) throw new Error(`Common Crawl CDX HTTP ${res.status}`);
 
   const text = await res.text();

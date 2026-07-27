@@ -40,7 +40,10 @@ import { wafw00fFingerprint } from '../../modules/waf-fingerprint.js';
 import { discoverParamsActive } from '../../modules/param-discovery.js';
 import { resolveCnameChain, matchProviderByCname, matchProviderBody } from '../../modules/takeover.js';
 import { crawlWithKatana } from '../../modules/js-crawler.js';
-import { validateSecretFindings } from '../../modules/secret-validation.js';
+import {
+  shouldValidateSecretFindings,
+  validateSecretFindings,
+} from '../../modules/secret-validation.js';
 import { limits } from '../../config.js';
 import { listRuns } from '../../modules/db.js';
 import { collectUniqueIpv4, shodanHostSummary } from '../../modules/ip-intel.js';
@@ -116,7 +119,31 @@ import path from 'path';
 import { ROOT, firstIpv4FromDnsRecords, sleep } from '../pipeline-shared.mjs';
 import { dispatchRegistryModule } from '../dispatcher.mjs';
 
+const TARGET_JS_FETCH_MODULES = new Set([
+  'client_auth_audit',
+  'client_surface_audit',
+  'firebase_audit',
+  'js_intel',
+]);
 
+export function shouldFetchTargetJsInContentPhase(state) {
+  if (state?.autoModeExecution !== true) return true;
+  return (state?.modules || []).some((moduleId) => TARGET_JS_FETCH_MODULES.has(moduleId));
+}
+
+export function resolveArchiveToolSelection({
+  autoModeExecution = false,
+  runtimeProfile = null,
+  modules = [],
+} = {}) {
+  const selected = new Set(Array.isArray(modules) ? modules : []);
+  const manualDeepDefaults =
+    autoModeExecution !== true && runtimeProfile?.includeCliArchives === true;
+  return {
+    runGau: manualDeepDefaults || selected.has('gau'),
+    runWaybackurls: manualDeepDefaults || selected.has('waybackurls'),
+  };
+}
 
 export async function runContentDiscoveryPhase(s) {
   const {
@@ -147,9 +174,10 @@ export async function runContentDiscoveryPhase(s) {
       } else {
         log('Coletando URLs do Wayback Machine (CDX)...', 'info');
         try {
-          waybackUrls = await fetchWaybackUrls(domain);
+          waybackUrls = await fetchWaybackUrls(domain, { signal: s.signal });
           log(`${waybackUrls.length} URLs únicas (200) no escopo *.${domain}`, 'success');
         } catch (e) {
+          if (s.signal?.aborted) throw s.signal.reason || e;
           log(`Wayback: ${e.message}`, 'warn');
         }
       }
@@ -164,22 +192,32 @@ export async function runContentDiscoveryPhase(s) {
       } else {
         log('Common Crawl (índice CDX)...', 'info');
         try {
-          ccUrls = await fetchCommonCrawlUrls(domain);
+          ccUrls = await fetchCommonCrawlUrls(domain, { signal: s.signal });
           log(`${ccUrls.length} URLs únicas (200) no Common Crawl`, 'success');
         } catch (e) {
+          if (s.signal?.aborted) throw s.signal.reason || e;
           log(`Common Crawl: ${e.message}`, 'warn');
         }
       }
     }
 
     archiveCliUrls = [];
-    if (runtimeProfile.includeCliArchives || modules.includes('gau') || modules.includes('waybackurls')) {
+    const archiveToolSelection = resolveArchiveToolSelection({
+      autoModeExecution: s.autoModeExecution,
+      runtimeProfile,
+      modules,
+    });
+    if (archiveToolSelection.runGau || archiveToolSelection.runWaybackurls) {
       if (apexHostIsIp) {
         log('gau / waybackurls (CLI) omitidos — arquivo por domínio não se aplica a alvo só-IP.', 'info');
       } else {
         try {
-          archiveCliUrls = await fetchArchiveToolUrls(domain, log);
+          archiveCliUrls = await fetchArchiveToolUrls(domain, log, {
+            ...archiveToolSelection,
+            signal: s.signal,
+          });
         } catch (e) {
+          if (s.signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
           log(`Archive CLI: ${e.message}`, 'warn');
         }
       }
@@ -195,7 +233,7 @@ export async function runContentDiscoveryPhase(s) {
           if (k.ok && k.urls.length) {
             let added = 0;
             for (const u of k.urls.slice(0, 300)) {
-              if (!urlInReconScope(u, domain, outOfScopeList)) continue;
+              if (!s.urlInScope(u)) continue;
               if (!urlCorpus.includes(u)) {
                 urlCorpus.push(u);
                 added++;
@@ -208,7 +246,7 @@ export async function runContentDiscoveryPhase(s) {
         }
       }
     }
-    urlCorpus = urlCorpus.filter((u) => urlInReconScope(u, domain, outOfScopeList));
+    urlCorpus = urlCorpus.filter((u) => s.urlInScope(u));
 
     if (modules.includes('graphql_probe')) {
       pipe('graphql_probe', 'active');
@@ -220,7 +258,14 @@ export async function runContentDiscoveryPhase(s) {
         );
       } else {
         try {
-          const gqlFindings = await tryGraphqlMinimalProbe(gqlUrls, domain, outOfScopeList, modules, log);
+          const gqlFindings = await tryGraphqlMinimalProbe(
+            gqlUrls,
+            domain,
+            outOfScopeList,
+            modules,
+            log,
+            s.scopePolicy,
+          );
           for (const gf of gqlFindings) addFinding(gf, null);
         } catch (e) {
           log(`GraphQL probe: ${e.message}`, 'warn');
@@ -247,6 +292,7 @@ export async function runContentDiscoveryPhase(s) {
               executor: async (query, variables, extraHeaders) => {
                 const r = await fetch(gqlUrl, {
                   method: 'POST',
+                  redirect: 'manual',
                   headers: { 'content-type': 'application/json', ...headers, ...(extraHeaders || {}) },
                   body: JSON.stringify({ query, variables }),
                   signal: AbortSignal.timeout(15000),
@@ -419,17 +465,24 @@ export async function runContentDiscoveryPhase(s) {
     progress(60);
 
     // ── JS ANALYSIS ─────────────────────────────
-    pipe('js', 'active');
+    const fetchTargetJs = shouldFetchTargetJsInContentPhase(s);
+    pipe('js', fetchTargetJs ? 'active' : 'skip');
     pipe('client_auth_audit', modules.includes('client_auth_audit') ? 'active' : 'skip');
     pipe('client_surface_audit', modules.includes('client_surface_audit') ? 'active' : 'skip');
     pipe('js_intel', modules.includes('js_intel') ? 'active' : 'skip');
-    const jsList = extractJsUrls(urlCorpus.length ? urlCorpus : [], 120).slice(0, limits.maxJsFetch);
-    log(`Analisando ${jsList.length} arquivos JS (passivo)...`, 'info');
+    const jsList = fetchTargetJs
+      ? extractJsUrls(urlCorpus.length ? urlCorpus : [], 120).slice(0, limits.maxJsFetch)
+      : [];
+    if (fetchTargetJs) {
+      log(`Analisando ${jsList.length} arquivos JS do alvo...`, 'info');
+    } else {
+      log('Fetch de JS omitido no Auto: nenhum módulo ativo de análise JS foi aprovado.', 'info');
+    }
     const clientAuthResults = [];
     const clientSurfaceResults = [];
     const jsAuditBodies = [];
     for (const jsUrl of jsList) {
-      const a = await analyzeJsUrl(jsUrl, { modules });
+      const a = await analyzeJsUrl(jsUrl, { modules, signal: s.signal });
       if (!a.ok) {
         log(`JS skip: ${jsUrl} (${a.error || a.status})`, 'warn');
         continue;
@@ -519,7 +572,7 @@ export async function runContentDiscoveryPhase(s) {
             type: 'secret',
             prio: 'high',
             score: 92,
-            value: `[${s.kind}] ${s.masked}`,
+            value: `[${s.kind}] ${s.rawMaterial || s.masked}`,
             meta: ['Possível segredo em JS (verificar falso positivo)', fpMeta].filter(Boolean).join(' • '),
             url: jsUrl,
           },
@@ -558,7 +611,7 @@ export async function runContentDiscoveryPhase(s) {
     if (modules.includes('firebase_audit') && firebaseContext?._auditPending) {
       try {
         const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
-        const writeProbes = String(process.env.GHOSTRECON_FIREBASE_WRITE_PROBES || '1').trim() !== '0';
+        const writeProbes = false;
         const { findings: fbFindings, summary } = await runFirebaseAudit(firebaseContext, {
           targetUrl,
           log,
@@ -582,7 +635,7 @@ export async function runContentDiscoveryPhase(s) {
     if (modules.includes('js_intel')) pipe('js_intel', 'done');
     await dispatchRegistryModule(s, 'websocket_recon');
     await dispatchRegistryModule(s, 'dom_clobbering_audit');
-    pipe('js', 'done');
+    if (fetchTargetJs) pipe('js', 'done');
     progress(72);
 
     // ── DORKS (URLs apenas) ─────────────────────
@@ -635,7 +688,7 @@ export async function runContentDiscoveryPhase(s) {
           try {
             const items = await googleCseSearch(d.query, gKey, gCx);
             for (const it of items) {
-              if (!urlInReconScope(it.link, domain, outOfScopeList)) continue;
+              if (!s.urlInScope(it.link)) continue;
               if (seenG.has(it.link)) continue;
               seenG.add(it.link);
               let pathname = '/';
@@ -770,6 +823,7 @@ export async function runContentDiscoveryPhase(s) {
             targetDomain: domain,
             repos: repoCandidates,
             log,
+            signal: s.signal,
           });
           if (cloned.skipped) {
             // clone desativado por config
@@ -795,6 +849,7 @@ export async function runContentDiscoveryPhase(s) {
             }
           }
         } catch (e) {
+          if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
           log(`Clone local GitHub: ${e.message}`, 'warn');
         }
       } else {
@@ -816,6 +871,7 @@ export async function runContentDiscoveryPhase(s) {
             targetDomain: domain,
             repos: manualGithubRepos,
             log,
+            signal: s.signal,
           });
           if (!cloned.skipped && cloned.cloned?.length) {
             githubClonedItems = cloned.cloned;
@@ -831,6 +887,7 @@ export async function runContentDiscoveryPhase(s) {
             }
           }
         } catch (e) {
+          if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
           log(`Clone local GitHub (manual): ${e.message}`, 'warn');
         }
       }
@@ -850,10 +907,18 @@ export async function runContentDiscoveryPhase(s) {
       pipe('pastebin', 'done');
       log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
     }
-    // Validação activa de tokens/secrets (fase 3)
-    pipe('secret_validation', 'active');
-    try {
-      const sv = await validateSecretFindings(findings, log);
+    // Validação ativa de tokens/secrets: nunca implícita. Em Auto e RUN
+    // manual, o módulo precisa constar no plano efetivamente autorizado.
+    if (!shouldValidateSecretFindings(modules)) {
+      pipe('secret_validation', 'skip');
+    } else {
+      pipe('secret_validation', 'active');
+      try {
+        const sv = await validateSecretFindings(findings, log, {
+          network: true,
+          signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
+        });
       for (const row of sv) {
         const isLive     = row.status === 'live';
         const isProbable = row.status === 'probable';
@@ -898,10 +963,12 @@ export async function runContentDiscoveryPhase(s) {
       const live    = sv.filter((r) => r.status === 'live').length;
       const expired = sv.filter((r) => r.tokenStatus === 'expired').length;
       if (sv.length) log(`Token validation: ${sv.length} token(s) — ${live} válido(s), ${expired} expirado(s)`, 'info');
-    } catch (e) {
-      log(`Secret validation: ${e.message}`, 'warn');
+      } catch (e) {
+        if (s.signal?.aborted || e?.name === 'AbortError' || e?.code === 'ABORT_ERR') throw e;
+        log(`Secret validation: ${e.message}`, 'warn');
+      }
+      pipe('secret_validation', 'done');
     }
-    pipe('secret_validation', 'done');
     pipe('secrets', 'done');
 
     await dispatchRegistryModule(s, 'secrets_context_ranker');

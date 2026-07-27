@@ -1,12 +1,11 @@
-import { execFile as execFileCb } from 'node:child_process';
-import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseAgentDecisionText, validateAgentDecision } from '../decision-contract.mjs';
+import { normalizeAndValidateAgentDecision, parseAgentDecisionText } from '../decision-contract.mjs';
 import { availableCatalogIds, availableEvidenceRefs, buildAgentPrompt } from './shared.mjs';
+import { execFileClosedStdin } from './codex.mjs';
 
-const execFileDefault = promisify(execFileCb);
+const execFileDefault = execFileClosedStdin;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'schemas', 'decision.schema.json');
 
@@ -31,11 +30,14 @@ function unwrapClaudeJson(stdout) {
 export async function decideWithClaudeCode({
   target, mode, catalog, ragContext, root, role = 'planner', iteration = 1,
   peerDecisions = [], observationBundle = null, env = process.env, execFileImpl = execFileDefault,
-  signal, maxContextChars = 120_000, allowIntrusive = false,
+  signal, maxContextChars = 120_000, allowIntrusive = false, autonomyLevel = 'observation',
 } = {}) {
   const schema = JSON.parse(await fs.readFile(SCHEMA_PATH, 'utf8'));
   const timeoutMs = Math.max(30_000, Math.min(900_000, Number(env.GHOSTRECON_CLAUDE_TIMEOUT_MS || 240_000)));
-  const prompt = buildAgentPrompt({ target, mode, catalog, ragContext, role, iteration, peerDecisions, observationBundle, maxContextChars, allowIntrusive });
+  const prompt = buildAgentPrompt({
+    target, mode, catalog, ragContext, role, iteration, peerDecisions,
+    observationBundle, maxContextChars, allowIntrusive, autonomyLevel,
+  });
   const args = [
     '--print',
     '--output-format', 'json',
@@ -45,7 +47,6 @@ export async function decideWithClaudeCode({
     '--disable-slash-commands',
     '--no-session-persistence',
     '--setting-sources', 'user',
-    prompt,
   ];
   const startedAt = Date.now();
   const result = await execFileImpl(String(env.GHOSTRECON_CLAUDE_COMMAND || 'claude'), args, {
@@ -55,10 +56,13 @@ export async function decideWithClaudeCode({
     maxBuffer: 8 * 1024 * 1024,
     windowsHide: true,
     signal,
+    input: prompt,
   });
   const parsed = unwrapClaudeJson(result?.stdout || '');
-  const validated = validateAgentDecision(parsed, {
-    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive }),
+  const validated = normalizeAndValidateAgentDecision(parsed, {
+    repairEnvelope: true,
+    repairOptions: { objective: `authorized_recon:${target || 'target'}` },
+    catalogModuleIds: availableCatalogIds(catalog, { allowIntrusive, autonomyLevel }),
     availableEvidenceRefs: availableEvidenceRefs({ ragContext, observationBundle }),
   });
   if (!validated.ok) throw new Error(`decisão Claude Code rejeitada: ${validated.errors.join('; ')}`);
@@ -71,6 +75,8 @@ export async function decideWithClaudeCode({
     latencyMs: Date.now() - startedAt,
     decision: validated.decision,
     usage: parsed?.usage || null,
-    transport: { command: 'claude --print', permissionMode: 'plan', tools: [] },
+    transport: {
+      command: 'claude --print', permissionMode: 'plan', tools: [], promptTransport: 'stdin',
+    },
   };
 }

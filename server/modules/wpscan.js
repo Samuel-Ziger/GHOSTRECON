@@ -25,8 +25,8 @@ export function isWpscanApiRequired() {
   return String(process.env.GHOSTRECON_WPSCAN_REQUIRE_API ?? '1').trim() !== '0';
 }
 
-function runProc(cmd, args, timeoutMs, spawnOpts = {}) {
-  return runProcess(cmd, args, { timeoutMs, spawnOpts, label: cmd });
+function runProc(cmd, args, timeoutMs, spawnOpts = {}, { signal = null } = {}) {
+  return runProcess(cmd, args, { timeoutMs, spawnOpts, signal, label: cmd });
 }
 
 function safeConfidence(n) {
@@ -205,7 +205,13 @@ export function extractWpscanFindings({ targetUrl, wpscanJson }) {
  * Rodar wpscan e retornar JSON parseado.
  * @returns {Promise<{ json: any|null, error?: string, stderr?: string, vulnDbCount?: number }>}
  */
-export async function runWpscanJson({ targetUrl, detectionMode, timeoutMs, log }) {
+export async function runWpscanJson({
+  targetUrl,
+  detectionMode,
+  timeoutMs,
+  log,
+  signal = null,
+}) {
   const dir = await mkdtemp(join(tmpdir(), 'ghwp-'));
   const outJson = join(dir, 'wpscan.json');
 
@@ -228,10 +234,6 @@ export async function runWpscanJson({ targetUrl, detectionMode, timeoutMs, log }
       '--force',
     ];
 
-    if (apiToken) {
-      args.push('--api-token', apiToken);
-    }
-
     const spawnEnv = { ...process.env };
     if (apiToken) spawnEnv.WPSCAN_API_TOKEN = apiToken;
 
@@ -246,7 +248,7 @@ export async function runWpscanJson({ targetUrl, detectionMode, timeoutMs, log }
       log(`Executando ${label}...`, 'info');
     }
 
-    const proc = await runProc('wpscan', args, timeout, { env: spawnEnv });
+    const proc = await runProc('wpscan', args, timeout, { env: spawnEnv }, { signal });
     if (proc.code !== 0) {
       if (typeof log === 'function') log(`[WPScan] ${label} terminou com código ${proc.code}`, 'warn');
     }
@@ -267,9 +269,9 @@ export async function runWpscanJson({ targetUrl, detectionMode, timeoutMs, log }
       return { json: null, error: `JSON parse error: ${e.message}`, stderr: proc.stderr || '' };
     }
   } catch (e) {
+    if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
     return { json: null, error: String(e?.message || e), stderr: '' };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
-

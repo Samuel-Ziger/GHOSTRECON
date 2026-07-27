@@ -1,14 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile as execFileCb } from 'node:child_process';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { codexChildEnv } from '../providers/codex.mjs';
 import { claudeChildEnv } from '../providers/claude-code.mjs';
 import { parseAgentDecisionText } from '../decision-contract.mjs';
 import { redactAutoContext } from '../providers/shared.mjs';
+import { runForgeCommand, throwIfForgeAborted } from './process-runner.mjs';
 
-const execFileDefault = promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'schemas', 'forge-artifact.schema.json');
 
@@ -17,6 +15,7 @@ function validateArtifact(artifact, request) {
   if (!artifact || typeof artifact !== 'object') errors.push('artefato deve ser objeto');
   if (String(artifact?.manifest?.id || '') !== String(request?.proposedId || '')) errors.push('manifest.id difere do proposedId');
   if (artifact?.manifest?.intrusive !== false) errors.push('manifest deve ser não intrusivo');
+  if (artifact?.manifest?.requiresAuth !== false) errors.push('requiresAuth deve ser false nesta fase');
   if (artifact?.manifest?.requiresKali !== false) errors.push('requiresKali deve ser false nesta fase');
   if (String(artifact?.moduleCode || '').length < 20) errors.push('moduleCode ausente');
   if (String(artifact?.testCode || '').length < 20) errors.push('testCode ausente');
@@ -67,25 +66,64 @@ function unwrapClaude(stdout) {
   return value?.result || value;
 }
 
-async function requestArtifact({ provider, prompt, root, pendingDir, env, execFileImpl, outputName = '.codex-artifact-output.json' }) {
+async function requestArtifact({
+  provider,
+  prompt,
+  root,
+  pendingDir,
+  env,
+  execFileImpl,
+  signal = null,
+  outputName = '.codex-artifact-output.json',
+}) {
+  throwIfForgeAborted(signal);
   if (!['codex', 'claude_code'].includes(provider)) throw new Error(`gerador ainda não suportado: ${provider}`);
   const schemaText = await fs.readFile(SCHEMA_PATH, 'utf8');
   const timeoutMs = Math.max(30_000, Math.min(900_000, Number(env.GHOSTRECON_AUTO_FORGE_GENERATE_TIMEOUT_MS || 300_000)));
   let artifact;
   if (provider === 'codex') {
     const outputFile = path.join(pendingDir, outputName);
-    const result = await execFileImpl(String(env.GHOSTRECON_CODEX_COMMAND || 'codex'), [
-      'exec', '--json', '--sandbox', 'read-only', '--output-schema', SCHEMA_PATH,
-      '--output-last-message', outputFile, '--cd', root, '--ephemeral', prompt,
-    ], { cwd: root, env: codexChildEnv(env), timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
-    artifact = parseAgentDecisionText(await fs.readFile(outputFile, 'utf8').catch(() => result?.stdout || ''));
-    await fs.rm(outputFile, { force: true }).catch(() => {});
+    try {
+      const result = await runForgeCommand(
+        String(env.GHOSTRECON_CODEX_COMMAND || 'codex'),
+        [
+          'exec', '--json', '--sandbox', 'read-only', '--output-schema', SCHEMA_PATH,
+          '--output-last-message', outputFile, '--cd', root, '--ephemeral', prompt,
+        ],
+        {
+          cwd: root,
+          env: codexChildEnv(env),
+          timeoutMs,
+          maxBuffer: 16 * 1024 * 1024,
+          signal,
+          execFileImpl,
+          label: 'Forge Codex generation',
+        },
+      );
+      throwIfForgeAborted(signal);
+      artifact = parseAgentDecisionText(await fs.readFile(outputFile, 'utf8').catch(() => result?.stdout || ''));
+    } finally {
+      await fs.rm(outputFile, { force: true }).catch(() => {});
+    }
   } else {
-    const result = await execFileImpl(String(env.GHOSTRECON_CLAUDE_COMMAND || 'claude'), [
-      '--print', '--output-format', 'json', '--json-schema', schemaText,
-      '--permission-mode', 'plan', '--tools', '', '--disable-slash-commands',
-      '--no-session-persistence', '--setting-sources', 'user', prompt,
-    ], { cwd: root, env: claudeChildEnv(env), timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+    const result = await runForgeCommand(
+      String(env.GHOSTRECON_CLAUDE_COMMAND || 'claude'),
+      [
+        '--print', '--output-format', 'json', '--json-schema', schemaText,
+        '--permission-mode', 'plan', '--tools', '', '--disable-slash-commands',
+        '--no-session-persistence', '--setting-sources', 'user', prompt,
+      ],
+      {
+        cwd: root,
+        env: claudeChildEnv(env),
+        timeoutMs,
+        maxBuffer: 16 * 1024 * 1024,
+        signal,
+        execFileImpl,
+        label: 'Forge Claude generation',
+      },
+    );
+    throwIfForgeAborted(signal);
     artifact = unwrapClaude(result?.stdout || '');
   }
   return artifact;
@@ -100,9 +138,18 @@ async function writeArtifact(pendingDir, artifact) {
   ]);
 }
 
-export async function generatePendingArtifact({ provider, request, target, root, pendingDir, env = process.env, execFileImpl = execFileDefault } = {}) {
+export async function generatePendingArtifact({
+  provider,
+  request,
+  target,
+  root,
+  pendingDir,
+  env = process.env,
+  execFileImpl = null,
+  signal = null,
+} = {}) {
   const artifact = await requestArtifact({
-    provider, prompt: forgePrompt({ request, target }), root, pendingDir, env, execFileImpl,
+    provider, prompt: forgePrompt({ request, target }), root, pendingDir, env, execFileImpl, signal,
   });
   const checked = validateArtifact(artifact, request);
   if (!checked.ok) throw new Error(`artefato rejeitado: ${checked.errors.join('; ')}`);
@@ -110,11 +157,22 @@ export async function generatePendingArtifact({ provider, request, target, root,
   return { ok: true, provider, pendingDir, manifest: checked.artifact.manifest };
 }
 
-export async function generateCorrectedArtifact({ provider, request, target, root, pendingDir, attempt, env = process.env, execFileImpl = execFileDefault } = {}) {
+export async function generateCorrectedArtifact({
+  provider,
+  request,
+  target,
+  root,
+  pendingDir,
+  attempt,
+  env = process.env,
+  execFileImpl = null,
+  signal = null,
+} = {}) {
   const artifact = await requestArtifact({
     provider,
     prompt: await correctionPrompt({ pendingDir, request, target, attempt }),
     root, pendingDir, env, execFileImpl,
+    signal,
     outputName: `.codex-correction-${attempt}.json`,
   });
   const checked = validateArtifact(artifact, request);

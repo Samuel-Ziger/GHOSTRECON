@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { augmentProcessPathFromCommonDirs } from './modules/tool-path.js';
-import { githubTokenPreview, resolveGithubToken } from './modules/github-token.mjs';
+import { resolveGithubToken } from './modules/github-token.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(__dirname, '..', '.env');
@@ -23,7 +23,7 @@ if (autoPathAdded.length) {
 
 const ghTok = resolveGithubToken();
 if (ghTok) {
-  console.warn(`[GHOSTRECON] GITHUB_TOKEN carregado (${githubTokenPreview(ghTok)}) — API + git clone`);
+  console.warn('[GHOSTRECON] GITHUB_TOKEN carregado — API + git clone (valor não exibido)');
 } else if (fs.existsSync(envPath)) {
   console.warn(
     '[GHOSTRECON] GITHUB_TOKEN ausente no .env — git clone de repos candidatos pode pedir credenciais no terminal',

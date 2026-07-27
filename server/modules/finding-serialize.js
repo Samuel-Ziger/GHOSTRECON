@@ -2,6 +2,7 @@
  * Serialização de findings para persistência (runs.findings_json) e export.
  * Corta campos pesados para caber no limite de bytes.
  */
+import { redactFindingForPublic } from './finding-redaction.mjs';
 
 const DEFAULT_MAX_BYTES = 8_000_000;
 
@@ -29,29 +30,31 @@ function slimEvidence(ev, maxSnippet = 4000) {
 
 function cloneFindingForSnapshot(f) {
   if (!f || typeof f !== 'object') return f;
+  const safe = redactFindingForPublic(f);
+  if (!safe) return null;
   const o = {
-    type: f.type,
-    prio: f.prio,
-    score: f.score,
-    value: typeof f.value === 'string' ? truncateStr(f.value, 24_000) : f.value,
-    meta: typeof f.meta === 'string' ? truncateStr(f.meta, 24_000) : f.meta,
-    url: f.url,
-    fingerprint: f.fingerprint,
-    compositeScore: f.compositeScore,
-    attackTier: f.attackTier,
-    bountyProbability: f.bountyProbability,
-    priorityWhy: Array.isArray(f.priorityWhy) ? f.priorityWhy.slice(0, 80) : f.priorityWhy,
-    risk: f.risk,
-    provenance: f.provenance,
-    owasp: Array.isArray(f.owasp) ? f.owasp : undefined,
-    mitre: Array.isArray(f.mitre) ? f.mitre : undefined,
+    type: safe.type,
+    prio: safe.prio,
+    score: safe.score,
+    value: typeof safe.value === 'string' ? truncateStr(safe.value, 24_000) : safe.value,
+    meta: typeof safe.meta === 'string' ? truncateStr(safe.meta, 24_000) : safe.meta,
+    url: safe.url,
+    fingerprint: safe.fingerprint,
+    compositeScore: safe.compositeScore,
+    attackTier: safe.attackTier,
+    bountyProbability: safe.bountyProbability,
+    priorityWhy: Array.isArray(safe.priorityWhy) ? safe.priorityWhy.slice(0, 80) : safe.priorityWhy,
+    risk: safe.risk,
+    provenance: safe.provenance,
+    owasp: Array.isArray(safe.owasp) ? safe.owasp : undefined,
+    mitre: Array.isArray(safe.mitre) ? safe.mitre : undefined,
   };
-  if (f.verification) {
+  if (safe.verification) {
     o.verification = {
-      classification: f.verification.classification,
-      confidenceScore: f.verification.confidenceScore,
-      verifiedAt: f.verification.verifiedAt,
-      evidence: f.verification.evidence ? slimEvidence(f.verification.evidence) : undefined,
+      classification: safe.verification.classification,
+      confidenceScore: safe.verification.confidenceScore,
+      verifiedAt: safe.verification.verifiedAt,
+      evidence: safe.verification.evidence ? slimEvidence(safe.verification.evidence) : undefined,
     };
   }
   return o;
@@ -64,7 +67,7 @@ function cloneFindingForSnapshot(f) {
  */
 export function serializeFindingsForRunSnapshot(findings, maxBytes = DEFAULT_MAX_BYTES) {
   const lim = Number(process.env.GHOSTRECON_FINDINGS_SNAPSHOT_MAX_BYTES || maxBytes);
-  const list = (findings || []).map(cloneFindingForSnapshot);
+  const list = (findings || []).map(cloneFindingForSnapshot).filter(Boolean);
   let payload = {
     schemaVersion: 1,
     savedAt: new Date().toISOString(),

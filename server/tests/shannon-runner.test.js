@@ -8,6 +8,7 @@ import {
   workflowLogPath,
   shannonReportPath,
   extractTemporalWebUiUrl,
+  runShannonOnClone,
 } from '../modules/shannon-runner.js';
 
 test('workflowLogPath junta workspaces e workspace id', () => {
@@ -55,4 +56,73 @@ test('waitForShannonWorkflowEnd detecta FAILED', async () => {
   process.env.GHOSTRECON_SHANNON_WORKFLOW_TIMEOUT_MS = '8000';
   const r = await waitForShannonWorkflowEnd(root, ws, null);
   assert.equal(r.outcome, 'failed');
+});
+
+test('waitForShannonWorkflowEnd rejeita sinal já cancelado sem iniciar polling', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('parar polling'));
+  await assert.rejects(
+    waitForShannonWorkflowEnd('/tmp/shannon', 'never-read', null, {
+      signal: controller.signal,
+      pollIntervalMs: 1,
+    }),
+    (error) => error?.name === 'AbortError' && error?.code === 'PROCESS_ABORTED',
+  );
+});
+
+test('runShannonOnClone remove tarefa cancelada da fila antes de iniciar subprocesso', async () => {
+  let releaseFirst;
+  let firstStarted;
+  const firstReady = new Promise((resolve) => {
+    firstStarted = resolve;
+  });
+  const firstProcess = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let processCalls = 0;
+  const processRunner = async () => {
+    processCalls += 1;
+    if (processCalls === 1) {
+      firstStarted();
+      return firstProcess;
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  const common = {
+    ghostRoot: '/tmp/ghostrecon-test',
+    domain: 'example.test',
+    clonePath: '/tmp/clone-test',
+    processRunner,
+    waitForWorkflowImpl: async () => ({
+      outcome: 'completed',
+      logPath: '/tmp/workflow.log',
+      tail: '',
+    }),
+    readReportImpl: async () => ({
+      ok: true,
+      path: '/tmp/report.md',
+      content: 'ok',
+      bytes: 2,
+    }),
+  };
+
+  const first = runShannonOnClone({ ...common, repoFullName: 'acme/first' });
+  await firstReady;
+
+  const controller = new AbortController();
+  const second = runShannonOnClone({
+    ...common,
+    repoFullName: 'acme/second',
+    signal: controller.signal,
+  });
+  controller.abort(new Error('cancelar tarefa na fila'));
+  await assert.rejects(
+    second,
+    (error) => error?.name === 'AbortError' && error?.code === 'PROCESS_ABORTED',
+  );
+
+  releaseFirst({ code: 0, stdout: '', stderr: '' });
+  await first;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(processCalls, 1);
 });

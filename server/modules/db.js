@@ -7,6 +7,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { fingerprintFinding, norm, isSha256FingerprintHex } from './db-common.js';
+import { serializeFindingsForRunSnapshot } from './finding-serialize.js';
+import { redactRunPayloadForPersistence } from './finding-redaction.mjs';
 export { fingerprintFinding, norm, isSha256FingerprintHex } from './db-common.js';
 export { resolveLocalProjectDbDir, sanitizePathSegment } from './db-sqlite.js';
 
@@ -188,7 +190,8 @@ function listValidationArchivesForTarget(targetRaw) {
  * @returns {Promise<{ runId: number, intelMerge: object, localMirrorPath?: string } | null>}
  */
 export async function saveRun(payload) {
-  const { localProjectName, ...rest } = payload;
+  const sanitizedPayload = sanitizeRunPayloadForPersistence(payload);
+  const { localProjectName, ...rest } = sanitizedPayload;
   const projectDir = sqlite.resolveLocalProjectDbDir(localProjectName, rest.target);
   const useRemote = usePostgresPrimary();
 
@@ -249,6 +252,21 @@ export async function saveRun(payload) {
   }
 
   return result;
+}
+
+/**
+ * Último gate antes de qualquer backend de persistência. Não confia no
+ * `findingsJson` fornecido pelo chamador: quando existe snapshot, ele é
+ * reconstruído exclusivamente a partir dos findings já redigidos.
+ */
+export function sanitizeRunPayloadForPersistence(payload = {}) {
+  const safe = redactRunPayloadForPersistence(payload);
+  return {
+    ...safe,
+    findingsJson: payload.findingsJson == null
+      ? null
+      : serializeFindingsForRunSnapshot(safe.findings),
+  };
 }
 
 /** Correlação de segredos (value_fp) entre alvos no mesmo nome de projeto — índice em SQLite local. */

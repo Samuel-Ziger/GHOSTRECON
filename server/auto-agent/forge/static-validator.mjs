@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { computeForgeArtifactIntegrity } from './artifact-integrity.mjs';
 
 const ALLOWED_CATEGORIES = new Set(['discovery', 'surface', 'validation', 'ai', 'persistence', 'reporting']);
 const ALLOWED_OUTPUTS = new Set(['finding', 'intel', 'artifact', 'metric']);
@@ -19,8 +20,9 @@ function scanForbidden(code, kind) {
     ['filesystem', /(?:node:)?fs(?:\/promises)?|\bDeno\.|\bBun\./],
     ['raw_network', /(?:node:)?(?:net|http|https|tls|dgram|dns)(?:\/promises)?/],
     ['worker_or_vm', /(?:node:)?(?:worker_threads|vm)\b|\bWebAssembly\b/],
-    ['environment_access', /\bprocess\.env\b|\bprocess\.binding\b/],
+    ['runtime_process_access', /\bprocess\b/],
     ['global_fetch', /(?<![\w.])fetch\s*\(/],
+    ['global_object_access', /\b(?:globalThis|global)\b|\bself\s*(?:\.|\[)/],
     ['module_loader', /\brequire\s*\(|\bimport\s*\(/],
     ['prototype_mutation', /__(?:proto)__|prototype\s*\[/],
   ];
@@ -38,7 +40,7 @@ function validateManifest(manifest, expectedId) {
   if (!ALLOWED_CATEGORIES.has(manifest.category)) errors.push('manifest.category inválida');
   if (manifest.intrusive !== false) errors.push('manifest.intrusive deve ser false');
   if (manifest.requiresKali !== false) errors.push('manifest.requiresKali deve ser false');
-  if (typeof manifest.requiresAuth !== 'boolean') errors.push('manifest.requiresAuth deve ser boolean');
+  if (manifest.requiresAuth !== false) errors.push('manifest.requiresAuth deve ser false');
   if (!Number.isInteger(manifest.timeoutMs) || manifest.timeoutMs < 1000 || manifest.timeoutMs > 120000) errors.push('manifest.timeoutMs fora do limite');
   if (!Number.isInteger(manifest.concurrency) || manifest.concurrency < 1 || manifest.concurrency > 8) errors.push('manifest.concurrency fora do limite');
   if (!Array.isArray(manifest.outputs) || !manifest.outputs.length || manifest.outputs.some((x) => !ALLOWED_OUTPUTS.has(x))) errors.push('manifest.outputs inválido');
@@ -69,6 +71,7 @@ export async function validateForgePackage(pendingDir) {
   if (!/\bfetchImpl\b/.test(moduleCode) && /https?:|request|endpoint|url/i.test(`${request.gap || ''} ${moduleCode}`)) {
     errors.push('módulo de rede deve aceitar fetchImpl injetável');
   }
+  const artifactIntegrity = await computeForgeArtifactIntegrity(pendingDir);
   const result = {
     schemaVersion: 1,
     ok: errors.length === 0,
@@ -77,6 +80,7 @@ export async function validateForgePackage(pendingDir) {
     imports: { module: moduleImports, test: testImports },
     forbidden,
     manifest,
+    artifactIntegrity,
   };
   await fs.writeFile(path.join(pendingDir, 'validation-results.json'), JSON.stringify(result, null, 2), 'utf8');
   return result;

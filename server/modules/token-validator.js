@@ -1,15 +1,17 @@
 /**
  * token-validator.js
  *
- * Valida ativamente se um token/segredo encontrado ainda está vivo:
+ * Analisa offline um token/segredo encontrado e, apenas com `network:true`,
+ * valida se ainda está vivo:
  *   1. Deteta tipo (JWT genérico, Supabase JWT, API key)
  *   2. Verifica expiração offline no claim `exp` do JWT
- *   3. Faz probes HTTP com os headers de auth corretos
+ *   3. Opcionalmente faz probes HTTP com os headers de auth corretos
  *   4. Devolve status: 'valid' | 'expired' | 'invalid' | 'revoked' | 'probable' | 'unknown'
  */
 
 import https from 'node:https';
 import http from 'node:http';
+import { safeSecretReference } from './secret-safety.js';
 
 const TIMEOUT_MS = 8_000;
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -81,12 +83,26 @@ function supabaseOrigin(sourceUrl, parsed) {
 
 // ── PROBE HTTP ────────────────────────────────────────────────────────
 
-async function probe(url, headers = {}, method = 'GET') {
-  return new Promise((resolve) => {
+async function probe(url, headers = {}, method = 'GET', { signal = null } = {}) {
+  if (signal?.aborted) throw signal.reason || new DOMException('The operation was aborted', 'AbortError');
+  return new Promise((resolve, reject) => {
     let parsed;
     try { parsed = new URL(url); } catch(_) { return resolve({ status: null, error: 'invalid_url' }); }
 
     const mod = parsed.protocol === 'https:' ? https : http;
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      reject(error);
+    };
     const req = mod.request(
       {
         hostname: parsed.hostname,
@@ -100,11 +116,27 @@ async function probe(url, headers = {}, method = 'GET') {
         let body = '';
         res.setEncoding('utf8');
         res.on('data', (c) => { body += c; if (body.length > 2048) req.destroy(); });
-        res.on('end', () => resolve({ status: res.statusCode, body }));
+        res.on('end', () => finish({ status: res.statusCode, body }));
       },
     );
-    req.on('error', (e) => resolve({ status: null, error: e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ status: null, error: 'timeout' }); });
+    const onAbort = () => {
+      const error = signal?.reason || new DOMException('The operation was aborted', 'AbortError');
+      req.destroy(error);
+      fail(error);
+    };
+    req.on('error', (e) => {
+      if (signal?.aborted) fail(signal.reason || e);
+      else finish({ status: null, error: e.message });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      finish({ status: null, error: 'timeout' });
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
     req.end();
   });
 }
@@ -130,14 +162,25 @@ function statusMeaning(status) {
 // ── VALIDAÇÃO PRINCIPAL ───────────────────────────────────────────────
 
 /**
- * Valida um token encontrado num recon.
+ * Valida um token encontrado num recon. O default é estritamente offline.
  *
  * @param {string} rawValue  - Valor do finding (pode ter wrapper "[JWT] eyJ...")
  * @param {string} sourceUrl - URL onde o token foi encontrado
  * @returns {Promise<TokenValidationResult>}
  */
-export async function validateToken(rawValue, sourceUrl) {
+export async function validateToken(
+  rawValue,
+  sourceUrl,
+  {
+    network = false,
+    probeImpl = null,
+    signal = null,
+    urlAllowed = null,
+  } = {},
+) {
+  if (signal?.aborted) throw signal.reason || new DOMException('The operation was aborted', 'AbortError');
   const raw = extractRawToken(rawValue);
+  const safeRef = safeSecretReference(rawValue);
 
   /** @type {TokenValidationResult} */
   const result = {
@@ -147,6 +190,8 @@ export async function validateToken(rawValue, sourceUrl) {
     evidence:        '',
     probes:          [],
     offlineExpired:  false,
+    tokenFingerprint: safeRef.fingerprint,
+    tokenRef:        safeRef.ref,
   };
 
   if (!raw || raw.length < 8) {
@@ -184,6 +229,33 @@ export async function validateToken(rawValue, sourceUrl) {
     }
   }
 
+  if (network !== true) {
+    if (result.offlineExpired) {
+      result.status = 'expired';
+      result.evidence = `JWT expirado offline (${result.expiredAt || 'exp inválido'})`;
+    } else if (parsed?.payload) {
+      result.status = 'probable';
+      result.evidence = 'estrutura JWT detectada; validação de rede não autorizada';
+    } else {
+      result.evidence = 'segredo detectado; validação de rede não autorizada';
+    }
+    return result;
+  }
+
+  const runProbe = typeof probeImpl === 'function' ? probeImpl : probe;
+  const mayProbe = (url) => {
+    if (typeof urlAllowed !== 'function') return true;
+    try {
+      return urlAllowed(url) === true;
+    } catch {
+      return false;
+    }
+  };
+  const executeProbe = async (url, headers, method = 'GET') => {
+    if (signal?.aborted) throw signal.reason || new DOMException('The operation was aborted', 'AbortError');
+    if (!mayProbe(url)) return { status: null, error: 'out_of_scope', skipped: true };
+    return runProbe(url, headers, method, { signal });
+  };
   const origin = originOf(sourceUrl);
 
   // ── SUPABASE JWT ───────────────────────────────────────────────────
@@ -194,9 +266,15 @@ export async function validateToken(rawValue, sourceUrl) {
       if (result.offlineExpired) result.status = 'expired';
       return result;
     }
+    if (!mayProbe(base)) {
+      result.status = result.offlineExpired ? 'expired' : 'probable';
+      result.evidence = 'origem Supabase fora do escopo autorizado; probe omitido';
+      result.probes.push({ url: base, status: null, error: 'out_of_scope', skipped: true });
+      return result;
+    }
 
     // Probe 1: /rest/v1/ — responde 200 para anon key válida
-    const r1 = await probe(`${base}/rest/v1/`, {
+    const r1 = await executeProbe(`${base}/rest/v1/`, {
       apikey:        raw,
       Authorization: `Bearer ${raw}`,
     });
@@ -212,7 +290,7 @@ export async function validateToken(rawValue, sourceUrl) {
     }
 
     // Probe 2: /auth/v1/user — para tokens de utilizador (não anon)
-    const r2 = await probe(`${base}/auth/v1/user`, {
+    const r2 = await executeProbe(`${base}/auth/v1/user`, {
       apikey:        raw,
       Authorization: `Bearer ${raw}`,
     });
@@ -239,7 +317,11 @@ export async function validateToken(rawValue, sourceUrl) {
     }
 
     for (const url of urls.slice(0, 5)) {
-      const r = await probe(url, { Authorization: `Bearer ${raw}` });
+      if (!mayProbe(url)) {
+        result.probes.push({ url, status: null, error: 'out_of_scope', skipped: true });
+        continue;
+      }
+      const r = await executeProbe(url, { Authorization: `Bearer ${raw}` });
       const m = statusMeaning(r.status);
       result.probes.push({ url, status: r.status, error: r.error || null });
 
@@ -288,7 +370,17 @@ export async function validateToken(rawValue, sourceUrl) {
     ];
 
     for (const { header, label } of strategies) {
-      const r = await probe(url, header);
+      if (!mayProbe(url)) {
+        result.probes.push({
+          url,
+          method: label,
+          status: null,
+          error: 'out_of_scope',
+          skipped: true,
+        });
+        continue;
+      }
+      const r = await executeProbe(url, header);
       const m = statusMeaning(r.status);
       result.probes.push({ url, method: label, status: r.status, error: r.error || null });
 

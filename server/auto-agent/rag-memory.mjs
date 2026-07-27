@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { cosineSimilarity, localTextEmbedding } from './semantic-ranker.mjs';
+import { redactAutoText, redactAutoValue } from './redaction.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(__dirname, '..', '..');
@@ -21,16 +23,27 @@ function timestamp(d = new Date()) {
 }
 
 function yamlString(value) {
-  return JSON.stringify(String(value ?? ''));
+  return JSON.stringify(redactAutoText(String(value ?? '')));
 }
 
 function mdList(list) {
   const arr = Array.isArray(list) ? list : [];
-  return arr.length ? arr.map((x) => `- ${String(x)}`).join('\n') : '- none';
+  return arr.length
+    ? arr.slice(0, 500).map((x) => `- ${redactAutoText(String(x)).slice(0, 2000)}`).join('\n')
+    : '- none';
 }
 
-function codeJson(value) {
-  return `\`\`\`json\n${JSON.stringify(value ?? null, null, 2)}\n\`\`\``;
+function codeJson(value, maxChars = 160_000) {
+  const safe = redactAutoValue(value ?? null);
+  let json = JSON.stringify(safe, null, 2);
+  if (json.length > maxChars) {
+    json = JSON.stringify({
+      truncated: true,
+      originalChars: json.length,
+      preview: json.slice(0, Math.max(1000, maxChars - 2000)),
+    }, null, 2);
+  }
+  return `\`\`\`json\n${json}\n\`\`\``;
 }
 
 const MEMORY_FOLDERS = Object.freeze({
@@ -40,19 +53,117 @@ const MEMORY_FOLDERS = Object.freeze({
   cursorTasks: 'cursor-tasks',
   forgeRequests: 'forge-requests',
 });
+const folderWriteLocks = new Map();
 
 function clampLimit(value, fallback = 20, max = 200) {
   return Math.max(1, Math.min(max, Number(value) || fallback));
 }
 
+function clampBytes(value, fallback = 512 * 1024, min = 4096, max = 4 * 1024 * 1024) {
+  const parsed = Number(value);
+  return Math.max(min, Math.min(max, Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback));
+}
+
+function ragLimits(env = process.env) {
+  return {
+    maxFileBytes: clampBytes(env.GHOSTRECON_AUTO_RAG_MAX_FILE_BYTES),
+    maxReadBytes: clampBytes(env.GHOSTRECON_AUTO_RAG_MAX_READ_BYTES || env.GHOSTRECON_AUTO_RAG_MAX_FILE_BYTES),
+    maxFilesPerFolder: clampLimit(env.GHOSTRECON_AUTO_RAG_MAX_FILES_PER_FOLDER, 2000, 20_000),
+  };
+}
+
 function normalizeTags(tags) {
   return [...new Set(['ghostrecon', 'auto-mode', ...(Array.isArray(tags) ? tags : [])]
-    .map((t) => String(t || '').trim())
+    .map((t) => redactAutoText(String(t || '')).trim().slice(0, 100))
     .filter(Boolean))];
 }
 
 function stripFrontmatter(text) {
   return String(text || '').replace(/^---[\s\S]*?---\s*/m, '').trim();
+}
+
+function safeHeading(value, fallback) {
+  return redactAutoText(String(value || fallback || 'Auto memory'))
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim()
+    .slice(0, 300) || fallback;
+}
+
+function truncateUtf8(value, maxBytes) {
+  const text = String(value ?? '');
+  const bytes = Buffer.byteLength(text);
+  if (bytes <= maxBytes) return text;
+  const marker = `\n\n[TRUNCATED: original_bytes=${bytes}]\n`;
+  const markerBytes = Buffer.byteLength(marker);
+  const prefix = Buffer.from(text).subarray(0, Math.max(0, maxBytes - markerBytes)).toString('utf8');
+  return `${prefix}${marker}`;
+}
+
+async function chmodRestricted(filePath, mode) {
+  await fs.chmod(filePath, mode).catch(() => {});
+}
+
+async function ensureRestrictedDir(dir) {
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmodRestricted(dir, 0o700);
+}
+
+async function atomicWriteRestricted(filePath, text, { maxBytes } = {}) {
+  const safeText = truncateUtf8(text, maxBytes || ragLimits().maxFileBytes);
+  const dir = path.dirname(filePath);
+  await ensureRestrictedDir(dir);
+  const tmp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+  let handle;
+  try {
+    handle = await fs.open(tmp, 'wx', 0o600);
+    await handle.writeFile(safeText, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.rename(tmp, filePath);
+    await chmodRestricted(filePath, 0o600);
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function readUtf8Limited(filePath, maxBytes) {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    const length = Math.min(stat.size, maxBytes + 8192);
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    const suffix = stat.size > maxBytes ? `\n[TRUNCATED: original_bytes=${stat.size}]` : '';
+    return truncateUtf8(
+      redactAutoText(`${buffer.subarray(0, bytesRead).toString('utf8')}${suffix}`),
+      maxBytes,
+    );
+  } finally {
+    await handle.close();
+  }
+}
+
+async function folderHasCapacity(dir, limit) {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.md')).length < limit;
+}
+
+async function writeMemoryFileWithLimit({ dir, filePath, text, limits }) {
+  const previous = folderWriteLocks.get(dir) || Promise.resolve();
+  const current = previous.catch(() => {}).then(async () => {
+    if (!await folderHasCapacity(dir, limits.maxFilesPerFolder)) return false;
+    await atomicWriteRestricted(filePath, text, { maxBytes: limits.maxFileBytes });
+    return true;
+  });
+  folderWriteLocks.set(dir, current);
+  try {
+    return await current;
+  } finally {
+    if (folderWriteLocks.get(dir) === current) folderWriteLocks.delete(dir);
+  }
 }
 
 function folderForKind(kind = '') {
@@ -83,9 +194,10 @@ export function resolveAutoRagDir({ root = DEFAULT_ROOT, env = process.env } = {
 export async function ensureAutoRagDirs(opts = {}) {
   const base = resolveAutoRagDir(opts);
   const dirs = { base };
+  await ensureRestrictedDir(base);
   for (const [key, folder] of Object.entries(MEMORY_FOLDERS)) {
     dirs[key] = path.join(base, folder);
-    await fs.mkdir(dirs[key], { recursive: true });
+    await ensureRestrictedDir(dirs[key]);
   }
   return dirs;
 }
@@ -109,17 +221,19 @@ export async function writeAutoDecisionMarkdown({
     return null;
   }
   const dirs = await ensureAutoRagDirs({ root, env });
+  const limits = ragLimits(env);
   const now = new Date();
   const safeKind = slug(kind, 'decision');
-  const safeTarget = slug(target, 'target');
-  const safeRun = slug(requestRunId || timestamp(now), 'run');
-  const filename = `${timestamp(now)}-${safeTarget}-${safeKind}-${safeRun}.md`;
+  const safeTarget = slug(redactAutoText(target), 'target');
+  const safeRun = slug(redactAutoText(requestRunId || timestamp(now)), 'run');
+  const filename = `${timestamp(now)}-${safeTarget}-${safeKind}-${safeRun}-${randomBytes(3).toString('hex')}.md`;
   const filePath = path.join(dirs.decisions, filename);
+  const safeEvents = Array.isArray(events) ? events : [];
   const eventStats = {
-    total: events.length,
-    findings: events.filter((e) => e?.type === 'finding').length,
-    errors: events.filter((e) => e?.type === 'error').length,
-    warnings: events.filter((e) => e?.type === 'log' && e.level === 'warn').length,
+    total: safeEvents.length,
+    findings: safeEvents.filter((e) => e?.type === 'finding').length,
+    errors: safeEvents.filter((e) => e?.type === 'error').length,
+    warnings: safeEvents.filter((e) => e?.type === 'log' && e.level === 'warn').length,
   };
   const frontmatter = [
     '---',
@@ -136,17 +250,17 @@ export async function writeAutoDecisionMarkdown({
   const body = [
     frontmatter,
     '',
-    `# ${title || `GHOSTRECON Auto ${kind}`}`,
+    `# ${safeHeading(title, `GHOSTRECON Auto ${kind}`)}`,
     '',
     '## Summary',
     '',
-    summary || 'Decision generated by GHOSTRECON Auto Mode.',
+    redactAutoText(summary || 'Decision generated by GHOSTRECON Auto Mode.').slice(0, 20_000),
     '',
     '## Target',
     '',
-    `- Target: \`${target || 'unknown'}\``,
-    `- Request run: \`${requestRunId || 'unknown'}\``,
-    `- Kind: \`${kind}\``,
+    `- Target: \`${redactAutoText(target || 'unknown').slice(0, 2000)}\``,
+    `- Request run: \`${redactAutoText(requestRunId || 'unknown').slice(0, 500)}\``,
+    `- Kind: \`${redactAutoText(kind).slice(0, 100)}\``,
     '',
     '## Commander Roles',
     '',
@@ -180,7 +294,15 @@ export async function writeAutoDecisionMarkdown({
     '',
   ].join('\n');
 
-  await fs.writeFile(filePath, body, 'utf8');
+  const written = await writeMemoryFileWithLimit({
+    dir: dirs.decisions,
+    filePath,
+    text: redactAutoText(body),
+    limits,
+  });
+  if (!written) {
+    return { skipped: true, reason: 'rag_file_limit', folder: MEMORY_FOLDERS.decisions, limit: limits.maxFilesPerFolder, baseDir: dirs.base };
+  }
   await updateAutoRagIndex({ root, env });
   return { filePath, filename, baseDir: dirs.base };
 }
@@ -199,13 +321,14 @@ export async function writeAutoRagNote({
     return null;
   }
   const dirs = await ensureAutoRagDirs({ root, env });
+  const limits = ragLimits(env);
   const now = new Date();
   const folder = folderForKind(kind);
-  const safeTitle = slug(title || kind, kind);
-  const filename = `${timestamp(now)}-${safeTitle}.md`;
   const dirKey = folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks'
     : folder === MEMORY_FOLDERS.forgeRequests ? 'forgeRequests'
       : folder;
+  const safeTitle = slug(redactAutoText(title || kind), kind);
+  const filename = `${timestamp(now)}-${safeTitle}-${randomBytes(3).toString('hex')}.md`;
   const filePath = path.join(dirs[dirKey], filename);
   const frontmatter = [
     '---',
@@ -219,14 +342,22 @@ export async function writeAutoRagNote({
   const text = [
     frontmatter,
     '',
-    `# ${title || `Auto ${kind}`}`,
+    `# ${safeHeading(title, `Auto ${kind}`)}`,
     '',
-    body || '_No body provided._',
+    redactAutoText(body || '_No body provided._'),
     '',
     metadata ? '## Metadata' : '',
     metadata ? codeJson(metadata) : '',
   ].filter((line, idx, arr) => line !== '' || arr[idx - 1] !== '').join('\n');
-  await fs.writeFile(filePath, text, 'utf8');
+  const written = await writeMemoryFileWithLimit({
+    dir: dirs[dirKey],
+    filePath,
+    text: redactAutoText(text),
+    limits,
+  });
+  if (!written) {
+    return { skipped: true, reason: 'rag_file_limit', folder, limit: limits.maxFilesPerFolder, baseDir: dirs.base };
+  }
   await updateAutoRagIndex({ root, env });
   return { filePath, filename, name: `${folder}/${filename}`, kind, baseDir: dirs.base };
 }
@@ -284,6 +415,7 @@ export async function writeAutoLesson({
 
 export async function listAutoRagMarkdown({ root = DEFAULT_ROOT, env = process.env, limit = 20 } = {}) {
   const dirs = await ensureAutoRagDirs({ root, env });
+  const limits = ragLimits(env);
   const files = [];
   for (const [key, folder] of Object.entries({
     decisions: dirs.decisions,
@@ -303,27 +435,34 @@ export async function listAutoRagMarkdown({ root = DEFAULT_ROOT, env = process.e
     .sort((a, b) => b.name.localeCompare(a.name))
     .slice(0, clampLimit(limit, 20, 500));
   return Promise.all(selected.map(async (item) => {
-    const text = await fs.readFile(item.path, 'utf8').catch(() => '');
+    const text = await readUtf8Limited(item.path, limits.maxReadBytes).catch(() => '');
     const firstHeading = /^#\s+(.+)$/m.exec(text)?.[1] || item.name;
     return {
       name: `${item.folder}/${item.name}`,
       file: item.name,
       folder: item.folder,
       path: item.path,
-      title: firstHeading,
-      preview: stripFrontmatter(text).slice(0, 900),
+      title: redactAutoText(firstHeading).slice(0, 300),
+      preview: redactAutoText(stripFrontmatter(text)).slice(0, 900),
     };
   }));
 }
 
 export async function readAutoRagMarkdown(name, { root = DEFAULT_ROOT, env = process.env } = {}) {
   const dirs = await ensureAutoRagDirs({ root, env });
+  const limits = ragLimits(env);
   const safe = safeMemoryRef(name);
   const dirKey = safe.folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks'
     : safe.folder === MEMORY_FOLDERS.forgeRequests ? 'forgeRequests'
       : safe.folder;
   const filePath = path.join(dirs[dirKey], safe.file);
-  return { name: safe.ref, file: safe.file, folder: safe.folder, path: filePath, text: await fs.readFile(filePath, 'utf8') };
+  return {
+    name: safe.ref,
+    file: safe.file,
+    folder: safe.folder,
+    path: filePath,
+    text: await readUtf8Limited(filePath, limits.maxReadBytes),
+  };
 }
 
 export async function searchAutoRagMarkdown({
@@ -337,6 +476,7 @@ export async function searchAutoRagMarkdown({
   limit = 8,
   scanLimit = 120,
 } = {}) {
+  const limits = ragLimits(env);
   const q = [query, target, decisionType, ...(technologies || []), ...(modules || [])].join(' ').trim().toLowerCase();
   const terms = q
     .split(/[^a-z0-9._-]+/i)
@@ -349,7 +489,7 @@ export async function searchAutoRagMarkdown({
   const semanticEnabled = !/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_SEMANTIC_RAG || '1'));
   const queryEmbedding = semanticEnabled ? localTextEmbedding(q) : null;
   for (const item of items) {
-    const text = await fs.readFile(item.path, 'utf8').catch(() => '');
+    const text = await readUtf8Limited(item.path, limits.maxReadBytes).catch(() => '');
     const hay = `${item.name}\n${item.title}\n${text}`.toLowerCase();
     let score = 0;
     for (const term of terms) {
@@ -369,7 +509,7 @@ export async function searchAutoRagMarkdown({
       scored.push({
         ...item,
         score,
-        preview: stripFrontmatter(text).slice(0, 1400),
+        preview: redactAutoText(stripFrontmatter(text)).slice(0, 1400),
       });
     }
   }
@@ -420,6 +560,6 @@ export async function updateAutoRagIndex({ root = DEFAULT_ROOT, env = process.en
     ...section('cursor-tasks', 'Cursor Tasks'),
     ...section('forge-requests', 'Module Forge Requests'),
   ].join('\n');
-  await fs.writeFile(indexPath, text, 'utf8');
+  await atomicWriteRestricted(indexPath, redactAutoText(text), { maxBytes: ragLimits(env).maxFileBytes });
   return { indexPath, count: items.length };
 }

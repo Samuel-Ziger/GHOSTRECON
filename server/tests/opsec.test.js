@@ -46,18 +46,22 @@ test('opsec: gate requer confirm em standard (sem flag)', () => {
   assert.equal(r.needsConfirm, true);
 });
 
-test('opsec: gate permite intrusivo em aggressive', () => {
+test('opsec: aggressive não substitui confirmação humana', () => {
   const r = gateModules({ modules: ['sqlmap'], profile: 'aggressive', confirm: false });
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, false);
+  assert.equal(r.needsConfirm, true);
+  const confirmed = gateModules({ modules: ['sqlmap'], profile: 'aggressive', confirm: true });
+  assert.equal(confirmed.ok, true);
 });
 
-test('opsec: gate bloqueia se ROE não assinado mesmo com confirm', () => {
+test('opsec: gate bloqueia ROE não assinado mesmo com confirm', () => {
   const r = gateModules({
-    modules: ['sqlmap'], profile: 'aggressive', confirm: false,
+    modules: ['sqlmap'], profile: 'aggressive', confirm: true,
     engagement: { roeSigned: false },
   });
   assert.equal(r.ok, false);
-  assert.equal(r.needsConfirm, true);
+  assert.equal(r.needsConfirm, false);
+  assert.match(r.reason, /ROE não assinado/);
 });
 
 test('opsec: gate não gera obstáculo sem intrusivos', () => {

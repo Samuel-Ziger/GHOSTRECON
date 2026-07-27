@@ -2,10 +2,9 @@
  * token-capture.js
  *
  * Quando um finding do tipo 'secret' é gerado, baixa a página onde o token foi
- * encontrado e grava em tokens/<domain>/:
- *   <kind>_<hash>.html      — conteúdo bruto da resposta HTTP
- *   <kind>_<hash>.curl.sh   — comando curl para reproduzir o pedido
- *   <kind>_<hash>.json      — metadata do finding + HTTP status
+ * encontrado e, somente quando explicitamente habilitado, grava evidência
+ * redigida em tokens/<domain>/. Material cru nunca entra em arquivo, curl,
+ * evento ou log.
  */
 
 import https from 'node:https';
@@ -14,7 +13,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { validateToken, extractRawToken } from './token-validator.js';
+import { validateToken } from './token-validator.js';
+import {
+  rawSecretFromFinding,
+  redactSecretText,
+  safeSecretReference,
+} from './secret-safety.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..', '..');
@@ -66,15 +70,32 @@ async function fetchFollowRedirects(urlStr, redirectsLeft = MAX_REDIRECTS) {
   });
 }
 
-export async function captureTokenFinding(finding, domain, emit) {
+export async function captureTokenFinding(
+  finding,
+  domain,
+  emit,
+  {
+    enabled = false,
+    fetchSource = false,
+    networkValidation = false,
+    outputDir = TOKENS_DIR,
+    fetchImpl = fetchFollowRedirects,
+    probeImpl = null,
+  } = {},
+) {
+  if (enabled !== true) return { skipped: 'disabled' };
   const { url, value, meta } = finding;
   if (!url) return;
+  const rawMaterial = rawSecretFromFinding(finding);
+  const safeRef = safeSecretReference(rawMaterial || value);
+  const safeUrl = redactSecretText(url, rawMaterial);
 
   const domainSlug = safeFilename(domain);
-  const domainDir  = path.join(TOKENS_DIR, domainSlug);
+  const domainDir  = path.join(outputDir, domainSlug);
 
   try {
-    await fs.mkdir(domainDir, { recursive: true });
+    await fs.mkdir(domainDir, { recursive: true, mode: 0o700 });
+    await fs.chmod(domainDir, 0o700);
   } catch (e) {
     emit?.({ type: 'log', msg: `[token-capture] falha ao criar pasta: ${e.message}`, level: 'warn' });
     return;
@@ -85,65 +106,78 @@ export async function captureTokenFinding(finding, domain, emit) {
   const hash = shortHash(url + (value || ''));
   const base = `${kind}_${hash}`;
 
-  emit?.({ type: 'log', msg: `[token-capture] a baixar ${url} …`, level: 'info' });
+  if (fetchSource) {
+    emit?.({ type: 'log', msg: `[token-capture] a baixar ${safeUrl} …`, level: 'info' });
+  }
 
   let fetchResult = null;
-  try {
-    fetchResult = await fetchFollowRedirects(url);
-    emit?.({
-      type: 'log',
-      msg: `[token-capture] HTTP ${fetchResult.status} — ${fetchResult.finalUrl !== url ? `(redirect → ${fetchResult.finalUrl}) ` : ''}${url}`,
-      level: fetchResult.status >= 400 ? 'warn' : 'ok',
-    });
-  } catch (e) {
-    emit?.({ type: 'log', msg: `[token-capture] fetch falhou (${url}): ${e.message}`, level: 'warn' });
+  if (fetchSource === true) {
+    try {
+      fetchResult = await fetchImpl(url);
+      emit?.({
+        type: 'log',
+        msg: `[token-capture] HTTP ${fetchResult.status} — ${redactSecretText(fetchResult.finalUrl || safeUrl, rawMaterial)}`,
+        level: fetchResult.status >= 400 ? 'warn' : 'ok',
+      });
+    } catch (e) {
+      emit?.({
+        type: 'log',
+        msg: `[token-capture] fetch falhou (${safeUrl}): ${redactSecretText(e.message, rawMaterial)}`,
+        level: 'warn',
+      });
+    }
   }
 
   // ── Validação activa do token ────────────────────────────────────
   let validation = null;
   try {
     emit?.({ type: 'log', msg: `[token-capture] a validar token (${kind})…`, level: 'info' });
-    validation = await validateToken(value, url);
+    validation = await validateToken(rawMaterial || value, url, {
+      network: networkValidation === true,
+      probeImpl,
+    });
     const icon = { valid: '✓ VÁLIDO', expired: '✗ EXPIRADO', invalid: '✗ INVÁLIDO',
                    revoked: '⊘ REVOGADO', probable: '~ PROVÁVEL', unknown: '? DESCONHECIDO' };
     emit?.({
       type: 'log',
-      msg: `[token-capture] token: ${icon[validation.status] ?? validation.status} — ${validation.evidence || 'sem evidência de rede'}`,
+      msg: `[token-capture] token: ${icon[validation.status] ?? validation.status} — ${redactSecretText(validation.evidence || 'sem evidência de rede', rawMaterial)}`,
       level: validation.status === 'valid' ? 'ok' : validation.status === 'probable' ? 'info' : 'warn',
     });
   } catch (e) {
-    emit?.({ type: 'log', msg: `[token-capture] validação do token falhou: ${e.message}`, level: 'warn' });
+    emit?.({
+      type: 'log',
+      msg: `[token-capture] validação do token falhou: ${redactSecretText(e.message, rawMaterial)}`,
+      level: 'warn',
+    });
+  }
+  if (validation) {
+    validation = JSON.parse(redactSecretText(JSON.stringify(validation), rawMaterial));
   }
 
   const writes = [];
 
-  // 1. Conteúdo bruto
+  // 1. Conteúdo redigido
   if (fetchResult?.body) {
+    const htmlPath = path.join(domainDir, `${base}.html`);
     writes.push(
       fs.writeFile(
-        path.join(domainDir, `${base}.html`),
-        fetchResult.body.slice(0, MAX_BODY),
-        'utf8',
-      ),
+        htmlPath,
+        redactSecretText(fetchResult.body.slice(0, MAX_BODY), rawMaterial),
+        { encoding: 'utf8', mode: 0o600 },
+      ).then(() => fs.chmod(htmlPath, 0o600)),
     );
   }
 
-  // 2. Curl reproduzível (com headers de auth quando token é válido)
-  const rawToken  = validation ? extractRawToken(value) : null;
+  // 2. Curl sem credencial. Não reproduz probes autenticados.
   const tokenType = validation?.tokenType ?? 'unknown';
-  const authHeader = rawToken ? (
-    tokenType === 'supabase_jwt'
-      ? `-H "apikey: ${rawToken}" \\\n  -H "Authorization: Bearer ${rawToken}"`
-      : `-H "Authorization: Bearer ${rawToken}"`
-  ) : null;
 
   const curlScript = [
     '#!/bin/bash',
-    `# Token       : ${value || ''}`,
+    `# Token ref   : ${safeRef.ref}`,
     `# Tipo        : ${tokenType}`,
     `# Status      : ${validation?.status ?? 'não validado'}`,
-    `# Evidência   : ${validation?.evidence ?? 'n/a'}`,
-    `# URL         : ${url}`,
+    `# Evidência   : ${redactSecretText(validation?.evidence ?? 'n/a', rawMaterial)}`,
+    `# URL         : ${safeUrl}`,
     `# Capturado   : ${new Date().toISOString()}`,
     `# HTTP fonte  : ${fetchResult?.status ?? 'n/a'}`,
     validation?.offlineExpired ? `# AVISO       : JWT expirado offline (exp ${validation.expiredAt ?? '?'})` : null,
@@ -153,33 +187,33 @@ export async function captureTokenFinding(finding, domain, emit) {
     `  -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \\`,
     `  -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \\`,
     `  -H "Cache-Control: no-cache" \\`,
-    `  "${url}"`,
+    `  "${safeUrl}"`,
     '',
-    authHeader ? [
-      '# — Probe autenticado (valida se o token é aceite) —',
-      `curl -sv -L -o /dev/null \\`,
-      `  ${authHeader} \\`,
-      `  "${url}"`,
-      '',
-    ].join('\n') : null,
+    '# Probe autenticado omitido: credenciais nunca são gravadas em curl.',
     `echo "Guardado em ${base}.html — HTTP $?"`,
   ].filter(Boolean).join('\n');
 
   const curlPath = path.join(domainDir, `${base}.curl.sh`);
   writes.push(
-    fs.writeFile(curlPath, curlScript, 'utf8').then(() => fs.chmod(curlPath, 0o755)),
+    fs.writeFile(curlPath, curlScript, { encoding: 'utf8', mode: 0o600 })
+      .then(() => fs.chmod(curlPath, 0o600)),
   );
 
-  // 3. Metadata JSON
+  // 3. Metadata JSON redigida
+  const jsonPath = path.join(domainDir, `${base}.json`);
   writes.push(
     fs.writeFile(
-      path.join(domainDir, `${base}.json`),
+      jsonPath,
       JSON.stringify({
         domain,
-        url,
-        finalUrl:    fetchResult?.finalUrl ?? null,
-        value:       value || '',
-        meta:        meta  || '',
+        url:         safeUrl,
+        finalUrl:    fetchResult?.finalUrl ? redactSecretText(fetchResult.finalUrl, rawMaterial) : null,
+        tokenRef:    safeRef.ref,
+        tokenFingerprint: safeRef.fingerprint,
+        meta:        redactSecretText(
+          typeof meta === 'string' ? meta : JSON.stringify(meta || {}),
+          rawMaterial,
+        ),
         capturedAt:  new Date().toISOString(),
         httpStatus:  fetchResult?.status ?? null,
         bodyBytes:   fetchResult?.body?.length ?? 0,
@@ -190,8 +224,8 @@ export async function captureTokenFinding(finding, domain, emit) {
           meta: `${base}.json`,
         },
       }, null, 2),
-      'utf8',
-    ),
+      { encoding: 'utf8', mode: 0o600 },
+    ).then(() => fs.chmod(jsonPath, 0o600)),
   );
 
   await Promise.allSettled(writes);
@@ -207,7 +241,8 @@ export async function captureTokenFinding(finding, domain, emit) {
   if (validation) {
     emit?.({
       type:            'token_validation',
-      tokenRef:        String(value || '').slice(0, 160),
+      tokenRef:        safeRef.ref,
+      tokenFingerprint: safeRef.fingerprint,
       tokenType:       validation.tokenType,
       status:          validation.status,
       evidence:        validation.evidence,

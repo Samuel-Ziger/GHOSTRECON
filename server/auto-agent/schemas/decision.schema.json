@@ -7,7 +7,8 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["run_modules", "continue_with_context", "finish", "ask_operator", "forge_module", "abstain"]
+      "description": "request_modules e execute_modules são aliases de transporte normalizados para run_modules antes da validação canônica.",
+      "enum": ["run_modules", "request_modules", "execute_modules", "continue_with_context", "finish", "ask_operator", "forge_module", "abstain"]
     },
     "objective": { "type": "string", "minLength": 1, "maxLength": 1000 },
     "reasoningSummary": {
@@ -53,10 +54,25 @@
         "proposedId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
         "gap": { "type": "string", "minLength": 1, "maxLength": 4000 },
         "benefit": { "type": "string", "minLength": 1, "maxLength": 4000 },
-        "evidenceRefs": { "type": "array", "items": { "type": "string", "maxLength": 500 } },
-        "intrusive": { "type": "boolean" },
-        "expectedInputs": { "type": "array", "items": { "type": "string", "maxLength": 500 } },
-        "expectedOutputs": { "type": "array", "items": { "type": "string", "maxLength": 500 } },
+        "evidenceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "intrusive": { "type": "boolean", "enum": [false] },
+        "expectedInputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "expectedOutputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
         "testStrategy": { "type": "string", "minLength": 1, "maxLength": 4000 },
         "risks": { "type": "string", "minLength": 1, "maxLength": 4000 }
       }

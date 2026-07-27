@@ -1,16 +1,24 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile as execFileCb } from 'node:child_process';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { codexChildEnv } from '../providers/codex.mjs';
 import { claudeChildEnv } from '../providers/claude-code.mjs';
 import { extractOpenAiContent, redactAutoContext } from '../providers/shared.mjs';
 import { parseAgentDecisionText } from '../decision-contract.mjs';
+import { combineAbortSignals } from '../../modules/http-utils.js';
+import {
+  isForgeAbort,
+  runForgeCommand,
+  throwIfForgeAborted,
+} from './process-runner.mjs';
+import {
+  computeForgeArtifactIntegrity,
+  sameForgeArtifactIntegrity,
+} from './artifact-integrity.mjs';
 
-const execFileDefault = promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'schemas', 'forge-review.schema.json');
+export const FORGE_MIN_INDEPENDENT_REVIEW_QUORUM = 2;
 
 function validateReview(input) {
   const verdicts = new Set(['approve', 'request_changes', 'reject', 'abstain']);
@@ -50,29 +58,59 @@ async function reviewPrompt(pendingDir) {
   ].join('\n'));
 }
 
-async function reviewCli(provider, prompt, pendingDir, root, env, execFileImpl) {
+async function reviewCli(provider, prompt, pendingDir, root, env, execFileImpl, signal) {
   const schemaText = await fs.readFile(SCHEMA_PATH, 'utf8');
   const timeout = Math.max(30000, Math.min(600000, Number(env.GHOSTRECON_AUTO_FORGE_REVIEW_TIMEOUT_MS || 180000)));
   if (provider.id === 'codex') {
     const outFile = path.join(pendingDir, '.codex-review-output.json');
-    const out = await execFileImpl(env.GHOSTRECON_CODEX_COMMAND || 'codex', [
-      'exec', '--json', '--sandbox', 'read-only', '--output-schema', SCHEMA_PATH,
-      '--output-last-message', outFile, '--cd', root, '--ephemeral', prompt,
-    ], { cwd: root, env: codexChildEnv(env), timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
-    const parsed = parseAgentDecisionText(await fs.readFile(outFile, 'utf8').catch(() => out?.stdout || ''));
-    await fs.rm(outFile, { force: true }).catch(() => {});
-    return validateReview(parsed);
+    try {
+      const out = await runForgeCommand(
+        env.GHOSTRECON_CODEX_COMMAND || 'codex',
+        [
+          'exec', '--json', '--sandbox', 'read-only', '--output-schema', SCHEMA_PATH,
+          '--output-last-message', outFile, '--cd', root, '--ephemeral', prompt,
+        ],
+        {
+          cwd: root,
+          env: codexChildEnv(env),
+          timeoutMs: timeout,
+          maxBuffer: 8 * 1024 * 1024,
+          signal,
+          execFileImpl,
+          label: `Forge review ${provider.id}`,
+        },
+      );
+      throwIfForgeAborted(signal);
+      const parsed = parseAgentDecisionText(await fs.readFile(outFile, 'utf8').catch(() => out?.stdout || ''));
+      return validateReview(parsed);
+    } finally {
+      await fs.rm(outFile, { force: true }).catch(() => {});
+    }
   }
-  const out = await execFileImpl(env.GHOSTRECON_CLAUDE_COMMAND || 'claude', [
-    '--print', '--output-format', 'json', '--json-schema', schemaText,
-    '--permission-mode', 'plan', '--tools', '', '--disable-slash-commands',
-    '--no-session-persistence', '--setting-sources', 'user', prompt,
-  ], { cwd: root, env: claudeChildEnv(env), timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+  const out = await runForgeCommand(
+    env.GHOSTRECON_CLAUDE_COMMAND || 'claude',
+    [
+      '--print', '--output-format', 'json', '--json-schema', schemaText,
+      '--permission-mode', 'plan', '--tools', '', '--disable-slash-commands',
+      '--no-session-persistence', '--setting-sources', 'user', prompt,
+    ],
+    {
+      cwd: root,
+      env: claudeChildEnv(env),
+      timeoutMs: timeout,
+      maxBuffer: 8 * 1024 * 1024,
+      signal,
+      execFileImpl,
+      label: `Forge review ${provider.id}`,
+    },
+  );
+  throwIfForgeAborted(signal);
   const wrapper = JSON.parse(String(out?.stdout || '').trim());
   return validateReview(wrapper.structured_output || (typeof wrapper.result === 'string' ? parseAgentDecisionText(wrapper.result) : wrapper.result || wrapper));
 }
 
-async function reviewHttp(provider, prompt, env, fetchImpl) {
+async function reviewHttp(provider, prompt, env, fetchImpl, signal) {
+  throwIfForgeAborted(signal);
   const isOpenrouter = provider.id === 'openrouter';
   const baseUrl = isOpenrouter
     ? String(env.GHOSTRECON_OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '')
@@ -87,44 +125,133 @@ async function reviewHttp(provider, prompt, env, fetchImpl) {
       messages: [{ role: 'system', content: 'Retorne somente JSON de review.' }, { role: 'user', content: prompt }],
       temperature: 0.1, max_tokens: 8192, response_format: { type: 'json_object' },
     }),
-    signal: AbortSignal.timeout(Number(env.GHOSTRECON_AUTO_FORGE_REVIEW_TIMEOUT_MS || 180000)),
+    signal: combineAbortSignals(
+      signal,
+      Number(env.GHOSTRECON_AUTO_FORGE_REVIEW_TIMEOUT_MS || 180000),
+    ),
   });
+  throwIfForgeAborted(signal);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`${provider.id} review HTTP ${res.status}`);
   return validateReview(parseAgentDecisionText(extractOpenAiContent(data)));
 }
 
-export async function reviewForgePackage({ pendingDir, root, providers = [], env = process.env, fetchImpl = globalThis.fetch, execFileImpl = execFileDefault } = {}) {
+export async function reviewForgePackage({
+  pendingDir,
+  root,
+  providers = [],
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  execFileImpl = null,
+  signal = null,
+} = {}) {
+  throwIfForgeAborted(signal);
+  const artifactIntegrity = await computeForgeArtifactIntegrity(pendingDir);
   const prompt = await reviewPrompt(pendingDir);
   const provenance = await fs.readFile(path.join(pendingDir, 'provenance.json'), 'utf8').then(JSON.parse).catch(() => ({}));
-  const eligible = providers.filter((p) => p.selected && p.usable && ['codex', 'claude_code', 'openrouter', 'skynet'].includes(p.id));
-  const independent = eligible.filter((p) => p.id !== provenance.author);
-  const reviewers = independent.length ? independent : eligible;
+  const verdictPath = path.join(pendingDir, 'verdict.json');
+  const initialVerdict = await fs.readFile(verdictPath, 'utf8').then(JSON.parse).catch(() => ({}));
+  const priorGatesMatch = sameForgeArtifactIntegrity(
+    initialVerdict?.validation?.artifactIntegrity,
+    artifactIntegrity,
+  ) && sameForgeArtifactIntegrity(
+    initialVerdict?.tests?.artifactIntegrity,
+    artifactIntegrity,
+  );
+  const eligible = providers.filter((p) => (
+    p.selected
+    && p.usable
+    && ['codex', 'claude_code', 'openrouter', 'skynet'].includes(p.id)
+  ));
+  const seenReviewers = new Set();
+  const reviewers = eligible.filter((provider) => {
+    if (provider.id === provenance.author || seenReviewers.has(provider.id)) return false;
+    seenReviewers.add(provider.id);
+    return true;
+  });
   const reviews = [];
   for (const provider of reviewers) {
+    throwIfForgeAborted(signal);
     const startedAt = Date.now();
     try {
       const review = ['codex', 'claude_code'].includes(provider.id)
-        ? await reviewCli(provider, prompt, pendingDir, root, env, execFileImpl)
-        : await reviewHttp(provider, prompt, env, fetchImpl);
+        ? await reviewCli(provider, prompt, pendingDir, root, env, execFileImpl, signal)
+        : await reviewHttp(provider, prompt, env, fetchImpl, signal);
       reviews.push({ ok: true, provider: provider.id, model: provider.defaultModel || null, latencyMs: Date.now() - startedAt, ...review });
     } catch (e) {
+      if (isForgeAbort(e, signal)) throw e;
       reviews.push({ ok: false, provider: provider.id, latencyMs: Date.now() - startedAt, error: e?.message || String(e), verdict: 'abstain' });
     }
   }
   const votes = reviews.filter((r) => r.ok && r.verdict !== 'abstain');
   const approvals = votes.filter((r) => r.verdict === 'approve').length;
-  const threshold = Math.floor(votes.length / 2) + 1;
+  const quorumMet = votes.length >= FORGE_MIN_INDEPENDENT_REVIEW_QUORUM;
+  const threshold = quorumMet
+    ? Math.max(
+        FORGE_MIN_INDEPENDENT_REVIEW_QUORUM,
+        Math.floor(votes.length / 2) + 1,
+      )
+    : FORGE_MIN_INDEPENDENT_REVIEW_QUORUM;
   const hasReject = votes.some((r) => r.verdict === 'reject');
   const hasChanges = votes.some((r) => r.verdict === 'request_changes');
-  const approved = votes.length > 0 && approvals >= threshold && !hasReject && !hasChanges;
-  const status = approved ? 'pending_operator_approval' : hasReject ? 'ai_review_rejected' : hasChanges ? 'changes_requested' : 'insufficient_review_quorum';
-  const result = { schemaVersion: 1, reviewedAt: new Date().toISOString(), approved, status, threshold, approvals, reviews };
+  const finalArtifactIntegrity = await computeForgeArtifactIntegrity(pendingDir);
+  const artifactUnchanged = sameForgeArtifactIntegrity(
+    artifactIntegrity,
+    finalArtifactIntegrity,
+  );
+  const approved = priorGatesMatch
+    && artifactUnchanged
+    && quorumMet
+    && approvals >= threshold
+    && !hasReject
+    && !hasChanges;
+  const status = !priorGatesMatch
+    ? 'artifact_gates_stale'
+    : !artifactUnchanged
+      ? 'artifact_changed_during_review'
+      : !quorumMet
+        ? 'insufficient_review_quorum'
+        : approved
+          ? 'pending_operator_approval'
+          : hasReject
+            ? 'ai_review_rejected'
+            : hasChanges
+              ? 'changes_requested'
+              : 'insufficient_review_quorum';
+  const result = {
+    schemaVersion: 1,
+    reviewedAt: new Date().toISOString(),
+    approved,
+    status,
+    author: provenance.author || null,
+    authorExcluded: true,
+    minimumQuorum: FORGE_MIN_INDEPENDENT_REVIEW_QUORUM,
+    quorumMet,
+    independentVotes: votes.length,
+    threshold,
+    approvals,
+    reviews,
+    artifactIntegrity,
+    artifactUnchanged,
+    priorGatesMatch,
+  };
   await fs.writeFile(path.join(pendingDir, 'ai-reviews.json'), JSON.stringify(result, null, 2), 'utf8');
-  const verdictPath = path.join(pendingDir, 'verdict.json');
   const verdict = await fs.readFile(verdictPath, 'utf8').then(JSON.parse).catch(() => ({}));
   verdict.status = status;
-  verdict.aiReview = { approved, threshold, approvals, reviewers: reviews.map((r) => ({ provider: r.provider, verdict: r.verdict, ok: r.ok })) };
+  verdict.aiReview = {
+    approved,
+    author: provenance.author || null,
+    authorExcluded: true,
+    minimumQuorum: FORGE_MIN_INDEPENDENT_REVIEW_QUORUM,
+    quorumMet,
+    independentVotes: votes.length,
+    threshold,
+    approvals,
+    reviewers: reviews.map((r) => ({ provider: r.provider, verdict: r.verdict, ok: r.ok })),
+    artifactIntegrity,
+    artifactUnchanged,
+    priorGatesMatch,
+  };
   verdict.policy = { ...(verdict.policy || {}), pipelineEnabled: false, operatorApprovalRequired: true };
   verdict.updatedAt = new Date().toISOString();
   await fs.writeFile(verdictPath, JSON.stringify(verdict, null, 2), 'utf8');

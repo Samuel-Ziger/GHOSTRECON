@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { parseArgs, parseDuration, kvListToObject } from '../modules/cli/args.mjs';
 
 test('parseArgs: string flag with --key value', () => {
@@ -86,4 +87,16 @@ test('kvListToObject: parse K=V pairs', () => {
 test('kvListToObject: ignora entries inválidas', () => {
   const obj = kvListToObject(['no-equals', '=nokey', 'K=']);
   assert.deepEqual(obj, { K: '' });
+});
+
+test('CLI RUN não herda confirmação global e usa aprovação vinculada ao plano', async () => {
+  const source = await fs.readFile(
+    new URL('../modules/cli/commands/run.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(source, /GHOSTRECON_CONFIRM_ACTIVE/);
+  assert.match(source, /\/api\/recon\/preflight/);
+  assert.match(source, /\/api\/recon\/approval/);
+  assert.match(source, /delete preflightBody\.auth/);
+  assert.match(source, /body\.manualApproval/);
 });

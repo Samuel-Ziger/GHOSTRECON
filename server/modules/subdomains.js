@@ -1,15 +1,22 @@
 import { UA } from '../config.js';
-import { fetchWithBackoff } from './http-utils.js';
+import { combineAbortSignals, fetchWithBackoff } from './http-utils.js';
 
 /**
  * Passivo: Certificate Transparency via crt.sh
  */
-export async function fetchCrtShSubdomains(domain) {
+export async function fetchCrtShSubdomains(
+  domain,
+  { signal = null, timeoutMs = 90000, fetchImpl = null } = {},
+) {
   const url = `https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`;
-  const res = await fetchWithBackoff(url, {
-    headers: { 'User-Agent': UA, Accept: 'application/json' },
-    signal: AbortSignal.timeout(90000),
-  });
+  const res = await fetchWithBackoff(
+    url,
+    {
+      headers: { 'User-Agent': UA, Accept: 'application/json' },
+      signal: combineAbortSignals(signal, timeoutMs),
+    },
+    { fetchImpl },
+  );
   if (!res.ok) throw new Error(`crt.sh HTTP ${res.status}`);
   const rows = await res.json();
   if (!Array.isArray(rows)) return [];

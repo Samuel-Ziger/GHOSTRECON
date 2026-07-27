@@ -22,10 +22,11 @@ export function resolveShannonHome(ghostRoot = defaultGhostRoot()) {
 
 /**
  * Diagnóstico read-only para UI e gate no recon.
- * @param {{ ghostRoot?: string }} [opts]
+ * @param {{ ghostRoot?: string, signal?: AbortSignal }} [opts]
  */
 export async function getShannonCapabilities(opts = {}) {
   const ghostRoot = opts.ghostRoot || defaultGhostRoot();
+  const signal = opts.signal || undefined;
   const home = resolveShannonHome(ghostRoot);
 
   const checks = {
@@ -37,9 +38,14 @@ export async function getShannonCapabilities(opts = {}) {
   };
 
   try {
-    await execFileAsync('docker', ['info'], { timeout: 8000, maxBuffer: 512 * 1024 });
+    await execFileAsync('docker', ['info'], {
+      timeout: 8000,
+      maxBuffer: 512 * 1024,
+      signal,
+    });
     checks.docker = true;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     /* ignore */
   }
 
@@ -67,9 +73,11 @@ export async function getShannonCapabilities(opts = {}) {
     const { stdout } = await execFileAsync('docker', ['images', '-q', 'shannon-worker'], {
       timeout: 12000,
       maxBuffer: 64 * 1024,
+      signal,
     });
     checks.workerImage = Boolean(String(stdout || '').trim());
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     checks.workerImage = false;
   }
 

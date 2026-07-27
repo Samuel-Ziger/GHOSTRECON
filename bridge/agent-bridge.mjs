@@ -1,22 +1,30 @@
 import { runProcess } from '../server/modules/module-runner.mjs';
-import { parseVigoliumJsonl } from './findings-normalizer.mjs';
+import {
+  parseVigoliumJsonl,
+  redactVigoliumExternalValue,
+} from './findings-normalizer.mjs';
 import {
   ghostreconRoot,
+  buildVigoliumChildEnv,
   resolveVigoliumBinary,
-  resolveVigoliumAuthEntries,
   resolveVigoliumAuthFiles,
   resolveVigoliumModuleTags,
   resolveVigoliumTarget,
   shouldPreferVigoliumPath,
-  shouldUseVigoliumCodex,
   vigoliumAgentTimeoutMs,
 } from './vigolium-config.mjs';
+import { createVigoliumAuthTransport } from './vigolium-auth-transport.mjs';
+import { assertVigoliumBinaryIdentity } from './vigolium-binary-integrity.mjs';
+import { rethrowFatalVigoliumExecutionError } from './vigolium-errors.mjs';
+import { redactAutoText } from '../server/auto-agent/redaction.mjs';
+import { redactLocalPathsForPublic } from '../server/modules/finding-redaction.mjs';
 
-export function buildVigoliumAgentArgs(s, mode) {
+export function buildVigoliumAgentArgs(s, mode, { authFiles: authFilesOverride } = {}) {
   const target = resolveVigoliumTarget(s);
   const source = String(s.vigoliumSource || '').trim();
-  const authFiles = resolveVigoliumAuthFiles(s);
-  const authEntries = resolveVigoliumAuthEntries(s);
+  const authFiles = Array.isArray(authFilesOverride)
+    ? authFilesOverride.map(String).map((value) => value.trim()).filter(Boolean)
+    : resolveVigoliumAuthFiles(s);
   const moduleTags = resolveVigoliumModuleTags(s);
   const args = ['agent', mode, '-j', '-F', '--soft-fail'];
 
@@ -32,13 +40,11 @@ export function buildVigoliumAgentArgs(s, mode) {
     if (source) args.push('--source', source);
     for (const tag of moduleTags) args.push('--module-tag', tag);
     for (const authFile of authFiles) args.push('--auth-file', authFile);
-    for (const authEntry of authEntries) args.push('--auth', authEntry);
   } else if (mode === 'autopilot') {
     args.push('-t', target);
     if (source) args.push('--source', source);
     for (const tag of moduleTags) args.push('--module-tag', tag);
     for (const authFile of authFiles) args.push('--auth-file', authFile);
-    for (const authEntry of authEntries) args.push('--auth', authEntry);
   } else if (mode === 'query') {
     const prompt = String(s.vigoliumAgentPrompt || 'security-code-review').trim();
     args.length = 0;
@@ -46,73 +52,109 @@ export function buildVigoliumAgentArgs(s, mode) {
     if (source) args.push('--source', source);
   }
 
-  return { args, target, source, authFiles, authEntries, moduleTags, skipped: false };
-}
-
-function vigoliumAgentEnv(s) {
-  if (!shouldUseVigoliumCodex(s)) return process.env;
-  return {
-    ...process.env,
-    GHOSTRECON_VIGOLIUM_USE_CODEX: '1',
-    VIGOLIUM_PROVIDER: process.env.VIGOLIUM_PROVIDER || 'openai-codex-oauth',
-  };
+  return { args, target, source, authFiles, moduleTags, skipped: false };
 }
 
 /**
  * @param {object} s — pipeline state
  * @param {'audit'|'swarm'|'query'|'autopilot'} mode
  */
-export async function runVigoliumAgent(s, mode) {
+export async function runVigoliumAgent(s, mode, {
+  runProcessImpl = runProcess,
+} = {}) {
   const log = s.log || (() => {});
+  s.signal?.throwIfAborted?.();
   const root = s.ROOT || ghostreconRoot();
   const { bin, source: binarySource } = await resolveVigoliumBinary(root, { preferPath: shouldPreferVigoliumPath(s) });
   if (!bin) {
     return { ok: false, skipped: true, reason: 'binário vigolium não encontrado', findings: [] };
   }
-
-  const built = buildVigoliumAgentArgs(s, mode);
-  if (built.skipped) {
-    return { ok: false, skipped: true, reason: built.reason, findings: [] };
-  }
-  const { args, target, source } = built;
-
-  log(`Vigolium agent ${mode}: ${mode === 'audit' ? source : target}`, 'info');
-
-  let result;
+  let authTransport = null;
+  const redactExternalText = (value) => redactLocalPathsForPublic(
+    authTransport?.redact(value) || String(value ?? ''),
+    { paths: [root, bin, s.vigoliumSource].filter(Boolean) },
+  );
+  const publicError = (value) => redactAutoText(
+    redactExternalText(value?.message || String(value ?? '')),
+  );
   try {
-    result = await runProcess(bin, args, {
-      timeoutMs: vigoliumAgentTimeoutMs(),
-      rejectOnError: false,
-      rejectOnTimeout: false,
-      spawnOpts: { env: vigoliumAgentEnv(s) },
-      label: `vigolium agent ${mode}`,
-    });
-  } catch (e) {
-    return { ok: false, skipped: false, reason: e?.message || String(e), findings: [] };
-  }
+    if (mode === 'swarm' || mode === 'autopilot') {
+      authTransport = await createVigoliumAuthTransport(s);
+    }
 
-  const raw = result.stdout || '';
-  const findings = parseVigoliumJsonl(raw);
-  const summary = parseAgentSummary(raw);
-  return {
-    ok: result.code === 0 || findings.length > 0,
-    skipped: false,
-    findings,
-    summary,
-    mode,
-    exitCode: result.code,
-    timedOut: result.timedOut,
-    binary: bin,
-    binarySource,
-  };
+    const built = buildVigoliumAgentArgs(s, mode, {
+      authFiles: authTransport?.authFiles,
+    });
+    if (built.skipped) {
+      return { ok: false, skipped: true, reason: built.reason, findings: [] };
+    }
+    const { args, target, source } = built;
+
+    log(
+      `Vigolium agent ${mode}: ${mode === 'audit' ? 'fonte local autorizada' : target}`,
+      'info',
+    );
+
+    let result;
+    try {
+      await assertVigoliumBinaryIdentity(bin, s.vigoliumExpectedIdentity);
+      result = await runProcessImpl(bin, args, {
+        timeoutMs: vigoliumAgentTimeoutMs(),
+        signal: s.signal,
+        rejectOnError: false,
+        rejectOnTimeout: false,
+        spawnOpts: { env: buildVigoliumChildEnv(s) },
+        label: `vigolium agent ${mode}`,
+      });
+    } catch (e) {
+      rethrowFatalVigoliumExecutionError(e, s.signal, publicError(e));
+      return {
+        ok: false,
+        skipped: false,
+        reason: publicError(e),
+        findings: [],
+      };
+    }
+
+    const raw = result.stdout || '';
+    const redact = redactExternalText;
+    const findings = parseVigoliumJsonl(raw, { redact });
+    const summary = parseAgentSummary(raw, { redact });
+    return {
+      ok: result.code === 0 || findings.length > 0,
+      skipped: false,
+      findings,
+      summary,
+      mode,
+      exitCode: result.code,
+      timedOut: result.timedOut,
+      binary: bin,
+      binarySource,
+    };
+  } catch (error) {
+    const redactedFailure = authTransport
+      ? publicError(error)
+      : 'falha ao preparar autenticação Vigolium';
+    rethrowFatalVigoliumExecutionError(error, s.signal, redactedFailure);
+    return {
+      ok: false,
+      skipped: false,
+      reason: redactedFailure,
+      findings: [],
+    };
+  } finally {
+    await authTransport?.cleanup?.();
+  }
 }
 
-function parseAgentSummary(raw) {
+function parseAgentSummary(raw, options = {}) {
   const lines = String(raw || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
       const row = JSON.parse(lines[i]);
-      if (row?.agentic_scan_uuid || row?.session_dir || row?.total_findings != null) return row;
+      if (row?.agentic_scan_uuid || row?.session_dir || row?.total_findings != null) {
+        return redactVigoliumExternalValue(row, options);
+      }
     } catch {
       // ignore non-JSON progress lines
     }

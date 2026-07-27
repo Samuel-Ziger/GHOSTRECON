@@ -64,11 +64,12 @@ function torControlReplyComplete(raw) {
 /**
  * Conecta + autentica + retorna um helper { send, close }.
  */
-async function connectControl({ timeoutMs = 8_000 } = {}) {
+async function connectControl({ timeoutMs = 8_000, signal = null } = {}) {
+  if (signal?.aborted) throw signal.reason || new Error('Tor ControlPort cancelado');
   const host = controlHost();
   const port = controlPort();
   return new Promise((resolve, reject) => {
-    const sock = net.connect({ host, port });
+    const sock = net.connect({ host, port, ...(signal ? { signal } : {}) });
     let buf = '';
     let to = setTimeout(() => {
       try { sock.destroy(); } catch { /* ignore */ }
@@ -137,14 +138,26 @@ async function connectControl({ timeoutMs = 8_000 } = {}) {
  * Sinaliza NEWNYM — Tor escolhe novos circuits para subsequentes streams.
  * Há um rate limit interno no Tor (default 10s) entre NEWNYMs.
  */
-export async function newnym({ timeoutMs = 5_000 } = {}) {
-  const { helper } = await connectControl({ timeoutMs });
+export async function newnym({ timeoutMs = 5_000, signal = null } = {}) {
+  if (signal?.aborted) throw signal.reason || new Error('Tor NEWNYM cancelado');
+  const { helper } = await connectControl({ timeoutMs, signal });
+  const onAbort = () => {
+    try {
+      helper.sock?.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+    } catch {
+      // Best-effort cancellation; the command timeout remains the fallback.
+    }
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
+    if (signal?.aborted) throw signal.reason || new Error('Tor NEWNYM cancelado');
     const r = await helper.send('SIGNAL NEWNYM', { multi: true });
+    if (signal?.aborted) throw signal.reason || new Error('Tor NEWNYM cancelado');
     const ok = /^250 OK/m.test(r);
     if (!ok) throw new Error(`NEWNYM falhou: ${r.trim()}`);
     return { ok: true, raw: r.trim() };
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     helper.close();
   }
 }
@@ -220,7 +233,8 @@ export async function getVersion({ timeoutMs = 5_000 } = {}) {
 }
 
 /** Health resumido para /api/tunnel/health. */
-export async function torHealth() {
+export async function torHealth({ signal = null } = {}) {
+  if (signal?.aborted) throw signal.reason || new Error('Tor health cancelado');
   const out = {
     control: { ok: false, host: controlHost(), port: controlPort(), authMethod: null, error: null },
     bootstrap: null,
@@ -228,31 +242,50 @@ export async function torHealth() {
     circuits: { count: 0, built: 0 },
   };
   try {
-    const { helper, authInfo } = await connectControl({ timeoutMs: 4_000 });
+    const { helper, authInfo } = await connectControl({ timeoutMs: 4_000, signal });
+    const onAbort = () => {
+      try {
+        helper.sock?.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+      } catch {
+        // Best-effort cancellation; command timeouts remain the fallback.
+      }
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     out.control.ok = true;
     out.control.authMethod = authInfo.method;
     try {
-      const v = await helper.send('GETINFO version', { multi: true });
-      const m = v.match(/version=(\S+)/);
-      out.version = m ? m[1] : null;
-    } catch { /* ignore */ }
-    try {
-      const b = await helper.send('GETINFO status/bootstrap-phase', { multi: true });
-      out.bootstrap = parseBootstrap(b);
-    } catch { /* ignore */ }
-    try {
-      const cs = await helper.send('GETINFO circuit-status', { multi: true });
-      const lines = cs.split(/\r?\n/);
-      for (const line of lines) {
-        const m = line.match(/^(\d+)\s+(LAUNCHED|BUILT|EXTENDED|FAILED|CLOSED)/);
-        if (m) {
-          out.circuits.count += 1;
-          if (m[2] === 'BUILT') out.circuits.built += 1;
-        }
+      try {
+        const v = await helper.send('GETINFO version', { multi: true });
+        const m = v.match(/version=(\S+)/);
+        out.version = m ? m[1] : null;
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason || error;
       }
-    } catch { /* ignore */ }
-    helper.close();
+      try {
+        const b = await helper.send('GETINFO status/bootstrap-phase', { multi: true });
+        out.bootstrap = parseBootstrap(b);
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason || error;
+      }
+      try {
+        const cs = await helper.send('GETINFO circuit-status', { multi: true });
+        const lines = cs.split(/\r?\n/);
+        for (const line of lines) {
+          const m = line.match(/^(\d+)\s+(LAUNCHED|BUILT|EXTENDED|FAILED|CLOSED)/);
+          if (m) {
+            out.circuits.count += 1;
+            if (m[2] === 'BUILT') out.circuits.built += 1;
+          }
+        }
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason || error;
+      }
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      helper.close();
+    }
   } catch (e) {
+    if (signal?.aborted) throw signal.reason || e;
     out.control.error = e?.message || String(e);
   }
   return out;

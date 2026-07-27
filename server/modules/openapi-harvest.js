@@ -50,7 +50,14 @@ function collectParamsFromSwagger2(doc) {
 /**
  * @returns {{ type:'endpoint'|'param', value, meta, url?, prio, score }[]}
  */
-export async function harvestOpenApiFromOrigins(origins, domain, outOfScopeList, modules, log) {
+export async function harvestOpenApiFromOrigins(
+  origins,
+  domain,
+  outOfScopeList,
+  modules,
+  log,
+  scopePolicy = null,
+) {
   const out = [];
   const cap = Math.max(1, Number(limits.openapiMaxOrigins ?? 10));
   const list = [...new Set(origins.map((o) => String(o).replace(/\/$/, '')))].slice(0, cap);
@@ -66,11 +73,11 @@ export async function harvestOpenApiFromOrigins(origins, domain, outOfScopeList,
       } catch {
         continue;
       }
-      if (!urlInReconScope(u.href, domain, outOfScopeList)) continue;
+      if (!urlInReconScope(u.href, domain, outOfScopeList, scopePolicy)) continue;
       try {
         const res = await fetch(u.href, {
           method: 'GET',
-          redirect: 'follow',
+          redirect: 'manual',
           signal: AbortSignal.timeout(timeoutMs),
           headers: {
             Accept: 'application/json,*/*;q=0.8',
@@ -130,7 +137,14 @@ const GQL_INTRO = JSON.stringify({
 /**
  * Um POST de introspecção mínima em /graphql (só se já existir pista no corpus).
  */
-export async function tryGraphqlMinimalProbe(graphqlUrls, domain, outOfScopeList, modules, log) {
+export async function tryGraphqlMinimalProbe(
+  graphqlUrls,
+  domain,
+  outOfScopeList,
+  modules,
+  log,
+  scopePolicy = null,
+) {
   const ua = pickStealthUserAgent(modules);
   const timeoutMs = Math.min(12000, limits.probeTimeoutMs || 12000);
   const seen = new Set();
@@ -141,7 +155,7 @@ export async function tryGraphqlMinimalProbe(graphqlUrls, domain, outOfScopeList
     } catch {
       continue;
     }
-    if (!urlInReconScope(u.href, domain, outOfScopeList)) continue;
+    if (!urlInReconScope(u.href, domain, outOfScopeList, scopePolicy)) continue;
     const key = u.origin + u.pathname;
     if (seen.has(key)) continue;
     seen.add(key);

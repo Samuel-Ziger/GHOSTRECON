@@ -6,6 +6,7 @@ import {
 } from '../../../bridge/vigolium-config.mjs';
 import { getVigoliumCapabilities } from '../../../bridge/vigolium-capabilities.mjs';
 import { logVigoliumFindingsSummary } from '../../../bridge/vigolium-log.mjs';
+import { rethrowFatalVigoliumExecutionError } from '../../../bridge/vigolium-errors.mjs';
 
 /**
  * Fase agent — vigolium-audit / swarm (Codex, Claude Code, etc.).
@@ -34,7 +35,7 @@ export async function runGoAgentPhase(s) {
   s.vigoliumSource = resolveVigoliumSource(s);
   if (agentMode === 'audit' && !s.vigoliumSource && Array.isArray(s.githubClonedItems) && s.githubClonedItems.length) {
     s.vigoliumSource = s.githubClonedItems[0].local_path;
-    log(`vigolium_audit: usando clone GitHub ${s.vigoliumSource}`, 'info');
+    log('vigolium_audit: usando clone GitHub local autorizado', 'info');
   }
   if (agentMode === 'audit' && !s.vigoliumSource) {
     log('vigolium_audit: indique caminho do código (vigoliumSource na UI ou GHOSTRECON_VIGOLIUM_SOURCE)', 'warn');
@@ -73,6 +74,7 @@ export async function runGoAgentPhase(s) {
       });
     }
   } catch (e) {
+    rethrowFatalVigoliumExecutionError(e, s.signal);
     log(`Vigolium agent: ${e?.message || e}`, 'warn');
     if (agentMode === 'audit') pipe('vigolium_audit', 'skip');
     if (agentMode === 'swarm') pipe('vigolium_swarm', 'skip');

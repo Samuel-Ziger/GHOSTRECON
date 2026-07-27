@@ -9,8 +9,12 @@ import {
   writeAutoLesson,
   writeAutoRagNote,
   loadAutoRagContext,
-  resolveAutoRagDir,
 } from '../server/auto-agent/rag-memory.mjs';
+import {
+  AUTO_AUTONOMY_POLICIES,
+  buildEffectiveAutoPlan,
+  effectivePlanApprovalDetails,
+} from '../server/auto-agent/effective-plan.mjs';
 import { expandIntrusiveRunModules, gateModules } from '../server/modules/opsec.mjs';
 
 const SERVER_NAME = 'ghostrecon';
@@ -36,6 +40,18 @@ function toolResult(value) {
       },
     ],
   };
+}
+
+function publicRagMemory(item) {
+  if (!item || typeof item !== 'object') return item;
+  const {
+    path: _localPath,
+    filePath: _filePath,
+    baseDir: _baseDir,
+    dir: _dir,
+    ...safe
+  } = item;
+  return safe;
 }
 
 function errorResult(message, extra = {}) {
@@ -69,6 +85,59 @@ function cleanArray(value) {
       .split(',')
       .map((x) => x.trim())
       .filter(Boolean);
+}
+
+export function normalizeAutoMcpOptions(args = {}) {
+  const requestedAutonomy = String(args.autonomyLevel || '').trim().toLowerCase();
+  const autonomyLevel = Object.hasOwn(AUTO_AUTONOMY_POLICIES, requestedAutonomy)
+    ? requestedAutonomy
+    : 'observation';
+  const includeFrameSeven = args.includeFrameSeven === true;
+  const includeVigolium = args.includeVigolium === true;
+
+  if (args.frameSevenAuth === true && !includeFrameSeven) {
+    throw new Error('FrameSeven autenticado exige includeFrameSeven=true');
+  }
+  if (args.vigoliumUseCodex === true && !includeVigolium) {
+    throw new Error('Vigolium com Codex exige includeVigolium=true');
+  }
+  if (includeFrameSeven && autonomyLevel === 'observation') {
+    throw new Error('FrameSeven envia requests ao alvo e exige autonomia assistida ou superior');
+  }
+  if (args.frameSevenAuth === true && !['authorized', 'authorized_opsec'].includes(autonomyLevel)) {
+    throw new Error('FrameSeven autenticado exige autonomia autorizada e recon.intrusive');
+  }
+  if (includeVigolium && !['authorized', 'authorized_opsec'].includes(autonomyLevel)) {
+    throw new Error('Vigolium DAST exige autonomia autorizada e recon.intrusive');
+  }
+
+  const body = {
+    domain: String(args.target || '').trim(),
+    mode: String(args.mode || 'balanced').trim().toLowerCase(),
+    commanders: cleanArray(args.commanders),
+    modules: cleanArray(args.modules),
+    includeHexstrike: args.includeHexstrike === true,
+    includeDeepPassive: args.includeDeepPassive !== false,
+    autonomyLevel,
+    includeFrameSeven,
+    frameSevenAuth: includeFrameSeven && args.frameSevenAuth === true,
+    includeVigolium,
+    vigoliumUseCodex: includeVigolium && args.vigoliumUseCodex === true,
+    // MCP stdio não possui hoje um canal bidirecional de aprovação ligado à
+    // mesma chamada. O backend deve negar qualquer popup em vez de aguardar
+    // até o timeout ou interpretar uma confirmação antecipada como consentimento
+    // para um plano que ainda não existe.
+    approvalMode: 'deny',
+  };
+  if (args.openrouterModel) body.openrouterModel = String(args.openrouterModel).trim();
+  if (args.engagementId) body.engagementId = String(args.engagementId).trim();
+  return body;
+}
+
+export function autoAutonomyToOpsecProfile(autonomyLevel) {
+  const normalized = String(autonomyLevel || '').trim().toLowerCase();
+  return AUTO_AUTONOMY_POLICIES[normalized]?.opsecProfile
+    || AUTO_AUTONOMY_POLICIES.observation.opsecProfile;
 }
 
 async function loadAutoPlanningModules() {
@@ -124,13 +193,6 @@ function evaluateMcpOpsec({ modules = [], profile = 'standard', confirmActive = 
   });
 }
 
-function autoModeToOpsecProfile(mode) {
-  const m = String(mode || 'balanced').toLowerCase();
-  if (m === 'quick') return 'passive';
-  if (m === 'deep') return 'aggressive';
-  return 'standard';
-}
-
 async function buildReconPlan(client, args = {}) {
   const target = String(args.target || '').trim();
   if (!target) throw new Error('target vazio');
@@ -182,6 +244,10 @@ function summarizeStreamEvents(events, result) {
   const done = [...events].reverse().find((e) => e?.type === 'done') || null;
   const autoPlan = [...events].reverse().find((e) => e?.type === 'auto_plan')?.plan || null;
   const autoEvaluation = [...events].reverse().find((e) => e?.type === 'auto_evaluation')?.evaluation || null;
+  const approvalRequired = [...events].reverse().find((e) => e?.type === 'auto_approval_required') || null;
+  const approvalDenied = [...events].reverse().find((e) => (
+    e?.type === 'auto_approval_denied' || e?.type === 'auto_approval_auto_denied'
+  )) || null;
   return {
     ok: errors.length === 0,
     lines: result?.lines || 0,
@@ -195,6 +261,8 @@ function summarizeStreamEvents(events, result) {
     target: done?.target ?? null,
     autoPlan,
     autoEvaluation,
+    approvalRequired: approvalRequired?.approval || null,
+    approvalDenied: Boolean(approvalDenied),
   };
 }
 
@@ -324,7 +392,7 @@ const tools = [
   },
   {
     name: 'ghostrecon_run_auto',
-    description: 'Executa Modo Auto via /api/recon/auto/stream com comandantes selecionados.',
+    description: 'Executa Modo Auto não interativo. Se o plano exigir confirmação humana, nenhuma ação é executada e a tool devolve os detalhes para aprovação pela UI.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -335,9 +403,25 @@ const tools = [
         },
         mode: { type: 'string', enum: ['quick', 'balanced', 'deep'], default: 'balanced' },
         openrouterModel: { type: 'string' },
-        includeHexstrike: { type: 'boolean', default: true },
+        modules: { type: 'array', items: { type: 'string' }, description: 'Modulos AUTO explicitamente solicitados.' },
+        autonomyLevel: {
+          type: 'string',
+          enum: ['observation', 'assisted', 'authorized', 'authorized_opsec'],
+          default: 'observation',
+          description: 'Politica de selecao AUTO; nao substitui autorizacao, RBAC, engagement ou aprovacao humana.',
+        },
+        includeHexstrike: { type: 'boolean', default: false },
         includeDeepPassive: { type: 'boolean', default: true },
-        confirmActive: { type: 'boolean', default: false },
+        includeVigolium: { type: 'boolean', default: false },
+        vigoliumUseCodex: { type: 'boolean', default: false },
+        includeFrameSeven: { type: 'boolean', default: false },
+        frameSevenAuth: { type: 'boolean', default: false },
+        confirmActive: {
+          type: 'boolean',
+          default: false,
+          description: 'Compatibilidade: não aprova antecipadamente um plano Auto ainda desconhecido.',
+        },
+        engagementId: { type: 'string' },
         timeoutMs: { type: 'integer', default: 1800000 },
         findingsLimit: { type: 'integer', default: 80 },
       },
@@ -347,7 +431,7 @@ const tools = [
   },
   {
     name: 'ghostrecon_plan_auto',
-    description: 'Monta um plano dry-run do Modo Auto com comandantes, catalogo, HexStrike e contexto RAG, sem executar o pipeline.',
+    description: 'Monta uma prévia determinística e seu plano efetivo expandido, sem executar conselho, pipeline ou aprovação humana.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -358,9 +442,20 @@ const tools = [
         },
         mode: { type: 'string', enum: ['quick', 'balanced', 'deep'], default: 'balanced' },
         openrouterModel: { type: 'string' },
-        includeHexstrike: { type: 'boolean', default: true },
+        autonomyLevel: {
+          type: 'string',
+          enum: ['observation', 'assisted', 'authorized', 'authorized_opsec'],
+          default: 'observation',
+          description: 'Politica de selecao usada para filtrar o catalogo e calcular OPSEC.',
+        },
+        includeHexstrike: { type: 'boolean', default: false },
         includeDeepPassive: { type: 'boolean', default: true },
+        includeVigolium: { type: 'boolean', default: false },
+        vigoliumUseCodex: { type: 'boolean', default: false },
+        includeFrameSeven: { type: 'boolean', default: false },
+        frameSevenAuth: { type: 'boolean', default: false },
         modules: { type: 'array', items: { type: 'string' } },
+        engagementId: { type: 'string' },
       },
       required: ['target'],
       additionalProperties: false,
@@ -513,8 +608,13 @@ async function readResource(uri) {
 
   if (rawUri === 'ghostrecon://auto-rag/index') {
     const context = await loadAutoRagContext({ root: ROOT, limit: 40 });
+    const { dir: _localPath, ...publicContext } = context || {};
     return {
-      contents: [{ uri: rawUri, mimeType: 'application/json', text: jsonText(context) }],
+      contents: [{
+        uri: rawUri,
+        mimeType: 'application/json',
+        text: jsonText({ vault: 'auto-rag', ...publicContext }),
+      }],
     };
   }
   if (rawUri.startsWith('ghostrecon://auto-rag/')) {
@@ -614,34 +714,42 @@ function getPrompt(name, args = {}) {
   };
 }
 
-async function callTool(name, args = {}) {
-  const client = makeClient();
+export async function callTool(name, args = {}, {
+  client = makeClient(),
+  planningModulesLoader = loadAutoPlanningModules,
+  ragContextLoader = loadAutoRagContext,
+} = {}) {
 
   if (name === 'ghostrecon_auto_rag_list') {
     return toolResult({
       ok: true,
-      dir: resolveAutoRagDir({ root: ROOT }),
-      memories: await listAutoRagMarkdown({ root: ROOT, limit: args.limit || 20 }),
+      vault: 'auto-rag',
+      memories: (await listAutoRagMarkdown({ root: ROOT, limit: args.limit || 20 }))
+        .map(publicRagMemory),
     });
   }
 
   if (name === 'ghostrecon_auto_rag_read') {
-    return toolResult(await readAutoRagMarkdown(args.name, { root: ROOT }));
+    return toolResult(publicRagMemory(await readAutoRagMarkdown(args.name, { root: ROOT })));
   }
 
   if (name === 'ghostrecon_auto_rag_search') {
     return toolResult({
       ok: true,
-      dir: resolveAutoRagDir({ root: ROOT }),
+      vault: 'auto-rag',
       query: String(args.query || ''),
-      memories: await searchAutoRagMarkdown({ root: ROOT, query: args.query, limit: args.limit || 8 }),
+      memories: (await searchAutoRagMarkdown({
+        root: ROOT,
+        query: args.query,
+        limit: args.limit || 8,
+      })).map(publicRagMemory),
     });
   }
 
   if (name === 'ghostrecon_auto_rag_write_note') {
     return toolResult({
       ok: true,
-      note: await writeAutoRagNote({
+      note: publicRagMemory(await writeAutoRagNote({
         root: ROOT,
         kind: 'note',
         title: args.title,
@@ -649,14 +757,14 @@ async function callTool(name, args = {}) {
         target: args.target || '',
         tags: cleanArray(args.tags),
         metadata: args.metadata || null,
-      }),
+      })),
     });
   }
 
   if (name === 'ghostrecon_auto_rag_write_lesson') {
     return toolResult({
       ok: true,
-      lesson: await writeAutoLesson({
+      lesson: publicRagMemory(await writeAutoLesson({
         root: ROOT,
         target: args.target || '',
         problem: args.problem,
@@ -667,7 +775,7 @@ async function callTool(name, args = {}) {
         confidence: args.confidence || '',
         tags: cleanArray(args.tags),
         metadata: args.metadata || null,
-      }),
+      })),
     });
   }
 
@@ -723,6 +831,31 @@ async function callTool(name, args = {}) {
     if (args.playbook) body.playbook = String(args.playbook);
     if (args.confirmActive === true) body.confirmActive = true;
     if (args.engagementId) body.engagementId = String(args.engagementId);
+    if (args.confirmActive === true) {
+      try {
+        const preflight = await client.postJson('/api/recon/preflight', body);
+        if (preflight?.requiresApproval) {
+          const decision = await client.postJson('/api/recon/approval', {
+            approvalId: preflight.approval?.approvalId,
+            planHash: preflight.plan?.hash,
+            approved: true,
+          });
+          if (decision?.approval?.status !== 'approved') {
+            return errorResult('Servidor não confirmou a aprovação vinculada ao plano.', {
+              planHash: preflight.plan?.hash || null,
+            });
+          }
+          body.manualApproval = {
+            approvalId: preflight.approval.approvalId,
+            planHash: preflight.plan.hash,
+          };
+        }
+      } catch (error) {
+        return errorResult('Falha no preflight/aprovação vinculada do RUN manual.', {
+          error: error?.message || String(error),
+        });
+      }
+    }
     const events = [];
     const result = await client.streamRecon(body, (event) => events.push(event), {
       timeoutMs: Math.max(60_000, Number(args.timeoutMs || 1_800_000)),
@@ -735,18 +868,8 @@ async function callTool(name, args = {}) {
   }
 
   if (name === 'ghostrecon_run_auto') {
-    const target = String(args.target || '').trim();
-    if (!target) return errorResult('target vazio');
-    const commanders = cleanArray(args.commanders);
-    const body = {
-      domain: target,
-      mode: args.mode || 'balanced',
-      commanders,
-      includeHexstrike: args.includeHexstrike !== false,
-      includeDeepPassive: args.includeDeepPassive !== false,
-    };
-    if (args.confirmActive === true) body.confirmActive = true;
-    if (args.openrouterModel) body.openrouterModel = String(args.openrouterModel).trim();
+    const body = normalizeAutoMcpOptions(args);
+    if (!body.domain) return errorResult('target vazio');
     const events = [];
     const result = await client.streamAutoRecon(body, (event) => events.push(event), {
       timeoutMs: Math.max(60_000, Number(args.timeoutMs || 1_800_000)),
@@ -755,39 +878,87 @@ async function callTool(name, args = {}) {
     const limit = Math.max(1, Math.min(500, Number(args.findingsLimit || 80)));
     summary.findings = summary.findings.slice(0, limit);
     summary.findingsReturned = summary.findings.length;
+    if (summary.approvalRequired) {
+      return errorResult(
+        'O plano Auto exige aprovação humana interativa. Nada foi executado; revise os detalhes e inicie pela UI para aprovar o plano exato.',
+        {
+          approvalRequired: summary.approvalRequired,
+          preconfirmationAccepted: false,
+          summary,
+        },
+      );
+    }
     return toolResult(summary);
   }
 
   if (name === 'ghostrecon_plan_auto') {
-    const target = String(args.target || '').trim();
-    if (!target) return errorResult('target vazio');
-    const { detectAutoProviders, buildAutoToolCatalog, createAutoPlan } = await loadAutoPlanningModules();
-    const commanders = cleanArray(args.commanders);
-    const providers = await detectAutoProviders({ selected: commanders });
-    const ragContext = await loadAutoRagContext({ root: ROOT, limit: 6 });
+    const autoRequest = normalizeAutoMcpOptions(args);
+    if (!autoRequest.domain) return errorResult('target vazio');
+    const { detectAutoProviders, buildAutoToolCatalog, createAutoPlan } = await planningModulesLoader();
+    const providers = await detectAutoProviders({ selected: autoRequest.commanders });
+    const ragContext = await ragContextLoader({ root: ROOT, limit: 6 });
     const catalog = await buildAutoToolCatalog({
-      includeHexstrike: args.includeHexstrike !== false,
-      includeDeepPassive: args.includeDeepPassive !== false,
+      includeHexstrike: autoRequest.includeHexstrike,
+      includeDeepPassive: autoRequest.includeDeepPassive,
+      includeIntrusive: ['authorized', 'authorized_opsec'].includes(autoRequest.autonomyLevel),
+      includeFrameSeven: autoRequest.includeFrameSeven,
+      frameSevenAuth: autoRequest.frameSevenAuth,
+      includeVigolium: autoRequest.includeVigolium,
       ghostRoot: ROOT,
     });
+    const requestedModules = [
+      ...autoRequest.modules,
+      ...(autoRequest.includeFrameSeven
+        ? [autoRequest.frameSevenAuth ? 'frameseven_authenticated' : 'frameseven_recon']
+        : []),
+      ...(autoRequest.includeVigolium ? ['vigolium_dast'] : []),
+    ];
     const plan = createAutoPlan({
-      target,
-      mode: args.mode || 'balanced',
-      requestedModules: cleanArray(args.modules),
+      target: autoRequest.domain,
+      mode: autoRequest.mode,
+      requestedModules: [...new Set(requestedModules)],
       providers: providers.providers,
       catalog,
-      openrouterModel: args.openrouterModel || null,
-      includeHexstrike: args.includeHexstrike !== false,
-      includeDeepPassive: args.includeDeepPassive !== false,
+      openrouterModel: autoRequest.openrouterModel || null,
+      includeHexstrike: autoRequest.includeHexstrike,
+      includeDeepPassive: autoRequest.includeDeepPassive,
       ragContext,
+      autonomyLevel: autoRequest.autonomyLevel,
+    });
+    plan.autonomyLevel = autoRequest.autonomyLevel;
+    plan.policy = {
+      ...(plan.policy || {}),
+      opsecProfile: autoAutonomyToOpsecProfile(autoRequest.autonomyLevel),
+    };
+    const effectivePlan = buildEffectiveAutoPlan({
+      plan,
+      catalog,
+      body: {
+        domain: autoRequest.domain,
+        mode: autoRequest.mode,
+        engagementId: autoRequest.engagementId,
+        includeHexstrike: autoRequest.includeHexstrike,
+        includeFrameSeven: autoRequest.includeFrameSeven,
+        frameSevenAuth: autoRequest.frameSevenAuth,
+        includeVigolium: autoRequest.includeVigolium,
+        vigoliumUseCodex: autoRequest.vigoliumUseCodex,
+        opsecProfile: autoAutonomyToOpsecProfile(autoRequest.autonomyLevel),
+      },
+      autonomyLevel: autoRequest.autonomyLevel,
+      frameSevenAvailable: Boolean(catalog.engines?.frameseven?.available),
+      forceFrameSevenRecon: false,
     });
     const opsec = evaluateMcpOpsec({
-      modules: plan.modules,
-      profile: autoModeToOpsecProfile(plan.mode),
+      modules: effectivePlan.expandedModules,
+      profile: effectivePlan.opsecProfile,
     });
     return toolResult({
-      ok: opsec.ok,
-      target,
+      ok: true,
+      previewOnly: true,
+      exactRuntimePlan: false,
+      runtimeMayDifferAfterCouncil: true,
+      executableWithoutInteractiveApproval: opsec.ok && !effectivePlan.requiresHumanApproval,
+      target: autoRequest.domain,
       providers,
       catalog: {
         modules: catalog.modules.map((m) => ({
@@ -804,6 +975,14 @@ async function callTool(name, args = {}) {
       },
       opsec,
       plan,
+      effectivePlan,
+      approval: effectivePlan.requiresHumanApproval
+        ? effectivePlanApprovalDetails(effectivePlan)
+        : null,
+      limitations: [
+        'A prévia usa a baseline determinística; o conselho de IA só decide dentro de uma sessão real.',
+        'Engagement, escopo, RBAC e aprovação final continuam sendo validados pelo backend antes da execução.',
+      ],
     });
   }
 
@@ -847,12 +1026,12 @@ function writeMessage(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-async function handleRequest(message) {
+export async function handleRequest(message, { write = writeMessage } = {}) {
   const { id, method, params = {} } = message || {};
   if (id == null) return;
   try {
     if (method === 'initialize') {
-      writeMessage({
+      write({
         jsonrpc: '2.0',
         id,
         result: {
@@ -871,16 +1050,16 @@ async function handleRequest(message) {
       return;
     }
     if (method === 'ping') {
-      writeMessage({ jsonrpc: '2.0', id, result: {} });
+      write({ jsonrpc: '2.0', id, result: {} });
       return;
     }
     if (method === 'tools/list') {
-      writeMessage({ jsonrpc: '2.0', id, result: { tools } });
+      write({ jsonrpc: '2.0', id, result: { tools } });
       return;
     }
     if (method === 'tools/call') {
       const result = await callTool(params.name, params.arguments || {});
-      writeMessage({ jsonrpc: '2.0', id, result });
+      write({ jsonrpc: '2.0', id, result });
       return;
     }
     if (method === 'resources/list') {
@@ -891,28 +1070,28 @@ async function handleRequest(message) {
         description: `Auto Mode memory: ${item.name}`,
         mimeType: 'text/markdown',
       }));
-      writeMessage({ jsonrpc: '2.0', id, result: { resources: [...resources, ...ragResources] } });
+      write({ jsonrpc: '2.0', id, result: { resources: [...resources, ...ragResources] } });
       return;
     }
     if (method === 'resources/read') {
-      writeMessage({ jsonrpc: '2.0', id, result: await readResource(params.uri) });
+      write({ jsonrpc: '2.0', id, result: await readResource(params.uri) });
       return;
     }
     if (method === 'prompts/list') {
-      writeMessage({ jsonrpc: '2.0', id, result: { prompts } });
+      write({ jsonrpc: '2.0', id, result: { prompts } });
       return;
     }
     if (method === 'prompts/get') {
-      writeMessage({ jsonrpc: '2.0', id, result: getPrompt(params.name, params.arguments || {}) });
+      write({ jsonrpc: '2.0', id, result: getPrompt(params.name, params.arguments || {}) });
       return;
     }
-    writeMessage({
+    write({
       jsonrpc: '2.0',
       id,
       error: { code: -32601, message: `Metodo nao suportado: ${method}` },
     });
   } catch (e) {
-    writeMessage({
+    write({
       jsonrpc: '2.0',
       id,
       error: { code: -32000, message: e?.message || String(e) },
@@ -920,7 +1099,7 @@ async function handleRequest(message) {
   }
 }
 
-function createFrameParser(onMessage) {
+export function createFrameParser(onMessage) {
   let buffer = Buffer.alloc(0);
   return (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -953,11 +1132,15 @@ function createFrameParser(onMessage) {
   };
 }
 
-const feed = createFrameParser((message) => {
-  void handleRequest(message);
-});
+const isMain = process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-process.stdin.on('data', feed);
-process.stdin.on('error', (e) => {
-  console.error(`[ghostrecon-mcp] stdin error: ${e?.message || e}`);
-});
+if (isMain) {
+  const feed = createFrameParser((message) => {
+    void handleRequest(message);
+  });
+  process.stdin.on('data', feed);
+  process.stdin.on('error', (e) => {
+    console.error(`[ghostrecon-mcp] stdin error: ${e?.message || e}`);
+  });
+}

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   resolveEngineMode,
   shouldRunGoEngine,
@@ -15,13 +16,76 @@ import {
   resolveVigoliumInputType,
   resolveVigoliumOnly,
   resolveVigoliumModuleTags,
+  buildVigoliumChildEnv,
+  shouldUseVigoliumCodex,
 } from '../../bridge/vigolium-config.mjs';
-import { buildVigoliumHtmlReportArgs, buildVigoliumScanArgs, runVigoliumScan } from '../../bridge/vigolium-runner.mjs';
+import {
+  assertVigoliumRuntimeTargetBinding,
+  buildVigoliumHtmlReportArgs,
+  buildVigoliumScanArgs,
+  runVigoliumScan,
+  sanitizeVigoliumHtmlReport,
+} from '../../bridge/vigolium-runner.mjs';
+import { createVigoliumAuthTransport } from '../../bridge/vigolium-auth-transport.mjs';
 import { vigoliumRowToFinding, parseVigoliumJsonl } from '../../bridge/findings-normalizer.mjs';
 import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs';
 import { logVigoliumFindingsSummary } from '../../bridge/vigolium-log.mjs';
+import { assertVigoliumBinaryIdentity } from '../../bridge/vigolium-binary-integrity.mjs';
 
 describe('vigolium bridge — config', () => {
+  it('sanitiza HTML autenticado no mesmo descritor antes de publicar', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-report-redaction-'));
+    const reportPath = path.join(tmp, 'report.html');
+    const exactSecret = 'opaque-report-session-fixture';
+    const genericSecret = `ghp_${'ZyXw9876'.repeat(4)}`;
+    try {
+      await fs.writeFile(
+        reportPath,
+        `<html><body>Authorization: Bearer ${exactSecret}\nCookie: sid=${exactSecret}\n${genericSecret}\n${tmp}/private/session.json\n/home/operator/private-auth.json</body></html>`,
+      );
+      await sanitizeVigoliumHtmlReport(reportPath, {
+        redact: (value) => String(value).split(exactSecret).join('<redacted>'),
+      });
+      const [body, stat] = await Promise.all([
+        fs.readFile(reportPath, 'utf8'),
+        fs.stat(reportPath),
+      ]);
+      assert.doesNotMatch(body, /opaque-report-session-fixture|ghp_ZyXw9876/);
+      assert.equal(body.includes(tmp), false);
+      assert.doesNotMatch(body, /\/home\/operator\/private-auth\.json/);
+      assert.match(body, /\[REDACTED\]|<redacted>/);
+      if (process.platform !== 'win32') assert.equal(stat.mode & 0o777, 0o600);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('revalida a identidade selada do binário e recusa troca pós-aprovação', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-identity-'));
+    const binary = path.join(tmp, 'vigolium-fixture');
+    try {
+      await fs.writeFile(binary, 'vigolium-approved');
+      const stat = await fs.stat(binary);
+      const expected = {
+        algorithm: 'sha256',
+        sha256: createHash('sha256').update('vigolium-approved').digest('hex'),
+        size: stat.size,
+        dev: stat.dev,
+        ino: stat.ino,
+      };
+      const verified = await assertVigoliumBinaryIdentity(binary, expected);
+      assert.equal(verified.sha256, expected.sha256);
+
+      await fs.writeFile(binary, 'vigolium-replaced');
+      await assert.rejects(
+        assertVigoliumBinaryIdentity(binary, expected),
+        (error) => error?.code === 'VIGOLIUM_BINARY_IDENTITY_MISMATCH',
+      );
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('resolveEngineMode default node', () => {
     assert.equal(resolveEngineMode({}), 'node');
   });
@@ -83,7 +147,84 @@ describe('vigolium bridge — config', () => {
     ]);
   });
 
-  it('buildVigoliumScanArgs inclui modulos, module-tag, auth-file e auth inline', () => {
+  it('entrada Vigolium não reaparece pelo ambiente e runtime recusa -T não selado', async () => {
+    const previousFile = process.env.GHOSTRECON_VIGOLIUM_INPUT_FILE;
+    const previousType = process.env.GHOSTRECON_VIGOLIUM_INPUT_TYPE;
+    try {
+      process.env.GHOSTRECON_VIGOLIUM_INPUT_FILE = '/tmp/out-of-scope-openapi.yaml';
+      process.env.GHOSTRECON_VIGOLIUM_INPUT_TYPE = 'openapi';
+      assert.equal(resolveVigoliumInputFile({}), null);
+      assert.equal(resolveVigoliumInputType({}), null);
+      assert.throws(
+        () => assertVigoliumRuntimeTargetBinding({
+          domain: 'example.com',
+          vigoliumInputFile: '/tmp/out-of-scope-openapi.yaml',
+          vigoliumInputType: 'openapi',
+        }),
+        (error) => error?.code === 'VIGOLIUM_INPUT_SCOPE_UNSEALED',
+      );
+      await assert.rejects(
+        runVigoliumScan({
+          domain: 'example.com',
+          vigoliumInputFile: '/tmp/out-of-scope-openapi.yaml',
+        }),
+        (error) => error?.code === 'VIGOLIUM_INPUT_SCOPE_UNSEALED',
+      );
+    } finally {
+      if (previousFile == null) delete process.env.GHOSTRECON_VIGOLIUM_INPUT_FILE;
+      else process.env.GHOSTRECON_VIGOLIUM_INPUT_FILE = previousFile;
+      if (previousType == null) delete process.env.GHOSTRECON_VIGOLIUM_INPUT_TYPE;
+      else process.env.GHOSTRECON_VIGOLIUM_INPUT_TYPE = previousType;
+    }
+  });
+
+  it('ambiente filho Vigolium usa allowlist e nunca encaminha tokens/DB/JWT', () => {
+    const child = buildVigoliumChildEnv({
+      vigoliumUseCodex: true,
+      vigoliumVpsProfile: false,
+    }, {
+      PATH: '/safe/bin',
+      HOME: '/safe/home',
+      LANG: 'pt_BR.UTF-8',
+      DATABASE_URL: 'postgres://user:password@db/private',
+      JWT_SECRET: 'jwt-secret',
+      GITHUB_TOKEN: 'ghp_secret',
+      OPENAI_API_KEY: 'sk-secret',
+      AUTH_API_KEYS: 'root-secret',
+      GHOSTRECON_API_KEY: 'api-secret',
+      VIGOLIUM_PROVIDER: 'unapproved-provider',
+    });
+
+    assert.deepEqual(child, {
+      PATH: '/safe/bin',
+      HOME: '/safe/home',
+      LANG: 'pt_BR.UTF-8',
+      GHOSTRECON_VIGOLIUM_USE_CODEX: '1',
+      VIGOLIUM_PROVIDER: 'openai-codex-oauth',
+    });
+    assert.doesNotMatch(JSON.stringify(child), /password|jwt-secret|ghp_secret|sk-secret|root-secret|api-secret/);
+  });
+
+  it('decisão explícita de não usar Codex prevalece sobre o ambiente do servidor', () => {
+    const previous = process.env.GHOSTRECON_VIGOLIUM_USE_CODEX;
+    try {
+      process.env.GHOSTRECON_VIGOLIUM_USE_CODEX = '1';
+      assert.equal(shouldUseVigoliumCodex({ vigoliumUseCodex: false }), false);
+      assert.equal(shouldUseVigoliumCodex({ vigoliumUseCodex: true }), true);
+      assert.equal(shouldUseVigoliumCodex({}), true);
+
+      const child = buildVigoliumChildEnv(
+        { vigoliumUseCodex: false, vigoliumVpsProfile: false },
+        { PATH: '/safe/bin', GHOSTRECON_VIGOLIUM_USE_CODEX: '1' },
+      );
+      assert.deepEqual(child, { PATH: '/safe/bin' });
+    } finally {
+      if (previous == null) delete process.env.GHOSTRECON_VIGOLIUM_USE_CODEX;
+      else process.env.GHOSTRECON_VIGOLIUM_USE_CODEX = previous;
+    }
+  });
+
+  it('buildVigoliumScanArgs inclui modulos e auth-file sem segredos inline no argv', () => {
     const built = buildVigoliumScanArgs({
       domain: 'example.com',
       vigoliumStrategy: 'balanced',
@@ -104,10 +245,9 @@ describe('vigolium bridge — config', () => {
     assert.ok(built.args.includes('--auth-file'));
     assert.ok(built.args.includes('admin.json'));
     assert.ok(built.args.includes('user.json'));
-    assert.ok(built.args.includes('admin:Cookie:session_id=abc123'));
-    assert.ok(built.args.includes('user:Cookie:session_id=xyz789'));
-    assert.ok(built.args.includes('ghostrecon:Cookie:sid=abc'));
-    assert.ok(built.args.includes('Authorization: Bearer token'));
+    assert.equal(built.args.includes('--auth'), false);
+    assert.equal(built.args.includes('-H'), false);
+    assert.doesNotMatch(built.args.join(' '), /abc123|xyz789|sid=abc|Bearer token/);
   });
 
   it('buildVigoliumScanArgs suporta entrada OpenAPI -T/-I e --only', () => {
@@ -129,7 +269,7 @@ describe('vigolium bridge — config', () => {
     const built = buildVigoliumHtmlReportArgs({
       domain: 'example.com',
       vigoliumReportOnly: 'discovery',
-      vigoliumAuthEntries: ['admin:Cookie:sid=1'],
+      vigoliumAuthFiles: ['admin.json'],
     }, { outFile: 'report.html' });
     assert.deepEqual(built.args.slice(0, 3), ['scan', '-t', 'https://example.com']);
     assert.ok(built.args.includes('--format'));
@@ -138,11 +278,397 @@ describe('vigolium bridge — config', () => {
     assert.ok(built.args.includes('report.html'));
     assert.ok(built.args.includes('--only'));
     assert.ok(built.args.includes('discovery'));
-    assert.ok(built.args.includes('admin:Cookie:sid=1'));
+    assert.ok(built.args.includes('admin.json'));
+    assert.equal(built.args.includes('--auth'), false);
+  });
+
+  it('materializa auth inline em JSON 0600 e remove no cleanup', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-auth-test-'));
+    let transport;
+    try {
+      transport = await createVigoliumAuthTransport({
+        vigoliumAuthFiles: ['operator.json'],
+        vigoliumAuthEntries: [
+          'admin:Cookie:session_id=abc123',
+          'admin:Authorization:Bearer inline-token',
+        ],
+        auth: {
+          cookie: 'sid=shared',
+          headers: { 'X-Session': 'shared-token' },
+        },
+      }, { tempRoot });
+
+      assert.equal(transport.authFiles[0], 'operator.json');
+      assert.ok(transport.ephemeralFile);
+      const payload = JSON.parse(await fs.readFile(transport.ephemeralFile, 'utf8'));
+      assert.equal(payload.sessions[0].name, 'ghostrecon');
+      assert.equal(payload.sessions[0].headers.Cookie, 'sid=shared');
+      assert.equal(payload.sessions[0].headers['X-Session'], 'shared-token');
+      assert.equal(payload.sessions[1].name, 'admin');
+      assert.equal(payload.sessions[1].headers.Cookie, 'session_id=abc123');
+      assert.equal(payload.sessions[1].headers.Authorization, 'Bearer inline-token');
+
+      if (process.platform !== 'win32') {
+        const dirMode = (await fs.stat(path.dirname(transport.ephemeralFile))).mode & 0o777;
+        const fileMode = (await fs.stat(transport.ephemeralFile)).mode & 0o777;
+        assert.equal(dirMode, 0o700);
+        assert.equal(fileMode, 0o600);
+      }
+
+      const built = buildVigoliumScanArgs(
+        { domain: 'example.com', vigoliumAuthEntries: ['admin:Cookie:must-not-leak'] },
+        { outFile: 'out.jsonl', authFiles: transport.authFiles },
+      );
+      assert.equal(built.args.includes('--auth'), false);
+      assert.doesNotMatch(built.args.join(' '), /must-not-leak|abc123|inline-token|shared-token/);
+    } finally {
+      const ephemeralFile = transport?.ephemeralFile;
+      await transport?.cleanup?.();
+      if (ephemeralFile) {
+        await assert.rejects(fs.access(ephemeralFile));
+      }
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('redige segredo opaco carregado por auth-file sem remover o arquivo do operador', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-auth-file-redact-'));
+    const authFile = path.join(tempRoot, 'operator-session.json');
+    const secret = 'opaque-auth-file-secret-fixture';
+    await fs.writeFile(authFile, JSON.stringify({
+      sessions: [{
+        name: 'operator',
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          Cookie: `sid=${secret}`,
+        },
+        login: {
+          username: 'operator',
+          password: secret,
+        },
+      }],
+    }), { mode: 0o600 });
+
+    const transport = await createVigoliumAuthTransport({
+      vigoliumAuthFiles: [authFile],
+    });
+    try {
+      assert.equal(transport.ephemeralFile, null);
+      const safe = transport.redact(`finding ${secret} via ${authFile}`);
+      assert.equal(safe.includes(secret), false);
+      assert.equal(safe.includes(authFile), false);
+      assert.match(safe, /redacted/i);
+      assert.match(safe, /LOCAL_PATH/);
+    } finally {
+      await transport.cleanup();
+      await transport.cleanup();
+      assert.equal((await fs.stat(authFile)).isFile(), true);
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('recusa auth-file com quebra de linha antes de montar argv', async () => {
+    await assert.rejects(
+      createVigoliumAuthTransport({
+        vigoliumAuthFiles: ['operator.json\n--auth attacker:Cookie:sid=1'],
+      }),
+      /caminho de auth-file Vigolium inválido/,
+    );
   });
 });
 
 describe('vigolium PATH mode fake binary', () => {
+  it('propaga o AbortSignal do pipeline ao subprocesso Vigolium', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-signal-'));
+    const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
+    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
+    const oldDatabaseUrl = process.env.DATABASE_URL;
+    const oldApiKey = process.env.OPENAI_API_KEY;
+    const controller = new AbortController();
+    let receivedSignal = null;
+    let receivedEnv = null;
+    try {
+      await fs.writeFile(binary, 'fixture');
+      if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
+      process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
+      process.env.DATABASE_URL = 'postgres://scanner:secret@db/internal';
+      process.env.OPENAI_API_KEY = 'sk-scanner-secret';
+      const out = await runVigoliumScan({
+        ROOT: tmp,
+        domain: 'example.com',
+        vigoliumVpsProfile: false,
+        signal: controller.signal,
+      }, {
+        log: () => {},
+        runProcessImpl: async (_file, _args, options) => {
+          receivedSignal = options.signal;
+          receivedEnv = options.spawnOpts?.env;
+          return {
+            code: 0,
+            stdout: `${JSON.stringify({
+              'template-id': 'signal-fixture',
+              url: 'https://example.com/',
+              info: { name: 'Signal fixture', severity: 'info' },
+            })}\n`,
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      });
+      assert.equal(out.ok, true);
+      assert.equal(receivedSignal, controller.signal);
+      assert.equal(receivedEnv.DATABASE_URL, undefined);
+      assert.equal(receivedEnv.OPENAI_API_KEY, undefined);
+      assert.doesNotMatch(JSON.stringify(receivedEnv), /scanner:secret|sk-scanner-secret/);
+    } finally {
+      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
+      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
+      if (oldDatabaseUrl == null) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = oldDatabaseUrl;
+      if (oldApiKey == null) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = oldApiKey;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('não rebaixa falhas fatais/cancelamento do scan para resultado parcial ou skip', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-fatal-scan-'));
+    const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
+    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
+    const cases = [
+      {
+        label: 'processo abortado',
+        createError() {
+          const error = new Error('fixture process aborted');
+          error.code = 'PROCESS_ABORTED';
+          return error;
+        },
+        verify(error) {
+          return error?.code === 'PROCESS_ABORTED';
+        },
+      },
+      {
+        label: 'processo sem confirmação de término',
+        createError() {
+          const error = new Error('fixture process unterminated');
+          error.code = 'PROCESS_UNTERMINATED';
+          error.unterminated = true;
+          return error;
+        },
+        verify(error) {
+          return error?.code === 'PROCESS_UNTERMINATED' && error?.unterminated === true;
+        },
+      },
+      {
+        label: 'identidade do binário divergente',
+        createError() {
+          const error = new Error('fixture binary identity mismatch');
+          error.code = 'VIGOLIUM_BINARY_IDENTITY_MISMATCH';
+          return error;
+        },
+        verify(error) {
+          return error?.code === 'VIGOLIUM_BINARY_IDENTITY_MISMATCH';
+        },
+      },
+      {
+        label: 'AbortError',
+        createError() {
+          const error = new Error('fixture abort error');
+          error.name = 'AbortError';
+          return error;
+        },
+        verify(error) {
+          return error?.name === 'AbortError';
+        },
+      },
+    ];
+
+    try {
+      await fs.writeFile(binary, 'fixture');
+      if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
+      process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
+
+      for (const fixture of cases) {
+        let ephemeralAuthFile = null;
+        let calls = 0;
+        await assert.rejects(
+          runVigoliumScan({
+            ROOT: tmp,
+            domain: 'example.com',
+            vigoliumVpsProfile: false,
+            vigoliumAuthEntries: ['operator:Cookie:sid=fatal-fixture-secret'],
+          }, {
+            log: () => {},
+            runProcessImpl: async (_file, args) => {
+              calls += 1;
+              const authFileIndex = args.indexOf('--auth-file');
+              ephemeralAuthFile = authFileIndex >= 0 ? args[authFileIndex + 1] : null;
+              throw fixture.createError();
+            },
+          }),
+          (error) => {
+            assert.equal(
+              fixture.verify(error),
+              true,
+              `${fixture.label} deve preservar a identidade terminal`,
+            );
+            assert.equal(error?.fatal, true);
+            assert.equal(error?.recoverable, false);
+            return true;
+          },
+        );
+        assert.equal(calls, 1);
+        assert.ok(ephemeralAuthFile);
+        await assert.rejects(fs.access(ephemeralAuthFile));
+      }
+    } finally {
+      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
+      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('propaga falha fatal ocorrida na geração do HTML legado', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-fatal-html-'));
+    const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
+    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
+    let calls = 0;
+    try {
+      await fs.writeFile(binary, 'fixture');
+      if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
+      process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
+
+      await assert.rejects(
+        runVigoliumScan({
+          ROOT: tmp,
+          domain: 'example.com',
+          vigoliumVpsProfile: false,
+          vigoliumHtmlReport: true,
+        }, {
+          log: () => {},
+          runProcessImpl: async () => {
+            calls += 1;
+            if (calls === 1) {
+              return { code: 0, stdout: '', stderr: '', timedOut: false };
+            }
+            const error = new Error('fixture HTML child did not terminate');
+            error.code = 'PROCESS_UNTERMINATED';
+            error.unterminated = true;
+            throw error;
+          },
+        }),
+        (error) => (
+          error?.code === 'PROCESS_UNTERMINATED'
+          && error?.unterminated === true
+          && error?.recoverable === false
+        ),
+      );
+      assert.equal(calls, 2);
+    } finally {
+      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
+      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('propaga cancelamento fatal ocorrido no fallback SQLite', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-fatal-sqlite-'));
+    const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
+    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
+    let calls = 0;
+    try {
+      await fs.writeFile(binary, 'fixture');
+      if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
+      process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
+
+      await assert.rejects(
+        runVigoliumScan({
+          ROOT: tmp,
+          domain: 'example.com',
+          modules: ['vigolium_dast'],
+          vigoliumVpsProfile: true,
+          vigoliumHtmlReport: false,
+        }, {
+          log: () => {},
+          runProcessImpl: async (_file, args) => {
+            calls += 1;
+            if (calls === 1) {
+              const outputIndex = args.indexOf('-o');
+              const outputBase = outputIndex >= 0 ? args[outputIndex + 1] : null;
+              assert.ok(outputBase);
+              await fs.writeFile(`${outputBase}.jsonl`, '');
+              await fs.writeFile(`${outputBase}.sqlite`, 'sqlite-fixture');
+              return { code: 0, stdout: '', stderr: '', timedOut: false };
+            }
+            assert.equal(args[0], 'finding');
+            const error = new Error('fixture SQLite import aborted');
+            error.code = 'PROCESS_ABORTED';
+            throw error;
+          },
+        }),
+        (error) => error?.code === 'PROCESS_ABORTED' && error?.recoverable === false,
+      );
+      assert.equal(calls, 2);
+    } finally {
+      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
+      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('go-engine preserva divergência de identidade como terminal e não emite skip/done', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-go-engine-fatal-'));
+    const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
+    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
+    const pipes = [];
+    try {
+      if (process.platform === 'win32') {
+        await fs.copyFile(process.execPath, binary);
+      } else {
+        await fs.writeFile(
+          binary,
+          '#!/usr/bin/env node\nif (process.argv[2] === "version") console.log("Version: fixture");\n',
+        );
+        await fs.chmod(binary, 0o755);
+      }
+      process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
+      const { runGoEnginePhase } = await import('../pipeline/phases/go-engine.mjs');
+
+      await assert.rejects(
+        runGoEnginePhase({
+          ROOT: tmp,
+          domain: 'example.com',
+          modules: ['vigolium_dast'],
+          engineMode: 'go',
+          vigoliumVpsProfile: false,
+          vigoliumExpectedIdentity: {
+            algorithm: 'sha256',
+            sha256: '0'.repeat(64),
+            size: 0,
+          },
+          log: () => {},
+          emit: () => {},
+          pipe: (name, state) => pipes.push({ name, state }),
+          addFinding: () => {},
+          progress: () => {},
+        }),
+        (error) => error?.code === 'VIGOLIUM_BINARY_IDENTITY_MISMATCH',
+      );
+
+      assert.equal(
+        pipes.some((item) => (
+          ['vigolium_engine', 'vigolium_dast'].includes(item.name)
+          && ['skip', 'done'].includes(item.state)
+        )),
+        false,
+      );
+    } finally {
+      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
+      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('runVigoliumScan usa vigolium do PATH, normaliza findings e gera report HTML', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-fake-vigolium-'));
     const oldPath = process.env.PATH;
@@ -208,6 +734,66 @@ else fs.writeFileSync(out, payload, 'utf8');
     } finally {
       process.chdir(oldCwd);
       process.env.PATH = oldPath;
+      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
+      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('runVigoliumScan usa somente --auth-file temporário e não registra segredo', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-fake-vig-auth-'));
+    const fakeBin = path.join(tmp, process.platform === 'win32' ? 'vigolium-auth.exe' : 'vigolium-auth');
+    const capturePath = path.join(tmp, 'capture.json');
+    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
+    const fakeScript = `const fs = require('fs');
+const args = process.argv.slice(2);
+const at = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : ''; };
+const authFile = at('--auth-file');
+const auth = JSON.parse(fs.readFileSync(authFile, 'utf8'));
+fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args, authFile, auth }), 'utf8');
+const out = at('-o') || '-';
+const row = JSON.stringify({
+  'template-id': 'auth-transport',
+  url: at('-t') + '/private?opaque=runtime-inline-secret',
+  'matched-at': 'authenticated runtime-inline-secret',
+  request: 'GET /private HTTP/1.1\\r\\nAuthorization: Bearer runtime-inline-secret',
+  response: 'HTTP/1.1 200 OK\\r\\nSet-Cookie: sid=runtime-cookie-secret',
+  info: { name: 'Auth transport runtime-cookie-secret', severity: 'info' }
+}) + '\\n';
+if (out === '-') process.stdout.write(row); else fs.writeFileSync(out, row, 'utf8');
+`;
+    const logs = [];
+    try {
+      if (process.platform === 'win32') {
+        await fs.copyFile(process.execPath, fakeBin);
+        await fs.writeFile(path.join(tmp, 'scan'), fakeScript, 'utf8');
+      } else {
+        await fs.writeFile(fakeBin, `#!/usr/bin/env node\n${fakeScript}`, 'utf8');
+        await fs.chmod(fakeBin, 0o755);
+      }
+      process.env.GHOSTRECON_VIGOLIUM_BIN = fakeBin;
+
+      const result = await runVigoliumScan({
+        ROOT: tmp,
+        domain: 'example.com',
+        vigoliumVpsProfile: false,
+        vigoliumAuthEntries: ['admin:Authorization:Bearer runtime-inline-secret'],
+        auth: { cookie: 'sid=runtime-cookie-secret' },
+      }, { log: (message) => logs.push(String(message)) });
+
+      assert.equal(result.ok, true);
+      const captured = JSON.parse(await fs.readFile(capturePath, 'utf8'));
+      assert.equal(captured.args.includes('--auth'), false);
+      assert.equal(captured.args.includes('-H'), false);
+      assert.doesNotMatch(captured.args.join(' '), /runtime-inline-secret|runtime-cookie-secret/);
+      assert.equal(captured.auth.sessions[0].headers.Cookie, 'sid=runtime-cookie-secret');
+      assert.equal(captured.auth.sessions[1].headers.Authorization, 'Bearer runtime-inline-secret');
+      await assert.rejects(fs.access(captured.authFile));
+      assert.doesNotMatch(logs.join('\n'), /runtime-inline-secret|runtime-cookie-secret/);
+      assert.doesNotMatch(JSON.stringify(result.findings), /runtime-inline-secret|runtime-cookie-secret/);
+      assert.match(JSON.stringify(result.findings), /redacted/i);
+      assert.match(logs.join('\n'), /--auth-file <restricted-file>/);
+    } finally {
       if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
       else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
       await fs.rm(tmp, { recursive: true, force: true });

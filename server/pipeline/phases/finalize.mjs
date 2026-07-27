@@ -34,6 +34,7 @@ import {
   buildPipelineExportPayloadForAi,
   emitIaProximosPassosToLog,
 } from '../pipeline-helpers.mjs';
+import { pipelineCapabilityAllowed } from '../pipeline-state.mjs';
 
 /**
  * Priorização, correlação, Shannon, PentestGPT, persistência, IA automática e webhooks.
@@ -178,20 +179,37 @@ export async function runFinalizePhase(ctx) {
     emit({ type: 'stats', stats: { ...stats } });
     emit({ type: 'findings_rescore', findings });
 
-    try {
-      await runHighPrioHttpRecheck({ findings, auth, modules, log });
-      emit({ type: 'findings_rescore', findings: [...findings] });
-    } catch (e) {
-      log(`Recheck HIGH: ${e.message}`, 'warn');
+    const runHighRecheck = pipelineCapabilityAllowed(ctx, 'high_recheck');
+    if (runHighRecheck) {
+      try {
+        await runHighPrioHttpRecheck({ findings, auth, modules, log, signal: ctx.signal });
+        emit({ type: 'findings_rescore', findings: [...findings] });
+      } catch (e) {
+        if (ctx.signal?.aborted) throw ctx.signal.reason || e;
+        log(`Recheck HIGH: ${e.message}`, 'warn');
+      }
+    } else {
+      emit({ type: 'pipe', name: 'high_recheck', state: 'skip' });
+    }
+    const runBrowserXssVerify = pipelineCapabilityAllowed(ctx, 'browser_xss_verify');
+    if (runBrowserXssVerify) {
+      try {
+        const pwFindings = await runOptionalPlaywrightXssProbe({
+          findings,
+          log,
+          limit: 4,
+          signal: ctx.signal,
+        });
+        for (const pf of pwFindings) addFinding(pf, null);
+      } catch (e) {
+        if (ctx.signal?.aborted) throw ctx.signal.reason || e;
+        log(`Playwright XSS: ${e.message}`, 'warn');
+      }
+    } else {
+      emit({ type: 'pipe', name: 'browser_xss_verify', state: 'skip' });
     }
     try {
-      const pwFindings = await runOptionalPlaywrightXssProbe({ findings, log, limit: 4 });
-      for (const pf of pwFindings) addFinding(pf, null);
-    } catch (e) {
-      log(`Playwright XSS: ${e.message}`, 'warn');
-    }
-    try {
-      const kaliCapSnap = await getKaliCapabilities();
+      const kaliCapSnap = await getKaliCapabilities({ signal: ctx.signal });
       reconCoverageSnapshot = buildReconCoverageSnapshot({
         domain,
         modules,
@@ -201,6 +219,7 @@ export async function runFinalizePhase(ctx) {
       });
       emit({ type: 'recon_coverage', snapshot: reconCoverageSnapshot });
     } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
       log(`Cobertura recon: ${e.message}`, 'warn');
     }
 
@@ -293,6 +312,7 @@ export async function runFinalizePhase(ctx) {
               repoFullName: item.full_name,
               log,
               emit,
+              signal: ctx.signal,
             });
             if (out.ok && out.report?.ok) {
               const excerpt = String(out.report.content || '')
@@ -326,6 +346,7 @@ export async function runFinalizePhase(ctx) {
               );
             }
           } catch (e) {
+            if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
             log(`Shannon: excepção (${item.full_name}): ${e.message}`, 'error');
           }
         }

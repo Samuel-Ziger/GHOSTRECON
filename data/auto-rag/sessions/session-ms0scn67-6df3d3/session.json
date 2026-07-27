@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "session-ms0scn67-6df3d3",
+  "requestRunId": "auto-ms0scn66-09b665b2",
+  "target": "loja.photonowoficial.com.br",
+  "startedAt": "2026-07-25T19:52:14.672Z",
+  "status": "interrupted",
+  "iteration": 1,
+  "agentCalls": 1,
+  "usage": {
+    "codex": {
+      "calls": 1,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "totalTokens": 0,
+      "costUsd": 0,
+      "costEstimated": true
+    }
+  },
+  "costUsd": 0,
+  "lastActivityAt": "2026-07-25T19:52:44.540Z",
+  "currentStage": "interrupted",
+  "currentModule": null,
+  "providers": [
+    "codex"
+  ],
+  "owner": {
+    "sub": "apikey:laptop",
+    "role": "admin",
+    "via": "apikey"
+  },
+  "limits": {
+    "maxIterations": 3,
+    "sessionTimeoutMs": 1800000,
+    "agentTimeoutMs": 180000,
+    "maxAgentCalls": 12,
+    "maxContextChars": 120000,
+    "maxCostUsd": 10
+  },
+  "autonomyLevel": "authorized_opsec",
+  "includeFrameSeven": true,
+  "frameSevenAuth": true,
+  "includeVigolium": true,
+  "vigoliumUseCodex": true,
+  "engagementId": null,
+  "catalogHash": "ad1f56a1af8ad17044cd3572fdfd42c842c02c804107d78904cf81b39315f772",
+  "promptVersion": "auto-council-v3",
+  "memoriesUsed": [
+    "decisions/2026-07-20T14-40-04-677Z-www.dfimoveis.com.br-plan-auto-mrtbzho3-5b637833.md",
+    "decisions/2026-07-20T14-59-56-165Z-www.dfimoveis.com.br-plan-auto-mrtcp2bg-e201fe98.md",
+    "decisions/2026-07-20T14-50-51-151Z-www.dfimoveis.com.br-plan-auto-mrtcd6h7-41f9b362.md",
+    "decisions/2026-07-20T14-26-02-295Z-www.dfimoveis.com.br-plan-auto-mrtbhky1-f69b0418.md",
+    "decisions/2026-07-20T15-21-10-709Z-admin.photonow.com.br-plan-auto-mrtdg38c-8c6c6a32.md",
+    "decisions/2026-07-20T15-24-50-340Z-admin.photonow.com.br-plan-auto-mrtdl3kt-02e7e32f.md"
+  ],
+  "pendingApproval": {
+    "kind": "intrusive_plan",
+    "intrusive": true,
+    "requiredScope": "recon.intrusive",
+    "target": "loja.photonowoficial.com.br",
+    "module": "rdap, dns_enrichment, security_headers, robots_sitemap, wellknown_security_txt, wayback, common_crawl, js_intel, client_surface_audit, header_intel, email_security_deep, websocket_recon, hpp_param_pollution, dom_clobbering_audit, secrets_context_ranker, chaining, risk_explainer, vigolium_dast, frameseven_authenticated",
+    "action": "executar exatamente o plano efetivo exibido",
+    "risk": "intrusivo: vigolium_dast, frameseven_authenticated",
+    "planHash": "838d4beea587cf8be4759a10212f6432b23325a3df76a9ab409f803c1ac5e9c5",
+    "denialBehavior": "módulos intrusivos serão removidos; o restante não intrusivo poderá continuar",
+    "engines": {
+      "ghostrecon": {
+        "enabled": true
+      },
+      "vigolium": {
+        "enabled": true,
+        "engine": "both",
+        "agent": "none",
+        "useCodex": false
+      },
+      "frameseven": {
+        "enabled": true,
+        "available": true,
+        "authBrowser": true,
+        "tools": "recon,access,ssrf,lfi,xss,xxe,cmdi,ssti,redirect,authtest,cve,crawler,content,subdomain,ports,nmap,bannergrab",
+        "moduleIds": [
+          "frameseven_authenticated"
+        ]
+      }
+    },
+    "limits": {
+      "profile": "standard",
+      "opsecProfile": "aggressive",
+      "enforcement": "deadline por fase; timeout/concurrency abaixo são limites declarados do catálogo",
+      "modules": [
+        {
+          "id": "rdap",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "discovery",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "dns_enrichment",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "discovery",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "security_headers",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "probe",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "robots_sitemap",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "probe",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "wellknown_security_txt",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "probe",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "wayback",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "content_discovery",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "common_crawl",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "content_discovery",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "js_intel",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "content_discovery",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "client_surface_audit",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "content_discovery",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "header_intel",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "probe",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "email_security_deep",
+          "source": "ghostrecon",
+          "class": "deep_passive",
+          "phase": "discovery",
+          "timeoutMs": 12000,
+          "concurrency": 2
+        },
+        {
+          "id": "websocket_recon",
+          "source": "ghostrecon",
+          "class": "deep_passive",
+          "phase": "content_discovery",
+          "timeoutMs": 8000,
+          "concurrency": 1
+        },
+        {
+          "id": "hpp_param_pollution",
+          "source": "ghostrecon",
+          "class": "deep_passive",
+          "phase": "content_discovery",
+          "timeoutMs": 5000,
+          "concurrency": 1
+        },
+        {
+          "id": "dom_clobbering_audit",
+          "source": "ghostrecon",
+          "class": "deep_passive",
+          "phase": "content_discovery",
+          "timeoutMs": 5000,
+          "concurrency": 1
+        },
+        {
+          "id": "secrets_context_ranker",
+          "source": "ghostrecon",
+          "class": "deep_passive",
+          "phase": "content_discovery",
+          "timeoutMs": 3000,
+          "concurrency": 1
+        },
+        {
+          "id": "chaining",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "finalize",
+          "timeoutMs": 90000,
+          "concurrency": 6
+        },
+        {
+          "id": "risk_explainer",
+          "source": "ghostrecon",
+          "class": "passive",
+          "phase": "finalize",
+          "timeoutMs": 5000,
+          "concurrency": 1
+        },
+        {
+          "id": "frameseven_authenticated",
+          "source": "frameseven",
+          "class": "intrusive",
+          "phase": "frameseven",
+          "timeoutMs": 1800000,
+          "concurrency": 10
+        },
+        {
+          "id": "vigolium_dast",
+          "source": "vigolium",
+          "class": "intrusive",
+          "phase": "go_engine",
+          "timeoutMs": 600000,
+          "concurrency": 1
+        }
+      ]
+    },
+    "approvalId": "approval-ms0sd3jp-g4cjq8",
+    "requestedAt": "2026-07-25T19:52:35.893Z",
+    "status": "approved",
+    "reason": "operador confirmou",
+    "resolvedAt": "2026-07-25T19:52:44.538Z"
+  },
+  "effectivePlanHash": "838d4beea587cf8be4759a10212f6432b23325a3df76a9ab409f803c1ac5e9c5",
+  "currentEffectivePlan": {
+    "hash": "838d4beea587cf8be4759a10212f6432b23325a3df76a9ab409f803c1ac5e9c5",
+    "iteration": 1,
+    "selectedModules": [
+      "rdap",
+      "dns_enrichment",
+      "security_headers",
+      "robots_sitemap",
+      "wellknown_security_txt",
+      "wayback",
+      "common_crawl",
+      "js_intel",
+      "client_surface_audit",
+      "header_intel",
+      "email_security_deep",
+      "websocket_recon",
+      "hpp_param_pollution",
+      "dom_clobbering_audit",
+      "secrets_context_ranker",
+      "chaining",
+      "risk_explainer",
+      "frameseven_authenticated",
+      "vigolium_dast"
+    ],
+    "engines": {
+      "ghostrecon": {
+        "enabled": true
+      },
+      "vigolium": {
+        "enabled": true,
+        "engine": "both",
+        "agent": "none",
+        "useCodex": false
+      },
+      "frameseven": {
+        "enabled": true,
+        "available": true,
+        "authBrowser": true,
+        "tools": "recon,access,ssrf,lfi,xss,xxe,cmdi,ssti,redirect,authtest,cve,crawler,content,subdomain,ports,nmap,bannergrab",
+        "moduleIds": [
+          "frameseven_authenticated"
+        ]
+      }
+    }
+  },
+  "finishedAt": "2026-07-25T19:56:23.234Z",
+  "durationMs": 248562,
+  "error": "server_restarted_before_session_completed"
+}

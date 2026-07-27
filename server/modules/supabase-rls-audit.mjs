@@ -8,6 +8,12 @@
 
 import https from 'node:https';
 import http from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  combineAbortSignals,
+  isAbortError,
+  throwIfAborted,
+} from './http-utils.js';
 
 const TIMEOUT_MS = 12_000;
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36';
@@ -68,12 +74,43 @@ function makeFinding({ type, value, score, url, meta, owasp, mitre, cvss }) {
   };
 }
 
-async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {}) {
-  return new Promise((resolve) => {
+const requestImplContext = new AsyncLocalStorage();
+
+function abortReason(signal) {
+  return signal?.reason || new DOMException('The operation was aborted', 'AbortError');
+}
+
+async function networkRequest(
+  url,
+  { method = 'GET', headers = {}, body = null, signal = null } = {},
+) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
     let parsed;
     try { parsed = new URL(url); } catch { return resolve({ status: null, headers: {}, body: '', error: 'invalid_url' }); }
     const mod = parsed.protocol === 'https:' ? https : http;
-    const req = mod.request({
+    let settled = false;
+    let req = null;
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      reject(error);
+    };
+    const onAbort = () => {
+      const reason = abortReason(signal);
+      req?.destroy(reason);
+      finishReject(reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) return onAbort();
+    req = mod.request({
       hostname: parsed.hostname,
       port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
       path: parsed.pathname + parsed.search,
@@ -86,13 +123,45 @@ async function rawRequest(url, { method = 'GET', headers = {}, body = null } = {
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; if (buf.length > 65536) req.destroy(); });
-      res.on('end', () => resolve({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
+      res.on('end', () => finishResolve({ status: res.statusCode, headers: resHeaders, body: buf, error: null }));
     });
-    req.on('error', (e) => resolve({ status: null, headers: {}, body: '', error: e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ status: null, headers: {}, body: '', error: 'timeout' }); });
+    req.on('error', (e) => {
+      if (isAbortError(e, signal)) finishReject(abortReason(signal));
+      else finishResolve({ status: null, headers: {}, body: '', error: e.message });
+    });
+    req.on('timeout', () => {
+      finishResolve({ status: null, headers: {}, body: '', error: 'timeout' });
+      req.destroy();
+    });
     if (body) req.write(body);
     req.end();
   });
+}
+
+async function rawRequest(url, options = {}) {
+  const context = requestImplContext.getStore() || {};
+  const requestImpl = typeof context === 'function' ? context : context.requestImpl;
+  const signal = options.signal || context.signal || null;
+  const urlAllowed = context.urlAllowed || null;
+  throwIfAborted(signal);
+  if (typeof urlAllowed === 'function' && urlAllowed(url) !== true) {
+    return { status: null, headers: {}, body: '', error: 'out_of_scope' };
+  }
+  const result = typeof requestImpl === 'function'
+    ? await requestImpl(url, { ...options, signal })
+    : await networkRequest(url, { ...options, signal });
+  throwIfAborted(signal);
+  return result;
+}
+
+function withRequestImpl(requestImpl, signal, urlAllowed, fn) {
+  throwIfAborted(signal);
+  return requestImplContext.run({ requestImpl, signal, urlAllowed }, fn);
+}
+
+function rethrowAbort(error) {
+  const signal = requestImplContext.getStore()?.signal || null;
+  if (isAbortError(error, signal)) throw error;
 }
 
 function sbHeaders(key, token = null) {
@@ -193,9 +262,26 @@ function parseAccessToken(body) {
 }
 
 /**
- * Obtém JWT autenticado automaticamente: env → bundle → signup anônimo → signup aberto → service_role.
+ * Resolve um JWT autenticado para probes somente leitura.
+ *
+ * Criação de sessão/conta e uso de service_role exigem gates separados. A
+ * simples presença de um token no ambiente ou no bundle nunca habilita writes.
  */
-export async function resolveSupabaseAuthToken(supabaseUrl, anonKey, { bundleText = '', log = null, envToken = null } = {}) {
+export async function resolveSupabaseAuthToken(
+  supabaseUrl,
+  anonKey,
+  {
+    bundleText = '',
+    log = null,
+    envToken = null,
+    writeProbes = false,
+    allowServiceRole = false,
+    requestImpl = null,
+    signal = null,
+    urlAllowed = null,
+  } = {},
+) {
+  return withRequestImpl(requestImpl, signal, urlAllowed, async () => {
   if (envToken) {
     return { authToken: envToken, apiKey: anonKey, source: 'env' };
   }
@@ -210,50 +296,76 @@ export async function resolveSupabaseAuthToken(supabaseUrl, anonKey, { bundleTex
         log?.(`[supabase-audit] Token autenticado encontrado no bundle (user_id=${t.sub})`, 'info');
         return { authToken: t.jwt, apiKey: anonKey, source: 'bundle_authenticated' };
       }
-    } catch { /* skip */ }
+    } catch (error) {
+      rethrowAbort(error);
+      /* skip */
+    }
   }
 
-  try {
-    const anonRes = await rawRequest(`${supabaseUrl}/auth/v1/signup`, {
-      method: 'POST',
-      headers: { ...sbHeaders(anonKey), 'X-Supabase-Api-Version': '2024-01-01' },
-      body: JSON.stringify({ data: {}, gotrue_meta_security: {} }),
-    });
-    const anonToken = parseAccessToken(anonRes.body);
-    if (anonRes.status === 200 && anonToken) {
-      log?.('[supabase-audit] Sessão anônima criada — token obtido automaticamente', 'info');
-      return { authToken: anonToken, apiKey: anonKey, source: 'anonymous_signin' };
+  if (writeProbes === true) {
+    try {
+      const anonRes = await rawRequest(`${supabaseUrl}/auth/v1/signup`, {
+        method: 'POST',
+        headers: { ...sbHeaders(anonKey), 'X-Supabase-Api-Version': '2024-01-01' },
+        body: JSON.stringify({ data: {}, gotrue_meta_security: {} }),
+      });
+      const anonToken = parseAccessToken(anonRes.body);
+      if (anonRes.status === 200 && anonToken) {
+        log?.('[supabase-audit] Sessão anônima criada por write probe autorizado', 'info');
+        return { authToken: anonToken, apiKey: anonKey, source: 'anonymous_signin' };
+      }
+    } catch (error) {
+      rethrowAbort(error);
+      /* skip */
     }
-  } catch { /* skip */ }
 
-  try {
-    const email = `ghostrecon.audit.${Date.now()}@ghostrecon.invalid`;
-    const signupRes = await rawRequest(`${supabaseUrl}/auth/v1/signup`, {
-      method: 'POST',
-      headers: { ...sbHeaders(anonKey), 'X-Supabase-Api-Version': '2024-01-01' },
-      body: JSON.stringify({ email, password: 'GhostReconAudit!2026Aa' }),
-    });
-    const signupToken = parseAccessToken(signupRes.body);
-    if (signupRes.status === 200 && signupToken) {
-      log?.('[supabase-audit] Conta de teste criada — access_token obtido automaticamente', 'info');
-      return { authToken: signupToken, apiKey: anonKey, source: 'open_signup' };
+    try {
+      const email = `ghostrecon.audit.${Date.now()}@ghostrecon.invalid`;
+      const signupRes = await rawRequest(`${supabaseUrl}/auth/v1/signup`, {
+        method: 'POST',
+        headers: { ...sbHeaders(anonKey), 'X-Supabase-Api-Version': '2024-01-01' },
+        body: JSON.stringify({ email, password: 'GhostReconAudit!2026Aa' }),
+      });
+      const signupToken = parseAccessToken(signupRes.body);
+      if (signupRes.status === 200 && signupToken) {
+        log?.('[supabase-audit] Conta de teste criada por write probe autorizado', 'info');
+        return { authToken: signupToken, apiKey: anonKey, source: 'open_signup' };
+      }
+    } catch (error) {
+      rethrowAbort(error);
+      /* skip */
     }
-  } catch { /* skip */ }
+  }
 
-  if (extracted.serviceRoleKey) {
+  if (writeProbes === true && allowServiceRole === true && extracted.serviceRoleKey) {
     log?.('[supabase-audit] service_role no bundle — usando para probes autenticados', 'warn');
     return { authToken: extracted.serviceRoleKey, apiKey: extracted.serviceRoleKey, source: 'bundle_service_role' };
   }
 
   return { authToken: null, apiKey: anonKey, source: null };
+  });
 }
 
 /**
  * Descobre credenciais Supabase no alvo (HTML + bundles JS).
  */
-export async function discoverSupabaseFromTarget(targetUrl, { fetchImpl = null, log = null, maxFiles = 8 } = {}) {
+export async function discoverSupabaseFromTarget(
+  targetUrl,
+  {
+    fetchImpl = null,
+    log = null,
+    maxFiles = 8,
+    signal = null,
+    urlAllowed = null,
+  } = {},
+) {
   log?.('[supabase-audit] Extraindo URL/key dos bundles do alvo', 'info');
-  const bundleText = await fetchClientBundleText(targetUrl, { fetchImpl, maxFiles });
+  const bundleText = await fetchClientBundleText(targetUrl, {
+    fetchImpl,
+    maxFiles,
+    signal,
+    urlAllowed,
+  });
   const creds = extractSupabaseCredentials(bundleText);
   return {
     ...creds,
@@ -373,7 +485,14 @@ export async function probeRlsReadTables(supabaseUrl, anonKey, log, tables = SUP
 /**
  * Probe RLS write: INSERT/PATCH anônimo com cleanup.
  */
-export async function probeRlsWriteTables(supabaseUrl, anonKey, log, exposedTables = []) {
+export async function probeRlsWriteTables(
+  supabaseUrl,
+  anonKey,
+  log,
+  exposedTables = [],
+  { writeProbes = false } = {},
+) {
+  if (writeProbes !== true) return [];
   const findings = [];
   const targets = exposedTables.length
     ? exposedTables.slice(0, 3).map((e) => e.table)
@@ -497,7 +616,12 @@ export async function probeStorageExposure(supabaseUrl, anonKey, log) {
 /**
  * Auth: signup aberto, enumeração, JWT lifetime.
  */
-export async function probeAuthMisconfig(supabaseUrl, anonKey, log) {
+export async function probeAuthMisconfig(
+  supabaseUrl,
+  anonKey,
+  log,
+  { writeProbes = false } = {},
+) {
   const findings = [];
   const settingsUrl = `${supabaseUrl}/auth/v1/settings`;
   const settingsRes = await rawRequest(settingsUrl, { headers: sbHeaders(anonKey) });
@@ -509,20 +633,32 @@ export async function probeAuthMisconfig(supabaseUrl, anonKey, log) {
     const signupDisabled = settings?.disable_signup === true || settings?.SITE_URL === undefined && settings?.external?.email === false;
     if (settings && !signupDisabled && settings?.external?.email !== false) {
       const signupUrl = `${supabaseUrl}/auth/v1/signup`;
-      const email = `ghostrecon.audit.${Date.now()}@ghostrecon.invalid`;
-      const signupRes = await rawRequest(signupUrl, {
-        method: 'POST',
-        headers: { ...sbHeaders(anonKey), 'X-Supabase-Api-Version': '2024-01-01' },
-        body: JSON.stringify({ email, password: 'GhostReconAudit!2026Aa' }),
-      });
-      if (signupRes.status === 200) {
-        log?.('[supabase-audit] Auth: cadastro público habilitado', 'warn');
+      if (writeProbes === true) {
+        const email = `ghostrecon.audit.${Date.now()}@ghostrecon.invalid`;
+        const signupRes = await rawRequest(signupUrl, {
+          method: 'POST',
+          headers: { ...sbHeaders(anonKey), 'X-Supabase-Api-Version': '2024-01-01' },
+          body: JSON.stringify({ email, password: 'GhostReconAudit!2026Aa' }),
+        });
+        if (signupRes.status === 200) {
+          log?.('[supabase-audit] Auth: cadastro público confirmado por write probe autorizado', 'warn');
+          findings.push(makeFinding({
+            type: 'supabase_open_signup',
+            value: 'Cadastro público Supabase Auth habilitado (signup via API)',
+            score: 68,
+            url: signupUrl,
+            meta: { verifiedByWriteProbe: true, note: 'Conta de teste criada — remover manualmente se necessário' },
+            owasp: 'A07:2021',
+          }));
+        }
+      } else {
+        log?.('[supabase-audit] Auth: configuração indica cadastro público; write probe não executado', 'warn');
         findings.push(makeFinding({
           type: 'supabase_open_signup',
-          value: 'Cadastro público Supabase Auth habilitado (signup via API)',
-          score: 68,
+          value: 'Configuração Supabase indica cadastro público habilitado',
+          score: 48,
           url: signupUrl,
-          meta: { note: 'Conta de teste criada — remover manualmente se necessário' },
+          meta: { verifiedByWriteProbe: false, source: 'auth_settings' },
           owasp: 'A07:2021',
         }));
       }
@@ -539,6 +675,8 @@ export async function probeAuthMisconfig(supabaseUrl, anonKey, log) {
       }));
     }
   }
+
+  if (writeProbes !== true) return findings;
 
   const recoverUrl = `${supabaseUrl}/auth/v1/recover`;
   const fake1 = await rawRequest(recoverUrl, {
@@ -607,7 +745,13 @@ export async function probeSupabaseGraphql(supabaseUrl, anonKey, log) {
 /**
  * RPC exposure — POST em funções comuns.
  */
-export async function probeRpcExposure(supabaseUrl, anonKey, log) {
+export async function probeRpcExposure(
+  supabaseUrl,
+  anonKey,
+  log,
+  { writeProbes = false } = {},
+) {
+  if (writeProbes !== true) return [];
   const findings = [];
   for (const fn of SUPABASE_RPC_NAMES) {
     const url = `${supabaseUrl}/rest/v1/rpc/${encodeURIComponent(fn)}`;
@@ -700,11 +844,24 @@ export function analyzeAnonKeyLifetime(anonKey) {
 /**
  * Busca bundles JS do alvo para detectar service_role no cliente.
  */
-export async function fetchClientBundleText(targetUrl, { fetchImpl = null, maxFiles = 6 } = {}) {
+export async function fetchClientBundleText(
+  targetUrl,
+  {
+    fetchImpl = null,
+    maxFiles = 6,
+    signal = null,
+    urlAllowed = null,
+  } = {},
+) {
   const fetchFn = fetchImpl || globalThis.fetch;
   if (!fetchFn || !targetUrl) return '';
+  throwIfAborted(signal);
+  if (typeof urlAllowed === 'function' && urlAllowed(targetUrl) !== true) return '';
   try {
-    const res = await fetchFn(targetUrl, { headers: { 'User-Agent': UA, Accept: 'text/html,*/*' }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await fetchFn(targetUrl, {
+      headers: { 'User-Agent': UA, Accept: 'text/html,*/*' },
+      signal: combineAbortSignals(signal, TIMEOUT_MS),
+    });
     const html = await res.text();
     const origin = new URL(targetUrl).origin;
     const jsUrls = [];
@@ -718,13 +875,22 @@ export async function fetchClientBundleText(targetUrl, { fetchImpl = null, maxFi
     }
     let text = html;
     for (const u of jsUrls) {
+      throwIfAborted(signal);
+      if (typeof urlAllowed === 'function' && urlAllowed(u) !== true) continue;
       try {
-        const r = await fetchFn(u, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+        const r = await fetchFn(u, {
+          headers: { 'User-Agent': UA },
+          signal: combineAbortSignals(signal, TIMEOUT_MS),
+        });
         if (r.ok) text += `\n${await r.text()}`;
-      } catch { /* skip */ }
+      } catch (error) {
+        if (isAbortError(error, signal)) throw error;
+        /* skip */
+      }
     }
     return text.slice(0, 800_000);
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     return '';
   }
 }
@@ -733,19 +899,32 @@ export async function fetchClientBundleText(targetUrl, { fetchImpl = null, maxFi
  * Executa todos os probes RLS/Storage/Auth generalistas.
  */
 export async function runSupabaseRlsAudit(context, opts = {}) {
+  return withRequestImpl(opts.requestImpl, opts.signal, opts.urlAllowed, async () => {
   const { supabaseUrl, anonKey, bundleText: bundleTextIn = '' } = context || {};
-  const { log = null, writeProbes = true, tables = SUPABASE_SENSITIVE_TABLES, targetUrl = '' } = opts;
+  const { log = null, writeProbes = false, tables = SUPABASE_SENSITIVE_TABLES, targetUrl = '' } = opts;
+  const allowWrites = writeProbes === true;
   const findings = [];
   const results = {};
 
   if (!supabaseUrl || !anonKey) {
     return { findings: [], summary: { skipped: 'sem supabaseUrl ou anonKey' }, exposed: [] };
   }
+  if (typeof opts.urlAllowed === 'function' && opts.urlAllowed(supabaseUrl) !== true) {
+    log?.('[supabase-audit] Endpoint Supabase fora do escopo autorizado — RLS audit ignorado', 'info');
+    return {
+      findings: [],
+      summary: { skipped: 'supabase_out_of_scope', results: {} },
+      exposed: [],
+    };
+  }
 
   let bundleText = bundleTextIn;
   if (!bundleText && targetUrl) {
     log?.('[supabase-audit] Buscando bundles JS para scan service_role', 'info');
-    bundleText = await fetchClientBundleText(targetUrl);
+    bundleText = await fetchClientBundleText(targetUrl, {
+      signal: opts.signal,
+      urlAllowed: opts.urlAllowed,
+    });
   }
 
   findings.push(...detectServiceRoleExposure(bundleText, { anonKey }));
@@ -757,20 +936,29 @@ export async function runSupabaseRlsAudit(context, opts = {}) {
     const { findings: rlsFindings, exposed } = await probeRlsReadTables(supabaseUrl, anonKey, log, tables);
     findings.push(...rlsFindings);
     results.rlsRead = exposed.length ? `${exposed.length} tabela(s)` : 'ok';
-    if (writeProbes && exposed.length) {
-      const wf = await probeRlsWriteTables(supabaseUrl, anonKey, log, exposed);
+    if (allowWrites && exposed.length) {
+      const wf = await probeRlsWriteTables(
+        supabaseUrl,
+        anonKey,
+        log,
+        exposed,
+        { writeProbes: true },
+      );
       findings.push(...wf);
       results.rlsWrite = wf.length ? 'vulneravel' : 'ok';
     }
   } catch (e) {
+    rethrowAbort(e);
     log?.(`[supabase-audit] RLS probe erro: ${e.message}`, 'warn');
     results.rlsRead = 'erro';
   }
 
   for (const [name, fn] of [
     ['storage', () => probeStorageExposure(supabaseUrl, anonKey, log)],
-    ['auth', () => probeAuthMisconfig(supabaseUrl, anonKey, log)],
-    ['rpc', () => probeRpcExposure(supabaseUrl, anonKey, log)],
+    ['auth', () => probeAuthMisconfig(supabaseUrl, anonKey, log, { writeProbes: allowWrites })],
+    ...(allowWrites
+      ? [['rpc', () => probeRpcExposure(supabaseUrl, anonKey, log, { writeProbes: true })]]
+      : []),
     ['edgeFunctions', () => probeEdgeFunctions(supabaseUrl, anonKey, log)],
   ]) {
     try {
@@ -779,6 +967,7 @@ export async function runSupabaseRlsAudit(context, opts = {}) {
       findings.push(...arr);
       results[name] = arr.length ? `${arr.length} achado(s)` : 'ok';
     } catch (e) {
+      rethrowAbort(e);
       log?.(`[supabase-audit] ${name} probe erro: ${e.message}`, 'warn');
       results[name] = 'erro';
     }
@@ -789,8 +978,10 @@ export async function runSupabaseRlsAudit(context, opts = {}) {
     if (gql) findings.push(gql);
     results.graphql = gql ? 'vulneravel' : 'ok';
   } catch (e) {
+    rethrowAbort(e);
     results.graphql = 'erro';
   }
 
   return { findings, summary: { results }, exposed: [] };
+  });
 }

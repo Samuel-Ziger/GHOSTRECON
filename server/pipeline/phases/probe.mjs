@@ -115,8 +115,18 @@ import { newnym as torNewnym } from '../../modules/tor-control.js';
 import path from 'path';
 import { ROOT, firstIpv4FromDnsRecords, sleep } from '../pipeline-shared.mjs';
 import { dispatchRegistryModule } from '../dispatcher.mjs';
+import { pipelineCapabilityAllowed } from '../pipeline-state.mjs';
 
 
+
+export function shouldRunWafFingerprint(state) {
+  if (!pipelineCapabilityAllowed(state, 'http_probe')) return false;
+  if (state?.autoModeExecution === true) {
+    return Array.isArray(state.modules) && state.modules.includes('wafw00f');
+  }
+  return (Array.isArray(state?.modules) && state.modules.includes('wafw00f'))
+    || state?.runtimeProfile?.name !== 'quick';
+}
 
 export async function runProbePhase(s) {
   const {
@@ -131,25 +141,30 @@ export async function runProbePhase(s) {
   } = s;
 
     // ── ALIVE / PROBE ───────────────────────────
-    pipe('alive', 'active');
+    const runHttpProbe = pipelineCapabilityAllowed(s, 'http_probe');
+    pipe('alive', runHttpProbe ? 'active' : 'skip');
     progress(28);
     const hostsToProbe = [
       domain,
       ...new Set([...subdomainsAlive, ...(modules.includes('subdomains') ? [] : s.vtHostnames)]),
-    ].slice(0, runtimeProfile.maxHostsToProbe);
+    ].filter((host) => s.hostInScope(host)).slice(0, runtimeProfile.maxHostsToProbe);
     const urlsToProbe = [];
     for (const h of hostsToProbe) {
       const hl = hostLiteralForUrl(h);
       urlsToProbe.push(`https://${hl}/`, `http://${hl}/`);
     }
-    log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
-    emit({
-      type: 'pipe_detail',
-      name: 'alive',
-      current: 0,
-      total: urlsToProbe.length,
-      label: `${hostsToProbe.length} host(s), ${urlsToProbe.length} URL(s)`,
-    });
+    if (runHttpProbe) {
+      log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
+      emit({
+        type: 'pipe_detail',
+        name: 'alive',
+        current: 0,
+        total: urlsToProbe.length,
+        label: `${hostsToProbe.length} host(s), ${urlsToProbe.length} URL(s)`,
+      });
+    } else {
+      log('HTTP probing omitido no Auto: capacidade http_probe não aprovada.', 'info');
+    }
 
     let completedAliveProbes = 0;
     const emitAliveProgress = (url) => {
@@ -167,24 +182,33 @@ export async function runProbePhase(s) {
       });
     };
 
-    s.probeResults = await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
-      let r;
-      try {
-        r = await probeHttp(u, { auth, modules, identityCtrl });
-      } catch (e) {
-        r = { ok: false, url: u, error: e?.message || String(e) };
-      } finally {
-        emitAliveProgress(u);
-      }
-      return { u, r };
-    });
+    s.probeResults = runHttpProbe
+      ? await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
+          let r;
+          try {
+            r = await probeHttp(u, {
+              auth,
+              modules,
+              identityCtrl,
+              signal: s.signal,
+              urlAllowed: (url) => s.urlInScope(url),
+            });
+          } catch (e) {
+            r = { ok: false, url: u, error: e?.message || String(e) };
+          } finally {
+            emitAliveProgress(u);
+          }
+          return { u, r };
+        })
+      : [];
 
     const seenTech = new Set();
     const seenHtmlCommentIntel = new Set();
-    const runWafFingerprint = modules.includes('wafw00f') || runtimeProfile.name !== 'quick';
+    const runWafFingerprint = shouldRunWafFingerprint(s);
     pipe('wafw00f', runWafFingerprint ? 'active' : 'skip');
     for (const { r } of s.probeResults) {
       if (!r.ok) continue;
+      if (!s.urlInScope(r.url)) continue;
       const host = new URL(r.url).hostname;
       if (r.status > 0 && r.status < 500) {
         log(`ALIVE ${r.url} → ${r.status} ${r.title ? `"${r.title.slice(0, 60)}"` : ''}`, 'success');
@@ -226,7 +250,7 @@ export async function runProbePhase(s) {
             });
           }
         }
-        if (r.htmlSample && hostInReconScope(host, domain, outOfScopeList)) {
+        if (r.htmlSample && s.hostInScope(host)) {
           for (const h of extractSuspiciousHtmlComments(r.htmlSample)) {
             const key = `${host}::${h.slice(0, 48)}`;
             if (seenHtmlCommentIntel.has(key)) continue;
@@ -269,7 +293,7 @@ export async function runProbePhase(s) {
           } catch {
             continue;
           }
-          if (!hostInReconScope(u.hostname, domain, outOfScopeList)) continue;
+          if (!s.hostInScope(u.hostname)) continue;
           const href = u.href;
           if (seenEp.has(href)) continue;
           seenEp.add(href);
@@ -442,7 +466,7 @@ export async function runProbePhase(s) {
       } catch {
         continue;
       }
-      if (!hostInReconScope(u.hostname, domain, outOfScopeList)) continue;
+      if (!s.hostInScope(u.hostname)) continue;
       const prefer = u.protocol === 'https:' ? 2 : 1;
       const cur = s.originByHost.get(u.hostname);
       if (!cur || prefer > cur.prefer) {
@@ -486,6 +510,7 @@ export async function runProbePhase(s) {
                 .split(',')
                 .map((x) => x.replace(/DNS:/gi, '').trim().toLowerCase().replace(/^\*\./, ''))
                 .filter((x) => /^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}$/i.test(x))
+                .filter((x) => s.hostInScope(x))
                 .slice(0, 30);
               s.tlsSanHosts = [...new Set([...s.tlsSanHosts, ...sanHosts])];
             }
@@ -497,7 +522,12 @@ export async function runProbePhase(s) {
         const bases = [...s.originByHost.values()].map((v) => v.origin);
         log(`robots.txt / sitemap (${bases.length} origem(ns))...`, 'info');
         await mapPool(bases, limits.surfaceConcurrency, async (baseOrigin) => {
-          const crawl = await crawlRobotsAndSitemapsForOrigin(baseOrigin, domain, outOfScopeList);
+          const crawl = await crawlRobotsAndSitemapsForOrigin(
+            baseOrigin,
+            domain,
+            outOfScopeList,
+            s.scopePolicy,
+          );
           for (const p of (crawl.disallowHints || []).slice(0, 20)) {
             addFinding(
               {
@@ -624,7 +654,7 @@ export async function runProbePhase(s) {
       pipe('wellknown_openid', 'skip');
     }
 
-    pipe('alive', 'done');
+    if (runHttpProbe) pipe('alive', 'done');
     progress(40);
 
     if (modules.includes('shodan')) {
@@ -635,11 +665,18 @@ export async function runProbePhase(s) {
       } else {
         log('Shodan: resolução IPv4 + host lookup (passivo)...', 'info');
         try {
-          const ips = await collectUniqueIpv4(
+          const discoveredIps = await collectUniqueIpv4(
             hostsToProbe,
             limits.shodanResolveMaxHosts,
             limits.shodanMaxIps,
           );
+          const ips = discoveredIps.filter((ip) => s.hostInScope(ip));
+          if (discoveredIps.length > ips.length) {
+            log(
+              `Shodan: ${discoveredIps.length - ips.length} IP(s) derivado(s) ignorado(s) por não constarem na allowlist formal`,
+              'info',
+            );
+          }
           for (const ip of ips) {
             const s = await shodanHostSummary(ip, sk);
             if (!s.ok) {
@@ -688,7 +725,14 @@ export async function runProbePhase(s) {
       pipe('openapi_specs', 'active');
       log('OpenAPI/Swagger: a procurar specs em paths comuns…', 'info');
       try {
-        const specRows = await harvestOpenApiFromOrigins(activeOrigins, domain, outOfScopeList, modules, log);
+        const specRows = await harvestOpenApiFromOrigins(
+          activeOrigins,
+          domain,
+          outOfScopeList,
+          modules,
+          log,
+          s.scopePolicy,
+        );
         for (const row of specRows) {
           addFinding(row, row.type === 'param' ? 'params' : row.type === 'endpoint' ? 'endpoints' : null);
         }

@@ -22,6 +22,13 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { isIntrusive } from './opsec.mjs';
+import {
+  hostnameMatchesOutOfScope,
+  hostnameMatchesDomainScopeRule,
+  ipMatchesScopeRule,
+} from './scope.js';
 
 function storeDir() {
   return path.resolve(process.cwd(), process.env.GHOSTRECON_ENGAGEMENT_DIR || '.ghostrecon-engagements');
@@ -50,6 +57,60 @@ function normId(id) {
     throw new Error('engagement id inválido (use A-Z 0-9 . _ : @ / -)');
   }
   return s;
+}
+
+function stableAuthorizationValue(value) {
+  if (Array.isArray(value)) return value.map(stableAuthorizationValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, stableAuthorizationValue(value[key])]),
+  );
+}
+
+function normalizedAuthorizationValues(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))]
+    .sort();
+}
+
+/**
+ * Hash dos campos do engagement que concedem ou restringem autorização.
+ * Notas, histórico de runs e metadados de apresentação não invalidam uma
+ * aprovação; escopo, exclusões, janela, ROE, status e origem invalidam.
+ */
+export function computeEngagementAuthorizationBinding(
+  engagement,
+  requestedEngagementId = null,
+) {
+  if (!engagement) return null;
+  const authorization = {
+    schemaVersion: 1,
+    requestedEngagementId: requestedEngagementId
+      ? String(requestedEngagementId).trim()
+      : null,
+    id: String(engagement.id || '').trim(),
+    status: String(engagement.status || '').trim().toLowerCase(),
+    roeSigned: engagement.roeSigned === true,
+    roeUrl: engagement.roeUrl ? String(engagement.roeUrl).trim() : null,
+    scopeDomains: normalizedAuthorizationValues(engagement.scopeDomains),
+    scopeIps: normalizedAuthorizationValues(engagement.scopeIps),
+    exclusions: normalizedAuthorizationValues(engagement.exclusions),
+    sourceIps: normalizedAuthorizationValues(engagement.sourceIps),
+    window: engagement.window ? {
+      startsAt: engagement.window.startsAt
+        ? String(engagement.window.startsAt).trim()
+        : null,
+      endsAt: engagement.window.endsAt
+        ? String(engagement.window.endsAt).trim()
+        : null,
+      tz: engagement.window.tz ? String(engagement.window.tz).trim() : null,
+    } : null,
+    closedAt: engagement.closedAt ? String(engagement.closedAt).trim() : null,
+  };
+  return createHash('sha256')
+    .update(JSON.stringify(stableAuthorizationValue(authorization)))
+    .digest('hex');
 }
 
 export async function listEngagements() {
@@ -130,17 +191,32 @@ export async function attachRunToEngagement(id, { runId, target, by = null }) {
  * Pré-run checklist: valida alvo contra escopo + exclusões, detecta módulos intrusivos,
  * retorna { ok, errors, warnings }.
  */
-export function preRunChecklist({ engagement, target, modules = [], playbook = null }) {
+export function preRunChecklist({
+  engagement,
+  target,
+  modules = [],
+  playbook = null,
+  requireFormalAuthorization = false,
+  intrusiveModules = null,
+}) {
   const errors = [];
   const warnings = [];
 
   if (!engagement) {
-    warnings.push('sem engagement — rodando fora de ROE formal (ok para bug bounty passivo).');
-    return checkIntrusive({ errors, warnings, modules, playbook });
+    if (requireFormalAuthorization) {
+      errors.push('engagement formal obrigatório para módulos intrusivos.');
+    } else {
+      warnings.push('sem engagement — rodando fora de ROE formal (ok para bug bounty passivo).');
+    }
+    return checkIntrusive({ errors, warnings, modules, playbook, intrusiveModules });
   }
 
-  if (engagement.status === 'closed') {
-    errors.push(`engagement ${engagement.id} está CLOSED desde ${engagement.closedAt}.`);
+  if (engagement.status !== 'active') {
+    errors.push(
+      engagement.status === 'closed'
+        ? `engagement ${engagement.id} está CLOSED desde ${engagement.closedAt}.`
+        : `engagement ${engagement.id} não está ativo (status=${engagement.status || 'desconhecido'}).`,
+    );
   }
 
   // Janela de teste
@@ -155,34 +231,43 @@ export function preRunChecklist({ engagement, target, modules = [], playbook = n
   }
 
   // ROE assinado
-  if (!engagement.roeSigned) warnings.push('ROE não marcado como assinado (roeSigned=false).');
+  if (!engagement.roeSigned) {
+    if (requireFormalAuthorization) errors.push('ROE assinado obrigatório para módulos intrusivos.');
+    else warnings.push('ROE não marcado como assinado (roeSigned=false).');
+  }
+
+  const scopeEntries =
+    (engagement.scopeDomains?.length || 0) + (engagement.scopeIps?.length || 0);
+  if (scopeEntries === 0) {
+    errors.push(
+      'engagement formal sem scopeDomains/scopeIps; defina uma allowlist antes de executar.',
+    );
+  }
 
   // Escopo
   if (target) {
-    const inDomain = (engagement.scopeDomains || []).some((r) => hostMatchesRule(target, r));
-    const inIp = (engagement.scopeIps || []).some((r) => ipMatchesRule(target, r));
-    const excluded = (engagement.exclusions || []).some((r) => hostMatchesRule(target, r) || ipMatchesRule(target, r));
+    const inDomain = (engagement.scopeDomains || [])
+      .some((rule) => hostnameMatchesDomainScopeRule(target, rule));
+    const inIp = (engagement.scopeIps || [])
+      .some((rule) => ipMatchesScopeRule(target, rule));
+    const excluded = hostnameMatchesOutOfScope(target, engagement.exclusions || []);
     if (excluded) errors.push(`${target} está em exclusions do engagement.`);
     if (!inDomain && !inIp) {
-      // Apenas aviso se scope vazio; erro se scope definido e não bateu.
-      if ((engagement.scopeDomains?.length || 0) + (engagement.scopeIps?.length || 0) > 0) {
+      if (scopeEntries > 0) {
         errors.push(`${target} fora do escopo definido (scopeDomains/scopeIps).`);
-      } else {
-        warnings.push('engagement sem scopeDomains/scopeIps — qualquer alvo aceito.');
       }
     }
   }
 
-  return checkIntrusive({ errors, warnings, modules, playbook });
+  return checkIntrusive({ errors, warnings, modules, playbook, intrusiveModules });
 }
 
-function checkIntrusive({ errors, warnings, modules, playbook }) {
-  const INTRUSIVE = new Set([
-    'sqlmap', 'nuclei', 'nuclei-aggressive', 'wpscan', 'ffuf', 'feroxbuster',
-    'dirsearch', 'gobuster', 'nmap-aggressive', 'nikto', 'wafwoof-active',
-    'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe', 'kali-active',
-  ]);
-  const hits = (modules || []).filter((m) => INTRUSIVE.has(String(m).toLowerCase()));
+function checkIntrusive({ errors, warnings, modules, playbook, intrusiveModules = null }) {
+  const declared = Array.isArray(intrusiveModules) ? intrusiveModules : [];
+  const hits = [...new Set([
+    ...declared,
+    ...(modules || []).filter((moduleId) => isIntrusive(moduleId)),
+  ].map(String).filter(Boolean))];
   if (hits.length) {
     warnings.push(`módulos INTRUSIVOS detectados: ${hits.join(', ')} — requer --confirm-active.`);
   }
@@ -190,35 +275,6 @@ function checkIntrusive({ errors, warnings, modules, playbook }) {
     warnings.push(`playbook "${playbook}" tem perfil agressivo.`);
   }
   return { ok: errors.length === 0, errors, warnings, intrusiveModules: hits };
-}
-
-function hostMatchesRule(host, rule) {
-  const h = String(host || '').toLowerCase();
-  const r = String(rule || '').toLowerCase().trim();
-  if (!h || !r) return false;
-  if (r.startsWith('*.')) {
-    const suffix = r.slice(1);
-    return h.endsWith(suffix) && h.length > suffix.length;
-  }
-  return h === r;
-}
-
-function ipMatchesRule(host, rule) {
-  const h = String(host || '').trim();
-  const r = String(rule || '').trim();
-  if (!h || !r) return false;
-  if (r === h) return true;
-  // CIDR básico /24 e /32
-  const m = r.match(/^(\d+\.\d+\.\d+)\.(\d+)\/(\d+)$/);
-  if (!m) return false;
-  const prefix = Number(m[3]);
-  if (prefix === 32) return r.split('/')[0] === h;
-  if (prefix === 24) {
-    const base = r.split('/')[0].split('.').slice(0, 3).join('.');
-    const hb = h.split('.').slice(0, 3).join('.');
-    return base === hb;
-  }
-  return false;
 }
 
 /**

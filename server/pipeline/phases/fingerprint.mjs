@@ -94,6 +94,7 @@ import { auditHppParamPollution } from '../../modules/hpp-param-pollution.mjs';
 import { runDomClobberingAudit } from '../../modules/dom-clobbering-audit.mjs';
 import { runEmailSecurityDeep } from '../../modules/email-security-deep.mjs';
 import { rankSecretFindings } from '../../modules/secrets-context-ranker.mjs';
+import { isAbortError, throwIfAborted } from '../../modules/http-utils.js';
 import {
   findPreviousApiContractSnapshots,
   runApiContractDiff,
@@ -150,6 +151,9 @@ export async function runFingerprintPhase(s) {
     tlsSanHosts,
     dnsAForHost,
   } = s;
+    const signal = s.signal || null;
+    const urlAllowed = (url) => s.urlInScope(url);
+    throwIfAborted(signal);
 
     // ── LOVABLE FINGERPRINT ───────────────────────
     s.lovableContext = null;
@@ -160,7 +164,9 @@ export async function runFingerprintPhase(s) {
         log(`Lovable fingerprint: analisando ${targetUrl}`, 'info');
         const lov = await fingerprintLovable(targetUrl, {
           pocDir: path.join(ROOT, 'pocs', 'supabase'),
-          storeRawSecrets: String(process.env.GHOSTRECON_POC_STORE_SECRETS || '').trim() === '1',
+          storeRawSecrets: false,
+          signal,
+          urlAllowed,
         });
         s.lovableContext = lov?.context || null;
         const lovFindings = Array.isArray(lov?.findings) ? lov.findings : [];
@@ -177,6 +183,7 @@ export async function runFingerprintPhase(s) {
           log('Lovable fingerprint: sem achados relevantes', 'info');
         }
       } catch (e) {
+        if (isAbortError(e, signal)) throw e;
         log(`Lovable fingerprint: ${e?.message || e}`, 'warn');
       }
       pipe('lovable_fingerprint', 'done');
@@ -192,7 +199,11 @@ export async function runFingerprintPhase(s) {
         let auditCtx = s.lovableContext;
         if (!auditCtx?.supabaseUrl || !auditCtx?.anonKey) {
           log('Supabase audit: extraindo URL/key dos bundles JS do alvo', 'info');
-          const discovered = await discoverSupabaseFromTarget(targetUrl, { log });
+          const discovered = await discoverSupabaseFromTarget(targetUrl, {
+            log,
+            signal,
+            urlAllowed,
+          });
           auditCtx = discovered?.context || null;
         } else if (s.lovableContext?.bundleText && !auditCtx.bundleText) {
           auditCtx = { ...auditCtx, bundleText: s.lovableContext.bundleText };
@@ -205,6 +216,11 @@ export async function runFingerprintPhase(s) {
             authToken: envAuth,
             targetUrl,
             log,
+            // Writes precisam de um fluxo dedicado de autorização; env/token
+            // apenas habilita contexto autenticado de leitura.
+            writeProbes: false,
+            signal,
+            urlAllowed,
           });
           for (const f of auditFindings) addFinding(withProvenance(f, 'supabase_audit'));
           const crit = summary?.critical || 0;
@@ -223,6 +239,7 @@ export async function runFingerprintPhase(s) {
           log('Supabase audit: Supabase URL/key não encontrados — alvo pode não usar Supabase', 'info');
         }
       } catch (e) {
+        if (isAbortError(e, signal)) throw e;
         log(`Supabase audit: ${e?.message || e}`, 'warn');
       }
       pipe('supabase_audit', 'done');
@@ -235,13 +252,17 @@ export async function runFingerprintPhase(s) {
       try {
         const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
         log('Firebase audit: descobrindo config nos bundles JS', 'info');
-        const { config, bundleText } = await discoverFirebaseFromTarget(targetUrl, { log });
+        const { config, bundleText } = await discoverFirebaseFromTarget(targetUrl, {
+          log,
+          signal,
+          urlAllowed,
+        });
         s.firebaseContext = config;
         if (config?.apiKey || config?.projectId) {
-          const writeProbes = String(process.env.GHOSTRECON_FIREBASE_WRITE_PROBES || '1').trim() !== '0';
+          const writeProbes = false;
           const { findings: fbFindings, summary } = await runFirebaseAudit(
             { ...config, bundleText },
-            { targetUrl, log, writeProbes },
+            { targetUrl, log, writeProbes, signal, urlAllowed },
           );
           for (const f of fbFindings) addFinding(withProvenance(f, 'firebase_audit'));
           const crit = summary?.critical || 0;
@@ -252,12 +273,13 @@ export async function runFingerprintPhase(s) {
             log('Firebase audit: nenhuma vulnerabilidade detectada nas rules/APIs', 'info');
           }
           if (!writeProbes) {
-            log('Firebase audit: probes de escrita desabilitados (GHOSTRECON_FIREBASE_WRITE_PROBES=0)', 'info');
+            log('Firebase audit: probes de escrita desabilitados; requerem autorização dedicada', 'info');
           }
         } else {
           log('Firebase audit: config Firebase não encontrada — alvo pode não usar Firebase', 'info');
         }
       } catch (e) {
+        if (isAbortError(e, signal)) throw e;
         log(`Firebase audit: ${e?.message || e}`, 'warn');
       }
       pipe('firebase_audit', 'done');

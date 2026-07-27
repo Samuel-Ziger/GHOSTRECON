@@ -93,7 +93,7 @@ const RUN_SPEC = [
   { name: 'reuse-modules', type: 'bool', default: false },
   { name: 'dry-run', type: 'bool', default: false },
   { name: 'out-of-scope', type: 'csv', default: [] },
-  { name: 'confirm-active', type: 'bool', default: true },
+  { name: 'confirm-active', type: 'bool', default: false },
 ];
 
 export async function ghostwatchCommand(argv) {
@@ -355,7 +355,7 @@ async function runOneSweep({ client, opts, stateDir, log }) {
       kaliMode: Boolean(runCfg.kali),
       profile: runCfg.profile,
       opsecProfile: opts['opsec-profile'],
-      confirmActive: Boolean(opts['confirm-active']) || process.env.GHOSTRECON_CONFIRM_ACTIVE === '1',
+      confirmActive: Boolean(opts['confirm-active']),
       outOfScope: outOfScope.join(','),
       playbook: runCfg.playbook || undefined,
       projectName: `ghostwatch-${target}`,
@@ -371,6 +371,24 @@ async function runOneSweep({ client, opts, stateDir, log }) {
     let newRunId = null;
     let errors = [];
     try {
+      if (body.confirmActive) {
+        const preflight = await client.postJson('/api/recon/preflight', body);
+        if (preflight?.requiresApproval) {
+          const decision = await client.postJson('/api/recon/approval', {
+            approvalId: preflight.approval?.approvalId,
+            planHash: preflight.plan?.hash,
+            approved: true,
+          });
+          if (decision?.approval?.status !== 'approved') {
+            throw new Error('aprovação vinculada ao plano GhostWatch não foi confirmada');
+          }
+          body.manualApproval = {
+            approvalId: preflight.approval.approvalId,
+            planHash: preflight.plan.hash,
+          };
+          log(`${target}: plano intrusivo aprovado hash=${preflight.plan.hash}`);
+        }
+      }
       await client.streamRecon(
         body,
         (evt) => {

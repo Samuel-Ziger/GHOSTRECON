@@ -16,12 +16,33 @@ export function stealthEnabled(modules) {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
-export async function stealthPause(modules) {
+export async function stealthPause(modules, signal = null) {
   if (!stealthEnabled(modules)) return;
+  if (signal?.aborted) throw signal.reason || new DOMException('cancelado', 'AbortError');
   const lo = Math.max(20, Number(limits.stealthJitterMinMs ?? 60));
   const hi = Math.max(lo, Number(limits.stealthJitterMaxMs ?? 420));
   const ms = lo + Math.random() * (hi - lo);
-  await new Promise((r) => setTimeout(r, ms));
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const onAbort = () => {
+      settle(reject, signal.reason || new DOMException('cancelado', 'AbortError'));
+    };
+    timer = setTimeout(() => settle(resolve), ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer.unref?.();
+    if (signal?.aborted) onAbort();
+  });
 }
 
 export function pickStealthUserAgent(modules) {
