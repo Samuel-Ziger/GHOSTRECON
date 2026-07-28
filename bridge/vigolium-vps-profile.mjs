@@ -6,24 +6,29 @@ import path from 'node:path';
  * Sem Discord nem relatório IA (fica para o finalize do GhostRecon).
  */
 
-export function shouldUseVigoliumVpsProfile(ctx = {}) {
+export function shouldUseVigoliumVpsProfile(ctx = {}, sourceEnv = process.env) {
+  // Uma escolha explícita faz parte do plano aprovado e deve prevalecer nos
+  // dois sentidos. Antes, `true` ainda podia ser revertido por uma variável
+  // ambiente `0`, enquanto apenas `false` era realmente autoritativo.
+  if (ctx.vigoliumVpsProfile === true) return true;
   if (ctx.vigoliumVpsProfile === false) return false;
-  const env = String(process.env.GHOSTRECON_VIGOLIUM_VPS_PROFILE ?? '').trim().toLowerCase();
+  const env = String(sourceEnv?.GHOSTRECON_VIGOLIUM_VPS_PROFILE ?? '').trim().toLowerCase();
   if (env === '0' || env === 'false' || env === 'no' || env === 'off') return false;
   if (env === '1' || env === 'true' || env === 'yes' || env === 'on') return true;
   const mods = ctx.modules || [];
   return mods.includes('vigolium_dast');
 }
 
-export function shouldSkipVigoliumExternalHarvest(ctx = {}) {
+export function shouldSkipVigoliumExternalHarvest(ctx = {}, sourceEnv = process.env) {
+  if (ctx.vigoliumSkipExternalHarvest === true) return true;
   if (ctx.vigoliumSkipExternalHarvest === false) return false;
-  const env = String(process.env.GHOSTRECON_VIGOLIUM_SKIP_EXTERNAL_HARVEST ?? '1').trim().toLowerCase();
+  const env = String(sourceEnv?.GHOSTRECON_VIGOLIUM_SKIP_EXTERNAL_HARVEST ?? '1').trim().toLowerCase();
   if (env === '0' || env === 'false' || env === 'no' || env === 'off') return false;
-  return shouldUseVigoliumVpsProfile(ctx);
+  return shouldUseVigoliumVpsProfile(ctx, sourceEnv);
 }
 
-export function vigoliumVpsDefaultStrategy(ctx = {}) {
-  return shouldUseVigoliumVpsProfile(ctx) ? 'deep' : null;
+export function vigoliumVpsDefaultStrategy(ctx = {}, sourceEnv = process.env) {
+  return shouldUseVigoliumVpsProfile(ctx, sourceEnv) ? 'deep' : null;
 }
 
 export function slugForVigoliumOutput(value) {
@@ -50,13 +55,13 @@ export function vigoliumArtifactPaths(outputBase) {
   };
 }
 
-export function appendVigoliumVpsScanFlags(args, ctx = {}) {
-  if (!shouldUseVigoliumVpsProfile(ctx)) return args;
+export function appendVigoliumVpsScanFlags(args, ctx = {}, sourceEnv = process.env) {
+  if (!shouldUseVigoliumVpsProfile(ctx, sourceEnv)) return args;
   if (!args.includes('-S')) args.push('-S');
   if (!args.some((a, i) => a === '--scope-origin' && args[i + 1] === 'strict')) {
     args.push('--scope-origin', 'strict');
   }
-  if (shouldSkipVigoliumExternalHarvest(ctx) && !args.includes('external-harvest')) {
+  if (shouldSkipVigoliumExternalHarvest(ctx, sourceEnv) && !args.includes('external-harvest')) {
     args.push('--skip', 'external-harvest');
   }
   return args;

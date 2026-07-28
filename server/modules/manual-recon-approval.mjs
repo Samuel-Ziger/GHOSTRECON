@@ -1,12 +1,15 @@
 import {
+  createHmac,
   createHash,
   randomBytes,
   timingSafeEqual,
 } from 'node:crypto';
 
 const DEFAULT_TTL_MS = 2 * 60_000;
-const DEFAULT_MAX_ENTRIES = 128;
+const DEFAULT_MAX_ENTRIES = 512;
+const DEFAULT_MAX_ENTRIES_PER_OWNER = 8;
 const SHA256_RE = /^[a-f0-9]{64}$/i;
+const GIT_OBJECT_ID_RE = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 
 function approvalError(code, message) {
   const error = new Error(message);
@@ -53,6 +56,33 @@ function normalizeIdentity(identity) {
   };
 }
 
+function normalizeSourceIdentity(identity) {
+  if (!identity || typeof identity !== 'object') return null;
+  const commit = cleanString(identity.commit).toLowerCase();
+  const tree = cleanString(identity.tree).toLowerCase();
+  const objectFormat = cleanString(identity.objectFormat).toLowerCase();
+  const expectedLength = objectFormat === 'sha256' ? 64 : 40;
+  if (
+    identity.version !== 1
+    || cleanString(identity.kind) !== 'git-worktree'
+    || !['sha1', 'sha256'].includes(objectFormat)
+    || !GIT_OBJECT_ID_RE.test(commit)
+    || !GIT_OBJECT_ID_RE.test(tree)
+    || commit.length !== expectedLength
+    || tree.length !== expectedLength
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    kind: 'git-worktree',
+    objectFormat,
+    commit,
+    tree,
+    trackedEntries: cleanInteger(identity.trackedEntries, 0),
+  };
+}
+
 function normalizeExecution(execution = {}) {
   const source = execution && typeof execution === 'object' ? execution : {};
   return {
@@ -64,13 +94,46 @@ function normalizeExecution(execution = {}) {
     playbook: cleanString(source.playbook) || null,
     fullPreset: cleanBoolean(source.fullPreset),
     navigatorMode: cleanBoolean(source.navigatorMode),
+    navigatorExec: cleanBoolean(source.navigatorExec),
+    navigatorUserMode: cleanBoolean(source.navigatorUserMode),
     torRequired: cleanBoolean(source.torRequired),
     torStrict: cleanBoolean(source.torStrict),
+    torNewnymBeforeRun: cleanBoolean(source.torNewnymBeforeRun),
+    torPerTargetCircuit: cleanBoolean(source.torPerTargetCircuit),
+    torDnsLeakHostBinding: cleanString(source.torDnsLeakHostBinding) || null,
     identityEnabled: cleanBoolean(source.identityEnabled),
     identityBehavior: cleanBoolean(source.identityBehavior),
     identityRotation: cleanString(source.identityRotation) || null,
+    identityIsolate: cleanBoolean(source.identityIsolate),
     proxyCount: cleanInteger(source.proxyCount, 0, 0, 32),
+    proxyPoolBinding: cleanString(source.proxyPoolBinding) || null,
     outOfScope: cleanStringList(source.outOfScope, { sort: true }),
+  };
+}
+
+function normalizeAuthentication(authentication = {}) {
+  const source = authentication && typeof authentication === 'object'
+    ? authentication
+    : {};
+  const pipeline = source.pipeline && typeof source.pipeline === 'object'
+    ? source.pipeline
+    : {};
+  const vigolium = source.vigolium && typeof source.vigolium === 'object'
+    ? source.vigolium
+    : {};
+  return {
+    pipeline: {
+      enabled: cleanBoolean(pipeline.enabled),
+      hasCookie: cleanBoolean(pipeline.hasCookie),
+      hasAuthorization: cleanBoolean(pipeline.hasAuthorization),
+      headerCount: cleanInteger(pipeline.headerCount, 0),
+    },
+    vigolium: {
+      enabled: cleanBoolean(vigolium.enabled),
+      sharesPipelineContext: cleanBoolean(vigolium.sharesPipelineContext),
+      inlineEntryCount: cleanInteger(vigolium.inlineEntryCount, 0),
+      authFileCount: cleanInteger(vigolium.authFileCount, 0),
+    },
   };
 }
 
@@ -102,13 +165,132 @@ function normalizeVigolium(vigolium = {}) {
     only: cleanString(source.only) || null,
     reportOnly: cleanString(source.reportOnly) || null,
     htmlReport: cleanBoolean(source.htmlReport),
+    preferPath: cleanBoolean(source.preferPath),
+    vpsProfile: cleanBoolean(source.vpsProfile),
+    skipExternalHarvest: cleanBoolean(source.skipExternalHarvest),
+    scanTimeoutMs: cleanInteger(source.scanTimeoutMs, null, 1),
+    agentTimeoutMs: cleanInteger(source.agentTimeoutMs, null, 1),
+    binarySource: cleanString(source.binarySource) || null,
+    binaryPathBinding: cleanString(source.binaryPathBinding) || null,
+    sourceMode: cleanString(source.sourceMode) || null,
     sourceBinding: cleanString(source.sourceBinding) || null,
+    sourceIdentity: normalizeSourceIdentity(source.sourceIdentity),
+    childEnvBinding: cleanString(source.childEnvBinding) || null,
+    authMaterialBinding: cleanString(source.authMaterialBinding) || null,
+    authFileIdentityCount: cleanInteger(source.authFileIdentityCount, 0),
     identity: normalizeIdentity(source.identity),
   };
 }
 
 function hashCanonical(value) {
   return createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
+}
+
+function stablePrivateValue(value, {
+  depth = 0,
+  key = '',
+  seen = new WeakSet(),
+} = {}) {
+  if (value === null) return null;
+  if (depth > 64) {
+    throw approvalError(
+      'MANUAL_RECON_PRIVATE_CONTEXT_INVALID',
+      'contexto privado excede a profundidade aceita',
+    );
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'object') {
+    throw approvalError(
+      'MANUAL_RECON_PRIVATE_CONTEXT_INVALID',
+      'contexto privado contém um tipo não suportado',
+    );
+  }
+  if (seen.has(value)) {
+    throw approvalError(
+      'MANUAL_RECON_PRIVATE_CONTEXT_INVALID',
+      'contexto privado contém referência circular',
+    );
+  }
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => stablePrivateValue(item, {
+        depth: depth + 1,
+        key,
+        seen,
+      }));
+    }
+    const out = {};
+    for (const childKey of Object.keys(value).sort()) {
+      if (depth === 0 && childKey === 'manualApproval') continue;
+      if (key === 'auth' && childKey === 'ghostreconApiKey') continue;
+      out[childKey] = stablePrivateValue(value[childKey], {
+        depth: depth + 1,
+        key: childKey,
+        seen,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/**
+ * Material privado usado apenas pelo store efêmero. Ele pode conter valores
+ * sensíveis e nunca deve ser retornado, logado ou persistido. O store conserva
+ * somente um HMAC process-local deste objeto.
+ */
+export function buildManualReconPrivateContext(body = {}) {
+  return stablePrivateValue(body);
+}
+
+export function summarizeManualReconAuthentication(body = {}, {
+  vigoliumEnabled = false,
+} = {}) {
+  const auth = body?.auth && typeof body.auth === 'object' ? body.auth : {};
+  const headers = auth.headers && typeof auth.headers === 'object'
+    ? Object.entries(auth.headers)
+      .filter(([, value]) => value != null && String(value).trim())
+    : [];
+  const headerNames = headers.map(([name]) => String(name).trim().toLowerCase());
+  const hasCookie = Boolean(String(auth.cookie || '').trim())
+    || headerNames.includes('cookie');
+  const hasAuthorization = headerNames.includes('authorization')
+    || headerNames.includes('proxy-authorization');
+  const pipelineEnabled = hasCookie || hasAuthorization || headers.length > 0;
+  const inlineEntries = [
+    ...(Array.isArray(body?.vigoliumAuthEntries) ? body.vigoliumAuthEntries : []),
+    ...(body?.vigoliumAuth != null && String(body.vigoliumAuth).trim()
+      ? String(body.vigoliumAuth)
+        .split(/[\n|,]+/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+      : []),
+  ].filter((value) => value != null && String(value).trim());
+  const authFiles = [
+    ...(Array.isArray(body?.vigoliumAuthFiles) ? body.vigoliumAuthFiles : []),
+    ...(body?.vigoliumAuthFile != null && String(body.vigoliumAuthFile).trim()
+      ? [body.vigoliumAuthFile]
+      : []),
+  ].filter((value) => value != null && String(value).trim());
+  const vigoliumHasContext = vigoliumEnabled
+    && (pipelineEnabled || inlineEntries.length > 0 || authFiles.length > 0);
+  return normalizeAuthentication({
+    pipeline: {
+      enabled: pipelineEnabled,
+      hasCookie,
+      hasAuthorization,
+      headerCount: headers.length,
+    },
+    vigolium: {
+      enabled: vigoliumHasContext,
+      sharesPipelineContext: vigoliumEnabled && pipelineEnabled,
+      inlineEntryCount: vigoliumEnabled ? inlineEntries.length : 0,
+      authFileCount: vigoliumEnabled ? authFiles.length : 0,
+    },
+  });
 }
 
 /**
@@ -125,6 +307,7 @@ export function buildManualReconPlan({
   expandedModules = [],
   intrusiveModules = [],
   execution = {},
+  authentication = {},
   frameSeven = {},
   vigolium = {},
 } = {}) {
@@ -145,6 +328,7 @@ export function buildManualReconPlan({
     expandedModules: cleanStringList(expandedModules),
     intrusiveModules: cleanStringList(intrusiveModules),
     execution: normalizeExecution(execution),
+    authentication: normalizeAuthentication(authentication),
     engines: {
       frameseven: normalizeFrameSeven(frameSeven),
       vigolium: normalizeVigolium(vigolium),
@@ -184,11 +368,30 @@ export function createManualReconApprovalStore({
   clock = () => Date.now(),
   ttlMs = DEFAULT_TTL_MS,
   maxEntries = DEFAULT_MAX_ENTRIES,
+  maxEntriesPerOwner = DEFAULT_MAX_ENTRIES_PER_OWNER,
   randomId = () => randomBytes(18).toString('base64url'),
+  bindingKey = randomBytes(32),
 } = {}) {
   const boundedTtlMs = cleanInteger(ttlMs, DEFAULT_TTL_MS, 1_000, 15 * 60_000);
   const boundedMaxEntries = cleanInteger(maxEntries, DEFAULT_MAX_ENTRIES, 1, 4_096);
+  const boundedMaxEntriesPerOwner = cleanInteger(
+    maxEntriesPerOwner,
+    DEFAULT_MAX_ENTRIES_PER_OWNER,
+    1,
+    128,
+  );
+  const privateBindingKey = Buffer.from(bindingKey);
+  if (privateBindingKey.length < 16) {
+    throw approvalError(
+      'MANUAL_RECON_APPROVAL_BINDING_KEY_INVALID',
+      'chave privada do store de aprovação é inválida',
+    );
+  }
   const records = new Map();
+
+  const privateBinding = (privateContext) => createHmac('sha256', privateBindingKey)
+    .update(JSON.stringify(stablePrivateValue(privateContext)), 'utf8')
+    .digest('hex');
 
   const removeExpired = () => {
     const now = clock();
@@ -237,7 +440,7 @@ export function createManualReconApprovalStore({
   };
 
   return Object.freeze({
-    issue({ plan, ownerSub }) {
+    issue({ plan, ownerSub, privateContext = {} }) {
       removeExpired();
       const owner = cleanString(ownerSub);
       if (!owner) {
@@ -249,8 +452,20 @@ export function createManualReconApprovalStore({
           'o plano informado não exige aprovação manual',
         );
       }
-      while (records.size >= boundedMaxEntries) {
-        records.delete(records.keys().next().value);
+      if (records.size >= boundedMaxEntries) {
+        throw approvalError(
+          'MANUAL_RECON_APPROVAL_CAPACITY',
+          'limite global de aprovações manuais pendentes atingido',
+        );
+      }
+      const ownerEntries = [...records.values()]
+        .filter((record) => safeEqual(record.ownerSub, owner))
+        .length;
+      if (ownerEntries >= boundedMaxEntriesPerOwner) {
+        throw approvalError(
+          'MANUAL_RECON_APPROVAL_OWNER_CAPACITY',
+          'limite de aprovações manuais pendentes deste operador atingido',
+        );
       }
       const now = clock();
       const approvalId = `manual-${cleanString(randomId())}`;
@@ -263,6 +478,7 @@ export function createManualReconApprovalStore({
         planHash: plan.hash,
         target: plan.target,
         engagementBinding: cleanString(plan.engagement?.authorizationBinding),
+        privateBinding: privateBinding(privateContext),
         status: 'pending',
         createdAt: new Date(now).toISOString(),
         expiresAt: now + boundedTtlMs,
@@ -282,7 +498,9 @@ export function createManualReconApprovalStore({
       }
       record.status = approved === true ? 'approved' : 'denied';
       record.decidedAt = new Date(clock()).toISOString();
-      return publicRecord(record);
+      const result = publicRecord(record);
+      if (record.status === 'denied') records.delete(record.approvalId);
+      return result;
     },
 
     consume({
@@ -291,6 +509,7 @@ export function createManualReconApprovalStore({
       planHash,
       target,
       engagementBinding,
+      privateContext = {},
     }) {
       const record = requireRecord(approvalId);
       try {
@@ -300,6 +519,12 @@ export function createManualReconApprovalStore({
           target,
           engagementBinding,
         });
+        if (!safeEqual(record.privateBinding, privateBinding(privateContext))) {
+          throw approvalError(
+            'MANUAL_RECON_APPROVAL_CONTEXT_MISMATCH',
+            'contexto privado de execução mudou depois da aprovação',
+          );
+        }
         if (record.status !== 'approved') {
           throw approvalError(
             'MANUAL_RECON_APPROVAL_NOT_APPROVED',

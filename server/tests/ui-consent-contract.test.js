@@ -28,7 +28,14 @@ test('body do Auto não transporta auth e RUN manual usa preflight + popup + apr
   assert.match(html, /\/api\/recon\/preflight/);
   assert.match(html, /\/api\/recon\/approval/);
   assert.match(html, /Hash do plano:/);
-  assert.match(html, /delete preflightBody\.auth/);
+  assert.match(html, /Identidades seladas:/);
+  assert.match(html, /frameSeven\.identity\?\.sha256/);
+  assert.match(html, /vigolium\.identity\?\.sha256/);
+  assert.match(html, /getPipelineAuthConfig/);
+  assert.doesNotMatch(html, /delete preflightBody\.(?:auth|vigoliumAuth)/);
+  assert.match(html, /Autenticação pipeline:/);
+  assert.match(html, /Autenticação Vigolium:/);
+  assert.match(route, /buildManualReconPrivateContext/);
   assert.match(route, /manualApprovalStore\.consume/);
   assert.match(route, /planHash:\s*manualReconPlan\.hash/);
 });

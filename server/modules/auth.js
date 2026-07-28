@@ -100,6 +100,11 @@ const STATE = {
   mode: 'apikey',
   disabled: false,
   defaultRole: 'admin',
+  // Configurada no boot. Prefere um segredo persistente para que owner-bound
+  // sessions sobrevivam a restart sem expor o hash reutilizável da API key.
+  principalBindingKey: null,
+  principalBindingPersistent: false,
+  principalBindingSource: 'ephemeral',
   apiKeys: new Map(),     // sha256(rawKey) → { role, label, scopes }
   jwt: {
     hsSecret: null,
@@ -110,6 +115,27 @@ const STATE = {
   auditDir: path.join(REPO_ROOT, 'logs'),
   auditDisable: false,
 };
+
+function configurePrincipalBindingKey() {
+  const explicit = String(process.env.AUTH_PRINCIPAL_BINDING_SECRET || '').trim();
+  if (explicit && Buffer.byteLength(explicit, 'utf8') < 32) {
+    throw new Error('AUTH_PRINCIPAL_BINDING_SECRET precisa ter pelo menos 32 bytes');
+  }
+  const jwtSecret = String(process.env.AUTH_JWT_SECRET || '').trim();
+  const stableSecret = explicit
+    || (Buffer.byteLength(jwtSecret, 'utf8') >= 32 ? jwtSecret : '');
+  if (stableSecret) {
+    STATE.principalBindingKey = createHmac('sha256', stableSecret)
+      .update('ghostrecon/api-key-principal/v1', 'utf8')
+      .digest();
+    STATE.principalBindingPersistent = true;
+    STATE.principalBindingSource = explicit ? 'dedicated' : 'jwt_hs256';
+    return;
+  }
+  STATE.principalBindingKey = randomBytes(32);
+  STATE.principalBindingPersistent = false;
+  STATE.principalBindingSource = 'ephemeral';
+}
 
 function loadApiKeysFromString(raw, source = 'env') {
   if (!raw) return 0;
@@ -137,6 +163,10 @@ function loadApiKeysFromString(raw, source = 'env') {
     STATE.apiKeys.set(hash, {
       role,
       label: rest.join(':') || `${source}#${n + 1}`,
+      keyId: createHmac('sha256', STATE.principalBindingKey)
+        .update(hash, 'utf8')
+        .digest('hex')
+        .slice(0, 24),
       scopes: scopesForRole(role),
     });
     n++;
@@ -170,6 +200,7 @@ function loadJwtConfig() {
 
 export function initAuth() {
   if (STATE.ready) return STATE;
+  configurePrincipalBindingKey();
   const mode = String(process.env.AUTH_MODE || 'apikey').trim().toLowerCase();
   STATE.mode = ['apikey', 'jwt', 'disabled'].includes(mode) ? mode : 'apikey';
   STATE.disabled = String(process.env.AUTH_DISABLE || '').trim() === '1' || STATE.mode === 'disabled';
@@ -211,6 +242,12 @@ export function initAuth() {
     audit: STATE.auditDisable ? 'stderr' : STATE.auditDir,
   };
   console.log('[auth] boot', JSON.stringify(summary));
+  if (STATE.apiKeys.size > 0 && !STATE.principalBindingPersistent) {
+    console.warn(
+      '[auth] owner de API key é estável apenas neste boot; configure '
+      + 'AUTH_PRINCIPAL_BINDING_SECRET (>=32 bytes) para retomadas owner-bound após restart',
+    );
+  }
 
   if (STATE.disabled) {
     console.warn('\x1b[33m[auth] AUTH_DISABLE=1 — toda autenticação está DESLIGADA. NUNCA use isto em produção.\x1b[0m');
@@ -261,7 +298,10 @@ function verifyApiKey(raw) {
   }
   if (!matched) return null;
   return {
-    sub: `apikey:${matched.label}`,
+    // O label é descritivo e pode se repetir. O identificador é um HMAC
+    // truncado, estável entre boots somente quando o binding persistente foi
+    // configurado, e nunca expõe o hash reutilizável da API key.
+    sub: `apikey:${matched.label}:${matched.keyId}`,
     role: matched.role,
     scopes: matched.scopes,
     via: 'apikey',
@@ -598,5 +638,9 @@ export function _authStateForTests() {
     defaultRole: STATE.defaultRole,
     apiKeys: STATE.apiKeys.size,
     jwt: { hs256: Boolean(STATE.jwt.hsSecret), rs256: Boolean(STATE.jwt.rsKey) },
+    principalBinding: {
+      persistent: STATE.principalBindingPersistent,
+      source: STATE.principalBindingSource,
+    },
   };
 }

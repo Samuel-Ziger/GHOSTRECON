@@ -13,6 +13,7 @@ import {
   resolveVigoliumModuleFilter,
   resolveVigoliumModuleTags,
   resolveVigoliumAuthFiles,
+  resolveVigoliumAuthEntries,
   resolveVigoliumInputFile,
   resolveVigoliumInputType,
   resolveVigoliumOnly,
@@ -73,10 +74,17 @@ function addSharedScanArgs(args, s, { authFiles: authFilesOverride } = {}) {
   return { moduleFilter, moduleTags, authFiles };
 }
 
-export function buildVigoliumScanArgs(s, { outFile, outBase, authFiles } = {}) {
+export function buildVigoliumScanArgs(s, {
+  outFile,
+  outBase,
+  authFiles,
+  vpsProfile = null,
+} = {}) {
   const strategy = resolveVigoliumStrategy(s);
   const only = resolveVigoliumOnly(s);
-  const vps = shouldUseVigoliumVpsProfile(s);
+  const vps = typeof vpsProfile === 'boolean'
+    ? vpsProfile
+    : shouldUseVigoliumVpsProfile(s);
   const args = ['scan'];
   const targetInfo = addTargetArgs(args, s);
   args.push('--strategy', strategy);
@@ -91,7 +99,26 @@ export function buildVigoliumScanArgs(s, { outFile, outBase, authFiles } = {}) {
   }
 
   const shared = addSharedScanArgs(args, s, { authFiles });
+  // Sessões autenticadas nunca podem cair no banco persistente padrão do
+  // Vigolium. `-S` usa um banco descartável e preserva apenas os artefatos
+  // explicitamente exportados, que passam pela sanitização do adapter.
+  if (shared.authFiles.length && !args.includes('-S')) args.push('-S');
   return { args, target: targetInfo.target, strategy, only, vpsProfile: vps, ...targetInfo, ...shared };
+}
+
+function hasVigoliumAuthMaterial(s = {}) {
+  const sharedAuth = s.auth && typeof s.auth === 'object' ? s.auth : null;
+  const hasSharedHeaders = Boolean(
+    sharedAuth?.headers
+    && typeof sharedAuth.headers === 'object'
+    && Object.values(sharedAuth.headers).some((value) => String(value ?? '').trim()),
+  );
+  return Boolean(
+    String(sharedAuth?.cookie || '').trim()
+    || hasSharedHeaders
+    || resolveVigoliumAuthFiles(s).length
+    || resolveVigoliumAuthEntries(s).length
+  );
 }
 
 export function buildVigoliumHtmlReportArgs(s, { outFile, authFiles } = {}) {
@@ -103,6 +130,7 @@ export function buildVigoliumHtmlReportArgs(s, { outFile, authFiles } = {}) {
   if (reportOnly) args.push('--only', reportOnly);
   args.push('--format', 'html', '-o', outFile || 'report.html', '-F', '--soft-fail');
   const shared = addSharedScanArgs(args, s, { authFiles });
+  if (shared.authFiles.length && !args.includes('-S')) args.push('-S');
   return { args, target: targetInfo.target, strategy, reportOnly, ...targetInfo, ...shared };
 }
 
@@ -190,6 +218,7 @@ async function readFindingsFromSqlite(
   runProcessImpl = runProcess,
   expectedIdentity = null,
   childEnv = {},
+  timeoutMs = vigoliumTimeoutMs(),
   redact = (value) => String(value ?? ''),
   redactLog = redact,
 ) {
@@ -215,7 +244,7 @@ async function readFindingsFromSqlite(
   ];
   await assertVigoliumBinaryIdentity(bin, expectedIdentity);
   const result = await runProcessImpl(bin, args, {
-    timeoutMs: Math.min(vigoliumTimeoutMs(), 180_000),
+    timeoutMs: Math.min(timeoutMs, 180_000),
     signal,
     rejectOnError: false,
     rejectOnTimeout: false,
@@ -267,9 +296,21 @@ export async function runVigoliumScan(s, hooks = {}) {
   s.signal?.throwIfAborted?.();
   assertVigoliumRuntimeTargetBinding(s);
   const root = s.ROOT || ghostreconRoot();
-  const vps = shouldUseVigoliumVpsProfile(s);
-  const childEnv = buildVigoliumChildEnv(s);
-  const { bin, source } = await resolveVigoliumBinary(root, { preferPath: shouldPreferVigoliumPath(s) });
+  const configuredVps = shouldUseVigoliumVpsProfile(s);
+  const authenticated = hasVigoliumAuthMaterial(s);
+  // Artefatos VPS persistem JSONL/SQLite brutos. Em contexto autenticado,
+  // execute no diretório temporário e descarte tudo após a normalização.
+  const vps = configuredVps && !authenticated;
+  const childEnv = s.vigoliumRuntimeConfigFrozen && s.vigoliumChildEnv
+    ? { ...s.vigoliumChildEnv }
+    : buildVigoliumChildEnv(s);
+  const resolvedBinary = s.vigoliumRuntimeConfigFrozen && s.vigoliumBinaryPath
+    ? { bin: s.vigoliumBinaryPath, source: s.vigoliumBinarySource || 'approved-plan' }
+    : await resolveVigoliumBinary(root, { preferPath: shouldPreferVigoliumPath(s) });
+  const { bin, source } = resolvedBinary;
+  const effectiveTimeoutMs = s.vigoliumRuntimeConfigFrozen && Number.isFinite(s.vigoliumTimeoutMs)
+    ? s.vigoliumTimeoutMs
+    : vigoliumTimeoutMs();
   if (!bin) {
     return {
       ok: false,
@@ -312,9 +353,14 @@ export async function runVigoliumScan(s, hooks = {}) {
       outFile: artifacts.jsonl,
       outBase,
       authFiles: authTransport.authFiles,
+      vpsProfile: vps,
     });
 
-    const profileLabel = vps ? 'perfil VPS (stateless, strict, skip external-harvest)' : 'perfil legado';
+    const profileLabel = authenticated
+      ? 'perfil autenticado efêmero (stateless, sem artefato bruto persistente)'
+      : vps
+        ? 'perfil VPS (stateless, strict, skip external-harvest)'
+        : 'perfil legado';
     const codexLabel = shouldUseVigoliumCodex(s) ? 'codex=sim' : 'codex=não';
     log(
       `Vigolium scan [${profileLabel}, ${codexLabel}]: ${target} (strategy=${strategy}, source=${source || 'auto'})`,
@@ -326,7 +372,7 @@ export async function runVigoliumScan(s, hooks = {}) {
     try {
       await assertVigoliumBinaryIdentity(bin, s.vigoliumExpectedIdentity);
       result = await runProcessImpl(bin, args, {
-        timeoutMs: vigoliumTimeoutMs(),
+        timeoutMs: effectiveTimeoutMs,
         signal: s.signal,
         rejectOnError: false,
         rejectOnTimeout: false,
@@ -365,6 +411,7 @@ export async function runVigoliumScan(s, hooks = {}) {
       runProcessImpl,
       s.vigoliumExpectedIdentity,
       childEnv,
+      effectiveTimeoutMs,
       redactExternalText,
       publicError,
     );
@@ -377,7 +424,7 @@ export async function runVigoliumScan(s, hooks = {}) {
   const scanOk = result.code === 0 || findings.length > 0;
   let htmlReport = null;
 
-  if (vps && shouldWriteVigoliumHtmlReport(s)) {
+  if (!authenticated && vps && shouldWriteVigoliumHtmlReport(s)) {
     let htmlOk = false;
     try {
       await fs.access(artifacts.html);
@@ -407,7 +454,7 @@ export async function runVigoliumScan(s, hooks = {}) {
     } else {
       log('Vigolium: HTML inline não gerado neste scan', 'warn');
     }
-  } else if (!vps && shouldWriteVigoliumHtmlReport(s)) {
+  } else if (!authenticated && !vps && shouldWriteVigoliumHtmlReport(s)) {
     const reportDir = path.join(root, '.runtime', 'vigolium-reports');
     await fs.mkdir(reportDir, { recursive: true });
     const reportPath = path.join(
@@ -421,7 +468,7 @@ export async function runVigoliumScan(s, hooks = {}) {
     try {
       await assertVigoliumBinaryIdentity(bin, s.vigoliumExpectedIdentity);
       const reportResult = await runProcessImpl(bin, html.args, {
-        timeoutMs: vigoliumTimeoutMs(),
+        timeoutMs: effectiveTimeoutMs,
         signal: s.signal,
         rejectOnError: false,
         rejectOnTimeout: false,
@@ -463,6 +510,11 @@ export async function runVigoliumScan(s, hooks = {}) {
       };
       log(`Vigolium HTML report falhou: ${htmlReport.reason}`, 'warn');
     }
+  } else if (authenticated && shouldWriteVigoliumHtmlReport(s)) {
+    log(
+      'Vigolium: relatório persistente omitido no contexto autenticado; a evidência bruta permaneceu apenas no diretório temporário',
+      'info',
+    );
   }
 
   if (!scanOk && result.stderr) {

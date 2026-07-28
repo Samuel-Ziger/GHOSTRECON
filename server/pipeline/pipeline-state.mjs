@@ -8,8 +8,13 @@ import {
 } from '../modules/scope.js';
 import { resolveReconProfile } from '../modules/runtime-profile.js';
 import { targetIsIp } from '../modules/recon-target.js';
+import {
+  MANUAL_IMPLICIT_CAPABILITIES,
+  MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES,
+} from '../modules/opsec.mjs';
 import { createPipelineContext } from './finding-context.mjs';
 import {
+  assertVigoliumRuntimeConfig,
   resolveEngineMode,
   resolveVigoliumStrategy,
   resolveVigoliumAgentMode,
@@ -30,15 +35,31 @@ function normalizeCapabilityId(value) {
   return String(value || '').trim().toLowerCase().replace(/-/g, '_');
 }
 
+const MANUAL_IMPLICIT_CAPABILITY_IDS = new Set(
+  MANUAL_IMPLICIT_CAPABILITIES.map(normalizeCapabilityId),
+);
+const MANUAL_INTRUSIVE_IMPLICIT_CAPABILITY_IDS = new Set(
+  MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES.map(normalizeCapabilityId),
+);
+const MANUAL_SAFE_IMPLICIT_CAPABILITY_IDS = new Set(
+  [...MANUAL_IMPLICIT_CAPABILITY_IDS]
+    .filter((capabilityId) => !MANUAL_INTRUSIVE_IMPLICIT_CAPABILITY_IDS.has(capabilityId)),
+);
+
 /**
- * O RUN manual preserva o comportamento legado. No Auto, uma ação implícita
- * só pode ocorrer quando a capacidade correspondente estiver no plano
- * efetivo/congelado.
+ * Uma ação implícita só pode ocorrer quando pertencer ao contrato central do
+ * RUN manual ou estiver no plano efetivo/congelado do Auto. Isso preserva as
+ * fases legadas conhecidas sem deixar novas capacidades escaparem dos gates.
  */
 export function pipelineCapabilityAllowed(state, capabilityId) {
-  if (state?.autoModeExecution !== true) return true;
   const normalized = normalizeCapabilityId(capabilityId);
   if (!normalized) return false;
+  if (state?.autoModeExecution !== true) {
+    if (state?.manualCapabilityIds instanceof Set) {
+      return state.manualCapabilityIds.has(normalized);
+    }
+    return MANUAL_SAFE_IMPLICIT_CAPABILITY_IDS.has(normalized);
+  }
   if (state.autoCapabilityIds instanceof Set) {
     return state.autoCapabilityIds.has(normalized);
   }
@@ -58,6 +79,7 @@ export function createPipelineState(ctx) {
     auth = null,
     profile = 'standard',
     outOfScope: outOfScopeClientRaw = null,
+    outOfScopeFrozen = false,
     projectName: projectNameRaw = '',
     autoAiReports = false,
     aiProviderMode = 'auto',
@@ -95,9 +117,12 @@ export function createPipelineState(ctx) {
     vigoliumPreferPath = false,
     vigoliumUseCodex = false,
     vigoliumExpectedIdentity = null,
+    vigoliumExpectedSourceIdentity = null,
+    vigoliumRuntimeConfig = null,
     signal = null,
     requestRunId = null,
     autoModeExecution = false,
+    manualEffectiveCapabilities = null,
     captureTokenFindings = false,
     tokenCaptureOptions = null,
     forgeSandboxRunner = null,
@@ -105,6 +130,19 @@ export function createPipelineState(ctx) {
   } = ctx;
 
   const apexHostIsIp = targetIsIp(domain);
+  const frozenVigoliumCandidate = vigoliumRuntimeConfig
+    && typeof vigoliumRuntimeConfig === 'object'
+    && vigoliumRuntimeConfig.vigoliumRuntimeConfigFrozen === true
+    ? vigoliumRuntimeConfig
+    : null;
+  const frozenVigolium = frozenVigoliumCandidate
+    ? assertVigoliumRuntimeConfig(frozenVigoliumCandidate)
+    : null;
+  const resolvedVigoliumExpectedIdentity = frozenVigolium?.vigoliumExpectedIdentity
+    || vigoliumExpectedIdentity;
+  const resolvedVigoliumExpectedSourceIdentity =
+    frozenVigolium?.vigoliumExpectedSourceIdentity
+    || vigoliumExpectedSourceIdentity;
 
   let bountyCtx =
     bountyContextBody && typeof bountyContextBody === 'object' ? bountyContextBody : null;
@@ -120,6 +158,13 @@ export function createPipelineState(ctx) {
   const autoCapabilityIds = new Set(
     (Array.isArray(modules) ? modules : []).map(normalizeCapabilityId).filter(Boolean),
   );
+  const manualCapabilityIds = new Set(
+    (Array.isArray(manualEffectiveCapabilities)
+      ? manualEffectiveCapabilities
+      : [...MANUAL_SAFE_IMPLICIT_CAPABILITY_IDS])
+      .map(normalizeCapabilityId)
+      .filter(Boolean),
+  );
   const domainStr = exactMatch ? `"${domain}"` : domain;
   const pctx = createPipelineContext({
     domain,
@@ -128,8 +173,12 @@ export function createPipelineState(ctx) {
     tokenCaptureOptions,
   });
 
-  const outOfScopeFromEnv = parseOutOfScopeEnv(process.env.GHOSTRECON_OUT_OF_SCOPE);
-  let outOfScopeList = [...outOfScopeFromEnv];
+  const outOfScopeFromEnv = outOfScopeFrozen
+    ? []
+    : parseOutOfScopeEnv(process.env.GHOSTRECON_OUT_OF_SCOPE);
+  let outOfScopeList = outOfScopeFrozen
+    ? parseOutOfScopeClientInput(outOfScopeClientRaw)
+    : [...outOfScopeFromEnv];
   if (outOfScopeClientRaw != null && outOfScopeClientRaw !== '') {
     const fromUi = parseOutOfScopeClientInput(outOfScopeClientRaw);
     outOfScopeList = mergeOutOfScopeLists(outOfScopeFromEnv, fromUi);
@@ -194,30 +243,101 @@ export function createPipelineState(ctx) {
     interesting: [],
     urlCorpus: [],
     githubClonedItems: [],
-    engineMode: resolveEngineMode({ engine, modules }),
-    vigoliumStrategy: resolveVigoliumStrategy({ vigoliumStrategy, strategy: vigoliumStrategy }),
-    vigoliumModules: Array.isArray(vigoliumModules) ? vigoliumModules : [],
-    vigoliumModuleTags: resolveVigoliumModuleTags({ vigoliumModuleTags, vigoliumModuleTag }),
-    vigoliumAgentMode: resolveVigoliumAgentMode({ vigoliumAgent, modules }),
-    vigoliumSource: resolveVigoliumSource({ vigoliumSource }),
-    vigoliumAuthFiles: resolveVigoliumAuthFiles({ vigoliumAuthFiles, vigoliumAuthFile }),
-    vigoliumAuthEntries: resolveVigoliumAuthEntries({ vigoliumAuthEntries, vigoliumAuth }),
-    vigoliumInputFile: resolveVigoliumInputFile({ vigoliumInputFile }),
-    vigoliumInputType: resolveVigoliumInputType({ vigoliumInputType }),
-    vigoliumOnly: resolveVigoliumOnly({ vigoliumOnly }),
-    vigoliumHtmlReport: shouldWriteVigoliumHtmlReport({ vigoliumHtmlReport }),
-    vigoliumReportOnly: resolveVigoliumReportOnly({ vigoliumReportOnly }),
-    vigoliumPreferPath: shouldPreferVigoliumPath({ vigoliumPreferPath, kaliMode }),
-    vigoliumUseCodex: shouldUseVigoliumCodex({ vigoliumUseCodex }),
-    vigoliumExpectedIdentity: vigoliumExpectedIdentity
-      && typeof vigoliumExpectedIdentity === 'object'
-      ? Object.freeze({ ...vigoliumExpectedIdentity })
+    engineMode: frozenVigolium
+      ? frozenVigolium.engineMode
+      : resolveEngineMode({ engine, modules }),
+    vigoliumStrategy: frozenVigolium
+      ? frozenVigolium.vigoliumStrategy
+      : resolveVigoliumStrategy({ vigoliumStrategy, strategy: vigoliumStrategy }),
+    vigoliumModules: frozenVigolium
+      ? [...frozenVigolium.vigoliumModules]
+      : Array.isArray(vigoliumModules) ? vigoliumModules : [],
+    vigoliumModuleTags: frozenVigolium
+      ? [...frozenVigolium.vigoliumModuleTags]
+      : resolveVigoliumModuleTags({ vigoliumModuleTags, vigoliumModuleTag }),
+    vigoliumAgentMode: frozenVigolium
+      ? frozenVigolium.vigoliumAgentMode
+      : resolveVigoliumAgentMode({ vigoliumAgent, modules }),
+    vigoliumSource: frozenVigolium
+      ? frozenVigolium.vigoliumSource
+      : resolveVigoliumSource({ vigoliumSource }),
+    vigoliumAuthFiles: frozenVigolium
+      ? [...frozenVigolium.vigoliumAuthFiles]
+      : resolveVigoliumAuthFiles({ vigoliumAuthFiles, vigoliumAuthFile }),
+    vigoliumAuthEntries: frozenVigolium
+      ? [...frozenVigolium.vigoliumAuthEntries]
+      : resolveVigoliumAuthEntries({ vigoliumAuthEntries, vigoliumAuth }),
+    vigoliumInputFile: frozenVigolium
+      ? frozenVigolium.vigoliumInputFile
+      : resolveVigoliumInputFile({ vigoliumInputFile }),
+    vigoliumInputType: frozenVigolium
+      ? frozenVigolium.vigoliumInputType
+      : resolveVigoliumInputType({ vigoliumInputType }),
+    vigoliumOnly: frozenVigolium
+      ? frozenVigolium.vigoliumOnly
+      : resolveVigoliumOnly({ vigoliumOnly }),
+    vigoliumHtmlReport: frozenVigolium
+      ? frozenVigolium.vigoliumHtmlReport
+      : shouldWriteVigoliumHtmlReport({ vigoliumHtmlReport }),
+    vigoliumReportOnly: frozenVigolium
+      ? frozenVigolium.vigoliumReportOnly
+      : resolveVigoliumReportOnly({ vigoliumReportOnly }),
+    vigoliumPreferPath: frozenVigolium
+      ? frozenVigolium.vigoliumPreferPath
+      : shouldPreferVigoliumPath({ vigoliumPreferPath, kaliMode }),
+    vigoliumUseCodex: frozenVigolium
+      ? frozenVigolium.vigoliumUseCodex
+      : shouldUseVigoliumCodex({ vigoliumUseCodex }),
+    vigoliumVpsProfile: frozenVigolium
+      ? frozenVigolium.vigoliumVpsProfile
+      : undefined,
+    vigoliumSkipExternalHarvest: frozenVigolium
+      ? frozenVigolium.vigoliumSkipExternalHarvest
+      : undefined,
+    vigoliumAuditMode: frozenVigolium
+      ? frozenVigolium.vigoliumAuditMode
+      : vigoliumAuditMode || null,
+    vigoliumTimeoutMs: frozenVigolium ? frozenVigolium.vigoliumTimeoutMs : null,
+    vigoliumAgentTimeoutMs: frozenVigolium
+      ? frozenVigolium.vigoliumAgentTimeoutMs
       : null,
-    vigoliumAuditMode: vigoliumAuditMode || null,
+    vigoliumChildEnv: frozenVigolium?.vigoliumChildEnv
+      ? Object.freeze({ ...frozenVigolium.vigoliumChildEnv })
+      : null,
+    vigoliumBinaryPath: frozenVigolium?.vigoliumBinaryPath || null,
+    vigoliumBinarySource: frozenVigolium?.vigoliumBinarySource || null,
+    vigoliumRuntimeConfigFrozen: Boolean(frozenVigolium),
+    vigoliumRuntimeConfigVersion: frozenVigolium
+      ? frozenVigolium.vigoliumRuntimeConfigVersion
+      : null,
+    vigoliumExpectedIdentity: resolvedVigoliumExpectedIdentity
+      && typeof resolvedVigoliumExpectedIdentity === 'object'
+      ? Object.freeze({ ...resolvedVigoliumExpectedIdentity })
+      : null,
+    vigoliumExpectedSourceIdentity: resolvedVigoliumExpectedSourceIdentity
+      && typeof resolvedVigoliumExpectedSourceIdentity === 'object'
+      ? Object.freeze({ ...resolvedVigoliumExpectedSourceIdentity })
+      : null,
+    vigoliumSourceAllowedRoots: frozenVigolium
+      && Array.isArray(frozenVigolium.vigoliumSourceAllowedRoots)
+      ? Object.freeze(frozenVigolium.vigoliumSourceAllowedRoots.map(String))
+      : Object.freeze([]),
+    vigoliumExpectedAuthFileIdentities: frozenVigolium
+      && Array.isArray(frozenVigolium.vigoliumExpectedAuthFileIdentities)
+      ? Object.freeze(
+          frozenVigolium.vigoliumExpectedAuthFileIdentities
+            .map((identity) => Object.freeze({ ...identity })),
+        )
+      : Object.freeze([]),
+    vigoliumAuthAllowedRoots: frozenVigolium
+      && Array.isArray(frozenVigolium.vigoliumAuthAllowedRoots)
+      ? Object.freeze(frozenVigolium.vigoliumAuthAllowedRoots.map(String))
+      : Object.freeze([]),
     signal,
     requestRunId,
     autoModeExecution: autoModeExecution === true,
     autoCapabilityIds,
+    manualCapabilityIds,
     // Dependências de execução Forge são injetadas pela rota/orquestrador e
     // nunca serializadas em checkpoints ou eventos.
     forgeSandboxRunner,

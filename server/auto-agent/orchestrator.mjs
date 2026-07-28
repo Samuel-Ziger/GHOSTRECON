@@ -43,6 +43,14 @@ import {
 } from '../modules/scope.js';
 import { redactAutoValue } from './redaction.mjs';
 import { isFatalVigoliumExecutionError } from '../../bridge/vigolium-errors.mjs';
+import {
+  buildVigoliumChildEnv,
+  resolveVigoliumEffectiveConfig,
+} from '../../bridge/vigolium-config.mjs';
+import {
+  inspectVigoliumSourceIdentity,
+  resolveVigoliumSourceAllowedRoots,
+} from '../../bridge/vigolium-source-integrity.mjs';
 
 const AUTO_PROMPT_VERSION = 'auto-council-v3';
 
@@ -52,6 +60,135 @@ function stableCatalogValue(value) {
   return Object.fromEntries(
     Object.keys(value).sort().map((key) => [key, stableCatalogValue(value[key])]),
   );
+}
+
+function bindAutoRuntimeValue(value) {
+  return createHash('sha256')
+    .update(JSON.stringify(stableCatalogValue(value)))
+    .digest('hex');
+}
+
+function hasAutoVigoliumAuthMaterial(body = {}, env = {}) {
+  const bodyValues = [
+    body.vigoliumAuth,
+    body.vigoliumAuthFile,
+    ...(Array.isArray(body.vigoliumAuthEntries) ? body.vigoliumAuthEntries : []),
+    ...(Array.isArray(body.vigoliumAuthFiles) ? body.vigoliumAuthFiles : []),
+  ];
+  const envValues = [
+    env.GHOSTRECON_VIGOLIUM_AUTH,
+    env.GHOSTRECON_VIGOLIUM_AUTHS,
+    env.GHOSTRECON_VIGOLIUM_AUTH_FILE,
+    env.GHOSTRECON_VIGOLIUM_AUTH_FILES,
+  ];
+  return [...bodyValues, ...envValues].some((value) => String(value ?? '').trim());
+}
+
+function autoVigoliumRuntimeContext(body, effectivePlan, useCodex) {
+  const agentMode = effectivePlan?.engines?.vigolium?.agent || 'none';
+  return {
+    ...body,
+    modules: [...(effectivePlan?.pipelineModules || [])],
+    engine: effectivePlan?.engines?.vigolium?.engine || 'node',
+    vigoliumAgent: agentMode,
+    vigoliumUseCodex: useCodex === true,
+    // Auth pré-carregada não integra o Auto. No fluxo autenticado, o contexto
+    // nasce no browser somente depois da aprovação humana específica.
+    vigoliumAuth: null,
+    vigoliumAuthFile: null,
+    vigoliumAuthEntries: [],
+    vigoliumAuthFiles: [],
+    // `-T` permanece proibido porque pode expandir o alvo.
+    vigoliumInputFile: null,
+    vigoliumInputType: null,
+    // Uma fonte configurada não participa de DAST puro. Evite que um valor de
+    // ambiente não utilizado contamine ou amplie esse plano.
+    ...(agentMode === 'none'
+      ? {
+          vigoliumRuntimeConfigFrozen: true,
+          vigoliumSource: null,
+        }
+      : {}),
+  };
+}
+
+/**
+ * Resolve uma única vez a configuração executável do Vigolium usada pelo Auto.
+ * O plano público recebe somente valores não sensíveis e bindings; o snapshot
+ * privado completo é entregue ao pipeline sem voltar a consultar `process.env`.
+ */
+export function resolveAutoVigoliumRuntimeSnapshot({
+  body = {},
+  effectivePlan,
+  catalog,
+  env = {},
+  useCodex = false,
+  sourceIdentity = null,
+  sourceAllowedRoots = [],
+} = {}) {
+  if (!effectivePlan?.engines?.vigolium?.enabled) {
+    return Object.freeze({ runtime: null, publicPlan: null });
+  }
+  const resolved = resolveVigoliumEffectiveConfig(
+    autoVigoliumRuntimeContext(body, effectivePlan, useCodex),
+    { env },
+  );
+  const childEnv = Object.freeze({ ...buildVigoliumChildEnv(resolved, env) });
+  const binaryPath = String(catalog?.engines?.vigolium?.binary || '').trim() || null;
+  const binarySource = String(catalog?.engines?.vigolium?.source || '').trim() || null;
+  if (!binaryPath || !effectivePlan.engines.vigolium.identity) {
+    throw new Error('Vigolium exige binário e identidade selados antes do plano efetivo');
+  }
+  const runtime = Object.freeze({
+    ...resolved,
+    vigoliumChildEnv: childEnv,
+    vigoliumBinaryPath: binaryPath,
+    vigoliumBinarySource: binarySource,
+    vigoliumExpectedIdentity: effectivePlan.engines.vigolium.identity,
+    vigoliumExpectedSourceIdentity: sourceIdentity,
+    vigoliumSourceAllowedRoots: Object.freeze([...(sourceAllowedRoots || [])]),
+    // Auth pré-carregada é proibida no Auto. Mantenha o contrato completo no
+    // snapshot para que o pipeline não precise inferir defaults nem consultar
+    // o ambiente depois da aprovação.
+    vigoliumExpectedAuthFileIdentities: Object.freeze([]),
+    vigoliumAuthAllowedRoots: Object.freeze([]),
+  });
+  const publicPlan = Object.freeze({
+    strategy: runtime.vigoliumStrategy,
+    modules: [...runtime.vigoliumModules],
+    moduleTags: [...runtime.vigoliumModuleTags],
+    auditMode: runtime.vigoliumAuditMode,
+    only: runtime.vigoliumOnly,
+    reportOnly: runtime.vigoliumReportOnly,
+    htmlReport: runtime.vigoliumHtmlReport,
+    preferPath: runtime.vigoliumPreferPath,
+    vpsProfile: runtime.vigoliumVpsProfile,
+    skipExternalHarvest: runtime.vigoliumSkipExternalHarvest,
+    scanTimeoutMs: runtime.vigoliumTimeoutMs,
+    agentTimeoutMs: runtime.vigoliumAgentTimeoutMs,
+    binarySource,
+    binaryPathBinding: bindAutoRuntimeValue(binaryPath),
+    sourceMode: runtime.vigoliumSource ? 'configured_local' : 'none',
+    sourceBinding: runtime.vigoliumSource
+      ? bindAutoRuntimeValue(runtime.vigoliumSource)
+      : null,
+    sourceIdentity: sourceIdentity
+      ? Object.freeze({
+          version: sourceIdentity.version,
+          kind: sourceIdentity.kind,
+          objectFormat: sourceIdentity.objectFormat,
+          commit: sourceIdentity.commit,
+          tree: sourceIdentity.tree,
+          trackedEntries: sourceIdentity.trackedEntries,
+        })
+      : null,
+    childEnvBinding: bindAutoRuntimeValue(childEnv),
+    runtimeBinding: bindAutoRuntimeValue({
+      ...runtime,
+      vigoliumExpectedIdentity: effectivePlan.engines.vigolium.identity,
+    }),
+  });
+  return Object.freeze({ runtime, publicPlan });
 }
 
 export function computeAutoCatalogHash(catalog = {}) {
@@ -82,6 +219,7 @@ export function computeAutoCatalogHash(catalog = {}) {
       .map(([id, engine]) => [id, {
         available: engine?.available === true,
         identity: engine?.identity || null,
+        runtimeBinding: engine?.runtimeBinding || null,
       }]),
   );
   return createHash('sha256')
@@ -322,11 +460,15 @@ export async function runAutoRecon({
   signal,
   principal = null,
   getEngagementImpl = getEngagement,
+  inspectVigoliumSourceIdentityImpl = inspectVigoliumSourceIdentity,
 } = {}) {
   if (typeof runPipeline !== 'function') {
     throw new Error('runPipeline ausente para Modo Auto');
   }
   const req = normalizeAutoRequest(body);
+  // Copie o ambiente executável uma única vez. Mudanças posteriores no objeto
+  // injetado ou em `process.env` não podem alterar o plano já apresentado.
+  const executionEnv = Object.freeze({ ...env });
   if (
     req.includeVigolium
     && (
@@ -340,6 +482,32 @@ export async function runAutoRecon({
       'Vigolium -T não é permitido no Auto: o arquivo não integra o plano efetivo nem possui alvos/escopo selados',
     );
   }
+  if (req.includeVigolium && hasAutoVigoliumAuthMaterial(body, executionEnv)) {
+    throw new Error(
+      'Auth Vigolium pré-carregada não é permitida no Auto; use o fluxo autenticado com browser e aprovação específica',
+    );
+  }
+  const baseVigoliumRuntime = req.includeVigolium
+    ? resolveVigoliumEffectiveConfig({
+        ...body,
+        modules: [],
+        engine: 'node',
+        vigoliumAgent: 'none',
+        vigoliumUseCodex: req.vigoliumUseCodex,
+        vigoliumAuth: null,
+        vigoliumAuthFile: null,
+        vigoliumAuthEntries: [],
+        vigoliumAuthFiles: [],
+        vigoliumInputFile: null,
+        vigoliumInputType: null,
+      }, { env: executionEnv })
+    : null;
+  const baseVigoliumRuntimeBinding = baseVigoliumRuntime
+    ? bindAutoRuntimeValue({
+        ...baseVigoliumRuntime,
+        vigoliumChildEnv: buildVigoliumChildEnv(baseVigoliumRuntime, executionEnv),
+      })
+    : null;
   const resumePolicy = buildAutoResumePolicy(req, body);
   if (pipelineOverrides && Object.keys(pipelineOverrides).length > 0) {
     throw new Error(
@@ -396,7 +564,8 @@ export async function runAutoRecon({
     forgeRuntimeAvailable: Boolean(forgeSandboxRunner),
     ghostRoot: ROOT,
     target: req.target,
-    env,
+    env: executionEnv,
+    vigoliumRuntimeBinding: baseVigoliumRuntimeBinding,
   });
   const catalogHash = computeAutoCatalogHash(catalog);
   if (restoredState) {
@@ -1055,16 +1224,77 @@ export async function runAutoRecon({
   session.assertActive();
   captureEmit({ type: 'auto_iteration_started', sessionId, iteration, modules: iterationPlan.modules });
   const iterationEventStart = events.length;
-  let effectivePlan = buildEffectiveAutoPlan({
-    plan: iterationPlan,
-    catalog,
-    body: effectivePlanBody,
-    autonomyLevel: req.autonomyLevel,
-    frameSevenAvailable,
-    forceFrameSevenRecon: req.includeFrameSeven
-      && iteration === 1
-      && !executedModules.has(req.frameSevenAuth ? 'frameseven_authenticated' : 'frameseven_recon'),
-  });
+  const buildIterationEffectivePlan = async (candidatePlan, forceFrameSevenRecon) => {
+    let candidate = buildEffectiveAutoPlan({
+      plan: candidatePlan,
+      catalog,
+      body: effectivePlanBody,
+      autonomyLevel: req.autonomyLevel,
+      frameSevenAvailable,
+      forceFrameSevenRecon,
+    });
+    let snapshot = resolveAutoVigoliumRuntimeSnapshot({
+      body,
+      effectivePlan: candidate,
+      catalog,
+      env: executionEnv,
+      useCodex: req.vigoliumUseCodex,
+    });
+    if (
+      candidate.engines.vigolium.agent === 'audit'
+      && !String(snapshot.runtime?.vigoliumSource || '').trim()
+    ) {
+      throw new Error(
+        'vigolium_audit exige fonte Git local dentro da raiz autorizada antes da aprovação',
+      );
+    }
+    if (snapshot.runtime?.vigoliumSource) {
+      const sourceAllowedRoots = resolveVigoliumSourceAllowedRoots(ROOT, executionEnv);
+      const sourceIdentity = await inspectVigoliumSourceIdentityImpl(
+        snapshot.runtime.vigoliumSource,
+        {
+          allowedRoots: sourceAllowedRoots,
+          signal: session.signal,
+          timeoutMs: snapshot.runtime.vigoliumAgentTimeoutMs,
+          env: executionEnv,
+        },
+      );
+      snapshot = resolveAutoVigoliumRuntimeSnapshot({
+        body,
+        effectivePlan: candidate,
+        catalog,
+        env: executionEnv,
+        useCodex: req.vigoliumUseCodex,
+        sourceIdentity,
+        sourceAllowedRoots,
+      });
+    }
+    if (snapshot.publicPlan) {
+      candidate = buildEffectiveAutoPlan({
+        plan: candidatePlan,
+        catalog,
+        body: {
+          ...effectivePlanBody,
+          vigoliumRuntimePlan: snapshot.publicPlan,
+        },
+        autonomyLevel: req.autonomyLevel,
+        frameSevenAvailable,
+        forceFrameSevenRecon,
+      });
+    }
+    return { plan: candidate, vigoliumRuntime: snapshot.runtime };
+  };
+  const forceFrameSevenRecon = req.includeFrameSeven
+    && iteration === 1
+    && !executedModules.has(
+      req.frameSevenAuth ? 'frameseven_authenticated' : 'frameseven_recon',
+    );
+  let builtIteration = await buildIterationEffectivePlan(
+    iterationPlan,
+    forceFrameSevenRecon,
+  );
+  let effectivePlan = builtIteration.plan;
+  let vigoliumRuntimeConfig = builtIteration.vigoliumRuntime;
   const revalidateEngagementForPlan = async (stage) => {
     const currentEngagement = req.engagementId
       ? await getEngagementImpl(req.engagementId)
@@ -1153,14 +1383,12 @@ export async function runAutoRecon({
         planHash: effectivePlan.hash,
         modules: effectivePlan.expandedModules,
       });
-      effectivePlan = buildEffectiveAutoPlan({
-        plan: { target: req.target, mode: iterationPlan.mode, action: 'finish', modules: [] },
-        catalog,
-        body: effectivePlanBody,
-        autonomyLevel: req.autonomyLevel,
-        frameSevenAvailable,
-        forceFrameSevenRecon: false,
-      });
+      builtIteration = await buildIterationEffectivePlan(
+        { target: req.target, mode: iterationPlan.mode, action: 'finish', modules: [] },
+        false,
+      );
+      effectivePlan = builtIteration.plan;
+      vigoliumRuntimeConfig = builtIteration.vigoliumRuntime;
     } else {
       approvalGranted = true;
       captureEmit({
@@ -1248,6 +1476,11 @@ export async function runAutoRecon({
     engagementOperator: principalId,
     kaliMode: effectivePlan.execution.kaliMode,
     confirmActive: approvalGranted && effectivePlan.execution.confirmActive,
+    ...(vigoliumRuntimeConfig || {}),
+    // `createPipelineState` reconhece um snapshot como autoritativo somente
+    // nesta propriedade. Os campos espalhados acima preservam compatibilidade
+    // com consumidores/testes antigos, mas nunca substituem o objeto selado.
+    vigoliumRuntimeConfig,
     engine: effectivePlan.engines.vigolium.engine,
     vigoliumAgent: effectivePlan.engines.vigolium.agent,
     vigoliumUseCodex: effectivePlan.engines.vigolium.useCodex,

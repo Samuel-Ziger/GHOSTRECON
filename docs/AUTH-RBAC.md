@@ -38,6 +38,20 @@ continuam a falhar com 401, mesmo com `AUTH_MODE=disabled`. O loopback é
 calculado pelo endereço real do socket; `X-Forwarded-For` só é considerado quando
 `GHOSTRECON_TRUST_PROXY=1` e a conexão vem de um proxy local/confiável.
 
+### Identidade estável de API key
+
+O `sub` de uma API key usa um identificador HMAC; a key bruta não é usada como
+identidade nem exposta na auditoria. Para que ownership, sessões e retomadas
+owner-bound reconheçam o mesmo principal depois de reiniciar a API, configure
+`AUTH_PRINCIPAL_BINDING_SECRET` com pelo menos 32 bytes.
+
+Quando essa variável não existe, o servidor usa `AUTH_JWT_SECRET` se ele tiver
+pelo menos 32 bytes. Sem nenhum segredo persistente, uma chave aleatória é
+gerada no boot: a autenticação continua funcionando, mas o identificador de API
+key muda no próximo processo e qualquer retomada ligada ao proprietário deve
+falhar fechado. O boot emite um aviso nesse caso. Não versione nenhum desses
+segredos.
+
 ## Roles
 
 ```
@@ -57,9 +71,9 @@ admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujei
 | _(allowlist)_       | `/api/health`, `/api/csrf-token`, `/api/inbound/*` (auth própria)                           | GET/POST |
 | `recon.read`        | `/api/runs`, `/api/runs/:id`, `/api/runs/:newer/diff/:base`, `/api/runs/:id/diff-summary/:b`, `/api/runs/:id/narrative`, `/api/runs/:id/purple`, `/api/intel/:target`, `/api/playbooks*`, `/api/projects` (GET), `/api/engagements` (GET), `/api/team/locks`, `/api/team/trail`, `/api/brain/*` (GET), `/api/manual-validations/:target` (GET), `/api/anotacao-handoff/:id` (GET), `/api/capabilities`, `/api/project-secret-peers`, `/api/ai/lmstudio-check` | GET |
 | `recon.read` (Auto) | `/api/recon/auto/sessions`, `/api/auto-rag/status`, `/api/auto-rag/search`, `/api/frameseven/reports/:reportId/:file` | GET |
-| `recon.run`         | `/api/recon/stream`                                                                         | POST   |
+| `recon.run`         | `/api/recon/preflight`, `/api/recon/stream`                                                 | POST   |
 | `recon.run` (Auto)  | `/api/recon/auto/stream`, cancelamento/aprovação da própria sessão Auto, aprovação FrameSeven e verdict Forge quando combinado com `forge.review` | POST |
-| `recon.intrusive`   | _Escala_ aplicada a `/api/recon/stream` sobre o plano expandido (aliases, engines e dependências), incluindo Kali, módulos intrusivos, Vigolium/DAST e o perfil FrameSeven `offensive_v1`; exige também engagement formal/ROE/escopo/janela e confirmação ativa | POST |
+| `recon.intrusive`   | _Escala_ aplicada a `/api/recon/preflight` e `/api/recon/stream` sobre o plano expandido; `/api/recon/approval` sempre exige este scope. Inclui Kali, módulos intrusivos, Vigolium/DAST e FrameSeven `offensive_v1`; exige também engagement/ROE/escopo/janela, `confirmActive` e aprovação vinculada | POST |
 | `recon.intrusive` (Auto) | _Escala_ aplicada ao stream Auto nos níveis 3/4, Vigolium, FrameSeven autenticado ou plano intrusivo; também é exigida ao resolver aprovação Auto/FrameSeven marcada como intrusiva | POST |
 | `forge.review`      | Ler/comparar pacotes Forge; decidir aprovação/rejeição exige cumulativamente `recon.run`, CSRF e engagement formal válido para o canário | GET/POST |
 | `forge.manage`      | Promover, habilitar, desabilitar, definir canary e fazer rollback de pacote Forge global | POST |
@@ -80,8 +94,31 @@ admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujei
 > stream apenas com módulos passivos (DNS, probe, wayback…), passa. Se incluir
 > qualquer módulo intrusivo, recebe 403. Depois da expansão do plano, qualquer
 > módulo intrusivo também exige engagement formal ativo, ROE assinado, alvo
-> dentro do escopo/janela e `confirmActive`; `aggressive` não substitui esses
-> controles.
+> dentro do escopo/janela, `confirmActive` e aprovação server-issued vinculada
+> ao hash; `aggressive` não substitui esses controles.
+
+## Aprovação vinculada do RUN manual
+
+O RUN manual intrusivo usa três requisições autenticadas e protegidas por CSRF:
+
+1. `POST /api/recon/preflight` expande o plano e emite um registro pendente;
+2. `POST /api/recon/approval` aceita ou recusa aquele `approvalId`/`planHash`;
+3. `POST /api/recon/stream` recompõe o plano e consome a aprovação antes da
+   execução.
+
+O preflight passivo exige `recon.run`. Quando a entrada já solicita capacidade
+intrusiva, o `intrusiveCheck` exige também `recon.intrusive`; decidir a aprovação
+sempre exige `recon.intrusive`. O registro é efêmero, vinculado ao `sub` do
+principal, possui TTL e é de uso único. Ele vincula alvo, autorização do
+engagement, módulos, opções de execução, ferramentas/limites e fingerprints dos
+binários. Mudança, expiração, replay ou outro proprietário falham fechado.
+
+O preflight recebe em memória o mesmo contexto privado necessário para calcular
+o binding que será recomposto no stream. Ele não devolve nem persiste os
+valores: o plano público contém apenas flags/contagens seguras e o registro
+pendente guarda um HMAC opaco. Auth, cookies, headers sensíveis, senhas e paths
+continuam fora do plano público. As ações `recon.manual_plan.issue`,
+`recon.manual_plan.decision` e `recon.manual_plan.consume` entram na auditoria.
 
 ## Auto, Forge e relatórios FrameSeven
 
@@ -157,6 +194,8 @@ Use para correlacionar com `runId` da pipeline e investigar quem disparou o quê
 1. Copia `.env.example` → `.env` e:
    - escolhe `AUTH_MODE`
    - gera ≥1 API key forte (≥24 chars) e atribui a um role
+   - define `AUTH_PRINCIPAL_BINDING_SECRET` (≥32 bytes) quando API keys precisam
+     manter o mesmo owner após restart
    - define `AUTH_AUDIT_DIR` se quiseres outro destino para o log
 2. Reinicia `npm start`. Procura no stdout a linha `[auth] boot {...}` para
    confirmar (`apiKeys`, `jwt.hs256`, `jwt.rs256`, `audit`).

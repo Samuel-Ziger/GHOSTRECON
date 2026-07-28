@@ -4,6 +4,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { parseArgs, kvListToObject } from '../args.mjs';
 import { GhostClient, GLOBAL_OPTS } from '../client.mjs';
 import { resolvePlaybook } from '../../playbooks/loader.mjs';
@@ -145,6 +146,9 @@ export async function runCommand(argv) {
       modules,
       engine: opts.engine,
       vigoliumAgent: opts['vigolium-agent'],
+      includeManualImplicit: true,
+      includeManualIntrusive: Boolean(opts['confirm-active']),
+      kaliMode: Boolean(opts.kali),
     });
     gate = gateModules({
       modules: modulesForOpsecGate,
@@ -212,20 +216,17 @@ export async function runCommand(argv) {
 
   if (Array.isArray(gate.acknowledged) && gate.acknowledged.length > 0) {
     try {
-      const preflightBody = { ...body };
-      delete preflightBody.auth;
-      delete preflightBody.vigoliumAuth;
-      delete preflightBody.vigoliumAuthEntries;
-      delete preflightBody.vigoliumAuthFile;
-      delete preflightBody.vigoliumAuthFiles;
-      const preflight = await client.postJson('/api/recon/preflight', preflightBody);
+      // O preflight recebe o mesmo contexto privado que será enviado ao stream.
+      // O servidor retorna somente o plano público e conserva apenas o binding
+      // efêmero desse contexto; valores de autenticação nunca são exibidos aqui.
+      const preflight = await client.postJson('/api/recon/preflight', body);
       if (!preflight?.requiresApproval || !preflight?.approval?.approvalId || !preflight?.plan?.hash) {
         throw new Error('servidor não emitiu uma aprovação vinculada ao plano intrusivo');
       }
-      log(
-        `[approval] plano=${preflight.plan.hash} target=${preflight.plan.target} `
-        + `intrusive=${(preflight.plan.intrusiveModules || []).join(',')}`,
-      );
+      const confirmation = await requestPlanSpecificApproval(preflight.plan);
+      if (!confirmation.approved) {
+        throw new Error(confirmation.reason);
+      }
       const decision = await client.postJson('/api/recon/approval', {
         approvalId: preflight.approval.approvalId,
         planHash: preflight.plan.hash,
@@ -325,6 +326,83 @@ export async function runCommand(argv) {
   return collected.errors.length ? 1 : 0;
 }
 
+function safeTerminalText(value, maxLength = 240) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function safePlanModuleList(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => safeTerminalText(item, 80))
+    .filter(Boolean)
+    .slice(0, 128);
+}
+
+export function formatPlanSpecificApproval(plan = {}) {
+  const target = safeTerminalText(plan?.target || '(alvo ausente)');
+  const hash = safeTerminalText(plan?.hash, 64).toLowerCase();
+  const intrusiveModules = safePlanModuleList(plan?.intrusiveModules);
+  const frameSeven = plan?.engines?.frameseven?.enabled === true
+    ? `FrameSeven:${safeTerminalText(plan.engines.frameseven.profile || 'habilitado', 40)}`
+    : null;
+  const vigolium = plan?.engines?.vigolium?.enabled === true
+    ? `Vigolium:${safeTerminalText(plan.engines.vigolium.agent || 'habilitado', 40)}`
+    : null;
+  const engines = [frameSeven, vigolium].filter(Boolean);
+  return [
+    '',
+    'Plano intrusivo aguardando confirmação humana:',
+    `  alvo: ${target}`,
+    `  hash: ${hash || '(ausente)'}`,
+    `  módulos intrusivos: ${intrusiveModules.join(', ') || '(nenhum declarado)'}`,
+    `  motores: ${engines.join(', ') || '(nenhum adicional)'}`,
+    '  credenciais e contexto autenticado foram omitidos desta exibição.',
+  ].join('\n');
+}
+
+export async function requestPlanSpecificApproval(plan, {
+  input = process.stdin,
+  output = process.stderr,
+  ask = null,
+} = {}) {
+  const hash = String(plan?.hash || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) {
+    return { approved: false, reason: 'plano intrusivo retornou hash inválido' };
+  }
+  if (input?.isTTY !== true || output?.isTTY !== true) {
+    return {
+      approved: false,
+      reason:
+        'plano intrusivo requer confirmação plan-specific em terminal interativo; '
+        + 'use o cockpit/API de aprovação ou execute novamente em um TTY',
+    };
+  }
+
+  const prefix = hash.slice(0, 12);
+  output.write(`${formatPlanSpecificApproval(plan)}\n`);
+  let readline = null;
+  try {
+    const question = ask || ((prompt) => {
+      readline = createInterface({ input, output, terminal: true });
+      return readline.question(prompt);
+    });
+    const answer = String(await question(
+      `Digite os 12 primeiros caracteres do hash (${prefix}) para aprovar: `,
+    ) || '').trim().toLowerCase();
+    if (answer !== prefix) {
+      return {
+        approved: false,
+        reason: 'confirmação plan-specific recusada ou não corresponde ao hash',
+      };
+    }
+    return { approved: true, prefix };
+  } finally {
+    readline?.close();
+  }
+}
+
 function mergeUnique(a, b) {
   const seen = new Set();
   const out = [];
@@ -370,7 +448,7 @@ Opções principais:
   --engagement ID                         Opcional — ROE/escopo (store local).
   --operator NAME                         Registo no engagement + team trail.
   --opsec-profile passive|stealth|standard|aggressive   Gate de módulos intrusivos (default: standard).
-  --confirm-active                        ACK explícito para módulos intrusivos / ROE.
+  --confirm-active                        Habilita gate intrusivo; o plano ainda exige confirmação do hash em TTY.
   --timeout SEC                           Default: 1800.
   --server URL                            Default: http://127.0.0.1:3847
   --start-server                          Auto-spawn do server.

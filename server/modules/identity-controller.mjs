@@ -27,6 +27,8 @@ const ACCEPT_LANGS = [
 const CAPTCHA_HINTS =
   /recaptcha|hcaptcha|g-recaptcha|h-captcha|cf-browser-verification|challenge-platform|__cf_chl_js|turnstile|please complete the security check|attention required.*cloudflare/i;
 
+const IDENTITY_ROTATIONS = new Set(['round_robin', 'random', 'fixed']);
+
 let _undici = null;
 async function loadUndici() {
   if (_undici !== null) return _undici;
@@ -102,8 +104,26 @@ function parseProxyList(list) {
   return out;
 }
 
-function proxiesFromEnv() {
-  const raw = String(process.env.GHOSTRECON_PROXY_POOL || '').trim();
+function hasOwn(value, key) {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Object.prototype.hasOwnProperty.call(value, key),
+  );
+}
+
+function envFlag(env, key) {
+  const value = String(env?.[key] || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function normalizeRotation(value, fallback = 'round_robin') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return IDENTITY_ROTATIONS.has(normalized) ? normalized : fallback;
+}
+
+function proxiesFromEnv(env = process.env) {
+  const raw = String(env?.GHOSTRECON_PROXY_POOL || '').trim();
   if (!raw) return [];
   return raw.split(/[,;\n]/).map((s) => s.trim()).filter(Boolean).slice(0, 32);
 }
@@ -120,33 +140,116 @@ function headersToObject(h) {
   return {};
 }
 
-export function mergeIdentityBodyFromEnv(body = {}) {
+export function mergeIdentityBodyFromEnv(body = {}, env = process.env) {
   const src = body && typeof body === 'object' ? body : {};
   const out = { ...src };
-  if (!out.proxyPool?.length && proxiesFromEnv().length) {
-    out.proxyPool = proxiesFromEnv();
+  if (!hasOwn(src, 'proxyPool')) {
+    const envProxies = proxiesFromEnv(env);
+    if (envProxies.length) out.proxyPool = envProxies;
   }
   return out;
 }
 
 /**
- * @param {{ enabled?: boolean, behavior?: boolean, proxyPool?: string[], modules?: string[] }} opts
+ * Resolve a configuração de identidade uma única vez antes dos gates.
+ *
+ * A precedência é campo a campo: request explícito, seleção do módulo (para
+ * habilitação), ambiente injetado e, por fim, defaults conservadores. O
+ * snapshot retornado é profundamente congelado para poder ser vinculado ao
+ * plano aprovado sem sofrer mutações ou uma segunda leitura de `process.env`.
+ *
+ * @param {{
+ *   modules?: string[],
+ *   identityBody?: Record<string, unknown>|null,
+ *   env?: Record<string, unknown>,
+ * }} input
+ */
+export function resolveEffectiveIdentityConfig({
+  modules = [],
+  identityBody = null,
+  env = process.env,
+} = {}) {
+  const request = identityBody && typeof identityBody === 'object'
+    ? identityBody
+    : {};
+  const normalizedModules = Object.freeze(
+    [...new Set(
+      (Array.isArray(modules) ? modules : [])
+        .map((moduleId) => String(moduleId || '').trim())
+        .filter(Boolean),
+    )],
+  );
+  const requestHasProxyPool = hasOwn(request, 'proxyPool');
+  const requestedProxies = requestHasProxyPool && Array.isArray(request.proxyPool)
+    ? request.proxyPool
+    : [];
+  const envProxies = requestHasProxyPool ? [] : proxiesFromEnv(env);
+  const proxyPool = Object.freeze(parseProxyList(
+    requestHasProxyPool ? requestedProxies : envProxies,
+  ));
+
+  let enabled;
+  if (hasOwn(request, 'enabled')) {
+    enabled = request.enabled === true;
+  } else if (requestHasProxyPool && proxyPool.length > 0) {
+    enabled = true;
+  } else if (normalizedModules.includes('identity_rotation')) {
+    enabled = true;
+  } else {
+    enabled = envFlag(env, 'GHOSTRECON_IDENTITY_ROTATION') || proxyPool.length > 0;
+  }
+
+  const requestHasRotation = hasOwn(request, 'rotation');
+  const rotation = requestHasRotation
+    ? normalizeRotation(request.rotation)
+    : normalizeRotation(env?.GHOSTRECON_PROXY_ROTATION);
+  const isolate = hasOwn(request, 'isolate')
+    ? request.isolate === true
+    : envFlag(env, 'GHOSTRECON_TOR_ISOLATE');
+
+  return Object.freeze({
+    resolved: true,
+    enabled,
+    behavior: hasOwn(request, 'behavior') ? request.behavior !== false : true,
+    proxyPool,
+    rotation,
+    isolate,
+    isolationKey: typeof request.isolationKey === 'string' ? request.isolationKey : null,
+    runId: typeof request.runId === 'string' || typeof request.runId === 'number'
+      ? String(request.runId)
+      : null,
+    target: typeof request.target === 'string' ? request.target : null,
+    modules: normalizedModules,
+  });
+}
+
+/**
+ * @param {{
+ *   resolved?: boolean,
+ *   enabled?: boolean,
+ *   behavior?: boolean,
+ *   proxyPool?: string[],
+ *   modules?: string[],
+ *   env?: Record<string, unknown>,
+ * }} opts
  */
 export function createIdentityController(opts = {}) {
+  const resolved = opts.resolved === true;
+  const env = resolved
+    ? null
+    : (opts.env && typeof opts.env === 'object' ? opts.env : process.env);
   const enabled = Boolean(opts.enabled);
   const behavior = opts.behavior !== false;
   const modules = Array.isArray(opts.modules) ? opts.modules : [];
-  const proxies = parseProxyList(
-    opts.proxyPool?.length ? opts.proxyPool : proxiesFromEnv(),
+  const proxyInput = resolved
+    ? (Array.isArray(opts.proxyPool) ? opts.proxyPool : [])
+    : (opts.proxyPool?.length ? opts.proxyPool : proxiesFromEnv(env));
+  const proxies = parseProxyList(proxyInput);
+  const rotationStrategy = normalizeRotation(
+    resolved ? opts.rotation : (opts.rotation || env?.GHOSTRECON_PROXY_ROTATION),
   );
-  const rotationStrategyRaw = String(
-    opts.rotation || process.env.GHOSTRECON_PROXY_ROTATION || 'round_robin',
-  )
-    .trim()
-    .toLowerCase();
-  const rotationStrategy = ['round_robin', 'random', 'fixed'].includes(rotationStrategyRaw)
-    ? rotationStrategyRaw
-    : 'round_robin';
+  const isolate = opts.isolate === true
+    || (!resolved && envFlag(env, 'GHOSTRECON_TOR_ISOLATE'));
   let proxyIdx = 0;
   /** @type {Map<string, { score: number, burnedUntil: number }>} */
   const health = new Map();
@@ -248,12 +351,9 @@ export function createIdentityController(opts = {}) {
     }
     if (isSocksUrl(href)) {
       // Stream isolation por target/run quando GHOSTRECON_TOR_ISOLATE=1 ou opts.isolate=true.
-      const isolateMode =
-        opts.isolate === true ||
-        String(process.env.GHOSTRECON_TOR_ISOLATE || '').trim() === '1';
       const isolationKey = opts.isolationKey || opts.runId || opts.target || '';
       let useHref = href;
-      if (isolateMode) {
+      if (isolate) {
         const u = new URL(href);
         if (!u.username) {
           const user = isolatedSocksUser('gr', isolationKey || 'auto');
@@ -408,6 +508,8 @@ export function createIdentityController(opts = {}) {
       backoffMul,
       proxyIdx,
       rotationStrategy,
+      resolved,
+      isolate,
       uaSlot,
       proxies: proxies.length,
       health: Object.fromEntries([...health.entries()].slice(0, 16)),
@@ -450,33 +552,22 @@ export function createIdentityController(opts = {}) {
   };
 }
 
-export function shouldEnableIdentity({ modules = [], identityBody = null } = {}) {
-  if (identityBody && typeof identityBody === 'object' && identityBody.enabled) return true;
-  if (
-    identityBody &&
-    typeof identityBody === 'object' &&
-    Array.isArray(identityBody.proxyPool) &&
-    identityBody.proxyPool.length
-  )
-    return true;
-  if (Array.isArray(modules) && modules.includes('identity_rotation')) return true;
-  const v = String(process.env.GHOSTRECON_IDENTITY_ROTATION || '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes';
+export function shouldEnableIdentity({
+  modules = [],
+  identityBody = null,
+  env = process.env,
+} = {}) {
+  return resolveEffectiveIdentityConfig({ modules, identityBody, env }).enabled;
 }
 
-export function normalizeIdentityOptions(modules, identityBody) {
-  const raw = identityBody && typeof identityBody === 'object' ? identityBody : {};
-  const body = mergeIdentityBodyFromEnv(raw);
-  const enabled = shouldEnableIdentity({ modules, identityBody: body });
-  const isolateEnv = String(process.env.GHOSTRECON_TOR_ISOLATE || '').trim() === '1';
+export function normalizeIdentityOptions(modules, identityBody, { env = process.env } = {}) {
+  const snapshot = resolveEffectiveIdentityConfig({ modules, identityBody, env });
+  // Compatibilidade: callers históricos acrescentam runId/target depois desta
+  // chamada. Mantemos o wrapper mutável, mas `resolved:true` garante que o
+  // controller não volte a consultar o ambiente.
   return {
-    enabled,
-    behavior: body.behavior !== false,
-    proxyPool: parseProxyList(body.proxyPool || []),
-    rotation: String(body.rotation || '').trim().toLowerCase() || undefined,
-    isolate: body.isolate === true || isolateEnv,
-    isolationKey: typeof body.isolationKey === 'string' ? body.isolationKey : null,
-    runId: typeof body.runId === 'string' || typeof body.runId === 'number' ? String(body.runId) : null,
-    target: typeof body.target === 'string' ? body.target : null,
+    ...snapshot,
+    proxyPool: [...snapshot.proxyPool],
+    modules: [...snapshot.modules],
   };
 }

@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { parseArgs, parseDuration, kvListToObject } from '../modules/cli/args.mjs';
+import {
+  formatPlanSpecificApproval,
+  requestPlanSpecificApproval,
+} from '../modules/cli/commands/run.mjs';
 
 test('parseArgs: string flag with --key value', () => {
   const { opts } = parseArgs(['--target', 'example.com'], [
@@ -97,6 +101,70 @@ test('CLI RUN não herda confirmação global e usa aprovação vinculada ao pla
   assert.doesNotMatch(source, /GHOSTRECON_CONFIRM_ACTIVE/);
   assert.match(source, /\/api\/recon\/preflight/);
   assert.match(source, /\/api\/recon\/approval/);
-  assert.match(source, /delete preflightBody\.auth/);
+  assert.doesNotMatch(source, /delete preflightBody\.auth/);
+  assert.doesNotMatch(source, /delete preflightBody\.vigoliumAuth/);
+  assert.match(source, /requestPlanSpecificApproval\(preflight\.plan\)/);
+  assert.match(source, /includeManualImplicit:\s*true/);
+  assert.match(source, /includeManualIntrusive:\s*Boolean\(opts\[['"]confirm-active['"]\]\)/);
+  assert.match(source, /kaliMode:\s*Boolean\(opts\.kali\)/);
   assert.match(source, /body\.manualApproval/);
+});
+
+test('CLI RUN falha fechado sem TTY e não consulta confirmação', async () => {
+  let asked = false;
+  const result = await requestPlanSpecificApproval({
+    hash: 'a'.repeat(64),
+  }, {
+    input: { isTTY: false },
+    output: { isTTY: false, write() {} },
+    ask: async () => {
+      asked = true;
+      return 'a'.repeat(12);
+    },
+  });
+  assert.equal(result.approved, false);
+  assert.match(result.reason, /terminal interativo/);
+  assert.equal(asked, false);
+});
+
+test('CLI RUN exige prefixo do hash e exibe somente resumo seguro', async () => {
+  const hash = 'b'.repeat(64);
+  const chunks = [];
+  const output = {
+    isTTY: true,
+    write(chunk) {
+      chunks.push(String(chunk));
+    },
+  };
+  const result = await requestPlanSpecificApproval({
+    target: 'lab.example.test',
+    hash,
+    intrusiveModules: ['vigolium_dast'],
+    engines: {
+      frameseven: { enabled: false },
+      vigolium: { enabled: true, agent: 'audit' },
+    },
+    auth: { cookie: 'secret-cookie' },
+    unexpectedSecret: 'secret-token',
+  }, {
+    input: { isTTY: true },
+    output,
+    ask: async (prompt) => {
+      assert.match(prompt, /bbbbbbbbbbbb/);
+      return 'bbbbbbbbbbbb';
+    },
+  });
+  const rendered = chunks.join('');
+  assert.equal(result.approved, true);
+  assert.match(rendered, /lab\.example\.test/);
+  assert.match(rendered, /vigolium_dast/);
+  assert.doesNotMatch(rendered, /secret-cookie|secret-token/);
+  assert.doesNotMatch(
+    formatPlanSpecificApproval({
+      hash,
+      auth: { cookie: 'secret-cookie' },
+      unexpectedSecret: 'secret-token',
+    }),
+    /secret-cookie|secret-token/,
+  );
 });

@@ -185,10 +185,21 @@ async function resolveRequestedModules(client, args = {}) {
   };
 }
 
-function evaluateMcpOpsec({ modules = [], profile = 'standard', confirmActive = false } = {}) {
+function evaluateMcpOpsec({
+  modules = [],
+  opsecProfile = 'standard',
+  confirmActive = false,
+  includeManualImplicit = false,
+  kaliMode = false,
+} = {}) {
   return gateModules({
-    modules: expandIntrusiveRunModules({ modules }),
-    profile,
+    modules: expandIntrusiveRunModules({
+      modules,
+      includeManualImplicit,
+      includeManualIntrusive: Boolean(confirmActive),
+      kaliMode: Boolean(kaliMode),
+    }),
+    profile: opsecProfile,
     confirm: Boolean(confirmActive),
   });
 }
@@ -196,7 +207,14 @@ function evaluateMcpOpsec({ modules = [], profile = 'standard', confirmActive = 
 async function buildReconPlan(client, args = {}) {
   const target = String(args.target || '').trim();
   if (!target) throw new Error('target vazio');
-  const profile = String(args.profile || 'standard').trim().toLowerCase();
+  const requestedProfile = String(args.profile || 'standard').trim().toLowerCase();
+  const profile = ['quick', 'standard', 'deep'].includes(requestedProfile)
+    ? requestedProfile
+    : 'standard';
+  const requestedOpsecProfile = String(args.opsecProfile || 'standard').trim().toLowerCase();
+  const opsecProfile = ['passive', 'stealth', 'standard', 'aggressive'].includes(requestedOpsecProfile)
+    ? requestedOpsecProfile
+    : 'standard';
   const { playbook, modules } = await resolveRequestedModules(client, args);
   const cap = await client.capabilities();
   const manifestById = new Map((Array.isArray(cap.modules) ? cap.modules : []).map((m) => [m.id, m]));
@@ -213,13 +231,16 @@ async function buildReconPlan(client, args = {}) {
   });
   const opsec = evaluateMcpOpsec({
     modules,
-    profile,
+    opsecProfile,
     confirmActive: args.confirmActive === true,
+    includeManualImplicit: true,
+    kaliMode: false,
   });
   return {
     ok: opsec.ok,
     target,
     profile,
+    opsecProfile,
     playbook: playbook ? {
       name: playbook.name,
       description: playbook.description || '',
@@ -234,6 +255,112 @@ async function buildReconPlan(client, args = {}) {
       requiresConfirmation: !opsec.ok,
       confirmActive: args.confirmActive === true,
     },
+  };
+}
+
+function safeManualApprovalIdentity(identity) {
+  if (!identity || typeof identity !== 'object') return null;
+  const sha256 = String(identity.sha256 || '').trim().toLowerCase();
+  return {
+    algorithm: String(identity.algorithm || 'sha256').trim().toLowerCase(),
+    sha256: /^[a-f0-9]{64}$/.test(sha256) ? sha256 : null,
+    size: Number.isFinite(Number(identity.size)) ? Number(identity.size) : null,
+  };
+}
+
+function safeManualApprovalEngine(engine = {}, {
+  kind,
+} = {}) {
+  const source = engine && typeof engine === 'object' ? engine : {};
+  if (kind === 'frameseven') {
+    return {
+      enabled: source.enabled === true,
+      authenticated: source.authenticated === true,
+      profile: source.profile ? String(source.profile) : null,
+      tools: cleanArray(source.tools),
+      timeoutMs: Number.isFinite(Number(source.timeoutMs)) ? Number(source.timeoutMs) : null,
+      toolTimeoutMs: Number.isFinite(Number(source.toolTimeoutMs)) ? Number(source.toolTimeoutMs) : null,
+      concurrency: Number.isFinite(Number(source.concurrency)) ? Number(source.concurrency) : null,
+      rate: Number.isFinite(Number(source.rate)) ? Number(source.rate) : null,
+      identity: safeManualApprovalIdentity(source.identity),
+    };
+  }
+  return {
+    enabled: source.enabled === true,
+    agent: source.agent ? String(source.agent) : null,
+    strategy: source.strategy ? String(source.strategy) : null,
+    useCodex: source.useCodex === true,
+    modules: cleanArray(source.modules),
+    moduleTags: cleanArray(source.moduleTags),
+    auditMode: source.auditMode ? String(source.auditMode) : null,
+    only: source.only ? String(source.only) : null,
+    reportOnly: source.reportOnly ? String(source.reportOnly) : null,
+    htmlReport: source.htmlReport === true,
+    identity: safeManualApprovalIdentity(source.identity),
+  };
+}
+
+export function safeManualApprovalPlan(plan = {}) {
+  const source = plan && typeof plan === 'object' ? plan : {};
+  const execution = source.execution && typeof source.execution === 'object'
+    ? source.execution
+    : {};
+  const authentication = source.authentication && typeof source.authentication === 'object'
+    ? source.authentication
+    : {};
+  return {
+    schemaVersion: Number(source.schemaVersion || 1),
+    kind: String(source.kind || 'ghostrecon.manual-recon.plan'),
+    target: String(source.target || ''),
+    engagement: {
+      id: source.engagement?.id ? String(source.engagement.id) : null,
+      authorizationBinding: source.engagement?.authorizationBinding
+        ? String(source.engagement.authorizationBinding)
+        : null,
+    },
+    selectedModules: cleanArray(source.selectedModules),
+    expandedModules: cleanArray(source.expandedModules),
+    intrusiveModules: cleanArray(source.intrusiveModules),
+    execution: {
+      exactMatch: execution.exactMatch === true,
+      kaliMode: execution.kaliMode === true,
+      profile: String(execution.profile || 'standard'),
+      opsecProfile: String(execution.opsecProfile || 'standard'),
+      engine: String(execution.engine || 'node'),
+      playbook: execution.playbook ? String(execution.playbook) : null,
+      fullPreset: execution.fullPreset === true,
+      navigatorMode: execution.navigatorMode === true,
+      navigatorExec: execution.navigatorExec === true,
+      navigatorUserMode: execution.navigatorUserMode === true,
+      torRequired: execution.torRequired === true,
+      torStrict: execution.torStrict === true,
+      identityEnabled: execution.identityEnabled === true,
+      outOfScope: cleanArray(execution.outOfScope),
+    },
+    authentication: {
+      pipeline: {
+        enabled: authentication.pipeline?.enabled === true,
+        hasCookie: authentication.pipeline?.hasCookie === true,
+        hasAuthorization: authentication.pipeline?.hasAuthorization === true,
+        headerCount: Number(authentication.pipeline?.headerCount || 0),
+      },
+      vigolium: {
+        enabled: authentication.vigolium?.enabled === true,
+        sharesPipelineContext: authentication.vigolium?.sharesPipelineContext === true,
+        inlineEntryCount: Number(authentication.vigolium?.inlineEntryCount || 0),
+        authFileCount: Number(authentication.vigolium?.authFileCount || 0),
+      },
+    },
+    engines: {
+      frameseven: safeManualApprovalEngine(source.engines?.frameseven, {
+        kind: 'frameseven',
+      }),
+      vigolium: safeManualApprovalEngine(source.engines?.vigolium, {
+        kind: 'vigolium',
+      }),
+    },
+    hash: String(source.hash || ''),
+    requiresHumanApproval: source.requiresHumanApproval === true,
   };
 }
 
@@ -363,6 +490,11 @@ const tools = [
         target: { type: 'string' },
         playbook: { type: 'string' },
         profile: { type: 'string', enum: ['quick', 'standard', 'deep'], default: 'standard' },
+        opsecProfile: {
+          type: 'string',
+          enum: ['passive', 'stealth', 'standard', 'aggressive'],
+          default: 'standard',
+        },
         modules: { type: 'array', items: { type: 'string' } },
         confirmActive: { type: 'boolean', default: false },
       },
@@ -372,19 +504,35 @@ const tools = [
   },
   {
     name: 'ghostrecon_run_recon',
-    description: 'Executa recon normal via /api/recon/stream e retorna resumo + findings.',
+    description:
+      'Executa recon normal via /api/recon/stream. Planos intrusivos retornam '
+      + 'approval_required e só continuam após aprovação separada pela UI/API.',
     inputSchema: {
       type: 'object',
       properties: {
         target: { type: 'string', description: 'Dominio, URL ou IP autorizado.' },
         playbook: { type: 'string', description: 'Nome do playbook, ex.: api-first ou quick-triage.' },
         profile: { type: 'string', enum: ['quick', 'standard', 'deep'], default: 'standard' },
+        opsecProfile: {
+          type: 'string',
+          enum: ['passive', 'stealth', 'standard', 'aggressive'],
+          default: 'standard',
+          description: 'Perfil OPSEC independente do perfil de execução.',
+        },
         modules: { type: 'array', items: { type: 'string' }, description: 'Modulos explicitos. Se omitido, use playbook.' },
         exactMatch: { type: 'boolean', default: false },
         timeoutMs: { type: 'integer', default: 1800000 },
         findingsLimit: { type: 'integer', default: 80 },
         confirmActive: { type: 'boolean', default: false },
         engagementId: { type: 'string' },
+        manualApprovalId: {
+          type: 'string',
+          description: 'ID emitido pelo preflight e aprovado separadamente pela UI/API.',
+        },
+        manualApprovalHash: {
+          type: 'string',
+          description: 'Hash exato do plano aprovado separadamente pela UI/API.',
+        },
       },
       required: ['target'],
       additionalProperties: false,
@@ -818,40 +966,58 @@ export async function callTool(name, args = {}, {
   if (name === 'ghostrecon_run_recon') {
     const target = String(args.target || '').trim();
     if (!target) return errorResult('target vazio');
+    const manualApprovalId = String(args.manualApprovalId || '').trim();
+    const manualApprovalHash = String(args.manualApprovalHash || '').trim();
+    if (Boolean(manualApprovalId) !== Boolean(manualApprovalHash)) {
+      return errorResult(
+        'manualApprovalId e manualApprovalHash devem ser informados juntos após aprovação separada pela UI/API.',
+      );
+    }
     const plan = await buildReconPlan(client, args);
     if (!plan.opsec?.ok) {
       return errorResult('OPSEC bloqueou execucao via MCP. Revise o plano e envie confirmActive=true apenas se houver autorizacao.', { plan });
     }
     const body = {
       domain: target,
-      profile: args.profile || 'standard',
+      profile: plan.profile,
+      opsecProfile: plan.opsecProfile,
       exactMatch: Boolean(args.exactMatch),
       modules: plan.modules,
     };
     if (args.playbook) body.playbook = String(args.playbook);
     if (args.confirmActive === true) body.confirmActive = true;
     if (args.engagementId) body.engagementId = String(args.engagementId);
-    if (args.confirmActive === true) {
+    if (manualApprovalId && manualApprovalHash) {
+      body.manualApproval = {
+        approvalId: manualApprovalId,
+        planHash: manualApprovalHash,
+      };
+    } else if (args.confirmActive === true) {
       try {
         const preflight = await client.postJson('/api/recon/preflight', body);
         if (preflight?.requiresApproval) {
-          const decision = await client.postJson('/api/recon/approval', {
-            approvalId: preflight.approval?.approvalId,
-            planHash: preflight.plan?.hash,
-            approved: true,
-          });
-          if (decision?.approval?.status !== 'approved') {
-            return errorResult('Servidor não confirmou a aprovação vinculada ao plano.', {
-              planHash: preflight.plan?.hash || null,
-            });
+          const approvalId = String(preflight.approval?.approvalId || '').trim();
+          const planHash = String(preflight.plan?.hash || '').trim();
+          if (!approvalId || !planHash) {
+            return errorResult('Servidor não emitiu identificadores válidos para aprovação vinculada.');
           }
-          body.manualApproval = {
-            approvalId: preflight.approval.approvalId,
-            planHash: preflight.plan.hash,
-          };
+          return toolResult({
+            ok: false,
+            status: 'approval_required',
+            approvalRequired: true,
+            plan: safeManualApprovalPlan(preflight.plan),
+            approval: {
+              approvalId,
+              planHash,
+              expiresAt: preflight.approval?.expiresAt || null,
+            },
+            nextAction:
+              'Aprove este approvalId/hash separadamente pela UI/API com o mesmo principal e chame '
+              + 'ghostrecon_run_recon novamente com manualApprovalId/manualApprovalHash.',
+          });
         }
       } catch (error) {
-        return errorResult('Falha no preflight/aprovação vinculada do RUN manual.', {
+        return errorResult('Falha no preflight vinculado do RUN manual.', {
           error: error?.message || String(error),
         });
       }
@@ -950,7 +1116,7 @@ export async function callTool(name, args = {}, {
     });
     const opsec = evaluateMcpOpsec({
       modules: effectivePlan.expandedModules,
-      profile: effectivePlan.opsecProfile,
+      opsecProfile: effectivePlan.opsecProfile,
     });
     return toolResult({
       ok: true,

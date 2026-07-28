@@ -297,7 +297,7 @@ async function runGhostwatch(argv, { forceOnce = false } = {}) {
   return 0;
 }
 
-async function runOneSweep({ client, opts, stateDir, log }) {
+export async function runOneSweep({ client, opts, stateDir, log }) {
   const state = await loadState(stateDir);
   let runs;
   try {
@@ -325,6 +325,7 @@ async function runOneSweep({ client, opts, stateDir, log }) {
     at: new Date().toISOString(),
     targets: [],
   };
+  let approvalBlocked = false;
 
   for (const item of targets) {
     const target = item.target;
@@ -370,39 +371,52 @@ async function runOneSweep({ client, opts, stateDir, log }) {
     log(`${target}: recon baseline=#${baseline.id} modules=${body.modules.length} outOfScope=${outOfScope.length}`);
     let newRunId = null;
     let errors = [];
+    let targetApprovalRequired = null;
+    let preflightCompleted = false;
+    let targetPreflightFailed = false;
     try {
-      if (body.confirmActive) {
-        const preflight = await client.postJson('/api/recon/preflight', body);
-        if (preflight?.requiresApproval) {
-          const decision = await client.postJson('/api/recon/approval', {
-            approvalId: preflight.approval?.approvalId,
-            planHash: preflight.plan?.hash,
-            approved: true,
-          });
-          if (decision?.approval?.status !== 'approved') {
-            throw new Error('aprovação vinculada ao plano GhostWatch não foi confirmada');
-          }
-          body.manualApproval = {
-            approvalId: preflight.approval.approvalId,
-            planHash: preflight.plan.hash,
-          };
-          log(`${target}: plano intrusivo aprovado hash=${preflight.plan.hash}`);
-        }
+      const preflight = await client.postJson('/api/recon/preflight', body);
+      preflightCompleted = true;
+      if (preflight?.requiresApproval) {
+        const planHash = String(preflight.plan?.hash || '').trim();
+        const intrusiveModules = Array.isArray(preflight.plan?.intrusiveModules)
+          ? preflight.plan.intrusiveModules.map(String).filter(Boolean)
+          : [];
+        targetApprovalRequired = {
+          planHash: planHash || null,
+          target: String(preflight.plan?.target || target),
+          intrusiveModules,
+        };
+        approvalBlocked = true;
+        errors.push(
+          `approval_required: plano ${planHash || '(sem hash)'} exige confirmação humana; `
+          + 'GhostWatch não aprova planos automaticamente',
+        );
+        log(
+          `${target}: bloqueado com segurança — aprovação humana necessária `
+          + `hash=${planHash || '-'} intrusivos=${intrusiveModules.join(',') || '-'}`,
+        );
+      } else {
+        await client.streamRecon(
+          body,
+          (evt) => {
+            if (evt?.runId) newRunId = evt.runId;
+            if (evt?.type === 'error') errors.push(evt.message || 'erro desconhecido');
+          },
+          { timeoutMs: Math.max(60_000, Number(opts.timeout || 1800) * 1000) },
+        );
       }
-      await client.streamRecon(
-        body,
-        (evt) => {
-          if (evt?.runId) newRunId = evt.runId;
-          if (evt?.type === 'error') errors.push(evt.message || 'erro desconhecido');
-        },
-        { timeoutMs: Math.max(60_000, Number(opts.timeout || 1800) * 1000) },
-      );
     } catch (e) {
       errors.push(e.message);
+      if (!preflightCompleted) {
+        approvalBlocked = true;
+        targetPreflightFailed = true;
+        log(`${target}: bloqueado com segurança — preflight falhou antes do stream`);
+      }
       log(`${target}: recon falhou: ${e.message}`);
     }
 
-    if (!newRunId) {
+    if (!targetApprovalRequired && !targetPreflightFailed && !newRunId) {
       try {
         const afterRuns = await client.listRuns({ limit: opts['limit-runs'] });
         const afterLatest = latestRunsByTarget(afterRuns).get(target);
@@ -412,7 +426,14 @@ async function runOneSweep({ client, opts, stateDir, log }) {
       }
     }
 
-    const result = { target, baselineId: baseline.id, newerId: newRunId, errors };
+    const result = {
+      target,
+      baselineId: baseline.id,
+      newerId: newRunId,
+      errors,
+      ...(targetApprovalRequired ? { approvalRequired: targetApprovalRequired } : {}),
+      ...(targetPreflightFailed ? { preflightFailed: true } : {}),
+    };
     if (newRunId && newRunId !== baseline.id) {
       try {
         const diff = normalizeDiffForGhostwatch(await client.diffRuns(baseline.id, newRunId));
@@ -459,7 +480,7 @@ async function runOneSweep({ client, opts, stateDir, log }) {
 
   if (opts.format === 'json') process.stdout.write(`${JSON.stringify(sweep, null, 2)}\n`);
   else writeSweepSummary(sweep);
-  return 0;
+  return approvalBlocked ? 5 : 0;
 }
 
 async function resolveRunConfig({ cfg, opts, baseline, client }) {
@@ -699,7 +720,8 @@ Uso recomendado na VPS:
 
 Por padrao le o .env do GHOSTRECON, usa GHOSTRECON_WEBHOOK_URL, roda full-recon
 em modo agressivo/Kali e remove Tor/Navigator, Shannon, PentestGPT e Vigolium
-agent/code-review/Codex antes de chamar o pipeline.
+agent/code-review/Codex antes de chamar o pipeline. Se o preflight indicar
+plano intrusivo, falha fechado: GhostWatch nunca aprova o plano automaticamente.
 
 Opcoes de run:
   --playbook NAME               Default: ${DEFAULT_PLAYBOOK}

@@ -35,6 +35,9 @@ describe('vigolium agent — config', () => {
         signal: controller.signal,
         log: () => {},
       }, 'audit', {
+        assertVigoliumSourceIdentityImpl: async (_source, _expected, options) => {
+          assert.equal(options.signal, controller.signal);
+        },
         runProcessImpl: async (_file, _args, options) => {
           receivedSignal = options.signal;
           receivedEnv = options.spawnOpts?.env;
@@ -145,6 +148,54 @@ describe('vigolium agent — config', () => {
     }
   });
 
+  it('revalida a fonte imediatamente antes do agente e trata divergência como terminal', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-agent-source-'));
+    const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
+    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
+    let sourceChecks = 0;
+    let processCalls = 0;
+    try {
+      await fs.writeFile(binary, 'fixture');
+      if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
+      process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
+      await assert.rejects(
+        runVigoliumAgent({
+          ROOT: tmp,
+          domain: 'example.com',
+          vigoliumSource: tmp,
+          vigoliumExpectedSourceIdentity: { fixture: true },
+          vigoliumSourceAllowedRoots: [tmp],
+          log: () => {},
+        }, 'audit', {
+          assertVigoliumSourceIdentityImpl: async (source, expected, options) => {
+            sourceChecks += 1;
+            assert.equal(source, tmp);
+            assert.deepEqual(expected, { fixture: true });
+            assert.deepEqual(options.allowedRoots, [tmp]);
+            const error = new Error('source mismatch fixture');
+            error.code = 'VIGOLIUM_SOURCE_IDENTITY_MISMATCH';
+            throw error;
+          },
+          runProcessImpl: async () => {
+            processCalls += 1;
+            throw new Error('não deveria executar');
+          },
+        }),
+        (error) => (
+          error?.code === 'VIGOLIUM_SOURCE_IDENTITY_MISMATCH'
+          && error?.fatal === true
+          && error?.recoverable === false
+        ),
+      );
+      assert.equal(sourceChecks, 1);
+      assert.equal(processCalls, 0);
+    } finally {
+      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
+      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('go-agent preserva divergência de identidade como terminal e não emite skip/done', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-go-agent-fatal-'));
     const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
@@ -167,9 +218,8 @@ describe('vigolium agent — config', () => {
         runGoAgentPhase({
           ROOT: tmp,
           domain: 'example.com',
-          modules: ['vigolium_audit'],
-          vigoliumAgentMode: 'audit',
-          vigoliumSource: tmp,
+          modules: ['vigolium_swarm'],
+          vigoliumAgentMode: 'swarm',
           vigoliumExpectedIdentity: {
             algorithm: 'sha256',
             sha256: '0'.repeat(64),
@@ -185,7 +235,7 @@ describe('vigolium agent — config', () => {
 
       assert.equal(
         pipes.some((item) => (
-          ['vigolium_agent', 'vigolium_audit'].includes(item.name)
+          ['vigolium_agent', 'vigolium_swarm'].includes(item.name)
           && ['skip', 'done'].includes(item.state)
         )),
         false,
@@ -245,13 +295,17 @@ describe('vigolium agent — config', () => {
       vigoliumAuthFiles: ['admin.json', 'user.json'],
       vigoliumAuthEntries: ['admin:Cookie:sid=1'],
       vigoliumModuleTags: ['access-control'],
-    }, 'swarm');
+    }, 'swarm', {
+      privateDbPath: '/tmp/ghostrecon-agent-private.sqlite',
+    });
     assert.equal(built.skipped, false);
     assert.ok(built.args.includes('-t'));
     assert.ok(built.args.includes('https://example.com'));
     assert.ok(built.args.includes('--auth-file'));
     assert.ok(built.args.includes('admin.json'));
     assert.ok(built.args.includes('user.json'));
+    assert.ok(built.args.includes('--db'));
+    assert.ok(built.args.includes('/tmp/ghostrecon-agent-private.sqlite'));
     assert.equal(built.args.includes('--auth'), false);
     assert.doesNotMatch(built.args.join(' '), /sid=1/);
     assert.ok(built.args.includes('--module-tag'));
@@ -267,8 +321,9 @@ describe('vigolium agent — config', () => {
 const args = process.argv.slice(2);
 const at = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : ''; };
 const authFile = at('--auth-file');
+const dbPath = at('--db');
 const auth = JSON.parse(fs.readFileSync(authFile, 'utf8'));
-fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args, authFile, auth }), 'utf8');
+fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args, authFile, dbPath, auth }), 'utf8');
 process.stdout.write(JSON.stringify({
   type: 'finding',
   data: {
@@ -309,6 +364,8 @@ process.stdout.write(JSON.stringify({
       assert.equal(captured.auth.sessions[0].headers.Authorization, 'Bearer agent-shared-secret');
       assert.equal(captured.auth.sessions[1].headers.Cookie, 'agent-inline-secret');
       await assert.rejects(fs.access(captured.authFile));
+      assert.ok(captured.dbPath);
+      await assert.rejects(fs.access(captured.dbPath));
       assert.doesNotMatch(logs.join('\n'), /agent-inline-secret|agent-shared-secret/);
       assert.doesNotMatch(JSON.stringify(result.findings), /agent-inline-secret|agent-shared-secret/);
       assert.doesNotMatch(JSON.stringify(result.summary), /agent-inline-secret|agent-shared-secret/);

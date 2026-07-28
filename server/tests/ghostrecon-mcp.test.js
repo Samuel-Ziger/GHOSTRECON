@@ -43,6 +43,23 @@ test('MCP stdio negocia protocolo e publica ferramentas sem iniciar a API', asyn
     assert.equal(autoTool.inputSchema.properties.frameSevenAuth.default, false);
     assert.equal(autoTool.inputSchema.properties.vigoliumUseCodex.default, false);
   }
+
+  const runTool = byId.get(2)?.result?.tools?.find(
+    (tool) => tool.name === 'ghostrecon_run_recon',
+  );
+  assert.deepEqual(runTool.inputSchema.properties.profile.enum, [
+    'quick',
+    'standard',
+    'deep',
+  ]);
+  assert.deepEqual(runTool.inputSchema.properties.opsecProfile.enum, [
+    'passive',
+    'stealth',
+    'standard',
+    'aggressive',
+  ]);
+  assert.ok(runTool.inputSchema.properties.manualApprovalId);
+  assert.ok(runTool.inputSchema.properties.manualApprovalHash);
 });
 
 test('MCP parser aceita NDJSON e framing Content-Length', () => {
@@ -57,9 +74,8 @@ test('MCP parser aceita NDJSON e framing Content-Length', () => {
   assert.deepEqual(messages.map((message) => message.id), [1, 2]);
 });
 
-test('MCP RUN intrusivo usa preflight e aprovação vinculada antes do stream', async () => {
+test('MCP RUN intrusivo retorna approval_required sem aprovar nem iniciar stream', async () => {
   const calls = [];
-  let streamedBody = null;
   const client = {
     async ensureServer() {
       return { spawned: false, child: null };
@@ -71,23 +87,77 @@ test('MCP RUN intrusivo usa preflight e aprovação vinculada antes do stream', 
     },
     async postJson(pathname, body) {
       calls.push({ pathname, body });
-      if (pathname === '/api/recon/preflight') {
-        return {
-          ok: true,
-          requiresApproval: true,
-          plan: {
-            hash: 'a'.repeat(64),
-            target: body.domain,
-            intrusiveModules: ['vigolium_dast'],
-          },
-          approval: { approvalId: 'approval-mcp-fixture' },
-        };
-      }
-      assert.equal(pathname, '/api/recon/approval');
       return {
         ok: true,
-        approval: { status: 'approved' },
+        requiresApproval: true,
+        plan: {
+          schemaVersion: 1,
+          kind: 'ghostrecon.manual-recon.plan',
+          hash: 'a'.repeat(64),
+          target: body.domain,
+          selectedModules: ['vigolium_dast'],
+          expandedModules: ['vigolium_dast'],
+          intrusiveModules: ['vigolium_dast'],
+          execution: {
+            profile: body.profile,
+            opsecProfile: body.opsecProfile,
+          },
+          authentication: {
+            pipeline: { enabled: false },
+            vigolium: { enabled: false },
+          },
+          engines: {
+            frameseven: { enabled: false },
+            vigolium: { enabled: true, agent: 'none' },
+          },
+          requiresHumanApproval: true,
+          unexpectedSecret: 'nao-deve-sair',
+        },
+        approval: {
+          approvalId: 'approval-mcp-fixture',
+          expiresAt: '2026-07-28T10:00:00.000Z',
+        },
       };
+    },
+    async streamRecon() {
+      assert.fail('stream não pode iniciar antes da aprovação separada');
+    },
+  };
+
+  const result = await callTool('ghostrecon_run_recon', {
+    target: 'lab.example.test',
+    modules: ['vigolium_dast'],
+    profile: 'deep',
+    opsecProfile: 'aggressive',
+    confirmActive: true,
+    engagementId: 'ENG-LAB',
+  }, { client });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(calls.map((call) => call.pathname), ['/api/recon/preflight']);
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.status, 'approval_required');
+  assert.equal(payload.approval.approvalId, 'approval-mcp-fixture');
+  assert.equal(payload.approval.planHash, 'a'.repeat(64));
+  assert.equal(payload.plan.execution.profile, 'deep');
+  assert.equal(payload.plan.execution.opsecProfile, 'aggressive');
+  assert.equal(payload.plan.unexpectedSecret, undefined);
+  assert.match(payload.nextAction, /manualApprovalId\/manualApprovalHash/);
+});
+
+test('MCP RUN usa aprovação explícita já decidida sem preflight ou autoaprovação', async () => {
+  let streamedBody = null;
+  const client = {
+    async ensureServer() {
+      return { spawned: false, child: null };
+    },
+    async capabilities() {
+      return {
+        modules: [{ id: 'vigolium_dast', intrusive: true, category: 'engine' }],
+      };
+    },
+    async postJson() {
+      assert.fail('chamada posterior aprovada não deve emitir novo preflight/decision');
     },
     async streamRecon(body, onEvent) {
       streamedBody = body;
@@ -99,20 +169,58 @@ test('MCP RUN intrusivo usa preflight e aprovação vinculada antes do stream', 
   const result = await callTool('ghostrecon_run_recon', {
     target: 'lab.example.test',
     modules: ['vigolium_dast'],
-    profile: 'standard',
+    profile: 'deep',
+    opsecProfile: 'aggressive',
     confirmActive: true,
     engagementId: 'ENG-LAB',
+    manualApprovalId: 'approval-mcp-fixture',
+    manualApprovalHash: 'b'.repeat(64),
   }, { client });
 
   assert.equal(result.isError, undefined);
-  assert.deepEqual(calls.map((call) => call.pathname), [
-    '/api/recon/preflight',
-    '/api/recon/approval',
-  ]);
+  assert.equal(streamedBody.profile, 'deep');
+  assert.equal(streamedBody.opsecProfile, 'aggressive');
   assert.deepEqual(streamedBody.manualApproval, {
     approvalId: 'approval-mcp-fixture',
-    planHash: 'a'.repeat(64),
+    planHash: 'b'.repeat(64),
   });
+});
+
+test('MCP separa perfil de execução do perfil OPSEC no plano', async () => {
+  const client = {
+    async ensureServer() {
+      return { spawned: false, child: null };
+    },
+    async capabilities() {
+      return {
+        modules: [{ id: 'headers', intrusive: false, category: 'passive' }],
+      };
+    },
+  };
+  const result = await callTool('ghostrecon_plan_recon', {
+    target: 'lab.example.test',
+    modules: ['headers'],
+    profile: 'deep',
+    opsecProfile: 'passive',
+  }, { client });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.profile, 'deep');
+  assert.equal(payload.opsecProfile, 'passive');
+  assert.equal(payload.opsec.profile, 'passive');
+  assert.equal(payload.opsec.ok, true);
+  assert.deepEqual(payload.opsec.blocked, []);
+
+  const activeResult = await callTool('ghostrecon_plan_recon', {
+    target: 'lab.example.test',
+    modules: ['headers'],
+    profile: 'deep',
+    opsecProfile: 'standard',
+    confirmActive: true,
+  }, { client });
+  const activePayload = JSON.parse(activeResult.content[0].text);
+  assert.ok(activePayload.opsec.acknowledged.includes('evidence_verification'));
+  assert.ok(activePayload.opsec.acknowledged.includes('active_param_discovery'));
+  assert.ok(activePayload.opsec.acknowledged.includes('browser_xss_verify'));
 });
 
 test('MCP normaliza política AUTO sem confundir mode com perfil OPSEC', () => {

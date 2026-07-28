@@ -8,14 +8,18 @@ import {
   resolveEngineMode,
   shouldRunGoEngine,
   resolveVigoliumStrategy,
+  resolveVigoliumEffectiveConfig,
   resolveVigoliumTarget,
   vigoliumBinaryCandidates,
+  resolveVigoliumModuleFilter,
   resolveVigoliumAuthFiles,
   resolveVigoliumAuthEntries,
   resolveVigoliumInputFile,
   resolveVigoliumInputType,
   resolveVigoliumOnly,
   resolveVigoliumModuleTags,
+  resolveVigoliumSource,
+  shouldPreferVigoliumPath,
   buildVigoliumChildEnv,
   shouldUseVigoliumCodex,
 } from '../../bridge/vigolium-config.mjs';
@@ -147,6 +151,91 @@ describe('vigolium bridge — config', () => {
     ]);
   });
 
+  it('resolve uma configuração efetiva imutável usando somente o ambiente injetado', () => {
+    const effective = resolveVigoliumEffectiveConfig(
+      {
+        modules: ['rdap'],
+        vigoliumVpsProfile: false,
+      },
+      {
+        env: {
+          GHOSTRECON_ENGINE: 'go',
+          GHOSTRECON_VIGOLIUM_STRATEGY: 'balanced',
+          GHOSTRECON_VIGOLIUM_MODULES: 'xss_light_scanner, sqli_error_based',
+          GHOSTRECON_VIGOLIUM_MODULE_TAGS: 'access-control, oast',
+          GHOSTRECON_VIGOLIUM_AUTH_FILES: '/tmp/admin.json, /tmp/user.json',
+          GHOSTRECON_VIGOLIUM_AUTHS: 'admin:Cookie:sid=approved',
+          GHOSTRECON_VIGOLIUM_ONLY: 'discovery',
+          GHOSTRECON_VIGOLIUM_HTML_REPORT: '1',
+          GHOSTRECON_VIGOLIUM_REPORT_ONLY: 'dast',
+          GHOSTRECON_VIGOLIUM_PREFER_PATH: '1',
+          GHOSTRECON_VIGOLIUM_USE_CODEX: '1',
+          GHOSTRECON_VIGOLIUM_SOURCE: '/workspace/approved-source',
+          GHOSTRECON_VIGOLIUM_AUDIT_MODE: 'deep',
+          GHOSTRECON_VIGOLIUM_TIMEOUT_MS: '1234',
+          GHOSTRECON_VIGOLIUM_AGENT_TIMEOUT_MS: '5678',
+        },
+      },
+    );
+
+    assert.equal(Object.isFrozen(effective), true);
+    assert.equal(Object.isFrozen(effective.vigoliumModules), true);
+    assert.equal(Object.isFrozen(effective.vigoliumAuthEntries), true);
+    assert.equal(effective.vigoliumRuntimeConfigFrozen, true);
+    assert.equal(effective.engine, 'go');
+    assert.equal(effective.vigoliumStrategy, 'balanced');
+    assert.deepEqual(effective.vigoliumModules, ['xss_light_scanner', 'sqli_error_based']);
+    assert.deepEqual(effective.vigoliumModuleTags, ['access-control', 'oast']);
+    assert.deepEqual(effective.vigoliumAuthFiles, ['/tmp/admin.json', '/tmp/user.json']);
+    assert.deepEqual(effective.vigoliumAuthEntries, ['admin:Cookie:sid=approved']);
+    assert.equal(effective.vigoliumOnly, 'discovery');
+    assert.equal(effective.vigoliumHtmlReport, true);
+    assert.equal(effective.vigoliumReportOnly, 'dast');
+    assert.equal(effective.vigoliumPreferPath, true);
+    assert.equal(effective.vigoliumUseCodex, true);
+    assert.equal(effective.vigoliumVpsProfile, false);
+    assert.equal(effective.vigoliumSource, '/workspace/approved-source');
+    assert.equal(effective.vigoliumAuditMode, 'deep');
+    assert.equal(effective.vigoliumTimeoutMs, 1234);
+    assert.equal(effective.vigoliumAgentTimeoutMs, 5678);
+  });
+
+  it('configuração efetiva vazia não reabre opções por ambiente posterior', () => {
+    const effective = resolveVigoliumEffectiveConfig(
+      {
+        modules: ['rdap'],
+        vigoliumVpsProfile: false,
+        vigoliumUseCodex: false,
+        vigoliumHtmlReport: false,
+        vigoliumPreferPath: false,
+      },
+      { env: {} },
+    );
+    const changedEnv = {
+      PATH: '/safe/bin',
+      GHOSTRECON_ENGINE: 'go',
+      GHOSTRECON_VIGOLIUM_MODULES: 'must-not-reappear',
+      GHOSTRECON_VIGOLIUM_MODULE_TAGS: 'must-not-reappear',
+      GHOSTRECON_VIGOLIUM_AUTH_FILES: '/tmp/must-not-reappear.json',
+      GHOSTRECON_VIGOLIUM_AUTHS: 'admin:Cookie:must-not-reappear',
+      GHOSTRECON_VIGOLIUM_ONLY: 'must-not-reappear',
+      GHOSTRECON_VIGOLIUM_SOURCE: '/tmp/must-not-reappear',
+      GHOSTRECON_VIGOLIUM_PREFER_PATH: '1',
+      GHOSTRECON_VIGOLIUM_USE_CODEX: '1',
+      GHOSTRECON_VIGOLIUM_VPS_PROFILE: '1',
+    };
+
+    assert.deepEqual(resolveVigoliumModuleFilter(effective, changedEnv), []);
+    assert.deepEqual(resolveVigoliumModuleTags(effective, changedEnv), []);
+    assert.deepEqual(resolveVigoliumAuthFiles(effective, changedEnv), []);
+    assert.deepEqual(resolveVigoliumAuthEntries(effective, changedEnv), []);
+    assert.equal(resolveVigoliumOnly(effective, changedEnv), null);
+    assert.equal(resolveVigoliumSource(effective, changedEnv), null);
+    assert.equal(shouldPreferVigoliumPath(effective, changedEnv), false);
+    assert.equal(shouldUseVigoliumCodex(effective, changedEnv), false);
+    assert.deepEqual(buildVigoliumChildEnv(effective, changedEnv), { PATH: '/safe/bin' });
+  });
+
   it('entrada Vigolium não reaparece pelo ambiente e runtime recusa -T não selado', async () => {
     const previousFile = process.env.GHOSTRECON_VIGOLIUM_INPUT_FILE;
     const previousType = process.env.GHOSTRECON_VIGOLIUM_INPUT_TYPE;
@@ -245,6 +334,7 @@ describe('vigolium bridge — config', () => {
     assert.ok(built.args.includes('--auth-file'));
     assert.ok(built.args.includes('admin.json'));
     assert.ok(built.args.includes('user.json'));
+    assert.ok(built.args.includes('-S'));
     assert.equal(built.args.includes('--auth'), false);
     assert.equal(built.args.includes('-H'), false);
     assert.doesNotMatch(built.args.join(' '), /abc123|xyz789|sid=abc|Bearer token/);
@@ -279,15 +369,18 @@ describe('vigolium bridge — config', () => {
     assert.ok(built.args.includes('--only'));
     assert.ok(built.args.includes('discovery'));
     assert.ok(built.args.includes('admin.json'));
+    assert.ok(built.args.includes('-S'));
     assert.equal(built.args.includes('--auth'), false);
   });
 
   it('materializa auth inline em JSON 0600 e remove no cleanup', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-auth-test-'));
+    const operatorFile = path.join(tempRoot, 'operator.json');
+    await fs.writeFile(operatorFile, JSON.stringify({ sessions: [] }), { mode: 0o600 });
     let transport;
     try {
       transport = await createVigoliumAuthTransport({
-        vigoliumAuthFiles: ['operator.json'],
+        vigoliumAuthFiles: [operatorFile],
         vigoliumAuthEntries: [
           'admin:Cookie:session_id=abc123',
           'admin:Authorization:Bearer inline-token',
@@ -296,9 +389,13 @@ describe('vigolium bridge — config', () => {
           cookie: 'sid=shared',
           headers: { 'X-Session': 'shared-token' },
         },
-      }, { tempRoot });
+      }, { tempRoot, allowedRoots: [tempRoot] });
 
-      assert.equal(transport.authFiles[0], 'operator.json');
+      assert.notEqual(transport.authFiles[0], operatorFile);
+      assert.deepEqual(
+        JSON.parse(await fs.readFile(transport.authFiles[0], 'utf8')),
+        { sessions: [] },
+      );
       assert.ok(transport.ephemeralFile);
       const payload = JSON.parse(await fs.readFile(transport.ephemeralFile, 'utf8'));
       assert.equal(payload.sessions[0].name, 'ghostrecon');
@@ -320,6 +417,7 @@ describe('vigolium bridge — config', () => {
         { outFile: 'out.jsonl', authFiles: transport.authFiles },
       );
       assert.equal(built.args.includes('--auth'), false);
+      assert.equal(built.args.includes('-S'), true);
       assert.doesNotMatch(built.args.join(' '), /must-not-leak|abc123|inline-token|shared-token/);
     } finally {
       const ephemeralFile = transport?.ephemeralFile;
@@ -351,9 +449,10 @@ describe('vigolium bridge — config', () => {
 
     const transport = await createVigoliumAuthTransport({
       vigoliumAuthFiles: [authFile],
-    });
+    }, { allowedRoots: [tempRoot] });
     try {
       assert.equal(transport.ephemeralFile, null);
+      assert.notEqual(transport.authFiles[0], authFile);
       const safe = transport.redact(`finding ${secret} via ${authFile}`);
       assert.equal(safe.includes(secret), false);
       assert.equal(safe.includes(authFile), false);
@@ -363,6 +462,7 @@ describe('vigolium bridge — config', () => {
       await transport.cleanup();
       await transport.cleanup();
       assert.equal((await fs.stat(authFile)).isFile(), true);
+      await assert.rejects(fs.access(transport.authFiles[0]));
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
   });
@@ -776,7 +876,8 @@ if (out === '-') process.stdout.write(row); else fs.writeFileSync(out, row, 'utf
       const result = await runVigoliumScan({
         ROOT: tmp,
         domain: 'example.com',
-        vigoliumVpsProfile: false,
+        vigoliumVpsProfile: true,
+        vigoliumHtmlReport: true,
         vigoliumAuthEntries: ['admin:Authorization:Bearer runtime-inline-secret'],
         auth: { cookie: 'sid=runtime-cookie-secret' },
       }, { log: (message) => logs.push(String(message)) });
@@ -785,6 +886,7 @@ if (out === '-') process.stdout.write(row); else fs.writeFileSync(out, row, 'utf
       const captured = JSON.parse(await fs.readFile(capturePath, 'utf8'));
       assert.equal(captured.args.includes('--auth'), false);
       assert.equal(captured.args.includes('-H'), false);
+      assert.equal(captured.args.includes('-S'), true);
       assert.doesNotMatch(captured.args.join(' '), /runtime-inline-secret|runtime-cookie-secret/);
       assert.equal(captured.auth.sessions[0].headers.Cookie, 'sid=runtime-cookie-secret');
       assert.equal(captured.auth.sessions[1].headers.Authorization, 'Bearer runtime-inline-secret');
@@ -793,6 +895,9 @@ if (out === '-') process.stdout.write(row); else fs.writeFileSync(out, row, 'utf
       assert.doesNotMatch(JSON.stringify(result.findings), /runtime-inline-secret|runtime-cookie-secret/);
       assert.match(JSON.stringify(result.findings), /redacted/i);
       assert.match(logs.join('\n'), /--auth-file <restricted-file>/);
+      assert.equal(result.vpsProfile, false);
+      assert.equal(result.htmlReport, null);
+      await assert.rejects(fs.access(path.join(tmp, '.runtime', 'vigolium-reports')));
     } finally {
       if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
       else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;

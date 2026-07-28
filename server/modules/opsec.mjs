@@ -58,13 +58,41 @@ export function getProfile(name) {
 }
 
 /**
+ * Capacidades que o pipeline legado do RUN manual pode executar mesmo quando
+ * não aparecem na seleção original do operador. Esta lista é a fonte única
+ * usada tanto para montar o plano efetivo antes dos gates quanto para permitir
+ * a execução implícita dentro das fases do pipeline.
+ */
+export const MANUAL_IMPLICIT_CAPABILITIES = Object.freeze([
+  'http_probe',
+  'evidence_verification',
+  'active_param_discovery',
+  'asset_discovery',
+  'high_recheck',
+  'browser_xss_verify',
+]);
+
+export const MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES = Object.freeze([
+  'evidence_verification',
+  'active_param_discovery',
+  'browser_xss_verify',
+]);
+
+/**
+ * `kaliMode` habilita uma fase legada inteira e não corresponde a um único
+ * checkbox. O sentinel torna essa capacidade visível no plano, nos gates e na
+ * aprovação vinculada ao hash.
+ */
+export const MANUAL_KALI_SENTINEL = 'kali_active';
+
+/**
  * Módulos marcados como intrusivos — require double-confirm para perfis
  * `passive`/`stealth` ou quando `allowIntrusive: false`.
  */
 export const INTRUSIVE_MODULES = new Set([
   'sqlmap', 'nuclei', 'nuclei-aggressive', 'wpscan', 'ffuf', 'feroxbuster',
   'dirsearch', 'gobuster', 'nmap-aggressive', 'nmap-port-scan', 'nikto',
-  'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe', 'kali-active',
+  'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe', MANUAL_KALI_SENTINEL,
   'info_disclosure_hunter', 'info-disclosure-hunter', 'info_disclosure_errors', 'info-disclosure-errors',
   'authz_matrix', 'cloud_bruteforce', 'cred_spray', 'dom_xss_verify',
   'active_param_discovery', 'browser_xss_verify', 'evidence_verification',
@@ -95,8 +123,18 @@ export function expandIntrusiveRunModules({
   modules = [],
   engine = null,
   vigoliumAgent = null,
+  includeManualImplicit = false,
+  includeManualIntrusive = false,
+  kaliMode = false,
 } = {}) {
   const out = [...(Array.isArray(modules) ? modules : [])];
+  if (includeManualImplicit) {
+    const intrusiveImplicit = new Set(MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES);
+    out.push(...MANUAL_IMPLICIT_CAPABILITIES.filter((moduleId) => (
+      includeManualIntrusive || !intrusiveImplicit.has(moduleId)
+    )));
+  }
+  if (kaliMode === true) out.push(MANUAL_KALI_SENTINEL);
   const e = String(engine || '').trim().toLowerCase();
   if (e === 'go' || e === 'both') out.push('vigolium_dast');
   const agent = String(vigoliumAgent || '').trim().toLowerCase();

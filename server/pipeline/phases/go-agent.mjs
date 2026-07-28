@@ -32,8 +32,16 @@ export async function runGoAgentPhase(s) {
     return;
   }
 
-  s.vigoliumSource = resolveVigoliumSource(s);
-  if (agentMode === 'audit' && !s.vigoliumSource && Array.isArray(s.githubClonedItems) && s.githubClonedItems.length) {
+  if (!s.vigoliumRuntimeConfigFrozen) {
+    s.vigoliumSource = resolveVigoliumSource(s);
+  }
+  if (
+    !s.vigoliumRuntimeConfigFrozen
+    && agentMode === 'audit'
+    && !s.vigoliumSource
+    && Array.isArray(s.githubClonedItems)
+    && s.githubClonedItems.length
+  ) {
     s.vigoliumSource = s.githubClonedItems[0].local_path;
     log('vigolium_audit: usando clone GitHub local autorizado', 'info');
   }

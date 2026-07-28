@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { createHmac, randomBytes } from 'crypto';
+import { createHash, createHmac, randomBytes } from 'crypto';
 
 const KEY_OPERATOR = randomBytes(20).toString('base64url'); // 27 chars
 const KEY_RED = randomBytes(20).toString('base64url');
@@ -86,6 +86,10 @@ test('initAuth registou 3 api keys + jwt HS256', () => {
   assert.equal(s.disabled, false);
   assert.equal(s.apiKeys, 3);
   assert.equal(s.jwt.hs256, true);
+  assert.deepEqual(s.principalBinding, {
+    persistent: true,
+    source: 'jwt_hs256',
+  });
 });
 
 test('ROLE_SCOPES tem expected role hierarchy', () => {
@@ -122,6 +126,12 @@ test('requireAuth: API key via X-API-Key → next + principal', async () => {
   assert.equal(next, true);
   assert.equal(req.principal.role, 'operator');
   assert.equal(req.principal.via, 'apikey');
+  assert.match(req.principal.sub, /^apikey:test-op:[a-f0-9]{24}$/);
+  assert.equal(req.principal.sub.includes(KEY_OPERATOR), false);
+  assert.equal(
+    req.principal.sub.includes(createHash('sha256').update(KEY_OPERATOR).digest('hex').slice(0, 24)),
+    false,
+  );
 });
 
 test('requireAuth: API key via Bearer → next', async () => {
@@ -130,6 +140,16 @@ test('requireAuth: API key via Bearer → next', async () => {
   const { next, req } = await callMw(mw, r);
   assert.equal(next, true);
   assert.equal(req.principal.role, 'red');
+  assert.match(req.principal.sub, /^apikey:test-red:[a-f0-9]{24}$/);
+});
+
+test('requireAuth: cada API key recebe identidade owner-bound distinta', async () => {
+  const mw = requireAuth();
+  const operatorReq = makeReq({ headers: { 'x-api-key': KEY_OPERATOR } });
+  const redReq = makeReq({ headers: { 'x-api-key': KEY_RED } });
+  await callMw(mw, operatorReq);
+  await callMw(mw, redReq);
+  assert.notEqual(operatorReq.principal.sub, redReq.principal.sub);
 });
 
 test('requireAuth: allowlist /api/health → next sem token', async () => {

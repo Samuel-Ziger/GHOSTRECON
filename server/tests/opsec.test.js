@@ -5,6 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PROFILES, getProfile, isIntrusive, gateModules, expandIntrusiveRunModules,
+  MANUAL_IMPLICIT_CAPABILITIES, MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES,
+  MANUAL_KALI_SENTINEL,
   createProxyPool, loadProxyPoolFromEnv, buildWatermark, applyWatermarkHeaders,
 } from '../modules/opsec.mjs';
 
@@ -31,6 +33,37 @@ test('opsec: engine go/both expande gate Vigolium', () => {
     expandIntrusiveRunModules({ modules: ['rdap'], engine: 'both', vigoliumAgent: 'swarm' }),
     ['rdap', 'vigolium_dast', 'vigolium_swarm'],
   );
+});
+
+test('opsec: RUN manual expande capacidades implícitas e sentinel Kali antes dos gates', () => {
+  const expanded = expandIntrusiveRunModules({
+    modules: ['security_headers'],
+    includeManualImplicit: true,
+    includeManualIntrusive: true,
+    kaliMode: true,
+  });
+  assert.deepEqual(
+    expanded,
+    ['security_headers', ...MANUAL_IMPLICIT_CAPABILITIES, MANUAL_KALI_SENTINEL],
+  );
+  assert.equal(isIntrusive(MANUAL_KALI_SENTINEL), true);
+  for (const id of ['evidence_verification', 'active_param_discovery', 'browser_xss_verify']) {
+    assert.equal(isIntrusive(id), true, id);
+  }
+});
+
+test('opsec: RUN sem confirmação mantém implícitas intrusivas fora do plano', () => {
+  const expanded = expandIntrusiveRunModules({
+    modules: ['security_headers'],
+    includeManualImplicit: true,
+    includeManualIntrusive: false,
+  });
+  for (const id of MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES) {
+    assert.equal(expanded.includes(id), false, id);
+  }
+  assert.ok(expanded.includes('http_probe'));
+  assert.ok(expanded.includes('asset_discovery'));
+  assert.ok(expanded.includes('high_recheck'));
 });
 
 test('opsec: gate bloqueia intrusivo em perfil passive', () => {

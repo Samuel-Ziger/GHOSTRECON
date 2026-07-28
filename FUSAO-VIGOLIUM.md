@@ -8,7 +8,7 @@ Documento técnico e estratégico para incorporar o motor Vigolium (Go) no monor
 
 ---
 
-## Atualização operacional verificada em 2026-07-26
+## Atualização operacional verificada em 2026-07-28
 
 Este arquivo preserva o plano histórico da fusão. Para comportamento vigente,
 prevalecem `bridge/`, `server/routes/recon-stream.mjs`, os testes e
@@ -19,10 +19,15 @@ No estado atual:
 - o RUN expande módulos, engines e dependências antes dos gates; se o plano
   efetivo contiver Vigolium/DAST ou qualquer outra capacidade intrusiva, exige
   `recon.intrusive`, engagement formal ativo, ROE assinado, escopo/janela
-  válidos e `confirmActive`;
+  válidos, `confirmActive` e aprovação server-issued ligada ao hash;
 - o binário Vigolium é inspecionado por descritor regular, sua identidade é
   selada no preflight/plano e revalidada imediatamente antes de cada scan,
   consulta de findings e execução do agente;
+- auditoria de código aceita somente uma fonte Git local dentro de
+  `GHOSTRECON_VIGOLIUM_SOURCE_ROOT` (default `<repo>/clone`). A raiz, a fonte e
+  `.git` precisam pertencer ao processo, não podem usar symlink nem permitir
+  escrita para grupo/outros. O worktree deve estar limpo; commit/tree são
+  selados no plano e revalidados imediatamente antes do agente;
 - o bridge propaga `AbortSignal` aos subprocessos e transporta autenticação por
   arquivo temporário restrito, sem cookies ou `Authorization` em argv/log;
 - os testes locais de bridge, agente, rota manual, FrameSeven, Auto e Forge usam
@@ -458,11 +463,27 @@ ghostrecon run -t https://alvo.com   # mantém comportamento actual até flag --
 
 **Transporte de credenciais implementado:** valores de autenticação inline e o
 contexto autenticado do GHOSTRECON são convertidos pelo bridge num bundle JSON
-temporário. O diretório usa permissão `0700`, o arquivo `0600`, o subprocesso
-recebe somente `--auth-file` e o bundle é removido em `finally`. Cookies e
-headers `Authorization` não entram em argv nem no log de comando. De forma
-equivalente, clones GitHub usam URL limpa e um `credential-store` temporário;
-o PAT não é incorporado à URL, ao ambiente do filho ou aos logs.
+temporário. Auth-files fornecidos pelo operador só são aceitos dentro de
+`GHOSTRECON_VIGOLIUM_AUTH_ROOT`, uma raiz existente, sem symlink, pertencente ao
+processo e privada (`0700` em POSIX). O arquivo de origem deve ser regular,
+privado (`0600` recomendado), sem symlink/hardlink e ter no máximo 1 MiB.
+
+No preflight, a identidade do arquivo é selada no plano. Na execução, os bytes
+são revalidados e copiados por descritor para um diretório `0700`; cada cópia
+usa `0600`, é exclusiva daquela run e é removida no cleanup. O subprocesso
+recebe somente o caminho dessa cópia por `--auth-file`, nunca o path original.
+Cookies e headers `Authorization` não entram em argv nem no log de comando. De
+forma equivalente, clones GitHub usam URL limpa e um `credential-store`
+temporário; o PAT não é incorporado à URL, ao ambiente do filho ou aos logs.
+
+**Integridade da fonte implementada:** `vigoliumSource` só é executável quando
+aponta para um repositório Git local sob
+`GHOSTRECON_VIGOLIUM_SOURCE_ROOT` (default `<repo>/clone`). Fonte remota,
+worktree alterado, arquivo extra/ignorado, symlink rastreado e submódulo falham
+fechado. O plano público mostra apenas o resumo commit/tree; inode, ownership e
+demais bindings ficam no contexto privado efêmero. Antes de `vigolium agent`,
+o bridge revalida a raiz permitida, ownership, permissões, índice limpo,
+commit/tree e identidade do diretório com timeout e `AbortSignal`.
 
 ### 6.3 Implementação CLI
 
@@ -625,6 +646,8 @@ GHOSTRECON_VIGOLIUM_BIN=./engines/vigolium          # ou vigolium/ no PATH
 GHOSTRECON_VIGOLIUM_STRATEGY=balanced               # lite | balanced | deep
 GHOSTRECON_VIGOLIUM_SERVER=http://127.0.0.1:9002  # opcional: server mode
 GHOSTRECON_VIGOLIUM_API_KEY=                        # se server com auth
+GHOSTRECON_VIGOLIUM_AUTH_ROOT=./.runtime/vigolium-sessions # root 0700; auth-files 0600
+GHOSTRECON_VIGOLIUM_SOURCE_ROOT=./clone             # default; fontes Git locais limpas
 
 # Agent / audit (herda Vigolium)
 VIGOLIUM_PROVIDER=openai-codex-oauth                # ou anthropic-cli, etc.

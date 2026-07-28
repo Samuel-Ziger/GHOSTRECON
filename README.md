@@ -8,7 +8,7 @@
 
 [![Node.js](https://img.shields.io/badge/Node.js-20--26-5FA04E?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![CLI](https://img.shields.io/badge/CLI-v1.1.0-111827?style=for-the-badge&logo=gnometerminal&logoColor=white)](#linha-de-comando)
-[![Tests](https://img.shields.io/badge/Test_Suites-98-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white)](#qualidade-e-testes)
+[![Tests](https://img.shields.io/badge/Tests-Local_Fixtures-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white)](#qualidade-e-testes)
 [![Local First](https://img.shields.io/badge/Local--First-Privacy-7C3AED?style=for-the-badge&logo=shield&logoColor=white)](#segurança-por-design)
 
 [Início rápido](#início-rápido) · [Arquitetura](#arquitetura) · [CLI](#linha-de-comando) · [Modo Auto](#modo-auto) · [Configuração](#configuração) · [Documentação](#documentação-técnica)
@@ -371,8 +371,25 @@ fechamento do stream é propagado ao pipeline, Vigolium e FrameSeven.
 No RUN manual, qualquer módulo intrusivo encontrado depois da expansão de
 aliases, engines e dependências exige cumulativamente `recon.intrusive`,
 engagement formal ativo, ROE assinado, alvo dentro do escopo e da janela, além
-de `confirmActive`; perfil `aggressive` não substitui esses gates. Isso inclui
-qualquer capacidade Vigolium já classificada como intrusiva quando solicitada.
+de `confirmActive` **e** uma aprovação emitida pelo servidor e vinculada ao
+plano; perfil `aggressive` não substitui esses gates. Isso inclui qualquer
+capacidade Vigolium já classificada como intrusiva quando solicitada.
+
+O protocolo do RUN intrusivo é
+`POST /api/recon/preflight` → `POST /api/recon/approval` →
+`POST /api/recon/stream`. O preflight calcula um SHA-256 sobre alvo, binding do
+engagement, módulos efetivos, opções de execução, ferramentas/limites
+FrameSeven, configuração Vigolium e identidades dos binários. A aprovação é
+efêmera, ligada ao operador, possui TTL e só pode ser consumida uma vez; qualquer
+mudança exige novo preflight. Auth, cookies, headers sensíveis, senhas e paths
+locais não entram no plano público.
+
+Na UI, o popup mostra módulos, engines, ferramentas, limites, hash do plano e
+fingerprints SHA-256 abreviados dos binários. Os demais clientes mantêm o mesmo
+gate, mas não a mesma interação: a CLI exige TTY e a digitação do prefixo do
+hash; o MCP devolve `approval_required` para aprovação separada pela UI/API; o
+GhostWatch nunca aprova automaticamente e bloqueia aquele alvo. A variável
+`GHOSTRECON_CONFIRM_ACTIVE` não aprova um plano HTTP.
 Na política atual do Auto, o FrameSeven é o único motor que mantém um perfil
 ofensivo. Esse perfil usa a lista explícita e read-oriented
 `recon,access,redirect,misconfig,cve,crawler,content,subdomain,ports,nmap,bannergrab`;
@@ -431,7 +448,12 @@ Principais grupos de tools:
 - status e inteligência HexStrike;
 - leitura, busca e escrita controlada no Auto RAG.
 
-O MCP reutiliza autenticação, CSRF, streaming NDJSON e o gate OPSEC do backend. Módulos intrusivos continuam exigindo `confirmActive=true`.
+O MCP reutiliza autenticação, CSRF, streaming NDJSON e o gate OPSEC do backend.
+Módulos intrusivos continuam exigindo `confirmActive=true`. O MCP executa o
+preflight, mas não decide a aprovação: ele devolve `approval_required` com
+`approvalId` e hash seguros. O operador deve aprovar separadamente pela UI/API,
+com o mesmo principal, e então repetir a tool com
+`manualApprovalId`/`manualApprovalHash`.
 
 ## Ecossistema local
 
@@ -511,6 +533,7 @@ O GHOSTRECON trata segurança operacional como parte do pipeline, não como deta
   Auto;
 - limites de tempo, memória, saída e custo para ferramentas/agentes;
 - plano efetivo congelado e identificado por hash antes da execução Auto;
+- preflight e aprovação manual owner-bound, com TTL, hash e consumo único;
 - checkpoint Auto v2 com claim atômico durável e proteção contra replay;
 - sessões Auto isoladas por operador e aprovação humana de uso único;
 - recusa de aprovação Auto fail-closed, sem execução parcial do plano;
@@ -541,7 +564,28 @@ PORT=3847
 HOST=127.0.0.1
 AUTH_MODE=apikey
 AUTH_API_KEYS=minha-chave:admin:operador-local
+AUTH_PRINCIPAL_BINDING_SECRET=gere-um-segredo-dedicado-com-ao-menos-32-bytes
+GHOSTRECON_MANUAL_APPROVAL_TTL_MS=120000
+GHOSTRECON_VIGOLIUM_AUTH_ROOT=./.runtime/vigolium-sessions
 ```
+
+O TTL da aprovação manual é limitado pelo servidor entre 1 segundo e 15
+minutos. O registro fica somente em memória; reiniciar a API invalida
+aprovações pendentes.
+
+`AUTH_PRINCIPAL_BINDING_SECRET` deriva por HMAC a identidade estável das API
+keys sem persistir a própria key. Se ele não estiver definido, um
+`AUTH_JWT_SECRET` com pelo menos 32 bytes é usado; sem nenhum dos dois, o binding
+é válido somente durante aquele boot e retomadas owner-bound após restart
+falham fechado.
+
+Auth-files existentes do Vigolium só são aceitos dentro de
+`GHOSTRECON_VIGOLIUM_AUTH_ROOT` (padrão
+`.runtime/vigolium-sessions`). A raiz deve existir, pertencer ao processo e, em
+POSIX, usar `0700`; use `0600` nos arquivos e não use symlink ou hardlink. O
+servidor sela a identidade no preflight, copia os bytes validados para um
+diretório temporário privado por execução e remove essa cópia no cleanup. O
+caminho original e os segredos não entram no plano público nem em argv/log.
 
 ### Persistência
 
@@ -615,6 +659,8 @@ Serviços auxiliares possuem requisitos próprios e não fazem parte dessa image
 | `GET` | `/api/health` | Saúde da API |
 | `GET` | `/api/csrf-token` | Emissão de token CSRF |
 | `GET` | `/api/capabilities` | Capacidades detectadas |
+| `POST` | `/api/recon/preflight` | Expansão e emissão do plano manual seguro |
+| `POST` | `/api/recon/approval` | Decisão sobre o plano manual intrusivo |
 | `POST` | `/api/recon/stream` | Recon normal em NDJSON |
 | `POST` | `/api/recon/auto/stream` | Recon comandado por IA |
 | `GET` | `/api/runs` | Histórico de runs |
@@ -648,22 +694,33 @@ node --test \
   server/tests/secret-safety.test.js \
   server/tests/write-probes-safety.test.js \
   server/tests/forge-security.test.js \
+  server/tests/manual-recon-approval.test.js \
   server/tests/recon-stream-route.test.js \
+  server/tests/ui-consent-contract.test.js \
   server/tests/frameseven-integration.test.js \
   server/tests/vigolium-bridge.test.js \
   server/tests/vigolium-agent.test.js
 
 # CLI
 npm run test:cli
+npm run test:mcp
 
 # Smoke de import sem abrir porta
-GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js).then(() => console.log('node app ok'))"
+GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js').then(() => console.log('node app ok'))"
 ```
 
 `npm test` inclui cenários que podem não ser totalmente herméticos. Revise o
 alvo e a política de rede antes da suíte completa. As melhorias atuais do Auto
 foram desenhadas para validação por mocks/fixtures; elas não equivalem a um scan
 real de navegador, DAST, Kali ou rede externa.
+
+Uma agregação hermética anterior foi executada excluindo
+`pipeline-smoke.test.js`, que pode acessar rede, e separando os testes de
+loopback `tor-tunnel.test.js`/`vigolium-server-client.test.js`. Como novos
+testes e endurecimentos foram adicionados depois dessa execução, não há um
+contador fixo vigente neste README: rode novamente os checks direcionados e a
+agregação compatível com o ambiente antes de promover uma versão. O E2E
+autenticado real continua pendente.
 
 ## Troubleshooting
 

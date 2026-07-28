@@ -9,6 +9,7 @@ import {
   createPipelineState,
   pipelineCapabilityAllowed,
 } from '../pipeline/pipeline-state.mjs';
+import { MANUAL_IMPLICIT_CAPABILITIES } from '../modules/opsec.mjs';
 import { runAssetDiscoveryPhase } from '../pipeline/phases/asset-discovery.mjs';
 import {
   runProbePhase,
@@ -64,10 +65,32 @@ test('catálogo classifica ações implícitas como capacidades ativas ou intrus
   }
 });
 
-test('gate preserva RUN manual e normaliza IDs selecionados no Auto', () => {
+test('gate manual exige plano efetivo para implícitas intrusivas e normaliza IDs no Auto', () => {
+  for (const id of ['http_probe', 'asset_discovery', 'high_recheck']) {
+    assert.equal(
+      pipelineCapabilityAllowed({ autoModeExecution: false, modules: [] }, id),
+      true,
+      id,
+    );
+  }
+  for (const id of ['evidence_verification', 'active_param_discovery', 'browser_xss_verify']) {
+    assert.equal(
+      pipelineCapabilityAllowed({ autoModeExecution: false, modules: [] }, id),
+      false,
+      id,
+    );
+  }
+  const manualCapabilityIds = new Set(MANUAL_IMPLICIT_CAPABILITIES);
   assert.equal(
-    pipelineCapabilityAllowed({ autoModeExecution: false, modules: [] }, 'http_probe'),
+    pipelineCapabilityAllowed(
+      { autoModeExecution: false, manualCapabilityIds },
+      'evidence_verification',
+    ),
     true,
+  );
+  assert.equal(
+    pipelineCapabilityAllowed({ autoModeExecution: false, modules: [] }, 'future_implicit_probe'),
+    false,
   );
 
   const { state } = autoState(['http-probe', 'high_recheck']);

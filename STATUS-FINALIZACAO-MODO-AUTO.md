@@ -1,6 +1,6 @@
 # Status de finalização do Modo Auto
 
-Atualizado em: 2026-07-26
+Atualizado em: 2026-07-28
 
 ## Finalidade deste documento
 
@@ -24,7 +24,8 @@ afirmações aspiracionais antigas.
 
 ## Resumo executivo
 
-**Estado atual:** beta supervisionado em fase final de endurecimento.
+**Estado atual:** beta supervisionado em endurecimento; não liberado para uso
+operacional autônomo.
 
 O Auto já possui planner real, catálogo híbrido, plano efetivo congelado,
 quatro níveis de autonomia, RBAC, engagement/ROE, escopo, aprovação humana,
@@ -35,10 +36,12 @@ planner travado, timeout que não encerrava o processo, fase CORS bloqueando a
 sessão, execução passiva demais no nível 4 e plano diferente do que era
 executado — já possuem correções estruturais.
 
-Ainda não é correto declarar o Auto “finalizado”. Restam bloqueadores
-concentrados na propagação fatal do Vigolium, confirmação ofensiva manual
-vinculada ao plano, regressão consolidada e teste ponta a ponta em laboratório
-autorizado.
+Ainda não é correto declarar o Auto “finalizado”. A propagação fatal do
+Vigolium e a confirmação ofensiva manual vinculada ao plano possuem
+implementação e checks direcionados, mas as mudanças de endurecimento
+posteriores exigem uma nova regressão hermética agregada. Também permanecem o
+E2E autenticado em laboratório e as pendências P1 descritas abaixo; portanto
+não existe um único “último bloqueador”.
 
 ### Legenda
 
@@ -124,7 +127,8 @@ Controles já implementados:
 - níveis 3/4 exigem `recon.intrusive` na própria rota;
 - níveis 2/3/4 exigem aprovação humana antes da execução;
 - autonomia e perfil `aggressive` não substituem autorização;
-- o popup apresenta alvo, módulos, engines, risco, limites e hash;
+- o popup apresenta alvo, módulos, engines, risco, limites, hash e fingerprints
+  SHA-256 abreviados dos binários;
 - recusa encerra o plano sem executar “o restante seguro”;
 - classe destrutiva permanece fora do planner Auto;
 - o conselho pós-pipeline preserva a política e a autonomia da sessão.
@@ -152,8 +156,9 @@ Esta frente foi revisada novamente em 2026-07-26.
 - `body.outOfScope` é combinado com as exclusões do engagement.
 - O Auto vincula a autorização do engagement ao plano aprovado.
 - O binding é revalidado antes da execução e antes dos motores externos.
-- O RUN manual revalida o engagement depois do pipeline e imediatamente antes
-  do FrameSeven.
+- O RUN manual revalida o engagement antes da execução integrada e
+  imediatamente antes do pipeline; quando FrameSeven participa, revalida
+  novamente depois do pipeline e imediatamente antes do scan.
 - O Auto autenticado revalida depois do pipeline e imediatamente antes de
   liberar o scan FrameSeven.
 - Hosts de Certificate Transparency fora do escopo são descartados.
@@ -308,7 +313,9 @@ Arquivos principais:
 
 ### 10. Redação autenticada do Vigolium
 
-Esta frente foi concluída e validada localmente com fixtures, sem rede externa:
+Esta frente possui implementação e testes direcionados com fixtures, sem rede
+externa. Ela ainda precisa participar da nova regressão agregada e do E2E
+controlado:
 
 - valores exatos de cookie, token e header são removidos de findings e resumos;
 - request, response, body, curl e evidências passam pela redação antes de
@@ -317,6 +324,9 @@ Esta frente foi concluída e validada localmente com fixtures, sem rede externa:
 - respostas públicas não revelam auth-files nem caminhos absolutos;
 - relatórios HTML são sanitizados antes de publicação;
 - diretórios e arquivos temporários permanecem `0700`/`0600`;
+- auth-files preexistentes só são aceitos dentro de
+  `GHOSTRECON_VIGOLIUM_AUTH_ROOT`, sem symlink/hardlink, e são copiados para um
+  snapshot temporário privado por execução;
 - cleanup é idempotente e foi exercitado nos testes locais;
 - headers com CRLF, NUL ou tamanho inválido são recusados;
 - a rota de relatório mantém RBAC, CSP e dados públicos mínimos.
@@ -351,56 +361,94 @@ continua pendente.
 - Um teste local confirma que `/api/tool-path-refresh` mantém o `PATH`
   inalterado e continua exigindo CSRF.
 
-## O que ainda falta para finalizar
+### 12. P0.1 concluído — falhas fatais do Vigolium
 
-### P0.1 — Propagar falhas fatais do Vigolium
+Falhas que invalidam autorização ou comprovam cancelamento incompleto não são
+mais convertidas em skip ou erro recuperável:
 
-O helper e as fases já reconhecem falhas fatais, porém alguns catches internos
-dos bridges ainda as convertem em `{ ok: false }`.
+- `VIGOLIUM_BINARY_IDENTITY_MISMATCH`;
+- `PROCESS_ABORTED`;
+- `PROCESS_UNTERMINATED`;
+- `AbortError`.
 
-É necessário:
+O contrato é centralizado em `bridge/vigolium-errors.mjs` e reaplicado nos
+runners, bridges, fases Go e catches do orquestrador. A regressão cobre o fluxo
+normal e o autenticado: depois de uma dessas falhas, o scan FrameSeven não é
+liberado, nenhuma nova iteração ou avaliação começa e a sessão termina como
+falha.
 
-- propagar `VIGOLIUM_BINARY_IDENTITY_MISMATCH`;
-- propagar `PROCESS_ABORTED`;
-- propagar `PROCESS_UNTERMINATED`;
-- propagar `AbortError`;
-- impedir que geração de relatório HTML ou fallback SQLite engulam essas
-  falhas;
-- impedir que o Auto marque esses casos como `recoverable:true`;
-- garantir que FrameSeven e nova iteração não iniciem depois de uma falha fatal
-  do Vigolium.
+Arquivos e testes principais:
 
-Arquivos:
-
+- `bridge/vigolium-errors.mjs`;
 - `bridge/vigolium-runner.mjs`;
 - `bridge/agent-bridge.mjs`;
-- `bridge/vigolium-errors.mjs`;
 - `server/pipeline/phases/go-engine.mjs`;
 - `server/pipeline/phases/go-agent.mjs`;
-- `server/pipeline/phase-executor.mjs`;
-- `server/auto-agent/orchestrator.mjs`.
+- `server/auto-agent/orchestrator.mjs`;
+- `server/tests/auto-agent.test.js`.
 
-### P0.2 — Confirmação manual vinculada ao plano
+### 13. P0.2 concluído — confirmação manual vinculada ao plano
 
-A variável global `GHOSTRECON_CONFIRM_ACTIVE=1` não satisfaz mais o gate HTTP;
-a confirmação precisa estar na requisição atual. Ainda falta tornar o registro
-da confirmação integralmente vinculado ao plano ofensivo aprovado.
+O RUN manual intrusivo agora usa um protocolo de três etapas:
 
-Para o FrameSeven ofensivo, a confirmação deve ser:
+1. `POST /api/recon/preflight` expande o plano, aplica os gates, sela as
+   identidades FrameSeven/Vigolium e emite um hash;
+2. `POST /api/recon/approval` registra a decisão do proprietário sobre aquele
+   hash;
+3. `POST /api/recon/stream` recompõe o plano e consome a aprovação uma única
+   vez antes de executar.
 
-- explícita na requisição atual;
-- vinculada ao alvo, engagement, módulos, ferramentas, limites e identidade do
-  binário;
-- registrada com hash do plano;
-- inválida depois de mudança no engagement ou executável.
+O registro é efêmero, owner-bound, possui TTL, é de uso único e vincula alvo,
+binding do engagement, módulos selecionados/expandidos/intrusivos, opções de
+execução, ferramentas e limites FrameSeven, configurações Vigolium e
+identidades dos binários. Mudança em qualquer binding exige novo preflight.
+`confirmActive` continua necessário na requisição atual, mas não substitui o
+ID de aprovação emitido pelo servidor.
 
-Uma variável de ambiente não deve aprovar silenciosamente um novo plano
-ofensivo.
+O preflight recebe o contexto privado em memória para calcular o binding, mas
+não o devolve nem o persiste: o plano público contém somente flags/contagens e
+o registro pendente guarda um HMAC opaco. A UI exibe o hash completo e os
+fingerprints SHA-256 abreviados dos binários no popup. A CLI exige TTY e
+digitação do prefixo do hash; o MCP retorna `approval_required` para decisão
+separada pela UI/API; o GhostWatch bloqueia e nunca aprova automaticamente. Uma
+variável global não concede aprovação.
+
+Arquivos e testes principais:
+
+- `server/modules/manual-recon-approval.mjs`;
+- `server/routes/recon-stream.mjs`;
+- `public/index.html`;
+- `server/modules/cli/commands/run.mjs`;
+- `server/modules/cli/commands/ghostwatch.mjs`;
+- `mcp/ghostrecon-mcp.mjs`;
+- `server/tests/manual-recon-approval.test.js`;
+- `server/tests/recon-stream-route.test.js`;
+- `server/tests/ui-consent-contract.test.js`;
+- `server/tests/cli-args.test.js`;
+- `server/tests/ghostrecon-mcp.test.js`.
+
+### 14. P0.4 reaberto — regressão local consolidada
+
+Uma suíte hermética agregada anterior passou no conjunto de arquivos existente
+naquele momento. Foram excluídos de propósito:
+
+- `pipeline-smoke.test.js`, porque pode consultar rede externa;
+- `tor-tunnel.test.js`;
+- `vigolium-server-client.test.js`.
+
+Os dois testes de loopback excluídos do sandbox restrito foram validados
+separadamente naquele estágio. Depois disso, novos testes e mudanças de
+segurança foram adicionados. A contagem antiga deixou de representar o estado
+corrente; é necessário repetir os checks direcionados, o smoke de import, CLI,
+MCP e a agregação hermética compatível com o ambiente. Essa evidência local,
+mesmo quando renovada, não substitui o E2E autenticado.
+
+## O que ainda falta para finalizar
 
 ### P0.3 — Validar dados autenticados no E2E autorizado
 
-A regressão local de redação está concluída. Falta validar, em laboratório
-autorizado e sem usar credenciais reais de produção:
+Depois da regressão local corrente, falta validar em laboratório autorizado e
+sem usar credenciais reais de produção:
 
 - auth-file fornecido e auth-file efêmero com navegador real;
 - compartilhamento single-use entre GHOSTRECON, Vigolium e FrameSeven;
@@ -409,36 +457,6 @@ autorizado e sem usar credenciais reais de produção:
 - respostas públicas contendo apenas flags, contagens e nomes seguros de
   headers;
 - ausência de browser, processo ou temporário residual.
-
-### P0.4 — Regressão local consolidada
-
-Executar, sem rede externa:
-
-```bash
-node --check <arquivos alterados>
-node --test server/tests/auth.test.js
-node --test server/tests/opsec.test.js
-node --test server/tests/scope.test.js
-node --test server/tests/engagement.test.js
-node --test server/tests/auto-agent.test.js
-node --test server/tests/auto-effective-plan.test.js
-node --test server/tests/module-runner.test.js
-node --test server/tests/pipeline-resilience.test.js
-node --test server/tests/process-cancellation.test.js
-node --test server/tests/frameseven-integration.test.js
-node --test server/tests/vigolium-bridge.test.js
-node --test server/tests/vigolium-agent.test.js
-node --test server/tests/vigolium-auth-config.test.js
-node --test server/tests/finding-redaction.test.js
-node --test server/tests/secret-safety.test.js
-node --test server/tests/tool-path-route.test.js
-GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js')"
-npm run test:cli
-npm run test:mcp
-```
-
-Depois dos testes direcionados, executar todos os testes locais herméticos,
-excluindo explicitamente `pipeline-smoke.test.js`, que pode acessar rede.
 
 ### P0.5 — E2E em laboratório autorizado
 
@@ -485,42 +503,44 @@ Nenhum desses E2E foi executado nesta revisão.
 O Modo Auto só deve sair desta fase quando todos os itens abaixo forem
 verdadeiros:
 
-- [ ] o plano efetivo autorizado é exatamente o plano executado;
-- [ ] aliases, presets, dependências e engines são expandidos antes dos gates;
-- [ ] autonomias 3/4 exigem `recon.intrusive`;
-- [ ] todo plano intrusivo exige engagement e aprovação vinculada;
-- [ ] escopo bloqueia subdomínios, redirects e IPs não autorizados;
-- [ ] timeout só termina depois do assentamento real;
-- [ ] cancelamento impede qualquer engine/iteração posterior;
-- [ ] identity mismatch de FrameSeven/Vigolium é terminal;
+- [x] o plano efetivo autorizado é exatamente o plano executado nas regressões
+      locais;
+- [x] aliases, presets, dependências e engines são expandidos antes dos gates;
+- [x] autonomias 3/4 exigem `recon.intrusive`;
+- [x] todo plano intrusivo exige engagement e aprovação vinculada;
+- [x] escopo bloqueia subdomínios, redirects e IPs não autorizados;
+- [x] timeout só termina depois do assentamento real;
+- [x] cancelamento impede qualquer engine/iteração posterior;
+- [x] identity mismatch de FrameSeven/Vigolium é terminal;
 - [x] FrameSeven recon, ofensivo e autenticado são mutuamente exclusivos;
 - [x] perfil FrameSeven ofensivo aparece completo no plano/payload de aprovação;
 - [x] `tools all`, `-active-scan` e write probes ficam fora dos perfis;
-- [ ] contexto autenticado é single-use, redigido e removido;
+- [x] contexto autenticado é single-use, redigido e removido nas fixtures
+      locais;
 - [ ] nenhum segredo aparece em argv, log, NDJSON, RAG, SQLite ou relatório;
-- [ ] retomada incompatível/repetida falha fechado;
-- [ ] testes locais herméticos passam;
+- [x] retomada incompatível/repetida falha fechado;
+- [ ] a regressão hermética corrente passa no estado final do código;
 - [ ] E2E controlado passa sem processos ou temporários residuais;
-- [ ] README e documentos operacionais correspondem ao código final.
+- [ ] README e documentos operacionais são revistos novamente após os checks
+      finais e o E2E.
 
 ## Ordem recomendada para concluir
 
-1. corrigir a propagação fatal do Vigolium;
-2. vincular a confirmação manual ofensiva ao plano;
-3. executar o E2E autenticado de redação em laboratório autorizado;
-4. executar os demais testes direcionados;
-5. executar suíte hermética agregada;
-6. atualizar README e documentos normativos;
-7. executar o E2E em laboratório autorizado;
-8. registrar resultados e pendências residuais neste arquivo.
+1. concluir os checks direcionados e a agregação hermética corrente;
+2. preparar um engagement e alvo de laboratório controlado;
+3. executar o E2E autenticado de redação;
+4. executar os demais cenários E2E de autonomia, recusa, timeout e
+   cancelamento;
+5. conferir processos, navegador, temporários e todos os artefatos persistidos;
+6. registrar os resultados e pendências residuais neste arquivo.
 
 ## Estado de liberação
 
 | Caminho | Estado |
 | --- | --- |
-| Testes locais com fixtures | apto |
-| `observation` em alvo controlado | apto para teste supervisionado após regressão final |
-| `assisted` em alvo controlado | apto para teste supervisionado após regressão final |
+| Testes locais com fixtures | revalidação agregada em andamento |
+| `observation` em alvo controlado | beta; testar só após a regressão corrente |
+| `assisted` em alvo controlado | beta; testar só após a regressão corrente |
 | `authorized` | não liberar antes dos P0 |
 | `authorized_opsec` | não liberar antes dos P0 |
 | FrameSeven ofensivo | somente engagement autorizado + confirmação humana |

@@ -10,16 +10,21 @@ import {
   resolveVigoliumAuthFiles,
   resolveVigoliumModuleTags,
   resolveVigoliumTarget,
+  resolveVigoliumAuditMode,
   shouldPreferVigoliumPath,
   vigoliumAgentTimeoutMs,
 } from './vigolium-config.mjs';
 import { createVigoliumAuthTransport } from './vigolium-auth-transport.mjs';
 import { assertVigoliumBinaryIdentity } from './vigolium-binary-integrity.mjs';
+import { assertVigoliumSourceIdentity } from './vigolium-source-integrity.mjs';
 import { rethrowFatalVigoliumExecutionError } from './vigolium-errors.mjs';
 import { redactAutoText } from '../server/auto-agent/redaction.mjs';
 import { redactLocalPathsForPublic } from '../server/modules/finding-redaction.mjs';
 
-export function buildVigoliumAgentArgs(s, mode, { authFiles: authFilesOverride } = {}) {
+export function buildVigoliumAgentArgs(s, mode, {
+  authFiles: authFilesOverride,
+  privateDbPath = null,
+} = {}) {
   const target = resolveVigoliumTarget(s);
   const source = String(s.vigoliumSource || '').trim();
   const authFiles = Array.isArray(authFilesOverride)
@@ -33,7 +38,7 @@ export function buildVigoliumAgentArgs(s, mode, { authFiles: authFilesOverride }
       return { skipped: true, reason: 'vigolium_audit requer --source / vigoliumSource', args: [], target, source, authFiles };
     }
     args.push('--source', source);
-    const auditMode = String(s.vigoliumAuditMode || process.env.GHOSTRECON_VIGOLIUM_AUDIT_MODE || 'lite').trim();
+    const auditMode = resolveVigoliumAuditMode(s);
     if (auditMode) args.push('--mode', auditMode);
   } else if (mode === 'swarm') {
     args.push('-t', target);
@@ -51,6 +56,19 @@ export function buildVigoliumAgentArgs(s, mode, { authFiles: authFilesOverride }
     args.push('agent', 'query', '--prompt-template', prompt, '-j', '--soft-fail');
     if (source) args.push('--source', source);
   }
+  if (authFiles.length) {
+    if (!privateDbPath || /[\r\n\0]/.test(String(privateDbPath))) {
+      return {
+        skipped: true,
+        reason: 'Vigolium autenticado exige banco temporário isolado',
+        args: [],
+        target,
+        source,
+        authFiles,
+      };
+    }
+    args.push('--db', String(privateDbPath));
+  }
 
   return { args, target, source, authFiles, moduleTags, skipped: false };
 }
@@ -61,11 +79,15 @@ export function buildVigoliumAgentArgs(s, mode, { authFiles: authFilesOverride }
  */
 export async function runVigoliumAgent(s, mode, {
   runProcessImpl = runProcess,
+  assertVigoliumSourceIdentityImpl = assertVigoliumSourceIdentity,
 } = {}) {
   const log = s.log || (() => {});
   s.signal?.throwIfAborted?.();
   const root = s.ROOT || ghostreconRoot();
-  const { bin, source: binarySource } = await resolveVigoliumBinary(root, { preferPath: shouldPreferVigoliumPath(s) });
+  const resolvedBinary = s.vigoliumRuntimeConfigFrozen && s.vigoliumBinaryPath
+    ? { bin: s.vigoliumBinaryPath, source: s.vigoliumBinarySource || 'approved-plan' }
+    : await resolveVigoliumBinary(root, { preferPath: shouldPreferVigoliumPath(s) });
+  const { bin, source: binarySource } = resolvedBinary;
   if (!bin) {
     return { ok: false, skipped: true, reason: 'binário vigolium não encontrado', findings: [] };
   }
@@ -84,6 +106,7 @@ export async function runVigoliumAgent(s, mode, {
 
     const built = buildVigoliumAgentArgs(s, mode, {
       authFiles: authTransport?.authFiles,
+      privateDbPath: authTransport?.privateDbPath,
     });
     if (built.skipped) {
       return { ok: false, skipped: true, reason: built.reason, findings: [] };
@@ -97,13 +120,30 @@ export async function runVigoliumAgent(s, mode, {
 
     let result;
     try {
+      if (source) {
+        await assertVigoliumSourceIdentityImpl(
+          source,
+          s.vigoliumExpectedSourceIdentity,
+          {
+            allowedRoots: s.vigoliumSourceAllowedRoots,
+            signal: s.signal,
+            timeoutMs: s.vigoliumAgentTimeoutMs,
+          },
+        );
+      }
       await assertVigoliumBinaryIdentity(bin, s.vigoliumExpectedIdentity);
       result = await runProcessImpl(bin, args, {
-        timeoutMs: vigoliumAgentTimeoutMs(),
+        timeoutMs: s.vigoliumRuntimeConfigFrozen && Number.isFinite(s.vigoliumAgentTimeoutMs)
+          ? s.vigoliumAgentTimeoutMs
+          : vigoliumAgentTimeoutMs(),
         signal: s.signal,
         rejectOnError: false,
         rejectOnTimeout: false,
-        spawnOpts: { env: buildVigoliumChildEnv(s) },
+        spawnOpts: {
+          env: s.vigoliumRuntimeConfigFrozen && s.vigoliumChildEnv
+            ? { ...s.vigoliumChildEnv }
+            : buildVigoliumChildEnv(s),
+        },
         label: `vigolium agent ${mode}`,
       });
     } catch (e) {

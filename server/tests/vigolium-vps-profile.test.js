@@ -16,6 +16,23 @@ test('VPS profile ativo quando vigolium_dast está nos módulos', () => {
   assert.equal(shouldUseVigoliumVpsProfile({ modules: ['vigolium_dast'], vigoliumVpsProfile: false }), false);
 });
 
+test('decisão VPS explícita true/false prevalece sobre ambiente injetado', () => {
+  assert.equal(
+    shouldUseVigoliumVpsProfile(
+      { modules: ['rdap'], vigoliumVpsProfile: true },
+      { GHOSTRECON_VIGOLIUM_VPS_PROFILE: '0' },
+    ),
+    true,
+  );
+  assert.equal(
+    shouldUseVigoliumVpsProfile(
+      { modules: ['vigolium_dast'], vigoliumVpsProfile: false },
+      { GHOSTRECON_VIGOLIUM_VPS_PROFILE: '1' },
+    ),
+    false,
+  );
+});
+
 test('buildVigoliumScanArgs perfil VPS inclui -S, strict e skip external-harvest', () => {
   const built = buildVigoliumScanArgs(
     { domain: 'example.com', modules: ['vigolium_dast'], vigoliumStrategy: 'deep' },

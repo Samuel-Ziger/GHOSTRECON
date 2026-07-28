@@ -332,6 +332,10 @@ export function buildEffectiveAutoPlan({
         engine,
         agent: vigoliumAgent,
         useCodex: body.vigoliumUseCodex === true && Boolean(vigoliumAgentModule),
+        runtime: vigoliumEnabled && body.vigoliumRuntimePlan
+          && typeof body.vigoliumRuntimePlan === 'object'
+          ? { ...body.vigoliumRuntimePlan }
+          : null,
         input: {
           mode: 'authorized_target',
           file: null,

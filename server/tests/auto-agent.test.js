@@ -57,6 +57,7 @@ import {
   unregisterActiveAutoSession,
 } from '../auto-agent/active-sessions.mjs';
 import { readAndMergeFrameSevenReport } from '../integrations/frameseven-report.mjs';
+import { createPipelineState } from '../pipeline/pipeline-state.mjs';
 
 function strongForgeSandbox(overrides = {}) {
   return {
@@ -319,6 +320,16 @@ test('catalogHash de retomada cobre metadados executáveis e independe da ordem'
   assert.notEqual(
     computeAutoCatalogHash({ ...base, engines: { frameseven: { available: true, identity: { sha256: 'a'.repeat(64), size: 1 } } } }),
     computeAutoCatalogHash({ ...base, engines: { frameseven: { available: true, identity: { sha256: 'b'.repeat(64), size: 1 } } } }),
+  );
+  assert.notEqual(
+    computeAutoCatalogHash({
+      ...base,
+      engines: { vigolium: { available: true, runtimeBinding: 'a'.repeat(64) } },
+    }),
+    computeAutoCatalogHash({
+      ...base,
+      engines: { vigolium: { available: true, runtimeBinding: 'b'.repeat(64) } },
+    }),
   );
 });
 
@@ -1466,6 +1477,7 @@ test('evaluateAutoRun preserva sucesso parcial quando um erro recuperável foi i
 test('runAutoRecon emite plano e chama runPipeline com modulos planejados', async () => {
   const emitted = [];
   let pipelineCtx = null;
+  let pipelineState = null;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-run-'));
   try {
   const result = await runAutoRecon({
@@ -1556,6 +1568,7 @@ test('Auto funde outOfScope do operador com exclusions do engagement no plano e 
       getEngagementImpl: async () => engagement,
       runPipeline: async (ctx) => {
         pipelineCtx = ctx;
+        pipelineState = createPipelineState(ctx);
       },
       fetchImpl: async () => ({ ok: false, status: 503 }),
       execFileImpl: async () => {
@@ -2205,6 +2218,243 @@ test('runAutoRecon recusa Vigolium -T explícito ou herdado do ambiente antes do
     }),
     /Vigolium -T não é permitido no Auto/i,
   );
+});
+
+test('runAutoRecon recusa autenticação Vigolium pré-carregada fora do browser aprovado', async () => {
+  const base = {
+    ROOT: process.cwd(),
+    runPipeline: async () => {
+      assert.fail('pipeline não pode executar com auth Vigolium pré-carregada');
+    },
+  };
+  await assert.rejects(
+    runAutoRecon({
+      ...base,
+      body: {
+        domain: 'example.com',
+        includeVigolium: true,
+        vigoliumAuthEntries: ['admin:Cookie:synthetic-secret'],
+      },
+      env: {},
+    }),
+    /Auth Vigolium pré-carregada não é permitida no Auto/i,
+  );
+  await assert.rejects(
+    runAutoRecon({
+      ...base,
+      body: {
+        domain: 'example.com',
+        includeVigolium: true,
+      },
+      env: {
+        GHOSTRECON_VIGOLIUM_AUTH_FILE: '/tmp/synthetic-auth.json',
+      },
+    }),
+    /Auth Vigolium pré-carregada não é permitida no Auto/i,
+  );
+});
+
+test('Auto congela configuração Vigolium antes do popup e ignora drift posterior do ambiente', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-vig-runtime-'));
+  const binary = path.join(
+    root,
+    'engines',
+    process.platform === 'win32' ? 'vigolium.exe' : 'vigolium',
+  );
+  const engagement = {
+    id: 'ENG-AUTO-VIG-RUNTIME',
+    status: 'active',
+    roeSigned: true,
+    scopeDomains: ['example.com'],
+    scopeIps: [],
+    exclusions: [],
+    window: {
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+  };
+  const env = {
+    PATH: '/safe/bin',
+    GHOSTRECON_AUTO_RAG_ENABLED: '0',
+    GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+    GHOSTRECON_VIGOLIUM_STRATEGY: 'balanced',
+    GHOSTRECON_VIGOLIUM_MODULES: 'headers,audit',
+    GHOSTRECON_VIGOLIUM_HTML_REPORT: '0',
+    GHOSTRECON_VIGOLIUM_VPS_PROFILE: '0',
+  };
+  const emitted = [];
+  let pipelineCtx = null;
+  try {
+    await fs.mkdir(path.dirname(binary), { recursive: true });
+    await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await fs.chmod(binary, 0o755);
+
+    await runAutoRecon({
+      body: {
+        domain: 'example.com',
+        mode: 'balanced',
+        commanders: [],
+        modules: ['vigolium_dast'],
+        includeVigolium: true,
+        autonomyLevel: 'authorized',
+        engagementId: engagement.id,
+      },
+      ROOT: root,
+      env,
+      principal: {
+        sub: 'red-runtime-fixture',
+        role: 'red',
+        scopes: ['recon.run', 'recon.intrusive'],
+      },
+      getEngagementImpl: async () => engagement,
+      runPipeline: async (ctx) => {
+        pipelineCtx = ctx;
+      },
+      emit: (event) => {
+        emitted.push(event);
+        if (event.type === 'auto_approval_required') {
+          env.GHOSTRECON_VIGOLIUM_STRATEGY = 'deep';
+          env.GHOSTRECON_VIGOLIUM_MODULES = 'changed-after-approval';
+          env.PATH = '/drifted/bin';
+          const active = getActiveAutoSession(event.sessionId);
+          active?.resolveApproval(
+            event.approval.approvalId,
+            true,
+            'fixture local aprovada',
+          );
+        }
+      },
+      fetchImpl: async () => ({ ok: false, status: 503 }),
+      execFileImpl: async () => {
+        throw new Error('provider indisponível na fixture');
+      },
+    });
+
+    assert.ok(pipelineCtx);
+    assert.ok(pipelineCtx.vigoliumRuntimeConfig);
+    assert.equal(pipelineCtx.vigoliumRuntimeConfigFrozen, true);
+    assert.equal(pipelineCtx.vigoliumRuntimeConfigVersion, 1);
+    assert.equal(pipelineCtx.vigoliumStrategy, 'balanced');
+    assert.deepEqual(pipelineCtx.vigoliumModules, ['headers', 'audit']);
+    assert.equal(pipelineCtx.vigoliumChildEnv.PATH, '/safe/bin');
+    assert.equal(pipelineState.vigoliumRuntimeConfigFrozen, true);
+    assert.equal(pipelineState.vigoliumStrategy, 'balanced');
+    assert.deepEqual(pipelineState.vigoliumModules, ['headers', 'audit']);
+    assert.equal(pipelineState.vigoliumChildEnv.PATH, '/safe/bin');
+    assert.equal(pipelineState.vigoliumBinaryPath, binary);
+    const effective = emitted.find((event) => event.type === 'auto_effective_plan');
+    assert.equal(effective?.effectivePlan?.engines?.vigolium?.runtime?.strategy, 'balanced');
+    assert.match(
+      effective?.effectivePlan?.engines?.vigolium?.runtime?.runtimeBinding || '',
+      /^[a-f0-9]{64}$/,
+    );
+    assert.doesNotMatch(JSON.stringify(emitted), /\/safe\/bin|\/drifted\/bin/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Auto sela identidade da fonte Vigolium antes da aprovação e a propaga ao pipeline', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-vig-source-'));
+  const binary = path.join(
+    root,
+    'engines',
+    process.platform === 'win32' ? 'vigolium.exe' : 'vigolium',
+  );
+  const source = path.join(root, 'clone', 'fixture-source');
+  const engagement = {
+    id: 'ENG-AUTO-VIG-SOURCE',
+    status: 'active',
+    roeSigned: true,
+    scopeDomains: ['example.com'],
+    scopeIps: [],
+    exclusions: [],
+    window: {
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+  };
+  const sourceIdentity = {
+    version: 1,
+    kind: 'git-worktree',
+    objectFormat: 'sha1',
+    commit: 'a'.repeat(40),
+    tree: 'b'.repeat(40),
+    trackedEntries: 3,
+    dev: 1,
+    ino: 2,
+    mode: 0o40700,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+    gitDirDev: 1,
+    gitDirIno: 3,
+  };
+  let pipelineCtx = null;
+  let inspection = null;
+  const emitted = [];
+  try {
+    await fs.mkdir(path.dirname(binary), { recursive: true });
+    await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await fs.chmod(binary, 0o755);
+
+    await runAutoRecon({
+      body: {
+        domain: 'example.com',
+        mode: 'balanced',
+        commanders: [],
+        modules: ['vigolium_audit'],
+        includeVigolium: true,
+        vigoliumSource: source,
+        autonomyLevel: 'authorized',
+        engagementId: engagement.id,
+      },
+      ROOT: root,
+      env: {
+        GHOSTRECON_AUTO_RAG_ENABLED: '0',
+        GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+      },
+      principal: {
+        sub: 'red-source-fixture',
+        role: 'red',
+        scopes: ['recon.run', 'recon.intrusive'],
+      },
+      getEngagementImpl: async () => engagement,
+      inspectVigoliumSourceIdentityImpl: async (receivedSource, options) => {
+        inspection = { receivedSource, options };
+        return sourceIdentity;
+      },
+      runPipeline: async (ctx) => {
+        pipelineCtx = ctx;
+      },
+      emit: (event) => {
+        emitted.push(event);
+        if (event.type === 'auto_approval_required') {
+          const active = getActiveAutoSession(event.sessionId);
+          active?.resolveApproval(
+            event.approval.approvalId,
+            true,
+            'fixture local aprovada',
+          );
+        }
+      },
+      fetchImpl: async () => ({ ok: false, status: 503 }),
+      execFileImpl: async () => {
+        throw new Error('provider indisponível na fixture');
+      },
+    });
+
+    assert.equal(inspection.receivedSource, source);
+    assert.deepEqual(inspection.options.allowedRoots, [path.join(root, 'clone')]);
+    assert.deepEqual(pipelineCtx.vigoliumExpectedSourceIdentity, sourceIdentity);
+    assert.deepEqual(pipelineCtx.vigoliumSourceAllowedRoots, [path.join(root, 'clone')]);
+    const effective = emitted.find((event) => event.type === 'auto_effective_plan');
+    assert.equal(
+      effective?.effectivePlan?.engines?.vigolium?.runtime?.sourceIdentity?.commit,
+      sourceIdentity.commit,
+    );
+    assert.doesNotMatch(JSON.stringify(emitted), new RegExp(source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test('cliente Auto não interativo nega o plano exato sem executar pipeline', async () => {

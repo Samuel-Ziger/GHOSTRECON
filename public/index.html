@@ -4138,8 +4138,9 @@
         <div id="vigoliumGuardrailBox" class="vigolium-tool-panel" style="display:none;font-family:var(--mono);font-size:9px;color:var(--text-dim);line-height:1.45"></div>
         <label for="vigoliumSourceInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Caminho do código-fonte (audit / swarm opcional)</label>
         <input id="vigoliumSourceInput" class="domain-input" type="text" placeholder="/caminho/para/repo ou ." autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
-        <label for="vigoliumAuthFileInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Auth file Vigolium (YAML/JSON, opcional; CSV para varios)</label>
-        <input id="vigoliumAuthFileInput" class="domain-input" type="text" placeholder="C:\\sessions\\auth.json ou admin.yaml,user.yaml" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+        <label for="vigoliumAuthFileInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Auth file Vigolium (YAML/JSON, opcional; CSV para vários)</label>
+        <input id="vigoliumAuthFileInput" class="domain-input" type="text" placeholder=".runtime/vigolium-sessions/admin.yaml,.runtime/vigolium-sessions/user.yaml" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+        <p class="gh-hint" style="font-size:9px;margin:4px 0 8px">Use somente arquivos dentro de <code>GHOSTRECON_VIGOLIUM_AUTH_ROOT</code> (padrão <code>.runtime/vigolium-sessions</code>): raiz <code>0700</code>, arquivos <code>0600</code>, sem symlink/hardlink. O servidor sela a identidade e usa uma cópia temporária exclusiva da execução.</p>
         <label for="vigoliumAuthEntriesInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Logins / auth inline Vigolium (um por linha)</label>
         <textarea id="vigoliumAuthEntriesInput" class="domain-input" rows="2" placeholder="admin:Cookie:session_id=abc123&#10;user:Cookie:session_id=xyz789" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%;resize:vertical;min-height:58px"></textarea>
         <div class="vigolium-tool-panel">
@@ -4766,6 +4767,16 @@ function getOptionalAuthConfig() {
   } catch {
     return null;
   }
+}
+
+function getPipelineAuthConfig() {
+  const configured = getOptionalAuthConfig();
+  if (!configured) return null;
+  const headers = configured.headers && typeof configured.headers === 'object'
+    ? { ...configured.headers }
+    : {};
+  const cookie = configured.cookie ? String(configured.cookie) : '';
+  return Object.keys(headers).length || cookie ? { headers, cookie } : null;
 }
 
 function parseProgramHeadersText(raw) {
@@ -7790,14 +7801,10 @@ async function prepareManualReconApproval(streamBody) {
   const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
   if (authConfig?.ghostreconApiKey) headers['X-API-Key'] = authConfig.ghostreconApiKey;
 
-  // O preflight não precisa receber credenciais. Esses campos são usados
-  // somente pelo stream depois que o plano sem segredos foi aprovado.
+  // O preflight recebe o mesmo contexto privado do stream para o servidor
+  // selá-lo por HMAC. O plano devolvido continua contendo apenas um resumo sem
+  // valores; a API key do GHOSTRECON viaja exclusivamente no header HTTP.
   const preflightBody = { ...streamBody };
-  delete preflightBody.auth;
-  delete preflightBody.vigoliumAuth;
-  delete preflightBody.vigoliumAuthEntries;
-  delete preflightBody.vigoliumAuthFile;
-  delete preflightBody.vigoliumAuthFiles;
 
   const preflightResponse = await fetch(apiUrl('/api/recon/preflight'), {
     method: 'POST',
@@ -7826,6 +7833,27 @@ async function prepareManualReconApproval(streamBody) {
     frameSeven.enabled ? `FrameSeven ${frameSeven.authenticated ? 'autenticado' : 'ofensivo'}` : null,
     vigolium.enabled ? `Vigolium ${vigolium.agent || 'sem agente'}` : null,
   ].filter(Boolean).join(', ') || 'pipeline GHOSTRECON';
+  const binaryIdentities = [
+    frameSeven.enabled && frameSeven.identity?.sha256
+      ? `FrameSeven sha256=${String(frameSeven.identity.sha256).slice(0, 16)}…`
+      : null,
+    vigolium.enabled && vigolium.identity?.sha256
+      ? `Vigolium sha256=${String(vigolium.identity.sha256).slice(0, 16)}…`
+      : null,
+  ].filter(Boolean).join(' · ') || '(nenhum binário externo)';
+  const authSummary = plan.authentication || {};
+  const pipelineAuth = authSummary.pipeline?.enabled
+    ? `sim (cookie=${authSummary.pipeline.hasCookie ? 'sim' : 'não'}, authorization=${authSummary.pipeline.hasAuthorization ? 'sim' : 'não'}, headers=${authSummary.pipeline.headerCount || 0})`
+    : 'não';
+  const vigoliumAuth = authSummary.vigolium?.enabled
+    ? `sim (compartilhado=${authSummary.vigolium.sharesPipelineContext ? 'sim' : 'não'}, inline=${authSummary.vigolium.inlineEntryCount || 0}, arquivos=${authSummary.vigolium.authFileCount || 0})`
+    : 'não';
+  const execution = plan.execution || {};
+  const executionContext = [
+    `navegador=${execution.navigatorMode ? (execution.navigatorExec ? 'execução autorizada' : 'somente contexto') : 'não'}`,
+    `Tor=${execution.torRequired ? (execution.torStrict ? 'estrito' : 'obrigatório') : 'não'}`,
+    `proxies=${execution.proxyCount || 0}${execution.proxyPoolBinding ? ' (selados)' : ''}`,
+  ].join(' · ');
   const approved = window.confirm(
     `CONFIRMAÇÃO DO PLANO MANUAL\n\n`
     + `Alvo: ${plan.target || streamBody.domain}\n`
@@ -7835,6 +7863,10 @@ async function prepareManualReconApproval(streamBody) {
     + `Motores: ${engines}\n`
     + `Ferramentas FrameSeven: ${tools}\n`
     + `Limites: ${limits}\n`
+    + `Identidades seladas: ${binaryIdentities}\n`
+    + `Autenticação pipeline: ${pipelineAuth}\n`
+    + `Autenticação Vigolium: ${vigoliumAuth}\n`
+    + `Contexto operacional: ${executionContext}\n`
     + `OPSEC: ${plan.execution?.opsecProfile || 'standard'}\n`
     + `Hash do plano: ${plan.hash || 'n/d'}\n\n`
     + 'A aprovação vale somente para este alvo, engagement, conjunto de módulos, ferramentas, limites e identidades de binário. '
@@ -8127,7 +8159,7 @@ async function startRecon() {
         modules: selectedMods,
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
         profile: getReconProfile(),
-        auth: getOptionalAuthConfig(),
+        auth: getPipelineAuthConfig(),
         includeFrameSeven,
         frameSevenAuth,
         autoAiReports: aiReportsEnabled,

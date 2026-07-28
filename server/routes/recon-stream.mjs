@@ -1,5 +1,7 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
+import path from 'node:path';
 import { parseReconTarget } from '../modules/recon-target.js';
+import { normalizeModuleId } from '../modules/module-ids.mjs';
 import {
   computeEngagementAuthorizationBinding,
   getEngagement,
@@ -7,6 +9,8 @@ import {
 } from '../modules/engagement.mjs';
 import {
   createEngagementScopePolicy,
+  mergeOutOfScopeLists,
+  parseOutOfScopeEnv,
   parseOutOfScopeClientInput,
 } from '../modules/scope.js';
 import {
@@ -15,7 +19,10 @@ import {
   expandIntrusiveRunModules,
   isIntrusive,
 } from '../modules/opsec.mjs';
-import { createIdentityController, normalizeIdentityOptions } from '../modules/identity-controller.mjs';
+import {
+  createIdentityController,
+  resolveEffectiveIdentityConfig,
+} from '../modules/identity-controller.mjs';
 import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
 import { quickValidateTor, isNavigatorModeActive } from '../modules/navegation.js';
 import {
@@ -29,6 +36,7 @@ import {
   refuseToRun as torRefuseToRun,
 } from '../modules/tor-strict.js';
 import { normalizeOpenrouterOnlyFlag } from '../modules/ai-dual-report.js';
+import { resolveReconProfile } from '../modules/runtime-profile.js';
 import { reconHttpContext } from '../lib/http-history.mjs';
 import { runIntegratedFrameSeven } from '../integrations/frameseven-runner.mjs';
 import {
@@ -39,15 +47,30 @@ import {
   FRAMESEVEN_OFFENSIVE_TOOLS_ARG_V1,
   FRAMESEVEN_OFFENSIVE_TOOLS_V1,
 } from '../integrations/frameseven-policy.mjs';
-import { resolveVigoliumBinary } from '../../bridge/vigolium-config.mjs';
+import {
+  buildVigoliumChildEnv,
+  resolveVigoliumBinary,
+  resolveVigoliumEffectiveConfig,
+} from '../../bridge/vigolium-config.mjs';
+import {
+  inspectVigoliumAuthFileIdentities,
+} from '../../bridge/vigolium-auth-transport.mjs';
 import { inspectVigoliumBinaryIdentity } from '../../bridge/vigolium-binary-integrity.mjs';
 import {
+  inspectVigoliumSourceIdentity,
+  resolveVigoliumSourceAllowedRoots,
+} from '../../bridge/vigolium-source-integrity.mjs';
+import {
+  buildManualReconPrivateContext,
   buildManualReconPlan,
   createManualReconApprovalStore,
+  summarizeManualReconAuthentication,
 } from '../modules/manual-recon-approval.mjs';
 
 function normalizeManualModules(body = {}) {
-  let modules = Array.isArray(body.modules) ? body.modules.map(String) : [];
+  let modules = Array.isArray(body.modules)
+    ? body.modules.map(normalizeModuleId).filter(Boolean)
+    : [];
   const navigatorActive = isNavigatorModeActive({
     navigatorMode: body.navigatorMode === true,
     navegation: body.navegation && typeof body.navegation === 'object' ? body.navegation : null,
@@ -56,23 +79,13 @@ function normalizeManualModules(body = {}) {
   if (!navigatorActive || fullPreset) {
     modules = modules.filter((moduleId) => moduleId !== 'navegation');
   }
-  return [...new Set(modules.map((moduleId) => String(moduleId).trim()).filter(Boolean))];
+  return [...new Set(modules)];
 }
 
-function normalizedVigoliumAgent(value) {
-  const agent = String(value || '').trim().toLowerCase();
-  return ['none', 'audit', 'swarm', 'autopilot'].includes(agent) ? agent : 'none';
-}
-
-function normalizedExecutionEngine(value) {
-  const engine = String(value || '').trim().toLowerCase();
-  return ['node', 'go', 'both'].includes(engine) ? engine : 'node';
-}
-
-function opaqueBinding(value) {
+function opaqueBinding(value, bindingKey) {
   const normalized = String(value || '').trim();
   return normalized
-    ? createHash('sha256').update(normalized, 'utf8').digest('hex')
+    ? createHmac('sha256', bindingKey).update(normalized, 'utf8').digest('hex')
     : null;
 }
 
@@ -91,9 +104,13 @@ export function registerReconStreamRoutes(app, deps) {
     inspectFrameSevenBinaryIdentityImpl = inspectFrameSevenBinaryIdentity,
     resolveFrameSevenBinaryImpl = resolveFrameSevenBinary,
     inspectVigoliumBinaryIdentityImpl = inspectVigoliumBinaryIdentity,
+    inspectVigoliumAuthFileIdentitiesImpl = inspectVigoliumAuthFileIdentities,
+    inspectVigoliumSourceIdentityImpl = inspectVigoliumSourceIdentity,
+    resolveVigoliumSourceAllowedRootsImpl = resolveVigoliumSourceAllowedRoots,
     resolveVigoliumBinaryImpl = resolveVigoliumBinary,
     auditAuthImpl = auditAuth,
     env = process.env,
+    manualPlanBindingKey = randomBytes(32),
   } = deps;
   const {
     normalizeHeadersForHistory,
@@ -104,6 +121,104 @@ export function registerReconStreamRoutes(app, deps) {
     || createManualReconApprovalStore({
       ttlMs: Number(env.GHOSTRECON_MANUAL_APPROVAL_TTL_MS || 120_000),
     });
+  const privatePlanBindingKey = Buffer.from(manualPlanBindingKey);
+  if (privatePlanBindingKey.length < 16) {
+    throw new Error('manualPlanBindingKey precisa de pelo menos 16 bytes');
+  }
+  const bindPrivateValue = (value) => opaqueBinding(value, privatePlanBindingKey);
+  const vigoliumAuthAllowedRoots = Object.freeze([
+    path.resolve(
+      String(env.GHOSTRECON_VIGOLIUM_AUTH_ROOT || '').trim()
+        || path.join(ROOT, '.runtime', 'vigolium-sessions'),
+    ),
+  ]);
+  const vigoliumSourceAllowedRoots = resolveVigoliumSourceAllowedRootsImpl(ROOT, env);
+  const resolveManualRuntimeConfig = (body = {}, modules = []) => {
+    const identity = resolveEffectiveIdentityConfig({
+      modules,
+      identityBody: body.identity,
+      env,
+    });
+    const vigolium = resolveVigoliumEffectiveConfig({
+      modules,
+      engine: body.engine,
+      kaliMode: body.kaliMode === true,
+      strategy: body.strategy,
+      vigoliumStrategy: body.vigoliumStrategy,
+      vigoliumModules: body.vigoliumModules,
+      vigoliumModuleTags: body.vigoliumModuleTags,
+      vigoliumModuleTag: body.vigoliumModuleTag,
+      vigoliumAgent: body.vigoliumAgent,
+      vigoliumSource: body.vigoliumSource,
+      vigoliumAuthFiles: body.vigoliumAuthFiles,
+      vigoliumAuthFile: body.vigoliumAuthFile,
+      vigoliumAuthEntries: body.vigoliumAuthEntries,
+      vigoliumAuth: body.vigoliumAuth,
+      vigoliumInputFile: body.vigoliumInputFile,
+      vigoliumInputType: body.vigoliumInputType,
+      vigoliumOnly: body.vigoliumOnly,
+      vigoliumHtmlReport: body.vigoliumHtmlReport,
+      vigoliumReportOnly: body.vigoliumReportOnly,
+      vigoliumPreferPath: body.vigoliumPreferPath,
+      vigoliumUseCodex: body.vigoliumUseCodex,
+      vigoliumVpsProfile: body.vigoliumVpsProfile,
+      vigoliumSkipExternalHarvest: body.vigoliumSkipExternalHarvest,
+      vigoliumAuditMode: body.vigoliumAuditMode,
+    }, { env });
+    const vigoliumChildEnv = Object.freeze({
+      ...buildVigoliumChildEnv(vigolium, env),
+    });
+    const torBody = body.tor && typeof body.tor === 'object' ? body.tor : {};
+    const torStrict = torBody.strict === true
+      || String(env.GHOSTRECON_TOR_STRICT || '').trim() === '1';
+    const torRequired = torBody.required === true
+      || torStrict
+      || String(env.GHOSTRECON_TOR_REQUIRED || '').trim() === '1';
+    const tor = Object.freeze({
+      required: torRequired,
+      strict: torStrict,
+      newnymBeforeRun: torRequired && torBody.newnymBeforeRun === true,
+      perTargetCircuit: torRequired && torBody.perTargetCircuit !== false,
+      dnsLeakHost: String(torBody.dnsLeakHost || '').trim() || null,
+    });
+    const outOfScope = Object.freeze(mergeOutOfScopeLists(
+      parseOutOfScopeEnv(env.GHOSTRECON_OUT_OF_SCOPE),
+      parseOutOfScopeClientInput(body.outOfScope),
+    ));
+    return Object.freeze({
+      identity,
+      vigolium,
+      vigoliumChildEnv,
+      tor,
+      executionProfile: resolveReconProfile(body.profile).name,
+      outOfScope,
+    });
+  };
+  const buildApprovalPrivateContext = (
+    body,
+    runtimeConfig,
+    {
+      vigoliumBinaryPath = null,
+      vigoliumBinarySource = null,
+      vigoliumAuthFileIdentities = [],
+      vigoliumSourceIdentity = null,
+    } = {},
+  ) => buildManualReconPrivateContext({
+    request: buildManualReconPrivateContext(body),
+    effective: {
+      identity: runtimeConfig.identity,
+      tor: runtimeConfig.tor,
+      vigolium: {
+        ...runtimeConfig.vigolium,
+        childEnv: runtimeConfig.vigoliumChildEnv,
+        binaryPath: vigoliumBinaryPath,
+        binarySource: vigoliumBinarySource,
+        authFileIdentities: vigoliumAuthFileIdentities,
+        sourceIdentity: vigoliumSourceIdentity,
+        sourceAllowedRoots: vigoliumSourceAllowedRoots,
+      },
+    },
+  });
   const buildResolvedManualPlan = ({
     body,
     target,
@@ -113,21 +228,35 @@ export function registerReconStreamRoutes(app, deps) {
     engagementId,
     engagementBinding,
     opsecProfile,
+    runtimeConfig,
     frameSevenIdentity,
     vigoliumIdentity,
+    vigoliumBinaryPath = null,
+    vigoliumBinarySource = null,
+    vigoliumAuthFileIdentities = [],
+    vigoliumSourceIdentity = null,
   }) => {
     const includeFrameSeven = body.includeFrameSeven === true;
-    const vigoliumAgent = normalizedVigoliumAgent(body.vigoliumAgent);
+    const {
+      identity,
+      vigolium,
+      vigoliumChildEnv,
+      tor,
+    } = runtimeConfig;
+    const vigoliumAgent = vigolium.vigoliumAgentMode;
     const vigoliumRequested = expandedModules.some((moduleId) => (
       String(moduleId || '').replace(/-/g, '_').startsWith('vigolium_')
     ));
-    const tor = body.tor && typeof body.tor === 'object' ? body.tor : {};
-    const torStrict = tor.strict === true
-      || String(env.GHOSTRECON_TOR_STRICT || '').trim() === '1';
-    const torRequired = tor.required === true
-      || torStrict
-      || String(env.GHOSTRECON_TOR_REQUIRED || '').trim() === '1';
-    const identity = body.identity && typeof body.identity === 'object' ? body.identity : {};
+    const proxyPool = [...identity.proxyPool];
+    const navegation = body.navegation && typeof body.navegation === 'object'
+      ? body.navegation
+      : {};
+    const fullPreset = body.fullPreset === true
+      || String(body.playbook || '').trim() === 'full-recon';
+    const navigatorActive = !fullPreset && isNavigatorModeActive({
+      navigatorMode: body.navigatorMode === true,
+      navegation,
+    });
     return buildManualReconPlan({
       target,
       engagementId,
@@ -138,20 +267,36 @@ export function registerReconStreamRoutes(app, deps) {
       execution: {
         exactMatch: body.exactMatch === true,
         kaliMode: body.kaliMode === true,
-        profile: body.profile,
+        profile: runtimeConfig.executionProfile,
         opsecProfile,
-        engine: normalizedExecutionEngine(body.engine),
+        engine: vigolium.engineMode,
         playbook: body.playbook,
-        fullPreset: body.fullPreset === true,
-        navigatorMode: body.navigatorMode === true,
-        torRequired,
-        torStrict,
-        identityEnabled: identity.enabled === true,
-        identityBehavior: identity.behavior === true,
+        fullPreset,
+        navigatorMode: navigatorActive,
+        navigatorExec: navigatorActive && navegation.exec === true,
+        navigatorUserMode: navigatorActive && navegation.userMode === true,
+        torRequired: tor.required,
+        torStrict: tor.strict,
+        torNewnymBeforeRun: tor.newnymBeforeRun,
+        torPerTargetCircuit: tor.perTargetCircuit,
+        torDnsLeakHostBinding: bindPrivateValue(tor.dnsLeakHost),
+        identityEnabled: identity.enabled,
+        identityBehavior: identity.behavior,
         identityRotation: identity.rotation,
-        proxyCount: Array.isArray(identity.proxyPool) ? identity.proxyPool.length : 0,
-        outOfScope: parseOutOfScopeClientInput(body.outOfScope),
+        identityIsolate: identity.isolate || tor.perTargetCircuit,
+        proxyCount: proxyPool.length,
+        proxyPoolBinding: proxyPool.length
+          ? bindPrivateValue(JSON.stringify(proxyPool))
+          : null,
+        outOfScope: runtimeConfig.outOfScope,
       },
+      authentication: summarizeManualReconAuthentication({
+        auth: body.auth,
+        vigoliumAuthEntries: vigolium.vigoliumAuthEntries,
+        vigoliumAuthFiles: vigolium.vigoliumAuthFiles,
+      }, {
+        vigoliumEnabled: vigoliumRequested,
+      }),
       frameSeven: {
         enabled: includeFrameSeven,
         authenticated: includeFrameSeven && body.frameSevenAuth === true,
@@ -166,19 +311,35 @@ export function registerReconStreamRoutes(app, deps) {
       vigolium: {
         enabled: vigoliumRequested,
         agent: vigoliumAgent,
-        strategy: body.vigoliumStrategy,
-        useCodex: body.vigoliumUseCodex === true,
-        modules: body.vigoliumModules,
-        moduleTags: Array.isArray(body.vigoliumModuleTags)
-          ? body.vigoliumModuleTags
-          : body.vigoliumModuleTag
-            ? [body.vigoliumModuleTag]
-            : [],
-        auditMode: body.vigoliumAuditMode,
-        only: body.vigoliumOnly,
-        reportOnly: body.vigoliumReportOnly,
-        htmlReport: body.vigoliumHtmlReport === true,
-        sourceBinding: opaqueBinding(body.vigoliumSource),
+        strategy: vigolium.vigoliumStrategy,
+        useCodex: vigolium.vigoliumUseCodex,
+        modules: vigolium.vigoliumModules,
+        moduleTags: vigolium.vigoliumModuleTags,
+        auditMode: vigolium.vigoliumAuditMode,
+        only: vigolium.vigoliumOnly,
+        reportOnly: vigolium.vigoliumReportOnly,
+        htmlReport: vigolium.vigoliumHtmlReport,
+        preferPath: vigolium.vigoliumPreferPath,
+        vpsProfile: vigolium.vigoliumVpsProfile,
+        skipExternalHarvest: vigolium.vigoliumSkipExternalHarvest,
+        scanTimeoutMs: vigolium.vigoliumTimeoutMs,
+        agentTimeoutMs: vigolium.vigoliumAgentTimeoutMs,
+        binarySource: vigoliumBinarySource,
+        binaryPathBinding: bindPrivateValue(vigoliumBinaryPath),
+        sourceMode: body.vigoliumSource
+          ? 'request'
+          : env.GHOSTRECON_VIGOLIUM_SOURCE
+            ? 'environment'
+            : 'none',
+        sourceBinding: bindPrivateValue(vigolium.vigoliumSource),
+        sourceIdentity: vigoliumSourceIdentity,
+        childEnvBinding: bindPrivateValue(JSON.stringify(vigoliumChildEnv)),
+        authMaterialBinding: bindPrivateValue(JSON.stringify({
+          entries: vigolium.vigoliumAuthEntries,
+          files: vigolium.vigoliumAuthFiles,
+          identities: vigoliumAuthFileIdentities,
+        })),
+        authFileIdentityCount: vigoliumAuthFileIdentities.length,
         identity: vigoliumIdentity,
       },
     });
@@ -214,12 +375,16 @@ export function registerReconStreamRoutes(app, deps) {
       );
     }
     const modules = normalizeManualModules(body);
-    const engine = normalizedExecutionEngine(body.engine);
-    const vigoliumAgent = normalizedVigoliumAgent(body.vigoliumAgent);
+    const runtimeConfig = resolveManualRuntimeConfig(body, modules);
+    const engine = runtimeConfig.vigolium.engineMode;
+    const vigoliumAgent = runtimeConfig.vigolium.vigoliumAgentMode;
     const expandedModules = expandIntrusiveRunModules({
       modules: includeFrameSeven ? [...modules, 'frameseven_active'] : modules,
       engine,
       vigoliumAgent,
+      includeManualImplicit: true,
+      includeManualIntrusive: body.confirmActive === true,
+      kaliMode: body.kaliMode === true,
     });
     const intrusiveModules = expandedModules.filter((moduleId) => isIntrusive(moduleId));
     const vigoliumRequested = expandedModules.some((moduleId) => (
@@ -293,17 +458,49 @@ export function registerReconStreamRoutes(app, deps) {
       throwIfAborted();
     }
     let vigoliumIdentity = null;
+    let vigoliumBinaryPath = null;
+    let vigoliumBinarySource = null;
+    let vigoliumAuthFileIdentities = [];
+    let vigoliumSourceIdentity = null;
     if (vigoliumRequested) {
       throwIfAborted();
       const resolved = await resolveVigoliumBinaryImpl(ROOT, {
-        preferPath: body.vigoliumPreferPath === true || body.kaliMode === true,
+        preferPath: runtimeConfig.vigolium.vigoliumPreferPath,
+        env,
       });
       const binary = resolved?.binary || resolved?.bin;
       if (!binary) {
         throw fail('MANUAL_RECON_VIGOLIUM_UNAVAILABLE', 'binário Vigolium indisponível');
       }
+      vigoliumBinaryPath = binary;
+      vigoliumBinarySource = resolved?.source || null;
       vigoliumIdentity = await inspectVigoliumBinaryIdentityImpl(binary);
       throwIfAborted();
+      if (runtimeConfig.vigolium.vigoliumAuthFiles.length) {
+        vigoliumAuthFileIdentities = await inspectVigoliumAuthFileIdentitiesImpl(
+          runtimeConfig.vigolium.vigoliumAuthFiles,
+          {
+            allowedRoots: vigoliumAuthAllowedRoots,
+            signal,
+          },
+        );
+        throwIfAborted();
+      }
+      if (
+        runtimeConfig.vigolium.vigoliumSource
+        && runtimeConfig.vigolium.vigoliumAgentMode !== 'none'
+      ) {
+        vigoliumSourceIdentity = await inspectVigoliumSourceIdentityImpl(
+          runtimeConfig.vigolium.vigoliumSource,
+          {
+            allowedRoots: vigoliumSourceAllowedRoots,
+            signal,
+            timeoutMs: runtimeConfig.vigolium.vigoliumAgentTimeoutMs,
+            env,
+          },
+        );
+        throwIfAborted();
+      }
     }
 
     const plan = buildResolvedManualPlan({
@@ -315,8 +512,19 @@ export function registerReconStreamRoutes(app, deps) {
       engagementId,
       engagementBinding,
       opsecProfile,
+      runtimeConfig,
       frameSevenIdentity,
       vigoliumIdentity,
+      vigoliumBinaryPath,
+      vigoliumBinarySource,
+      vigoliumAuthFileIdentities,
+      vigoliumSourceIdentity,
+    });
+    const privateContext = buildApprovalPrivateContext(body, runtimeConfig, {
+      vigoliumBinaryPath,
+      vigoliumBinarySource,
+      vigoliumAuthFileIdentities,
+      vigoliumSourceIdentity,
     });
     return {
       plan,
@@ -325,13 +533,34 @@ export function registerReconStreamRoutes(app, deps) {
       engagementBinding,
       frameSevenIdentity,
       vigoliumIdentity,
+      vigoliumBinaryPath,
+      vigoliumBinarySource,
+      vigoliumAuthFileIdentities,
+      vigoliumAuthAllowedRoots,
+      vigoliumSourceIdentity,
+      vigoliumSourceAllowedRoots,
+      runtimeConfig,
+      privateContext,
       ownerSub: String(principal?.sub || '').trim(),
     };
   };
 
-  const intrusiveRequestCheck = (req) => (
-    req.body?.includeFrameSeven === true || reconBodyIsIntrusive(req.body)
-  );
+  const intrusiveRequestCheck = (req) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const modules = normalizeManualModules(body);
+    const runtimeConfig = resolveManualRuntimeConfig(body, modules);
+    const expanded = expandIntrusiveRunModules({
+      modules: body.includeFrameSeven === true
+        ? [...modules, 'frameseven_active']
+        : modules,
+      engine: runtimeConfig.vigolium.engineMode,
+      vigoliumAgent: runtimeConfig.vigolium.vigoliumAgentMode,
+      includeManualImplicit: true,
+      includeManualIntrusive: body.confirmActive === true,
+      kaliMode: body.kaliMode === true,
+    });
+    return expanded.some((moduleId) => isIntrusive(moduleId));
+  };
 
   app.post('/api/recon/preflight', requireScope('recon.run', {
     intrusiveCheck: intrusiveRequestCheck,
@@ -340,13 +569,38 @@ export function registerReconStreamRoutes(app, deps) {
       res.status(403).json({ ok: false, code: 'CSRF_INVALID', error: 'CSRF token inválido/ausente' });
       return;
     }
+    const preflightController = new AbortController();
+    const abortPreflight = (source = 'request_aborted') => {
+      if (preflightController.signal.aborted) return;
+      const error = Object.assign(new Error(
+        `preflight manual cancelado: cliente desconectado (${source})`,
+      ), {
+        name: 'AbortError',
+        code: 'CLIENT_DISCONNECTED',
+      });
+      preflightController.abort(error);
+    };
+    const onRequestAborted = () => abortPreflight('request_aborted');
+    const onResponseClose = () => {
+      if (!res.writableEnded) abortPreflight('response_close');
+    };
+    req.once?.('aborted', onRequestAborted);
+    res.once?.('close', onResponseClose);
     try {
-      const prepared = await prepareManualApprovalPlan(req.body, req.principal);
+      const prepared = await prepareManualApprovalPlan(
+        req.body,
+        req.principal,
+        preflightController.signal,
+      );
+      if (preflightController.signal.aborted) {
+        throw preflightController.signal.reason;
+      }
       let approval = null;
       if (prepared.plan.requiresHumanApproval) {
         approval = manualApprovalStore.issue({
           plan: prepared.plan,
           ownerSub: prepared.ownerSub,
+          privateContext: prepared.privateContext,
         });
       }
       auditAuthImpl(req, req.principal, 'allow', {
@@ -373,6 +627,9 @@ export function registerReconStreamRoutes(app, deps) {
         error: error?.message || 'preflight manual falhou',
         ...(error?.checklist ? { checklist: error.checklist } : {}),
       });
+    } finally {
+      req.removeListener?.('aborted', onRequestAborted);
+      res.removeListener?.('close', onResponseClose);
     }
   });
 
@@ -477,9 +734,6 @@ export function registerReconStreamRoutes(app, deps) {
   let modules = normalizeManualModules(req.body);
   const exactMatch = Boolean(req.body?.exactMatch);
   const kaliMode = Boolean(req.body?.kaliMode);
-  const profile = String(req.body?.profile || 'standard')
-    .trim()
-    .toLowerCase();
   const includeFrameSeven = req.body?.includeFrameSeven === true;
   if (req.body?.frameSevenAuth === true && !includeFrameSeven) {
     send({ type: 'error', message: 'FrameSeven autenticado exige includeFrameSeven=true' });
@@ -505,7 +759,7 @@ export function registerReconStreamRoutes(app, deps) {
 
   const engagementIdRaw = req.body?.engagementId != null ? String(req.body.engagementId).trim() : '';
   const operatorRaw = req.body?.operator != null ? String(req.body.operator).trim() : '';
-  const rawOpsec = String(req.body?.opsecProfile || process.env.GHOSTRECON_OPSEC_PROFILE || 'standard')
+  const rawOpsec = String(req.body?.opsecProfile || env.GHOSTRECON_OPSEC_PROFILE || 'standard')
     .trim()
     .toLowerCase();
   const allowedOpsec = new Set(['passive', 'stealth', 'standard', 'aggressive']);
@@ -516,17 +770,23 @@ export function registerReconStreamRoutes(app, deps) {
   const navigatorMode = Boolean(req.body?.navigatorMode === true);
   const navegationBody =
     req.body?.navegation && typeof req.body.navegation === 'object' ? req.body.navegation : null;
-  const navigatorActive = isNavigatorModeActive({ navigatorMode, navegation: navegationBody });
   const isFullPresetRun =
     req.body?.fullPreset === true || playbookNameForCheck === 'full-recon';
+  const navigatorActive = !isFullPresetRun
+    && isNavigatorModeActive({ navigatorMode, navegation: navegationBody });
 
   if (!navigatorActive || isFullPresetRun) {
     modules = modules.filter((m) => m !== 'navegation');
   }
+  const runtimeConfig = resolveManualRuntimeConfig(req.body, modules);
+  const profile = runtimeConfig.executionProfile;
   const modulesForOpsecGate = expandIntrusiveRunModules({
     modules: includeFrameSeven ? [...modules, 'frameseven_active'] : modules,
-    engine: req.body?.engine,
-    vigoliumAgent: req.body?.vigoliumAgent,
+    engine: runtimeConfig.vigolium.engineMode,
+    vigoliumAgent: runtimeConfig.vigolium.vigoliumAgentMode,
+    includeManualImplicit: true,
+    includeManualIntrusive: confirmActive,
+    kaliMode,
   });
   const intrusiveModulesForRun = modulesForOpsecGate.filter((moduleId) => isIntrusive(moduleId));
   const requiresFormalAuthorization = intrusiveModulesForRun.length > 0;
@@ -739,22 +999,55 @@ export function registerReconStreamRoutes(app, deps) {
     return;
   }
   let expectedVigoliumBinaryIdentity = null;
+  let expectedVigoliumBinaryPath = null;
+  let expectedVigoliumBinarySource = null;
+  let expectedVigoliumAuthFileIdentities = [];
+  let expectedVigoliumSourceIdentity = null;
   if (vigoliumRequested) {
     try {
       throwIfCancelled();
       const resolvedVigolium = await resolveVigoliumBinaryImpl(ROOT, {
-        preferPath: req.body?.vigoliumPreferPath === true || kaliMode,
+        preferPath: runtimeConfig.vigolium.vigoliumPreferPath,
+        env,
       });
       const vigoliumBinary = resolvedVigolium?.binary || resolvedVigolium?.bin;
       if (!vigoliumBinary) throw new Error('binário Vigolium indisponível');
+      expectedVigoliumBinaryPath = vigoliumBinary;
+      expectedVigoliumBinarySource = resolvedVigolium?.source || null;
       expectedVigoliumBinaryIdentity = await inspectVigoliumBinaryIdentityImpl(vigoliumBinary);
       throwIfCancelled();
+      if (runtimeConfig.vigolium.vigoliumAuthFiles.length) {
+        expectedVigoliumAuthFileIdentities = await inspectVigoliumAuthFileIdentitiesImpl(
+          runtimeConfig.vigolium.vigoliumAuthFiles,
+          {
+            allowedRoots: vigoliumAuthAllowedRoots,
+            signal: controller.signal,
+          },
+        );
+        throwIfCancelled();
+      }
+      if (
+        runtimeConfig.vigolium.vigoliumSource
+        && runtimeConfig.vigolium.vigoliumAgentMode !== 'none'
+      ) {
+        expectedVigoliumSourceIdentity = await inspectVigoliumSourceIdentityImpl(
+          runtimeConfig.vigolium.vigoliumSource,
+          {
+            allowedRoots: vigoliumSourceAllowedRoots,
+            signal: controller.signal,
+            timeoutMs: runtimeConfig.vigolium.vigoliumAgentTimeoutMs,
+            env,
+          },
+        );
+        throwIfCancelled();
+      }
     } catch (error) {
       send({
         type: 'error',
+        code: error?.code || 'VIGOLIUM_PREPARATION_FAILED',
         message: controller.signal.aborted
           ? 'Vigolium: preparação cancelada'
-          : `Vigolium: identidade do binário não pôde ser selada (${error?.message || error})`,
+          : `Vigolium: identidade efetiva não pôde ser selada (${error?.message || error})`,
       });
       endResponse();
       return;
@@ -770,8 +1063,13 @@ export function registerReconStreamRoutes(app, deps) {
     engagementId: engagementIdRaw,
     engagementBinding: engagementAuthorizationBinding,
     opsecProfile,
+    runtimeConfig,
     frameSevenIdentity: expectedFrameSevenBinaryIdentity,
     vigoliumIdentity: expectedVigoliumBinaryIdentity,
+    vigoliumBinaryPath: expectedVigoliumBinaryPath,
+    vigoliumBinarySource: expectedVigoliumBinarySource,
+    vigoliumAuthFileIdentities: expectedVigoliumAuthFileIdentities,
+    vigoliumSourceIdentity: expectedVigoliumSourceIdentity,
   });
   send({
     type: 'manual_effective_plan',
@@ -812,6 +1110,12 @@ export function registerReconStreamRoutes(app, deps) {
         planHash: manualReconPlan.hash,
         target: manualReconPlan.target,
         engagementBinding: manualReconPlan.engagement.authorizationBinding,
+        privateContext: buildApprovalPrivateContext(req.body, runtimeConfig, {
+          vigoliumBinaryPath: expectedVigoliumBinaryPath,
+          vigoliumBinarySource: expectedVigoliumBinarySource,
+          vigoliumAuthFileIdentities: expectedVigoliumAuthFileIdentities,
+          vigoliumSourceIdentity: expectedVigoliumSourceIdentity,
+        }),
       });
       if (clientHashMismatch) {
         const mismatch = new Error('plano mudou depois da confirmação');
@@ -880,14 +1184,9 @@ export function registerReconStreamRoutes(app, deps) {
   //     dnsLeakHost: 'check.tor…' // host usado para o DNS leak test (opt)
   //   }
   // Default: se GHOSTRECON_TOR_REQUIRED=1 ou GHOSTRECON_TOR_STRICT=1, força.
-  const torOpts = req.body?.tor && typeof req.body.tor === 'object' ? req.body.tor : {};
-  const torStrictWanted =
-    torOpts.strict === true ||
-    String(process.env.GHOSTRECON_TOR_STRICT || '').trim() === '1';
-  const torRequired =
-    torOpts.required === true ||
-    torStrictWanted ||
-    String(process.env.GHOSTRECON_TOR_REQUIRED || '').trim() === '1';
+  const torOpts = runtimeConfig.tor;
+  const torStrictWanted = torOpts.strict;
+  const torRequired = torOpts.required;
   let cleanupTorStrictScope = null;
 
   // STRICT prereq check — se faltar algo (proxychains, DNS lockdown, SOCKS,
@@ -946,7 +1245,7 @@ export function registerReconStreamRoutes(app, deps) {
       msg: `[tor] OK — exitIp=${torValidation.tor?.ip} bootstrap=${torValidation.control?.bootstrap?.tag} (${torValidation.durationMs}ms)`,
       level: 'info',
     });
-    if (torOpts.newnymBeforeRun === true) {
+    if (torOpts.newnymBeforeRun) {
       try {
         await torNewnymImpl({ timeoutMs: 5_000, signal: controller.signal });
         throwIfCancelled();
@@ -957,7 +1256,11 @@ export function registerReconStreamRoutes(app, deps) {
     }
   }
 
-  const identityOpts = normalizeIdentityOptions(modules, req.body?.identity);
+  const identityOpts = {
+    ...runtimeConfig.identity,
+    proxyPool: [...runtimeConfig.identity.proxyPool],
+    modules: [...runtimeConfig.identity.modules],
+  };
   // ID temporário para telemetria do tor-strict (correlacionável com runId
   // depois que saveRun emitir um). Emitimos no stream para o cliente saber.
   const requestRunId = `req-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
@@ -965,7 +1268,7 @@ export function registerReconStreamRoutes(app, deps) {
   identityOpts.target = domain;
   // Quando torRequired + perTargetCircuit, propagamos para identity-controller
   // ativar IsolateSOCKSAuth com user/pass únicos (circuit dedicado por target).
-  if (torRequired && torOpts.perTargetCircuit !== false) {
+  if (torOpts.perTargetCircuit) {
     identityOpts.isolate = true;
     identityOpts.isolationKey = `${domain}-${Date.now().toString(36)}`;
   }
@@ -1003,8 +1306,8 @@ export function registerReconStreamRoutes(app, deps) {
           required: true,
           exitIp: torValidation?.tor?.ip || null,
           bootstrap: torValidation?.control?.bootstrap?.tag || null,
-          perTargetCircuit: torOpts.perTargetCircuit !== false,
-          newnymBefore: Boolean(torOpts.newnymBeforeRun),
+          perTargetCircuit: torOpts.perTargetCircuit,
+          newnymBefore: torOpts.newnymBeforeRun,
         }
       : { required: false },
   });
@@ -1025,7 +1328,8 @@ export function registerReconStreamRoutes(app, deps) {
         kaliMode,
         auth: capturedAuth || authForPipeline,
         profile,
-        outOfScope: req.body?.outOfScope,
+        outOfScope: runtimeConfig.outOfScope,
+        outOfScopeFrozen: true,
         projectName: req.body?.projectName,
         autoAiReports: Boolean(req.body?.autoAiReports),
         aiProviderMode: String(req.body?.aiProviderMode || 'auto'),
@@ -1049,53 +1353,47 @@ export function registerReconStreamRoutes(app, deps) {
         identityCtrl,
         navegation: navegationBody,
         navigatorMode: navigatorActive,
-        engine: ['node', 'go', 'both'].includes(String(req.body?.engine || '').trim().toLowerCase())
-          ? String(req.body.engine).trim().toLowerCase()
-          : 'node',
-        vigoliumStrategy:
-          req.body?.vigoliumStrategy != null
-            ? String(req.body.vigoliumStrategy).trim().toLowerCase()
-            : req.body?.strategy != null
-              ? String(req.body.strategy).trim().toLowerCase()
-              : null,
-        vigoliumModules: Array.isArray(req.body?.vigoliumModules)
-          ? req.body.vigoliumModules.map(String)
-          : null,
-        vigoliumModuleTags: Array.isArray(req.body?.vigoliumModuleTags)
-          ? req.body.vigoliumModuleTags.map(String)
-          : null,
-        vigoliumModuleTag: req.body?.vigoliumModuleTag != null ? String(req.body.vigoliumModuleTag).trim() : null,
-        vigoliumAgent: ['none', 'audit', 'swarm', 'autopilot'].includes(
-          String(req.body?.vigoliumAgent || '').trim().toLowerCase(),
-        )
-          ? String(req.body.vigoliumAgent).trim().toLowerCase()
-          : 'none',
-        vigoliumSource: req.body?.vigoliumSource != null ? String(req.body.vigoliumSource).trim() : null,
-        vigoliumAuthFiles: Array.isArray(req.body?.vigoliumAuthFiles)
-          ? req.body.vigoliumAuthFiles.map(String)
-          : null,
-        vigoliumAuthFile: req.body?.vigoliumAuthFile != null ? String(req.body.vigoliumAuthFile).trim() : null,
-        vigoliumAuditMode:
-          req.body?.vigoliumAuditMode != null ? String(req.body.vigoliumAuditMode).trim().toLowerCase() : null,
+        engine: runtimeConfig.vigolium.engineMode,
+        vigoliumStrategy: runtimeConfig.vigolium.vigoliumStrategy,
+        vigoliumModules: [...runtimeConfig.vigolium.vigoliumModules],
+        vigoliumModuleTags: [...runtimeConfig.vigolium.vigoliumModuleTags],
+        vigoliumModuleTag: null,
+        vigoliumAgent: runtimeConfig.vigolium.vigoliumAgentMode,
+        vigoliumSource: runtimeConfig.vigolium.vigoliumSource,
+        vigoliumAuthFiles: [...runtimeConfig.vigolium.vigoliumAuthFiles],
+        vigoliumAuthFile: null,
+        vigoliumAuditMode: runtimeConfig.vigolium.vigoliumAuditMode,
         // `-T` permanece fechado até existir um contrato que enumere, valide e
         // sele cada alvo contido no arquivo antes dos gates.
         vigoliumInputFile: null,
         vigoliumInputType: null,
-        vigoliumOnly:
-          req.body?.vigoliumOnly != null ? String(req.body.vigoliumOnly).trim() : null,
-        vigoliumAuthEntries: Array.isArray(req.body?.vigoliumAuthEntries)
-          ? req.body.vigoliumAuthEntries.map(String)
-          : null,
-        vigoliumAuth:
-          req.body?.vigoliumAuth != null ? String(req.body.vigoliumAuth).trim() : null,
-        vigoliumHtmlReport: req.body?.vigoliumHtmlReport === true,
-        vigoliumReportOnly:
-          req.body?.vigoliumReportOnly != null ? String(req.body.vigoliumReportOnly).trim() : null,
-        vigoliumPreferPath: req.body?.vigoliumPreferPath === true,
-        vigoliumUseCodex: req.body?.vigoliumUseCodex === true,
+        vigoliumOnly: runtimeConfig.vigolium.vigoliumOnly,
+        vigoliumAuthEntries: [...runtimeConfig.vigolium.vigoliumAuthEntries],
+        vigoliumAuth: null,
+        vigoliumHtmlReport: runtimeConfig.vigolium.vigoliumHtmlReport,
+        vigoliumReportOnly: runtimeConfig.vigolium.vigoliumReportOnly,
+        vigoliumPreferPath: runtimeConfig.vigolium.vigoliumPreferPath,
+        vigoliumUseCodex: runtimeConfig.vigolium.vigoliumUseCodex,
         vigoliumExpectedIdentity: expectedVigoliumBinaryIdentity,
+        vigoliumExpectedSourceIdentity: expectedVigoliumSourceIdentity,
+        vigoliumRuntimeConfig: Object.freeze({
+          ...runtimeConfig.vigolium,
+          vigoliumChildEnv: runtimeConfig.vigoliumChildEnv,
+          vigoliumBinaryPath: expectedVigoliumBinaryPath,
+          vigoliumBinarySource: expectedVigoliumBinarySource,
+          vigoliumExpectedIdentity: expectedVigoliumBinaryIdentity,
+          vigoliumExpectedSourceIdentity: expectedVigoliumSourceIdentity
+            ? Object.freeze({ ...expectedVigoliumSourceIdentity })
+            : null,
+          vigoliumSourceAllowedRoots,
+          vigoliumExpectedAuthFileIdentities: Object.freeze(
+            expectedVigoliumAuthFileIdentities.map((identity) => Object.freeze({ ...identity })),
+          ),
+          vigoliumAuthAllowedRoots,
+        }),
         signal: stageSignal || controller.signal,
         requestRunId,
+        manualEffectiveCapabilities: modulesForOpsecGate,
       }));
       if (includeFrameSeven) {
         await runIntegratedFrameSevenImpl({

@@ -125,6 +125,7 @@ export async function buildAutoToolCatalog({
   includeVigolium = false,
   hexstrikeCapabilities = null,
   vigoliumCapabilities = null,
+  vigoliumRuntimeBinding = null,
   forgeRuntimeAvailable = true,
   ghostRoot,
   target = null,
@@ -141,7 +142,11 @@ export async function buildAutoToolCatalog({
     ? await fs.access(frameSevenBinary, fsConstants.X_OK).then(() => true).catch(() => false)
     : false;
   const vigolium = includeVigolium
-    ? (vigoliumCapabilities || await resolveVigoliumBinary(ghostRoot).catch(() => ({ bin: null, source: null })))
+    ? (
+        vigoliumCapabilities
+        || await resolveVigoliumBinary(ghostRoot, { env })
+          .catch(() => ({ bin: null, source: null }))
+      )
     : null;
   const vigoliumAvailable = Boolean(vigolium?.installed ?? vigolium?.bin ?? vigolium?.binary);
   const vigoliumBinary = vigolium?.binary || vigolium?.bin || null;
@@ -327,6 +332,7 @@ export async function buildAutoToolCatalog({
         binary: vigoliumBinary,
         source: vigolium?.resolveSource || vigolium?.source || null,
         identity: vigoliumIdentity,
+        runtimeBinding: includeVigolium ? String(vigoliumRuntimeBinding || '') || null : null,
       },
       forge: {
         available: forgeRuntimeAvailable === true,

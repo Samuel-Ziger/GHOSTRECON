@@ -1,6 +1,6 @@
 # Modo Auto GHOSTRECON
 
-> Estado verificado em 2026-07-26: **beta supervisionado**. Este documento
+> Estado verificado em 2026-07-28: **beta supervisionado**. Este documento
 > descreve o contrato operacional atual. Planos e listas de modelos anteriores
 > eram propostas de arquitetura e não devem ser usados como fonte de verdade.
 > O saldo auditável desta evolução, inclusive bloqueadores ainda abertos, está
@@ -120,7 +120,8 @@ intrusivo e não autoriza write probes.
 No RUN manual, o plano também é expandido antes do preflight. Se qualquer ID
 resultante for intrusivo — inclusive uma capacidade Vigolium/DAST ou o
 `frameseven_active` implícito em `includeFrameSeven` — a rota exige engagement
-formal e confirmação ativa antes de preparar ou iniciar o processo.
+formal, `confirmActive` e aprovação vinculada ao hash antes de iniciar qualquer
+scanner ou subprocesso.
 
 ## Níveis de autonomia
 
@@ -180,6 +181,36 @@ igualdade entre o plano aprovado e o executado.
 
 Nenhum adapter ou fallback pode injetar módulos após o último gate. Alteração do
 plano exige nova expansão, novo hash e nova validação.
+
+### Aprovação do Auto × aprovação do RUN manual
+
+A aprovação do Auto pertence à sessão e ao plano efetivo daquela iteração. O
+RUN manual usa um contrato separado, também fail-closed:
+
+```text
+POST /api/recon/preflight
+  → plano seguro + hash + approvalId pendente
+POST /api/recon/approval
+  → decisão owner-bound
+POST /api/recon/stream
+  → recomposição + consumo único + execução
+```
+
+O registro manual é efêmero, possui TTL e vincula alvo, binding do engagement,
+módulos selecionados/expandidos/intrusivos, opções de execução,
+ferramentas/limites FrameSeven, configuração Vigolium e identidades seladas dos
+binários. O preflight recebe em memória o mesmo contexto privado que será
+recomposto no stream, mas não o expõe nem o persiste: o plano público contém
+somente flags/contagens e o registro pendente guarda um binding HMAC opaco.
+Alteração de qualquer binding, expiração, replay ou outro proprietário invalida
+a aprovação.
+
+No cockpit, o popup mostra o hash completo e os fingerprints SHA-256 abreviados
+de FrameSeven/Vigolium. A CLI conclui o protocolo somente em TTY, depois que o
+operador digita o prefixo do hash. O MCP devolve `approval_required` e depende
+de aprovação externa pela UI/API com o mesmo principal. O GhostWatch nunca
+aprova automaticamente: registra o bloqueio e não abre o stream intrusivo.
+Nenhum desses clientes transforma variável de ambiente em consentimento.
 
 ### Gates explícitos no runtime
 
@@ -301,7 +332,8 @@ o pipeline e é propagado às integrações Vigolium/FrameSeven.
 No mesmo endpoint manual, módulos, engines e dependências são expandidos antes
 do preflight. Qualquer módulo intrusivo dessa lista efetiva exige
 `recon.intrusive`, engagement formal ativo, ROE assinado, escopo e janela
-válidos e `confirmActive`; OPSEC `aggressive` não substitui consentimento.
+válidos, `confirmActive` e aprovação server-issued ligada ao hash; OPSEC
+`aggressive` não substitui consentimento.
 
 Para cada fase:
 
@@ -451,8 +483,9 @@ intrusivo do plano expandido. `includeFrameSeven=true` seleciona o perfil
 ofensivo explícito e read-oriented descrito acima; ele continua classificado
 como intrusivo mesmo sem navegador. Antes de iniciar, a rota exige
 `recon.intrusive`, engagement formal ativo, ROE assinado, alvo dentro do escopo
-e da janela, além de confirmação ativa. `aggressive`, o toggle autenticado ou a
-presença do binário não substituem nenhum desses gates. `tools all`,
+e da janela, além de `confirmActive` e aprovação owner/hash-bound.
+`aggressive`, o toggle autenticado ou a presença do binário não substituem
+nenhum desses gates. `tools all`,
 `-active-scan` e ferramentas com efeitos mutáveis não fazem parte desse perfil.
 
 Os testes locais de integração FrameSeven, plano efetivo Auto e rota RUN
@@ -464,8 +497,12 @@ continua sendo E2E controlado.
 Quando o compartilhamento com Vigolium foi explicitamente autorizado, cookies e
 headers são materializados num bundle temporário restrito e passados por
 `--auth-file`; valores inline, `Authorization` e `Cookie` são redigidos da
-telemetria, e o bundle é removido em `finally`. O transporte seguro não concede
-novos módulos nem altera escopo.
+telemetria, e o bundle é removido em `finally`. Auth-files preexistentes precisam
+estar dentro de `GHOSTRECON_VIGOLIUM_AUTH_ROOT` (padrão
+`.runtime/vigolium-sessions`), com raiz `0700` e arquivos `0600` em POSIX, sem
+symlink/hardlink. Eles são selados no preflight e copiados para um diretório
+temporário privado por execução; o caminho original nunca é entregue ao
+subprocesso. O transporte seguro não concede novos módulos nem altera escopo.
 
 O Auto não usa o conjunto destrutivo do FrameSeven. A ordem, quando os motores
 foram selecionados, é:
@@ -535,6 +572,10 @@ CSRF e ownership. Entre os eventos de observabilidade estão:
 - `auto_heartbeat`;
 - eventos RAG e Forge.
 
+Separadamente, o RUN manual expõe `/api/recon/preflight`,
+`/api/recon/approval` e `/api/recon/stream`, além dos eventos
+`manual_effective_plan` e `manual_approval_consumed`.
+
 Clientes devem manter compatibilidade com o NDJSON e não interpretar
 desconexão do navegador como prova automática de falha do scanner.
 Eventos Auto são sanitizados antes de entrar na sessão e no stream; payloads
@@ -563,7 +604,9 @@ node --test \
   server/tests/secret-safety.test.js \
   server/tests/write-probes-safety.test.js \
   server/tests/forge-security.test.js \
+  server/tests/manual-recon-approval.test.js \
   server/tests/recon-stream-route.test.js \
+  server/tests/ui-consent-contract.test.js \
   server/tests/frameseven-integration.test.js \
   server/tests/vigolium-bridge.test.js \
   server/tests/vigolium-agent.test.js
@@ -576,11 +619,21 @@ node --test server/tests/opsec.test.js
 node --test server/tests/auth.test.js
 node --test server/tests/engagement.test.js
 GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js')"
+npm run test:cli
+npm run test:mcp
 ```
 
 Esta evolução foi desenhada e testada com executores injetados, mocks e
 fixtures. Nenhum scan real de rede, navegador autenticado, DAST, Kali, Nmap,
 sqlmap ou alvo externo faz parte da validação documental desta entrega.
+
+Uma agregação hermética anterior foi executada excluindo
+`pipeline-smoke.test.js` e separando os testes de loopback
+`tor-tunnel.test.js`/`vigolium-server-client.test.js`. Como o código e a suíte
+continuaram evoluindo, essa execução não representa a revisão corrente e não
+há contador fixo declarado aqui. Antes de promover o Auto, repita os checks
+direcionados, a agregação hermética compatível com o ambiente e os E2E
+controlados aplicáveis.
 
 ## Limitações conhecidas
 
@@ -658,3 +711,15 @@ canário e executar somente o módulo dinâmico com atestação por operação.
 Relatórios públicos FrameSeven passaram a ser artefatos HTML/JSON/Markdown
 regenerados e redigidos, lidos por descritor seguro e autorizados por
 owner/engagement.
+
+### 2026-07-28 — falhas fatais e aprovação manual vinculada
+
+Falhas fatais do Vigolium passaram a atravessar bridges, fases e catches do
+orquestrador sem serem rebaixadas para erro recuperável; regressões impedem
+FrameSeven, nova iteração e avaliação depois dessas falhas. O RUN manual ganhou
+preflight, decisão e consumo único de aprovação vinculada ao plano, com
+owner/TTL e identidades seladas. O cockpit, a CLI, o MCP e o GhostWatch passaram
+a respeitar o mesmo gate, com interações diferentes: popup, confirmação do hash
+em TTY, handoff para aprovação externa e bloqueio automático, respectivamente.
+Checks direcionados passaram naquele estágio; após as mudanças posteriores, a
+agregação hermética e o E2E autenticado real precisam ser executados novamente.

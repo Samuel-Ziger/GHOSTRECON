@@ -2,7 +2,7 @@
 
 Criado em: 2026-07-20
 
-Atualizado em: 2026-07-26
+Atualizado em: 2026-07-28
 
 Este é o backlog operacional do Auto. O contrato atual está em
 `MODO-AUTO-GHOSTRECON.md`; a investigação e a sequência histórica estão em
@@ -58,7 +58,7 @@ Nenhum nível do Auto delega capacidades destrutivas.
 - [x] Aplicar preflight de engagement/ROE e gate OPSEC ao plano expandido.
 - [x] Exigir no RUN manual, para qualquer módulo intrusivo do plano expandido,
       `recon.intrusive`, engagement formal ativo/assinado/no escopo/na janela e
-      `confirmActive`.
+      `confirmActive` mais aprovação server-issued vinculada ao hash.
 - [x] Tratar o perfil ofensivo explícito do FrameSeven como intrusivo, sem
       depender de `tools all`, e manter engagement/ROE/confirmação cumulativos.
 - [x] Manter o FrameSeven como único motor com perfil ofensivo no Auto; o
@@ -71,6 +71,15 @@ Nenhum nível do Auto delega capacidades destrutivas.
 - [x] Impedir que `GHOSTRECON_CONFIRM_ACTIVE=1` substitua a confirmação da
       requisição HTTP.
 - [x] Mostrar alvo, risco, módulos, engines, limites e hash na aprovação.
+- [x] Exibir no popup os fingerprints SHA-256 abreviados de FrameSeven/Vigolium.
+- [x] Criar `/api/recon/preflight` e `/api/recon/approval` para o RUN manual.
+- [x] Vincular aprovação manual a owner, TTL, alvo, engagement, módulos,
+      ferramentas, limites e identidades, com consumo único.
+- [x] Recalcular o plano no stream e falhar fechado em mudança, expiração,
+      replay ou proprietário diferente.
+- [x] Excluir credenciais e paths do plano público e aplicar o gate em todos os
+      clientes: popup no cockpit, hash em TTY na CLI, handoff de aprovação no
+      MCP e bloqueio fail-closed no GhostWatch.
 - [x] Fazer qualquer recusa encerrar sem pipeline, módulo ou engine.
 - [x] Impedir continuação automática de “restante seguro” após uma recusa.
 - [x] Manter classe destrutiva fora da autonomia 4.
@@ -125,6 +134,11 @@ Nenhum nível do Auto delega capacidades destrutivas.
       como progresso.
 - [x] Criar `AbortController` no RUN manual e propagar desconexão/cancelamento
       ao pipeline, Vigolium e FrameSeven.
+- [x] Propagar falhas fatais do Vigolium (`VIGOLIUM_BINARY_IDENTITY_MISMATCH`,
+      `PROCESS_ABORTED`, `PROCESS_UNTERMINATED` e `AbortError`) sem downgrade
+      recuperável.
+- [x] Impedir FrameSeven, nova iteração e avaliação depois de falha fatal do
+      Vigolium, inclusive no fluxo autenticado.
 
 ### RAG, Forge e engines
 
@@ -167,7 +181,9 @@ Nenhum nível do Auto delega capacidades destrutivas.
 - [x] Separar deadlines FrameSeven de captura auth, aprovação, `before_scan` e
       scan, aguardando o assentamento limitado antes de continuar.
 - [x] Transportar auth do Vigolium por arquivo temporário restrito, sem segredo
-      em argv/log, com cleanup idempotente.
+      em argv/log, com cleanup idempotente; auth-files existentes ficam
+      limitados a uma raiz `0700`, usam arquivo `0600`, recusam
+      symlink/hardlink e são copiados para um snapshot privado por execução.
 - [x] Preservar a ordem GHOSTRECON → Vigolium → FrameSeven no Auto.
 - [x] Emitir resultado separado por engine e preservar proveniência.
 - [x] Validar, normalizar e mesclar o `report.json` FrameSeven com deduplicação
@@ -229,6 +245,8 @@ antigo.
 | plano intrusivo recusado | termina sem pipeline, módulo ou engine |
 | RUN manual com qualquer módulo intrusivo sem engagement/ROE/confirm | bloqueado antes de preparar/spawnar engine |
 | RUN manual com perfil ofensivo FrameSeven explícito | segue a mesma regra intrusiva mesmo sem auth-browser |
+| RUN intrusivo sem approval, expirado, reutilizado ou de outro owner | bloqueado antes do pipeline/engine |
+| alvo/engagement/módulos/tools/limites/identidade mudam após popup | hash diverge; aprovação é invalidada |
 | FrameSeven recebe `tools all` ou `-active-scan` | plano/adapter recusa antes do spawn |
 | cliente fecha o stream manual | `AbortSignal` chega ao pipeline e engines |
 | fase recuperável falha e assenta | próxima fase roda; status final `partial` |
@@ -249,6 +267,7 @@ antigo.
 | FrameSeven sem opt-in | não aparece nem executa |
 | FrameSeven auth sem toggle | requisição rejeitada |
 | identidade FrameSeven/Vigolium muda após o plano | spawn recusado |
+| Vigolium aborta, não assenta ou troca identidade | falha terminal; FrameSeven e próxima iteração não iniciam |
 | timeout em captura/aprovação/before-scan/scan | TERM→KILL, settle e cleanup |
 | FrameSeven com erro/truncamento no relatório | um único `engine_partial` após merge |
 | relatório FrameSeven PDF/raw, symlink ou trocado durante leitura | rota responde 404 |
@@ -282,14 +301,26 @@ node --test \
   server/tests/secret-safety.test.js \
   server/tests/write-probes-safety.test.js \
   server/tests/forge-security.test.js \
+  server/tests/manual-recon-approval.test.js \
   server/tests/recon-stream-route.test.js \
+  server/tests/ui-consent-contract.test.js \
   server/tests/frameseven-integration.test.js \
   server/tests/vigolium-bridge.test.js \
   server/tests/vigolium-agent.test.js
+
+npm run test:cli
+npm run test:mcp
 ```
 
 Os checks acima usam mocks e fixtures. Nesta entrega não foi executado scan real
 de rede, navegador autenticado, DAST, Kali, Nmap ou sqlmap.
+
+Uma agregação hermética anterior foi executada excluindo
+`pipeline-smoke.test.js` e separando os testes de loopback
+`tor-tunnel.test.js`/`vigolium-server-client.test.js`. Depois dela, o runtime e
+a suíte receberam novos endurecimentos; portanto a regressão local precisa ser
+reexecutada e registrada contra o estado final, sem depender de um contador
+fixo histórico. Isso continua separado do E2E autenticado P0.
 
 ## Critério de aptidão
 
