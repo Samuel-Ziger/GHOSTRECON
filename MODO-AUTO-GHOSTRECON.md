@@ -1,10 +1,9 @@
 # Modo Auto GHOSTRECON
 
-> Estado verificado em 2026-07-28: **beta supervisionado**. Este documento
-> descreve o contrato operacional atual. Planos e listas de modelos anteriores
-> eram propostas de arquitetura e não devem ser usados como fonte de verdade.
-> O saldo auditável desta evolução, inclusive bloqueadores ainda abertos, está
-> em `STATUS-FINALIZACAO-MODO-AUTO.md`.
+> Estado verificado em 2026-07-30: **beta supervisionado, não finalizado**.
+> Este documento descreve o contrato operacional observado no código e também
+> sinaliza onde a implementação ainda não satisfaz a invariante pretendida.
+> O estado de liberação está em `STATUS-FINALIZACAO-MODO-AUTO.md`.
 
 ## Objetivo
 
@@ -48,7 +47,8 @@ requisição + principal autenticado + alvo
  checkpoint v2 pronto + claim atômico de uso único
                   │
                   ▼
- expansão de dependências, engines e risco
+ expansão externa de dependências, engines e risco
+ (expansão interna do Vigolium ainda é pendente)
                   │
                   ▼
  plano efetivo congelado + SHA-256
@@ -100,11 +100,18 @@ operação que o pipeline ainda trata como ativa ou intrusiva.
 | `hexstrike_intel` | Inteligência e recomendação do HexStrike, não execução automática da ferramenta recomendada |
 | `destructive` | Nunca exposta ao planner Auto |
 
-Capacidades com finalidade de ataque de credenciais, ocultação de identidade ou
-expansão perigosa de escopo ficam fora do Auto mesmo quando a implementação
-atual pareça apenas gerar um plano. Entre os IDs explicitamente proibidos estão
+IDs conhecidos com finalidade de ataque de credenciais, ocultação de identidade
+ou expansão perigosa de escopo são filtrados no catálogo GHOSTRECON. Entre os
+IDs explicitamente proibidos estão
 `cloud_bruteforce`, `cred_spray`, `identity_rotation`, `kali_proxychains`,
 `navegation` e `stealth_requests`.
+
+Essa filtragem ainda não cobre de forma comprovada os módulos internos
+resolvidos pelo Vigolium. `vigolium_dast` pode virar uma seleção interna ampla,
+inclusive com uploads, writes e tentativas de credencial, sem que cada ID
+apareça no popup. Por isso o Vigolium não está liberado no Auto e deve
+permanecer desabilitado por política até a expansão interna, classificação e
+separação desses probes ocorrerem antes dos gates.
 
 O Auto também não delega probes destrutivos do FrameSeven. O FrameSeven é o
 único motor que mantém perfil ofensivo na integração Auto. Os perfis são
@@ -155,18 +162,24 @@ que será expandido, validado e identificado por outro hash.
 
 ## Plano efetivo e invariantes
 
+Os passos abaixo são a invariante exigida. A implementação corrente ainda não a
+cumpre integralmente para módulos internos do Vigolium nem para a política de
+rede dentro de FrameSeven/Vigolium; esses caminhos não devem ser liberados
+enquanto a lacuna permanecer.
+
 A decisão da IA não é enviada diretamente ao pipeline. Antes da execução:
 
 1. aliases e IDs são normalizados;
 2. apenas módulos existentes, disponíveis e permitidos permanecem;
-3. dependências, fases legadas, Kali e engines são expandidos;
+3. dependências, fases legadas, Kali e IDs externos de engines são expandidos;
 4. risco é recalculado sobre a lista expandida;
 5. FrameSeven, Vigolium e HexStrike são conferidos contra seus opt-ins;
 6. preflight de engagement/escopo e gate OPSEC são executados;
 7. o objeto completo é congelado;
 8. um hash SHA-256 identifica o plano;
 9. o popup mostra alvo, módulos, engines, risco, limites e o hash;
-10. o executor recebe exatamente os campos congelados.
+10. o executor recebe os campos congelados e deve provar que nenhuma expansão
+    interna adicional ocorreu.
 
 Quando FrameSeven ou Vigolium participam, a identidade observada do executável
 também entra no catálogo e no plano. Hash, tamanho e metadados são obtidos do
@@ -179,8 +192,9 @@ fases legadas ocultas. No Auto, o modo influencia a escolha explícita do
 planner; o perfil entregue ao pipeline permanece limitado para preservar a
 igualdade entre o plano aprovado e o executado.
 
-Nenhum adapter ou fallback pode injetar módulos após o último gate. Alteração do
-plano exige nova expansão, novo hash e nova validação.
+Nenhum adapter ou fallback pode injetar módulos após o último gate. Hoje essa
+garantia ainda precisa ser implementada para a resolução interna do Vigolium.
+Qualquer alteração deve exigir nova expansão, novo hash e nova validação.
 
 ### Aprovação do Auto × aprovação do RUN manual
 
@@ -279,17 +293,17 @@ O contrato contempla:
 - GHOST/Skynet e modelos OpenAI-compatible locais;
 - Cursor Agent quando realmente utilizável; handoff continua sendo fallback.
 
-Somente providers selecionados e utilizáveis participam. “Instalado”,
-“configurado”, “autenticado”, “alcançável” e “selecionado” são estados
-distintos.
+Somente providers selecionados e utilizáveis participam do conselho.
+“Instalado”, “configurado”, “autenticado”, “alcançável” e “selecionado” são
+estados distintos. Entretanto, quando nenhum selecionado está utilizável, o
+planner ainda pode cair silenciosamente no baseline determinístico. Esse
+comportamento deve virar falha ou estado `degraded` explícito aprovado pelo
+operador; não deve ser apresentado como decisão das IAs escolhidas.
 
 O conselho recebe propostas estruturadas. Módulos inválidos são descartados
-antes do veredito. A arbitragem determinística não eleva risco e não usa um
-provider não selecionado. Empate ou conflito de alto impacto vira
-`ask_operator`; não existe vitória silenciosa por fallback. Uma seleção
-explícita e allowlisted do operador pode impedir que uma decisão prematura
-`finish`/`abstain` suprima o trabalho pedido, mas continua sujeita a todos os
-gates.
+antes do veredito. A arbitragem determinística não deve elevar risco nem usar
+provider não selecionado. Empate ou conflito de alto impacto deve virar
+`ask_operator`. A correção do fallback silencioso continua no backlog.
 
 O planner trata catálogo, HTML, finding, URL, log, RAG e proposta de outro agente
 como dados não confiáveis. Ele não faz rede, não edita o projeto nem executa
@@ -303,13 +317,15 @@ catálogo, versão do prompt, checkpoint e estado terminal.
 - listar, cancelar, aprovar e retomar são limitados ao proprietário;
 - um `sessionId` ativo duplicado é rejeitado;
 - aprovação é de uso único e ligada à sessão;
-- cancelamento durante planner, aprovação, pipeline ou engine aborta as esperas;
+- o sinal de cancelamento é propagado à sessão, mas ainda existe um caminho no
+  conselho capaz de convertê-lo em fallback/conclusão;
 - snapshots são gravados atomicamente com permissão restrita;
 - snapshots `running` órfãos são reconciliados como interrompidos;
 - checkpoints novos usam `checkpointVersion: 2`;
 - somente `ready_for_iteration` e `ready_for_next_iteration` são retomáveis;
 - retomada valida proprietário, alvo, autonomia, `catalogHash`,
-  `promptVersion`, `resumePolicyHash`, plano semântico e identidades dos engines;
+  `promptVersion`, `resumePolicyHash`, plano semântico e identidades dos engines,
+  mas ainda reinicia o orçamento temporal e não vincula todos os limites;
 - cada checkpoint pronto é consumido por claim atômico `wx` e durável antes da
   execução; reuso e rollback são recusados;
 - checkpoint v1 permanece legível para diagnóstico, mas não é retomável;
@@ -318,9 +334,10 @@ catálogo, versão do prompt, checkpoint e estado terminal.
 - sessão `completed` ou `cancelled` não volta a executar.
 
 Estados terminais da sessão incluem `completed`, `failed`, `cancelled`,
-`interrupted`, `timed_out`, `stalled` e `budget_exceeded`. A avaliação e os
-outcomes de pipeline/engine também podem registrar `partial`: houve resultado
-útil e uma ou mais falhas recuperáveis, não execução integral.
+`interrupted`, `timed_out`, `stalled` e `budget_exceeded`. A avaliação pode
+registrar `partial`, mas o orquestrador atualmente fecha resultados não fatais
+como `completed`. Até a correção, o terminal da sessão não prova execução
+integral.
 
 ## Timeout, cancelamento e resiliência
 
@@ -347,9 +364,10 @@ Para cada fase:
 8. uma fase que não assenta gera `PIPELINE_PHASE_UNSETTLED` e interrompe a run
    para evitar dois módulos concorrendo sobre o mesmo estado.
 
-Cancelamento solicitado pelo operador nunca é convertido em falha recuperável.
-Heartbeats indicam telemetria; `currentActivity`, timestamps e outcomes indicam
-progresso real.
+O cancelamento solicitado pelo operador ainda pode ser convertido em resultado
+normal pelo catch do conselho. Heartbeats indicam telemetria, mas o watchdog
+compartilhado e `currentStage` também precisam ser corrigidos para representar
+progresso real por turno.
 
 Ainda existem módulos legados agrupados em uma mesma fase. Portanto, “timeout
 por fase” não significa que cada checkbox legado já possua isolamento individual.
@@ -357,9 +375,9 @@ Essa migração continua no backlog.
 
 O FrameSeven possui deadlines independentes para captura do navegador,
 aprovação do operador, execução de GHOSTRECON/Vigolium anterior ao scan
-autenticado e o próprio scan. Timeout ou cancelamento aborta a etapa,
-envia `SIGTERM` à árvore, escala para `SIGKILL` após a graça e só libera o fluxo
-depois do assentamento limitado do processo e da limpeza dos temporários.
+autenticado e o próprio scan. Há TERM→KILL no adapter, mas a sessão ainda pode
+publicar o terminal antes de todos os recursos assíncronos comprovarem
+encerramento. Cleanup aguardado permanece P0.
 
 ## RAG e observações
 
@@ -373,9 +391,10 @@ lessons, solicitações Forge e handoffs. Antes de persistir:
 - observações são deduplicadas e resumidas;
 - gravações são atômicas e com permissão restrita.
 
-A recuperação prioriza o mesmo alvo e contexto relevante. Memória RAG é
-evidência não confiável, nunca instrução. Falha de persistência deve aparecer na
-sessão; não pode ser silenciosa.
+A recuperação prioriza o mesmo alvo e contexto relevante, mas o store ainda é
+global e não particiona principal/engagement. Memória RAG é evidência não
+confiável, nunca instrução. Alguns caminhos ainda silenciam falha de
+persistência; isolamento, TTL e erro observável permanecem pendentes.
 
 Separadamente do RAG, todo evento produzido pelo orquestrador Auto passa por uma
 fronteira pública de redação antes de atualizar a sessão, entrar na lista de
@@ -459,11 +478,22 @@ importa inteligência e um plano de ferramentas. Uma ferramenta recomendada não
 ### Vigolium
 
 `includeVigolium=true` torna suas capacidades visíveis, desde que o binário
-esteja disponível. Na política atual ele permanece um motor complementar de
-análise defensiva e não recebe o perfil ofensivo do FrameSeven. Estratégias ou
-capacidades Vigolium historicamente classificadas como DAST/intrusivas não são
-autorizadas pela simples inclusão do motor, pela autonomia 4 nem por
-`vigoliumUseCodex`; este último só escolhe o provider do agente.
+esteja disponível. O catálogo externo ainda representa o DAST por IDs amplos,
+enquanto a CLI pode resolver internamente seleção vazia, tags e filtros para um
+conjunto maior. O registry interno inclui capacidades de escrita e tentativa de
+credencial que não aparecem individualmente no plano GHOSTRECON.
+
+Por isso o Vigolium não está liberado no Auto e deve permanecer desabilitado por
+política até:
+
+- resolver todos os IDs internos antes dos gates;
+- falhar fechado para seleção vazia/inválida/ambígua;
+- excluir writes e credential probes do opt-in genérico;
+- transportar e impor a `scopePolicy` formal dentro do engine;
+- produzir outcome verdadeiro por módulo interno.
+
+`vigoliumUseCodex` apenas seleciona o provider do agente e nunca autoriza DAST,
+write, credencial ou ampliação de escopo.
 
 ### FrameSeven
 
@@ -473,10 +503,17 @@ do navegador. O contexto autenticado:
 
 - valida a origem;
 - tem TTL;
-- é consumido uma vez;
+- pretende ser consumido uma vez;
 - usa diretório `0700` e arquivo `0600`;
 - não coloca senha, cookie ou token em argv/log/RAG;
-- é removido ao final ou no cancelamento.
+- deve ser removido ao final ou no cancelamento.
+
+O adapter ainda não transporta a allowlist formal para dentro do CLI. Validar o
+alvo raiz e revalidar o engagement antes do spawn não contém, por si só,
+redirects, crawler, subdomínios, IPs ou portas descobertas. O modo ofensivo e o
+fluxo autenticado não estão liberados e devem permanecer desabilitados por
+política até essa política ser imposta no engine e o consumo único/cleanup
+serem comprovados por E2E.
 
 No RUN manual, a regra geral é exigir autorização formal para qualquer módulo
 intrusivo do plano expandido. `includeFrameSeven=true` seleciona o perfil
@@ -511,14 +548,16 @@ foram selecionados, é:
 GHOSTRECON → Vigolium → FrameSeven
 ```
 
-Cada engine produz outcome próprio (`done`, `partial`, `skipped`, `failed`,
-`timeout` ou `cancelled`) e conserva sua proveniência.
+Cada engine emite eventos de outcome, mas parte dos estados de módulo ainda é
+inferida por pipe/fase e pode divergir da execução real. O contrato pendente
+exige `done`, `partial`, `skipped`, `failed`, `timeout` ou `cancelled` derivados
+do runner.
 
-O adapter posterga o terminal de sucesso até o `report.json` ser validado por
-schema, origem e tamanho, normalizado e mesclado. A deduplicação agrega fontes e
-evidências em vez de apagar proveniência. Exit code recuperável com relatório
-útil, erros/truncamento no relatório ou falha posterior de merge resultam em um
-único `engine_partial`; cancelamento continua sendo terminal distinto.
+O adapter posterga seu evento de sucesso até o `report.json` ser validado,
+normalizado e mesclado. Porém a sessão Auto ainda pode fechar como `completed`
+quando a avaliação é parcial, e o cockpit abandona o stream em qualquer evento
+`error`, inclusive recuperável. O terminal único e a proveniência consolidada
+da sessão permanecem pendentes.
 
 Relatórios válidos sob `reports/` são servidos por
 `GET /api/frameseven/reports/:reportId/:file`. O material exposto é regenerado
@@ -581,6 +620,11 @@ desconexão do navegador como prova automática de falha do scanner.
 Eventos Auto são sanitizados antes de entrar na sessão e no stream; payloads
 brutos de subprocessos não devem contornar essa função.
 
+O cockpit atual interrompe a leitura em qualquer evento `error`, mesmo quando
+`recoverable:true`. Até a correção, ele pode perder o terminal enquanto o
+backend continua trabalhando. Consumidores não devem tratar “AUTO COMPLETO”
+como evidência suficiente sem conferir o terminal e os outcomes reais.
+
 ## Verificação local
 
 As regressões centrais podem ser verificadas sem alvo externo:
@@ -617,6 +661,7 @@ Checks complementares:
 ```bash
 node --test server/tests/opsec.test.js
 node --test server/tests/auth.test.js
+node --test server/tests/auth-principal-restart.test.js
 node --test server/tests/engagement.test.js
 GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js')"
 npm run test:cli
@@ -627,99 +672,41 @@ Esta evolução foi desenhada e testada com executores injetados, mocks e
 fixtures. Nenhum scan real de rede, navegador autenticado, DAST, Kali, Nmap,
 sqlmap ou alvo externo faz parte da validação documental desta entrega.
 
-Uma agregação hermética anterior foi executada excluindo
-`pipeline-smoke.test.js` e separando os testes de loopback
-`tor-tunnel.test.js`/`vigolium-server-client.test.js`. Como o código e a suíte
-continuaram evoluindo, essa execução não representa a revisão corrente e não
-há contador fixo declarado aqui. Antes de promover o Auto, repita os checks
-direcionados, a agregação hermética compatível com o ambiente e os E2E
-controlados aplicáveis.
+O gate corrente não está verde: `auto-agent.test.js` contém uma referência
+inexistente a `pipelineState`, e o teste de binding de principal entre
+processos precisa ser adaptado ao harness do Node 22. `pipeline-smoke.test.js`
+usa rede e deve sair do gate hermético para um job opt-in autorizado.
 
 ## Limitações conhecidas
 
-1. O catálogo é híbrido; ainda há duplicação de classificação entre manifests,
-   OPSEC e a lista de capacidades legadas.
-2. O limite resiliente é por fase. Módulos legados dentro da mesma fase ainda
-   precisam ser migrados para deadlines individuais.
-3. O adapter FrameSeven não propaga uma política Tor/proxy estrita. Não trate
-   sua seleção como garantia de paridade de transporte OPSEC.
-4. A paridade residual de autenticação, proveniência e relatório entre RUN
-   normal e Auto ainda precisa de teste ponta a ponta com navegador real
-   controlado. Até esse E2E, níveis 3/4 permanecem experimentais.
+1. módulos internos do Vigolium não são expandidos individualmente antes dos
+   gates e podem incluir writes/credential attempts;
+2. FrameSeven/Vigolium não recebem a `scopePolicy` formal completa;
+3. alguns redirects e `jwks_uri` ainda podem sair do escopo;
+4. cancelamento/timeout de provider pode virar fallback ou `completed`;
+5. o dispatcher pode emitir `done` depois de erro;
+6. `partial` não é terminal real da sessão e a UI abandona erros recuperáveis;
+7. retomada reinicia orçamento temporal e não vincula todos os limites;
+8. recursos assíncronos não são aguardados integralmente antes do terminal;
+9. RAG não está isolado por principal/engagement e não possui TTL comum;
+10. planos ativos podem rodar sem engagement formal;
+11. timeout, outcome e progresso ainda são amplos por fase;
+12. não existe `runId`/relatório Auto consolidado entre iterações e engines;
+13. catálogo/classificação/readiness continuam híbridos;
+14. fallback de IA, consentimento cloud e custo não são plenamente
+    verificáveis;
+15. FrameSeven não transporta Tor/proxy estrito;
+16. regressão hermética e E2E autenticado continuam pendentes.
 
 O backlog atualizado está em
 `MELHORIAS-PENDENTES-MODO-AUTO.md`.
 
-## Histórico preservado
+## Estado de liberação
 
-### 2026-07-05 — blueprint inicial
-
-Foi definido o princípio comandante/ferramenta/orquestrador, o endpoint NDJSON,
-o primeiro catálogo passivo, o detector de providers, o HexStrike intelligence
-e a memória Markdown. Tabelas antigas de “melhor modelo” e nomes futuros eram
-exemplos aspiracionais e foram removidas do contrato operacional porque
-disponibilidade e IDs de modelos mudam.
-
-### 2026-07-14 — decisão real e conselho
-
-Entraram schema de decisão, adaptadores reais, conselho, persistência de turnos,
-RAG orientado ao alvo, Forge pending/review/approval e isolamento de geração.
-
-### 2026-07-16 — ciclo de vida
-
-Entraram probes de usabilidade, sessão persistente, limites, cancelamento,
-checkpoints, App Server Codex, Cursor Agent opcional, canary/rollback Forge e
-reparo JSON limitado.
-
-### 2026-07-20 — estabilização inicial
-
-Execuções reais expuseram falhas de timeout do App Server e stalls no CORS.
-Foram adicionados watchdog, cancelamento individual, reconciliação de sessões e
-correções iniciais. A afirmação histórica de “desenvolvimento pausado” não é
-mais o estado atual.
-
-### 2026-07-25 — plano efetivo e endurecimento
-
-O catálogo passou a cobrir manifests, legado e engines; o plano efetivo ganhou
-expansão, hash e aprovação; níveis de autonomia passaram a ter política
-explícita; sessões receberam ownership/RBAC; providers e subprocessos ganharam
-encerramento em dois estágios; o pipeline Auto ganhou resiliência por fase; RAG
-e Forge receberam redação, limites, isolamento e integridade. Probes implícitos
-passaram a exigir capacidades explícitas no Auto; classificações divergentes
-passaram a escolher o maior risco; write probes e validação online de segredos
-foram separados e fechados por padrão.
-
-### 2026-07-26 — retomada, Forge e FrameSeven
-
-Checkpoints v2 passaram a representar somente fronteiras prontas e receberam
-claim durável anti-replay. O catálogo passou a vincular identidade dos engines e
-integridade Forge. O runtime Forge ganhou runner forte Bubblewrap, ativação
-exclusiva por `activationId` e canário hash-bound. Eventos Auto passaram por
-redação central antes da sessão/NDJSON. O FrameSeven passou a normalizar e
-mesclar `report.json`, emitir um único terminal depois do merge e servir
-relatórios por rota autenticada e contida.
-
-Na revisão posterior do mesmo dia, o RUN manual recebeu cancelamento propagado
-por `AbortSignal` e engagement/ROE formal para todo plano intrusivo expandido.
-Naquele estágio histórico, a integração FrameSeven ainda dependia de
-`tools all`; essa seleção foi posteriormente substituída pelos perfis explícitos
-recon e ofensivo descritos neste documento. FrameSeven e Vigolium passaram a
-revalidar a identidade selada antes de cada processo; o FrameSeven ganhou
-deadlines separados por etapa. O lifecycle Forge passou a comparar
-alvo/artefato/engagement sob lock, revalidar a autorização antes e depois do
-canário e executar somente o módulo dinâmico com atestação por operação.
-Relatórios públicos FrameSeven passaram a ser artefatos HTML/JSON/Markdown
-regenerados e redigidos, lidos por descritor seguro e autorizados por
-owner/engagement.
-
-### 2026-07-28 — falhas fatais e aprovação manual vinculada
-
-Falhas fatais do Vigolium passaram a atravessar bridges, fases e catches do
-orquestrador sem serem rebaixadas para erro recuperável; regressões impedem
-FrameSeven, nova iteração e avaliação depois dessas falhas. O RUN manual ganhou
-preflight, decisão e consumo único de aprovação vinculada ao plano, com
-owner/TTL e identidades seladas. O cockpit, a CLI, o MCP e o GhostWatch passaram
-a respeitar o mesmo gate, com interações diferentes: popup, confirmação do hash
-em TTY, handoff para aprovação externa e bloqueio automático, respectivamente.
-Checks direcionados passaram naquele estágio; após as mudanças posteriores, a
-agregação hermética e o E2E autenticado real precisam ser executados novamente.
+| Caminho | Estado |
+| --- | --- |
+| `observation` | somente piloto passivo controlado |
+| `assisted` | laboratório controlado; não liberado operacionalmente |
+| `authorized` / `authorized_opsec` | experimentais no código; não liberados e devem permanecer desabilitados por política |
+| Vigolium Auto | não liberado; deve permanecer desabilitado por política |
+| FrameSeven ofensivo/autenticado | não liberado; deve permanecer desabilitado por política |

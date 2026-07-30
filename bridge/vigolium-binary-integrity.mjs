@@ -10,6 +10,41 @@ function identityError(message) {
   return error;
 }
 
+export function assertVigoliumBinaryIdentityShape(expectedIdentity) {
+  if (
+    !expectedIdentity
+    || typeof expectedIdentity !== 'object'
+    || Array.isArray(expectedIdentity)
+    || expectedIdentity.algorithm !== 'sha256'
+    || !SHA256_RE.test(String(expectedIdentity.sha256 || ''))
+    || !Number.isSafeInteger(Number(expectedIdentity.size))
+    || Number(expectedIdentity.size) < 0
+  ) {
+    throw identityError('identidade esperada do Vigolium é inválida');
+  }
+  for (const key of ['dev', 'ino', 'mode']) {
+    if (
+      expectedIdentity[key] != null
+      && (
+        !Number.isSafeInteger(Number(expectedIdentity[key]))
+        || Number(expectedIdentity[key]) < 0
+      )
+    ) {
+      throw identityError(`identidade esperada do Vigolium possui ${key} inválido`);
+    }
+  }
+  if (
+    expectedIdentity.mtimeMs != null
+    && (
+      !Number.isFinite(Number(expectedIdentity.mtimeMs))
+      || Number(expectedIdentity.mtimeMs) < 0
+    )
+  ) {
+    throw identityError('identidade esperada do Vigolium possui mtimeMs inválido');
+  }
+  return expectedIdentity;
+}
+
 async function hashFileHandle(handle) {
   const hash = createHash('sha256');
   const buffer = Buffer.allocUnsafe(64 * 1024);
@@ -29,14 +64,7 @@ async function hashFileHandle(handle) {
  */
 export async function assertVigoliumBinaryIdentity(binary, expectedIdentity) {
   if (!expectedIdentity) return null;
-  if (
-    expectedIdentity.algorithm !== 'sha256'
-    || !SHA256_RE.test(String(expectedIdentity.sha256 || ''))
-    || !Number.isSafeInteger(Number(expectedIdentity.size))
-    || Number(expectedIdentity.size) < 0
-  ) {
-    throw identityError('identidade esperada do Vigolium é inválida');
-  }
+  assertVigoliumBinaryIdentityShape(expectedIdentity);
 
   const actual = await inspectVigoliumBinaryIdentity(binary);
   if (

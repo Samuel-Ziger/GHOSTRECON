@@ -97,9 +97,10 @@ confirmação específica, marcador não destrutivo e limpeza verificável.
   registry, módulos Forge dinâmicos e ferramentas externas. Não presuma que
   todo módulo passa hoje pelo registry.
 - Auto Mode é beta supervisionado. Os níveis `observation` e `assisted` devem
-  permanecer conservadores; `authorized` e `authorized_opsec` são experimentais
-  até existir cobertura completa de RBAC, engagement, aprovação, timeout,
-  cancelamento, retomada e auditoria.
+  permanecer conservadores; `authorized` e `authorized_opsec` são
+  experimentais no código, não liberados operacionalmente e devem permanecer
+  desabilitados por política até existir cobertura completa de RBAC,
+  engagement, aprovação, timeout, cancelamento, retomada e auditoria.
 - O RUN integrado tenta executar o pipeline GHOSTRECON/Vigolium e, quando o
   binário está disponível, FrameSeven. As integrações inteiras não são
   simplesmente opt-in no código atual; o modo autenticado do FrameSeven e o uso
@@ -329,16 +330,18 @@ permitidas e escolher somente IDs existentes e disponíveis.
 - Módulo solicitado diretamente pelo operador também deve existir e passar
   catálogo/gates; validação não vale apenas para saída de IA.
 - O conselho pós-pipeline deve preservar a autonomia e a política da sessão.
-- Toda expansão efetiva ocorre antes dos gates descritos acima.
+- Toda expansão efetiva deve ocorrer antes dos gates descritos acima; a
+  resolução interna do Vigolium ainda viola essa invariante.
 - `authorized` e `authorized_opsec` devem exigir papel intrusivo, engagement
   válido quando aplicável e confirmação específica do plano.
 - O popup deve explicar módulos, engines, alvo, risco, limites e consequência da
   aprovação.
-- Forge deve continuar proibindo módulo intrusivo. Seus testes rodam em
-  subprocesso restrito, mas o módulo ativo aprovado ainda é importado no
-  processo principal por `server/auto-agent/forge/runtime-loader.mjs`; trate-o
-  como código não confiável e preserve validação, revisão, aprovação e canário.
-  O planner nunca escreve o código.
+- Forge deve continuar proibindo módulo intrusivo. Teste, canário e runtime
+  aprovado usam o runner forte Bubblewrap e falham fechado sem ele. Trate o
+  pacote como código não confiável, preserve validação, revisão, aprovação,
+  integridade e canário, e mantenha pendente o E2E real de timeout,
+  cancelamento, atestação e ausência de resíduos. O planner nunca escreve o
+  código.
 
 ### Ciclo de vida
 
@@ -549,31 +552,42 @@ executado sem evidência verificável.
 Até que código e testes comprovem a correção, trate estes itens como pendências,
 não como salvaguardas já garantidas:
 
-1. expandir Vigolium/engines e qualquer módulo implícito antes de RBAC,
-   engagement e gate OPSEC no RUN e no Auto;
-2. exigir `recon.intrusive` para autonomias 3/4 e validar engagement no Auto;
-3. impedir que `aggressive` substitua confirmação humana;
-4. unificar a classificação de risco entre manifests, OPSEC, RBAC, engagement e
-   catálogo;
-5. manter política/autonomia no conselho pós-pipeline e bloquear fallback com
-   privilégio maior;
-6. implementar deadline e cancelamento reais por módulo, subprocesso, browser e
-   espera de aprovação;
-7. validar compatibilidade completa de snapshots antes de retomar;
-8. tornar AuthContext realmente single-use, com TTL e limpeza comprovada;
-9. remover credenciais de argv/logs do Vigolium e de clones Git;
-10. conectar e testar o popup FrameSeven no RUN normal;
-11. obter paridade de fusão, proveniência e relatório FrameSeven entre RUN e
-    Auto;
-12. proteger a rota de relatório FrameSeven e representar `done/skipped/failed`
-    conforme execução real;
-13. centralizar redação antes de RAG, snapshots, relatórios e persistência;
-14. rastrear PID/process-group dos serviços iniciados pela stack e fornecer
-    stop/status confiáveis;
-15. separar e desligar por padrão probes de escrita do Supabase e qualquer
-    capacidade ativa/destrutiva equivalente;
-16. isolar no runtime os módulos Forge aprovados, que hoje ainda são importados
-    no processo principal.
+1. expandir todos os IDs internos do Vigolium antes de RBAC, engagement, OPSEC
+   e aprovação; seleção vazia/inválida não pode virar `all`;
+2. separar e bloquear por padrão writes, uploads, stored payloads e tentativas
+   de credencial do Vigolium;
+3. propagar a `scopePolicy` congelada para FrameSeven/Vigolium e revalidar
+   redirects, crawler, subdomínios, DNS→IP, CIDRs, `jwks_uri` e origem
+   autenticada;
+4. exigir engagement/ROE formal para toda execução ativa operacional, não
+   apenas para itens classificados como intrusivos;
+5. repropagar abort, timeout e falhas fatais no conselho, providers e
+   dispatcher; nenhum catch pode convertê-los em fallback, `done` ou
+   `completed`;
+6. derivar outcomes por módulo da execução real e emitir terminais distintos
+   para completo, parcial, falha, cancelamento e timeout;
+7. corrigir a UI para continuar o NDJSON em erro recuperável e não mostrar
+   “AUTO COMPLETO” para resultado parcial/incompleto;
+8. persistir deadline e orçamentos absolutos; resume não pode renovar tempo,
+   chamadas, custo ou iterações;
+9. aguardar browser, App Server, process groups, workers e temporários
+   encerrarem antes do evento terminal;
+10. persistir aprovação pendente antes da espera e tornar reconciliação/falhas
+    de snapshot observáveis;
+11. particionar RAG, snapshots e artefatos por principal/engagement/alvo, com
+    TTL e política de retenção;
+12. tornar fallback de IA degradado explícito e exigir consentimento/política de
+    dados/custo antes de provider externo receber evidência privada;
+13. criar um `runId` e relatório Auto consolidado entre iterações e motores,
+    preservando proveniência e estado parcial;
+14. unificar classificação/readiness do catálogo e aplicar deadline,
+    cancelamento e progresso reais por módulo;
+15. transportar Tor/proxy estrito ao FrameSeven ou bloquear o engine nesse
+    perfil; fechar a paridade residual de UI, CLI, MCP, RUN e Auto e fornecer
+    `stop/status` confiáveis para sidecars;
+16. criar regressão hermética verde, separar o smoke de rede e executar E2E
+    controlado de escopo, autenticação, cancelamento, timeout, restart, redação
+    e ausência de resíduos.
 
 Mudanças nessas áreas exigem testes de regressão que cubram caminho positivo,
 negação, timeout, cancelamento, desconexão, restart e ausência de segredos.

@@ -278,10 +278,18 @@ A CLI também oferece `projects`, `engagement`, `narrative`, `purple`, `team`, `
 
 ## Modo Auto
 
-O Modo Auto é um orquestrador **supervisionado**. As IAs selecionadas propõem um
-plano; o GHOSTRECON valida o contrato, expande dependências e engines, aplica
-RBAC, escopo, engagement e OPSEC, solicita a aprovação necessária e somente
-então executa o plano congelado.
+O Modo Auto é um orquestrador **supervisionado**. Seu contrato exige que as IAs
+selecionadas proponham um plano e que o GHOSTRECON expanda, gateie e execute
+exatamente o objeto congelado. A implementação cobre o plano externo, mas ainda
+não satisfaz essa invariante para a expansão interna do Vigolium nem para a
+política de rede dentro de todos os engines.
+
+> [!CAUTION]
+> O Auto não está finalizado. `observation` é apenas piloto passivo controlado;
+> `assisted` fica restrito a laboratório; `authorized`,
+> `authorized_opsec`, Vigolium Auto e FrameSeven ofensivo/autenticado estão
+> implementados experimentalmente, mas não estão liberados e devem permanecer
+> desabilitados por política enquanto os P0 permanecerem abertos.
 
 ```text
 CONTEXTO REDIGIDO + CATÁLOGO + RAG
@@ -292,7 +300,8 @@ CONTEXTO REDIGIDO + CATÁLOGO + RAG
                   ↓
         CHECKPOINT V2 + CLAIM ÚNICO
                   ↓
-     PLANO EFETIVO EXPANDIDO + HASH
+ PLANO EXTERNO EXPANDIDO + HASH
+ (VIGOLIUM INTERNO AINDA PENDENTE)
                   ↓
        RBAC + ESCOPO + ROE + OPSEC
                   ↓
@@ -304,11 +313,12 @@ CONTEXTO REDIGIDO + CATÁLOGO + RAG
 ```
 
 O catálogo do Auto combina manifests, fases legadas, módulos Forge ativos e
-engines externas. Cada item é classificado como `passive`, `deep_passive`,
-`active`, `intrusive` ou `hexstrike_intel`. Capacidades destrutivas ou voltadas
-a credenciais, ocultação de identidade e expansão indevida de escopo não são
-delegadas ao Auto, inclusive na autonomia máxima. Quando manifest e legado
-divergem, vale a classe de maior risco e os requisitos são combinados.
+engines externas. Cada item externo é classificado como `passive`,
+`deep_passive`, `active`, `intrusive` ou `hexstrike_intel`. A resolução interna
+do Vigolium ainda não é expandida integralmente antes dos gates e pode carregar
+capabilities de escrita ou tentativa de credencial que não aparecem
+individualmente no popup. Por isso o opt-in do Vigolium não deve ser usado até
+essa expansão falhar fechado e writes/credential probes serem separados.
 
 ### Autonomia
 
@@ -334,7 +344,9 @@ O ciclo de retomada usa checkpoints v2 nas fronteiras
 `ready_for_iteration`/`ready_for_next_iteration`. Cada plano pronto é consumido
 por um claim atômico e durável antes da execução; reuso e rollback são
 recusados. Checkpoints v1 continuam legíveis para diagnóstico, mas não são
-retomáveis, e não existe retomada no meio de engine ou avaliação.
+retomáveis, e não existe retomada no meio de engine ou avaliação. O orçamento
+temporal, porém, ainda é reiniciado no resume e nem todos os limites fazem parte
+da política de compatibilidade.
 
 Módulos Forge aprovados usam um runner forte Bubblewrap em Linux. Sem esse
 sandbox, o catálogo os marca como indisponíveis e aprovação/canário falham
@@ -361,12 +373,11 @@ pela simples presença de token, anon key, `service_role` ou variável de
 ambiente. Quando auth é compartilhado com Vigolium, ele segue por arquivo
 temporário restrito, não por argv/log.
 
-O timeout do Auto é aplicado por fase. Uma falha recuperável é registrada e a
-execução só segue quando a fase realmente encerrou; processo que não responde a
-`SIGTERM` recebe `SIGKILL`. Resultado útil com falhas recuperáveis termina como
-`partial`, e não como sucesso silencioso. O caminho manual continua fail-fast
-por padrão, mas agora cria seu próprio `AbortController`: abort do request ou
-fechamento do stream é propagado ao pipeline, Vigolium e FrameSeven.
+O timeout do Auto é aplicado por fase e os runners gerenciados possuem
+TERM→KILL. Ainda existem caminhos em que cancelamento/falha fatal é capturado,
+um módulo é marcado como `done` ou uma avaliação `partial` fecha a sessão como
+`completed`. A UI também abandona o stream em qualquer evento `error`, inclusive
+recuperável. Até a correção, o terminal exibido não é prova de conclusão real.
 
 No RUN manual, qualquer módulo intrusivo encontrado depois da expansão de
 aliases, engines e dependências exige cumulativamente `recon.intrusive`,
@@ -399,6 +410,11 @@ separados para captura autenticada, aprovação humana, trabalho anterior ao sca
 e scan, com encerramento
 `SIGTERM` → `SIGKILL` e espera limitada de assentamento.
 
+O adapter ainda não transporta a `scopePolicy` formal para dentro do CLI.
+Redirects, crawler, subdomínios, IPs e portas descobertas não têm contenção
+comprovada pela allowlist do engagement; o perfil ofensivo/autenticado não está
+liberado e deve permanecer desabilitado por política.
+
 No FrameSeven, o terminal de sucesso só é emitido depois de validar, normalizar
 e mesclar o `report.json`. Evidência útil com erro recuperável de scan, relatório
 incompleto ou falha de merge gera um único `engine_partial`. A rota protegida
@@ -416,19 +432,23 @@ ferramentas externas.
 
 Provedores contemplados pelo contrato incluem Codex, Claude Code, Cursor,
 OpenRouter, GHOST/modelo local e endpoints OpenAI-compatible. A disponibilidade
-depende da instalação e configuração local. Decisões e memórias redigidas ficam
-em `data/auto-rag/`; o endpoint principal é
+depende da instalação e configuração local. Quando todos os selecionados estão
+indisponíveis, o backend ainda pode usar baseline determinístico sem um estado
+degradado explícito. O RAG ainda não é particionado por principal/engagement, e
+consentimento, custo e política para providers externos precisam ser
+verificáveis antes de evidência autenticada. O endpoint principal é
 `POST /api/recon/auto/stream`.
 
 > [!IMPORTANT]
 > Autonomia é uma política de seleção, nunca autorização do alvo. Níveis 3/4
-> continuam experimentais e devem ser usados apenas com escopo e ROE explícitos.
+> não estão liberados e devem permanecer desabilitados por política;
+> `assisted` também não está liberado operacionalmente.
 
-Limites atuais: o catálogo/classificação ainda são híbridos; parte dos módulos
-legados compartilha timeout por fase; o adapter FrameSeven ainda não transporta
-Tor/proxy estrito; e a paridade residual entre RUN e Auto — especialmente o
-fluxo autenticado com navegador real controlado — ainda precisa de validação
-ponta a ponta.
+Pendências centrais: expansão interna do Vigolium; scope em todos os engines e
+redirects; propagação fatal de cancelamento/timeout; outcomes e terminais
+verdadeiros; deadline absoluto no resume; cleanup aguardado; RAG isolado;
+engagement para ações ativas; relatório Auto consolidado; readiness real do
+catálogo; regressão hermética e E2E controlado.
 
 Leia [MODO-AUTO-GHOSTRECON.md](MODO-AUTO-GHOSTRECON.md) para o contrato
 operacional, [STATUS-FINALIZACAO-MODO-AUTO.md](STATUS-FINALIZACAO-MODO-AUTO.md)
@@ -684,6 +704,7 @@ node --test \
   server/tests/auto-planner-contract.test.js \
   server/tests/auto-effective-plan.test.js \
   server/tests/auto-session-security.test.js \
+  server/tests/auth-principal-restart.test.js \
   server/tests/auto-rag-runtime-security.test.js \
   server/tests/auto-strict-phase-gates.test.js \
   server/tests/auto-content-network-gates.test.js \
@@ -709,18 +730,14 @@ npm run test:mcp
 GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js').then(() => console.log('node app ok'))"
 ```
 
-`npm test` inclui cenários que podem não ser totalmente herméticos. Revise o
-alvo e a política de rede antes da suíte completa. As melhorias atuais do Auto
-foram desenhadas para validação por mocks/fixtures; elas não equivalem a um scan
-real de navegador, DAST, Kali ou rede externa.
+O gate Auto corrente não está verde: `auto-agent.test.js` referencia
+`pipelineState` inexistente, e `auth-principal-restart.test.js` precisa ser
+adaptado ao harness de subprocessos do Node 22. `npm test` também inclui
+`pipeline-smoke.test.js`, que pode consultar `example.com`; esse smoke deve ser
+separado em job opt-in/autorizado antes de existir um gate hermético oficial.
 
-Uma agregação hermética anterior foi executada excluindo
-`pipeline-smoke.test.js`, que pode acessar rede, e separando os testes de
-loopback `tor-tunnel.test.js`/`vigolium-server-client.test.js`. Como novos
-testes e endurecimentos foram adicionados depois dessa execução, não há um
-contador fixo vigente neste README: rode novamente os checks direcionados e a
-agregação compatível com o ambiente antes de promover uma versão. O E2E
-autenticado real continua pendente.
+Mocks e fixtures não substituem o E2E controlado de navegador, DAST,
+cancelamento, restart, contenção de escopo, redação e cleanup.
 
 ## Troubleshooting
 
@@ -763,12 +780,13 @@ Verifique `GHOSTRECON_HEXSTRIKE_URL`, o ambiente Python e o health endpoint do s
 
 - [Modo Auto e conselho de IAs](MODO-AUTO-GHOSTRECON.md)
 - [Status de finalização do Modo Auto](STATUS-FINALIZACAO-MODO-AUTO.md)
+- [Pendências de IA do Modo Auto](PLANO-MELHORIAS-AUTO-IA.md)
 - [Autenticação, RBAC e scopes](docs/AUTH-RBAC.md)
 - [Tor strict e proteção anti-leak](docs/TOR.md)
 - [Contrato de módulos](docs/MODULE-CONTRACT.md)
-- [Integração autenticada do FrameSeven](PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md)
-- [Estado e evolução do FrameSeven](FRAMESEVEN-INTEGRACAO-FUTURA.md)
-- [Fusão GHOSTRECON + Vigolium](FUSAO-VIGOLIUM.md)
+- [Pendências da integração autenticada do FrameSeven](PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md)
+- [Pendências futuras do FrameSeven](FRAMESEVEN-INTEGRACAO-FUTURA.md)
+- [Pendências GHOSTRECON + Vigolium](FUSAO-VIGOLIUM.md)
 - [Melhorias pendentes do Modo Auto](MELHORIAS-PENDENTES-MODO-AUTO.md)
 
 ## Licenças e terceiros
