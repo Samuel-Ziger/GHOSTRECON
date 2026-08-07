@@ -295,10 +295,10 @@ O contrato contempla:
 
 Somente providers selecionados e utilizáveis participam do conselho.
 “Instalado”, “configurado”, “autenticado”, “alcançável” e “selecionado” são
-estados distintos. Entretanto, quando nenhum selecionado está utilizável, o
-planner ainda pode cair silenciosamente no baseline determinístico. Esse
-comportamento deve virar falha ou estado `degraded` explícito aprovado pelo
-operador; não deve ser apresentado como decisão das IAs escolhidas.
+estados distintos. Quando commanders foram selecionados e nenhum produz
+decisão válida, o Auto emite `auto_council_degraded` e força `ask_operator`
+em vez de baseline silencioso. O baseline determinístico permanece apenas
+quando nenhum commander foi pedido (modo intencional).
 
 O conselho recebe propostas estruturadas. Módulos inválidos são descartados
 antes do veredito. A arbitragem determinística não deve elevar risco nem usar
@@ -333,11 +333,10 @@ catálogo, versão do prompt, checkpoint e estado terminal.
   meio de efeitos: exigem uma nova execução;
 - sessão `completed` ou `cancelled` não volta a executar.
 
-Estados terminais da sessão incluem `completed`, `failed`, `cancelled`,
-`interrupted`, `timed_out`, `stalled` e `budget_exceeded`. A avaliação pode
-registrar `partial`, mas o orquestrador atualmente fecha resultados não fatais
-como `completed`. Até a correção, o terminal da sessão não prova execução
-integral.
+Estados terminais da sessão incluem `completed`, `partial`, `failed`,
+`cancelled`, `interrupted`, `timed_out`, `stalled` e `budget_exceeded`. O
+orquestrador propaga `evaluation.status` ao terminal da sessão: falhas
+recuperáveis de fase fecham como `partial`, não como `completed`.
 
 ## Timeout, cancelamento e resiliência
 
@@ -364,10 +363,10 @@ Para cada fase:
 8. uma fase que não assenta gera `PIPELINE_PHASE_UNSETTLED` e interrompe a run
    para evitar dois módulos concorrendo sobre o mesmo estado.
 
-O cancelamento solicitado pelo operador ainda pode ser convertido em resultado
-normal pelo catch do conselho. Heartbeats indicam telemetria, mas o watchdog
-compartilhado e `currentStage` também precisam ser corrigidos para representar
-progresso real por turno.
+O cancelamento durante o turno do conselho é repropagado como `AbortError` e
+não vira turno `ok:false` nem baseline silencioso. Heartbeats indicam
+telemetria, mas o watchdog compartilhado e `currentStage` ainda precisam
+representar progresso real por turno.
 
 Ainda existem módulos legados agrupados em uma mesma fase. Portanto, “timeout
 por fase” não significa que cada checkbox legado já possua isolamento individual.
@@ -620,10 +619,11 @@ desconexão do navegador como prova automática de falha do scanner.
 Eventos Auto são sanitizados antes de entrar na sessão e no stream; payloads
 brutos de subprocessos não devem contornar essa função.
 
-O cockpit atual interrompe a leitura em qualquer evento `error`, mesmo quando
-`recoverable:true`. Até a correção, ele pode perder o terminal enquanto o
-backend continua trabalhando. Consumidores não devem tratar “AUTO COMPLETO”
-como evidência suficiente sem conferir o terminal e os outcomes reais.
+O cockpit continua o NDJSON após `error` com `recoverable:true` e distingue
+`AUTO COMPLETO` de `AUTO PARCIAL` conforme `auto_session.phase`. Consumidores
+ainda devem conferir outcomes reais; `completed` prova ausência de falha
+recuperável registrada, não necessariamente cobertura integral de todos os
+módulos desejados.
 
 ## Verificação local
 
@@ -672,10 +672,10 @@ Esta evolução foi desenhada e testada com executores injetados, mocks e
 fixtures. Nenhum scan real de rede, navegador autenticado, DAST, Kali, Nmap,
 sqlmap ou alvo externo faz parte da validação documental desta entrega.
 
-O gate corrente não está verde: `auto-agent.test.js` contém uma referência
-inexistente a `pipelineState`, e o teste de binding de principal entre
-processos precisa ser adaptado ao harness do Node 22. `pipeline-smoke.test.js`
-usa rede e deve sair do gate hermético para um job opt-in autorizado.
+A referência inexistente a `pipelineState` em `auto-agent.test.js` foi
+corrigida. Binding de principal entre processos está coberto por
+`auth-principal-restart.test.js`. `npm test` é hermético; o smoke de rede fica
+em `npm run test:network` / job CI opt-in. Gate Auto: `npm run test:auto:hermetic`.
 
 ## Limitações conhecidas
 
@@ -683,9 +683,11 @@ usa rede e deve sair do gate hermético para um job opt-in autorizado.
    gates e podem incluir writes/credential attempts;
 2. FrameSeven/Vigolium não recebem a `scopePolicy` formal completa;
 3. alguns redirects e `jwks_uri` ainda podem sair do escopo;
-4. cancelamento/timeout de provider pode virar fallback ou `completed`;
+4. cancelamento no conselho é repropagado; timeout/abort no dispatcher e
+   pós-pipeline ainda têm lacunas;
 5. o dispatcher pode emitir `done` depois de erro;
-6. `partial` não é terminal real da sessão e a UI abandona erros recuperáveis;
+6. terminal `partial` e UI recuperável estão no caminho Auto; outcomes por
+   módulo ainda podem ser inferidos por fase;
 7. retomada reinicia orçamento temporal e não vincula todos os limites;
 8. recursos assíncronos não são aguardados integralmente antes do terminal;
 9. RAG não está isolado por principal/engagement e não possui TTL comum;
@@ -693,10 +695,10 @@ usa rede e deve sair do gate hermético para um job opt-in autorizado.
 11. timeout, outcome e progresso ainda são amplos por fase;
 12. não existe `runId`/relatório Auto consolidado entre iterações e engines;
 13. catálogo/classificação/readiness continuam híbridos;
-14. fallback de IA, consentimento cloud e custo não são plenamente
-    verificáveis;
+14. degradado explícito cobre providers selecionados falhos; consentimento
+    cloud e custo ainda não são plenamente verificáveis;
 15. FrameSeven não transporta Tor/proxy estrito;
-16. regressão hermética e E2E autenticado continuam pendentes.
+16. regressão hermética completa e E2E autenticado continuam pendentes.
 
 O backlog atualizado está em
 `MELHORIAS-PENDENTES-MODO-AUTO.md`.

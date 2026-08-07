@@ -5320,6 +5320,67 @@ async function postAutoApiJson(pathname, body) {
   return data;
 }
 
+const AUTO_CONFIRMED_TERMINAL_PHASES = new Set([
+  'completed', 'partial', 'failed', 'cancelled', 'interrupted',
+  'timed_out', 'stalled', 'budget_exceeded',
+]);
+
+/** Polla snapshot/memória até status terminal confirmado (stream pode morrer antes). */
+async function waitForAutoSessionTerminal(sessionId, {
+  timeoutMs = 30_000,
+  intervalMs = 1_000,
+} = {}) {
+  const id = String(sessionId || '').trim();
+  if (!id) return null;
+  const deadline = Date.now() + Math.max(2_000, Number(timeoutMs) || 30_000);
+  const pause = Math.max(250, Number(intervalMs) || 1_000);
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(apiUrl(`/api/recon/auto/sessions/${encodeURIComponent(id)}`), {
+        headers: autoApiHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      const status = String(data?.session?.status || '');
+      if (res.ok && data?.ok && AUTO_CONFIRMED_TERMINAL_PHASES.has(status)) {
+        return { status, session: data.session, source: data.source || null };
+      }
+    } catch {
+      // tenta de novo até o deadline
+    }
+    await new Promise((resolve) => setTimeout(resolve, pause));
+  }
+  return null;
+}
+
+/** Mapeia outcome terminal Auto → rótulo de statusText (contrato UI). */
+function autoUiTerminalStatusText(outcome) {
+  if (outcome === 'completed') return 'AUTO COMPLETO';
+  if (outcome === 'partial') return 'AUTO PARCIAL';
+  if (['cancelled', 'interrupted', 'cancel_requested_unconfirmed'].includes(outcome)) {
+    return 'AUTO CANCELADO';
+  }
+  return 'ERRO';
+}
+
+function markAutoAwaitingTerminal(sessionId, detail = '') {
+  const cancelBtn = document.getElementById('autoCancelBtn');
+  const status = document.getElementById('autoModeStatus');
+  const autoBtn = document.getElementById('autoRunBtn');
+  activeAutoSessionId = sessionId || activeAutoSessionId;
+  isRunning = true;
+  if (cancelBtn) cancelBtn.disabled = false;
+  if (autoBtn) {
+    autoBtn.textContent = 'AGUARDANDO TERMINAL...';
+    autoBtn.disabled = true;
+    autoBtn.classList.add('running');
+  }
+  if (status) {
+    status.textContent = detail
+      || `Aguardando confirmação terminal da sessão ${activeAutoSessionId || '?'}...`;
+  }
+  document.getElementById('statusText').textContent = 'AUTO AGUARDANDO TERMINAL';
+}
+
 async function refreshAutoForge() {
   const status = document.getElementById('autoForgeStatus');
   const list = document.getElementById('autoForgeList');
@@ -5484,10 +5545,17 @@ function summarizeAutoEvent(ev) {
     'stalled',
     'budget_exceeded',
     'completed',
+    'partial',
   ].includes(ev.phase)) {
     if (ev.phase !== 'completed') addLog(`AUTO sessão ${ev.phase}: ${ev.error || ev.session?.error || ''}`.trim(), ev.phase === 'failed' ? 'error' : 'warn');
-    if (ev.phase !== 'completed') activeAutoSessionId = null;
+    // Mantém sessionId até finish() confirmar o terminal (cancel/poll ainda úteis).
     return null;
+  }
+  if (ev.type === 'auto_persist_failed') {
+    return {
+      msg: `AUTO persistência falhou (${ev.stage || 'snapshot'}): ${ev.error || 'erro'}`,
+      level: 'error',
+    };
   }
   if (ev.type === 'auto_stall_detected') {
     return { msg: `AUTO watchdog: sem progresso há ${Math.round((ev.idleMs || 0) / 1000)}s | fase=${ev.currentStage || '-'} | módulo=${ev.currentModule || '-'}`, level: 'warn' };
@@ -5727,6 +5795,7 @@ async function startAutoModeRecon() {
 
   const finish = (outcome, msg = '') => {
     const completed = outcome === 'completed';
+    const partial = outcome === 'partial';
     const cancelled = ['cancelled', 'interrupted', 'cancel_requested_unconfirmed'].includes(outcome);
     closeMitreLive();
     if (autoCancelFallbackTimer) clearTimeout(autoCancelFallbackTimer);
@@ -5741,12 +5810,26 @@ async function startAutoModeRecon() {
     if (runBtn) runBtn.disabled = false;
     if (startBtn) startBtn.disabled = false;
     if (cancelBtn) cancelBtn.disabled = true;
-    document.getElementById('statusText').textContent = completed ? 'AUTO COMPLETO' : cancelled ? 'AUTO CANCELADO' : 'ERRO';
-    currentPipeDetail = completed ? 'auto concluido' : cancelled ? 'auto cancelado' : 'auto erro';
+    document.getElementById('statusText').textContent = autoUiTerminalStatusText(outcome);
+    currentPipeDetail = completed
+      ? 'auto concluido'
+      : partial
+        ? 'auto parcial'
+        : cancelled
+          ? 'auto cancelado'
+          : 'auto erro';
     updateProgressDetail();
     isRunning = false;
-    if (status) status.textContent = completed ? 'Modo Auto concluído.' : cancelled ? 'Modo Auto cancelado.' : 'Modo Auto encerrou com erro.';
-    if (msg) addLog(msg, completed ? 'success' : cancelled ? 'warn' : 'error');
+    if (status) {
+      status.textContent = completed
+        ? 'Modo Auto concluído.'
+        : partial
+          ? 'Modo Auto concluído com resultados parciais.'
+          : cancelled
+            ? 'Modo Auto cancelado.'
+            : 'Modo Auto encerrou com erro.';
+    }
+    if (msg) addLog(msg, completed ? 'success' : partial || cancelled ? 'warn' : 'error');
   };
 
   try {
@@ -5799,50 +5882,106 @@ async function startAutoModeRecon() {
     }
     const outcome = await consumeReconStreamFromResponse(res, 0, null, null, { requireAutoTerminal: true });
     if (outcome.status === 'completed') finish('completed', 'AUTO: execução concluída.');
+    else if (outcome.status === 'partial') finish('partial', 'AUTO: execução parcial — revise falhas recuperáveis e outcomes.');
     else if (outcome.status === 'cancelled') finish('cancelled', 'AUTO: cancelamento confirmado pelo servidor.');
     else if (outcome.status === 'interrupted') finish('interrupted', 'AUTO: sessão interrompida.');
-    else if (outcome.status === 'cancel_requested_unconfirmed') {
-      finish('cancel_requested_unconfirmed', 'AUTO: stream encerrado sem confirmação terminal do cancelamento.');
+    else if (
+      outcome.status === 'cancel_requested_unconfirmed'
+      || outcome.status === 'interrupted_unconfirmed'
+      || outcome.status === 'incomplete'
+    ) {
+      const sessionId = activeAutoSessionId
+        || localStorage.getItem('ghostrecon.auto.lastSessionId')
+        || null;
+      markAutoAwaitingTerminal(sessionId, 'Stream encerrado; confirmando terminal no servidor...');
+      addLog('AUTO: stream encerrado sem terminal; consultando snapshot da sessão...', 'warn');
+      const confirmed = await waitForAutoSessionTerminal(sessionId, { timeoutMs: 30_000 });
+      if (confirmed?.status) {
+        finish(
+          confirmed.status,
+          `AUTO: terminal confirmado via ${confirmed.source || 'snapshot'} (${confirmed.status}).`,
+        );
+      } else {
+        markAutoAwaitingTerminal(sessionId, 'Terminal ainda não confirmado — use Parar Auto de novo se necessário.');
+        addLog('AUTO: terminal não confirmado a tempo; cancelamento permanece disponível.', 'warn');
+        autoCancelRequested = false;
+      }
     } else {
       finish('failed', `AUTO: sessão encerrou com status ${outcome.status || 'desconhecido'}.`);
     }
   } catch (e) {
-    finish(
-      autoCancelRequested ? 'cancel_requested_unconfirmed' : 'failed',
-      autoCancelRequested
-        ? 'AUTO: stream encerrado sem confirmação terminal do cancelamento.'
-        : `AUTO: ${e?.message || e}`,
-    );
+    if (autoCancelRequested || activeAutoSessionId) {
+      const sessionId = activeAutoSessionId
+        || localStorage.getItem('ghostrecon.auto.lastSessionId')
+        || null;
+      markAutoAwaitingTerminal(sessionId, 'Falha de stream; confirmando terminal no servidor...');
+      const confirmed = await waitForAutoSessionTerminal(sessionId, { timeoutMs: 30_000 });
+      if (confirmed?.status) {
+        finish(
+          confirmed.status,
+          `AUTO: terminal confirmado após falha de stream (${confirmed.status}).`,
+        );
+        return;
+      }
+      markAutoAwaitingTerminal(sessionId, 'Aguardando terminal — Parar Auto continua disponível.');
+      autoCancelRequested = false;
+      addLog(`AUTO: ${e?.message || e}`, 'warn');
+      return;
+    }
+    finish('failed', `AUTO: ${e?.message || e}`);
   }
 }
 
 async function cancelAutoModeRecon() {
-  if (!isRunning || !activeAutoController || autoCancelRequested) return;
+  const sessionId = activeAutoSessionId
+    || localStorage.getItem('ghostrecon.auto.lastSessionId')
+    || null;
+  if (!isRunning && !sessionId) return;
+  if (autoCancelRequested && activeAutoController) return;
   autoCancelRequested = true;
-  const sessionId = activeAutoSessionId;
   const status = document.getElementById('autoModeStatus');
   const autoBtn = document.getElementById('autoRunBtn');
+  const cancelBtn = document.getElementById('autoCancelBtn');
   if (autoBtn) {
     autoBtn.textContent = 'CANCELANDO...';
     autoBtn.disabled = true;
   }
+  if (cancelBtn) cancelBtn.disabled = true;
   if (status) status.textContent = sessionId ? `Cancelando sessão ${sessionId}...` : 'Cancelando sessão...';
   try {
     if (!sessionId) {
-      activeAutoController.abort(new Error('AUTO cancelado localmente antes da criação da sessão'));
+      activeAutoController?.abort(new Error('AUTO cancelado localmente antes da criação da sessão'));
       return;
     }
-    await postAutoApiJson(`/api/recon/auto/${encodeURIComponent(sessionId)}/cancel`, { reason: 'operator_ui' });
-    addLog(`AUTO: cancelamento aceito para ${sessionId}; aguardando estado terminal.`, 'warn');
-    autoCancelFallbackTimer = setTimeout(() => {
-      activeAutoController?.abort(new Error('Timeout aguardando confirmação do cancelamento AUTO'));
-    }, 10_000);
+    try {
+      await postAutoApiJson(`/api/recon/auto/${encodeURIComponent(sessionId)}/cancel`, { reason: 'operator_ui' });
+      addLog(`AUTO: cancelamento aceito para ${sessionId}; aguardando estado terminal.`, 'warn');
+    } catch (cancelErr) {
+      // Sessão pode já ter terminado no servidor — ainda confirmamos via snapshot.
+      addLog(`AUTO: cancel API: ${cancelErr?.message || cancelErr}; confirmando terminal...`, 'warn');
+    }
+    if (activeAutoController) {
+      autoCancelFallbackTimer = setTimeout(() => {
+        activeAutoController?.abort(new Error('Timeout aguardando confirmação do cancelamento AUTO'));
+      }, 10_000);
+    } else {
+      markAutoAwaitingTerminal(sessionId, 'Cancel solicitado; confirmando terminal...');
+      const confirmed = await waitForAutoSessionTerminal(sessionId, { timeoutMs: 30_000 });
+      if (confirmed?.status) {
+        finish(confirmed.status, `AUTO: terminal confirmado (${confirmed.status}).`);
+      } else {
+        autoCancelRequested = false;
+        if (cancelBtn) cancelBtn.disabled = false;
+        markAutoAwaitingTerminal(sessionId, 'Terminal pendente — tente Parar Auto novamente.');
+      }
+    }
   } catch (e) {
     autoCancelRequested = false;
     if (autoBtn) {
       autoBtn.textContent = 'PARAR AUTO';
       autoBtn.disabled = false;
     }
+    if (cancelBtn) cancelBtn.disabled = false;
     if (status) status.textContent = 'Falha ao cancelar; a sessão continua em execução.';
     addLog(`AUTO: falha ao solicitar cancelamento no servidor: ${e?.message || e}`, 'error');
   }
@@ -7522,7 +7661,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       if (autoSummary) addLog(autoSummary.msg, autoSummary.level || 'info');
       if (ev.type === 'auto_session') {
         sawAutoSession = true;
-        if (['completed', 'cancelled', 'interrupted', 'failed', 'timed_out', 'stalled', 'budget_exceeded'].includes(ev.phase)) {
+        if (['completed', 'partial', 'cancelled', 'interrupted', 'failed', 'timed_out', 'stalled', 'budget_exceeded'].includes(ev.phase)) {
           autoTerminalPhase = ev.phase;
           if (['failed', 'timed_out', 'stalled', 'budget_exceeded'].includes(ev.phase)) failed = true;
         }
@@ -7722,6 +7861,13 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
         if (ev.phase === 'error' && ev.message) addLog(`IA: ${ev.message}`, 'error');
       }
       if (ev.type === 'error') {
+        if (ev.recoverable === true) {
+          addLog(
+            `Erro recuperável: ${ev.message || 'falha não fatal — stream Auto continua'}`,
+            'warn',
+          );
+          continue;
+        }
         addLog(ev.message || 'Erro no servidor', 'error');
         mitreLivePost({ type: 'run_end' });
         failed = true;
@@ -7790,6 +7936,7 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
       status,
       terminalPhase: autoTerminalPhase,
       sawAutoSession,
+      partial: status === 'partial',
     };
   }
   return !failed;

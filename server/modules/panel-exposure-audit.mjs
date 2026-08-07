@@ -1,6 +1,7 @@
 import { limits } from '../config.js';
 import { mapPool, readResponseSnippet } from './module-runner.mjs';
 import { pickStealthUserAgent, stealthPause } from './request-policy.js';
+import { fetchScoped, urlAllowedOrSameOrigin } from './scoped-fetch.mjs';
 
 export const moduleManifest = {
   id: 'panel_exposure_audit',
@@ -71,11 +72,12 @@ function classifyPanel(url, status, body, headers) {
   };
 }
 
-async function probePath(url, { modules = [], fetchImpl = fetch } = {}) {
+async function probePath(url, { modules = [], fetchImpl = fetch, urlAllowed = null } = {}) {
   await stealthPause(modules);
-  const res = await fetchImpl(url, {
+  const res = await fetchScoped(url, {
+    fetchImpl,
     method: 'GET',
-    redirect: 'follow',
+    urlAllowed: urlAllowedOrSameOrigin(url, urlAllowed),
     signal: AbortSignal.timeout(Math.min(9000, limits.probeTimeoutMs || 9000)),
     headers: {
       Accept: 'text/html,application/json,text/plain,*/*;q=0.8',
@@ -109,6 +111,7 @@ export async function runPanelExposureAudit({
   origins = [],
   modules = [],
   fetchImpl = fetch,
+  urlAllowed = null,
   log = () => {},
 } = {}) {
   const maxOrigins = Math.max(1, Math.min(20, Number(process.env.GHOSTRECON_PANEL_MAX_ORIGINS || 8)));
@@ -125,7 +128,7 @@ export async function runPanelExposureAudit({
   const seen = new Set();
   await mapPool(jobs, 3, async (url) => {
     try {
-      const f = await probePath(url, { modules, fetchImpl });
+      const f = await probePath(url, { modules, fetchImpl, urlAllowed });
       if (!f) return;
       const key = String(f.url || f.value).toLowerCase();
       if (seen.has(key)) return;

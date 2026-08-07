@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { limits } from '../config.js';
 import { pickStealthUserAgent, stealthPause } from './request-policy.js';
 import { readResponseSnippet } from './module-runner.mjs';
+import { fetchScoped, urlAllowedOrSameOrigin } from './scoped-fetch.mjs';
 
 export const moduleManifest = {
   id: 'jwt_jwks_audit',
@@ -168,10 +169,16 @@ export function auditJwks(jwks, { url = '', issuer = '' } = {}) {
   return findings;
 }
 
-async function fetchJsonWithHeaders(url, { fetchImpl = fetch, timeoutMs = 8_000, headers = {} } = {}) {
-  const res = await fetchImpl(url, {
+async function fetchJsonWithHeaders(url, {
+  fetchImpl = fetch,
+  timeoutMs = 8_000,
+  headers = {},
+  urlAllowed = null,
+} = {}) {
+  const res = await fetchScoped(url, {
+    fetchImpl,
     method: 'GET',
-    redirect: 'follow',
+    urlAllowed: urlAllowedOrSameOrigin(url, urlAllowed),
     signal: AbortSignal.timeout(timeoutMs),
     headers: {
       Accept: 'application/json,*/*;q=0.8',
@@ -189,11 +196,14 @@ async function fetchJsonWithHeaders(url, { fetchImpl = fetch, timeoutMs = 8_000,
 
 async function discoverJwksFromOidc(origin, opts) {
   const url = new URL('/.well-known/openid-configuration', origin).href;
-  const doc = await fetchJsonWithHeaders(url, opts).catch(() => null);
+  const allowed = urlAllowedOrSameOrigin(url, opts?.urlAllowed);
+  const doc = await fetchJsonWithHeaders(url, { ...opts, urlAllowed: allowed }).catch(() => null);
   const jwksUri = doc?.json?.jwks_uri;
   if (!jwksUri) return [];
   try {
-    return [{ url: new URL(jwksUri, origin).href, issuer: doc.json.issuer || '' }];
+    const resolved = new URL(jwksUri, origin).href;
+    if (allowed(resolved) !== true) return [];
+    return [{ url: resolved, issuer: doc.json.issuer || '' }];
   } catch {
     return [];
   }
@@ -204,6 +214,7 @@ export async function runJwtJwksAudit({
   modules = [],
   log = () => {},
   fetchImpl = fetch,
+  urlAllowed = null,
 } = {}) {
   const findings = [];
   const seenUrls = new Set();
@@ -212,7 +223,12 @@ export async function runJwtJwksAudit({
   const candidates = [];
 
   for (const origin of origins.slice(0, Math.max(1, limits.wellKnownMaxHosts || 8))) {
-    for (const c of await discoverJwksFromOidc(origin, { fetchImpl, timeoutMs, headers: { 'User-Agent': ua } })) {
+    for (const c of await discoverJwksFromOidc(origin, {
+      fetchImpl,
+      timeoutMs,
+      urlAllowed,
+      headers: { 'User-Agent': ua },
+    })) {
       candidates.push(c);
     }
     for (const p of COMMON_JWKS_PATHS) {
@@ -227,6 +243,7 @@ export async function runJwtJwksAudit({
     const fetched = await fetchJsonWithHeaders(candidate.url, {
       fetchImpl,
       timeoutMs,
+      urlAllowed,
       headers: { 'User-Agent': ua },
     }).catch(() => null);
     if (!fetched?.json?.keys) continue;

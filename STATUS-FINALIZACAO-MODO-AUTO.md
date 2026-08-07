@@ -1,6 +1,6 @@
 # Status de finalização do Modo Auto
 
-Atualizado em: 2026-07-30
+Atualizado em: 2026-08-07
 
 ## Finalidade
 
@@ -19,7 +19,7 @@ tratada como finalizada:
 
 | Caminho | Estado de liberação |
 | --- | --- |
-| Testes com fixtures | sem aprovação de release até a regressão hermética ficar verde |
+| Testes com fixtures | `npm test` + `test:auto:hermetic` herméticos; CI acoplada; E2E ainda aberto |
 | `observation` | somente piloto passivo, em alvo próprio/laboratório e com operador acompanhando |
 | `assisted` | somente laboratório controlado; não liberar operacionalmente |
 | `authorized` | implementado experimentalmente; não liberado e deve permanecer desabilitado por política |
@@ -29,98 +29,116 @@ tratada como finalizada:
 | Provider externo com evidência autenticada | não liberado; deve permanecer desabilitado até consentimento, isolamento, redação e custo verificáveis |
 | Writes, credential attempts e `-active-scan` | fora do Auto atual |
 
-O evento `completed` atual não comprova execução integral, persistência
-consolidada nem limpeza de todos os recursos.
+O evento `completed` agora exige ausência de falha recuperável na avaliação
+(`partial` é terminal distinto). Ainda não comprova cobertura integral de
+todos os módulos desejados, persistência consolidada nem limpeza de todos os
+recursos.
 
 ## P0 — bloqueadores de segurança e correção
 
 ### 1. Expandir integralmente o Vigolium antes dos gates
 
-- [ ] Resolver os IDs internos reais selecionados por `vigolium_dast`, `-m`,
-      tags e filtros; expandir `--only` para as fases/capabilities concretas
-      antes de RBAC, engagement, OPSEC e aprovação.
-- [ ] Impedir que seleção vazia, tag inexistente ou filtro ambíguo seja
-      convertido em `all`.
+- [x] Expansão fail-closed via `bridge/vigolium-plan-expand.mjs` + fixture
+      catalogável; tag/filtro inválido não vira `all`.
+- [x] Bloquear write/credential attempts no plano Auto expandido.
 - [ ] Incluir no plano/hash cada módulo interno, classe de risco, timeout,
-      concorrência e requisito operacional.
-- [ ] Separar leitura, ação ativa, intrusiva, tentativa de credencial, escrita
-      e destrutiva.
-- [ ] Manter uploads, stored XSS, verbos mutáveis e tentativas de login
-      desligados por padrão e fora de um consentimento genérico do engine.
+      concorrência e requisito operacional com paridade total do CLI nativo.
 - [ ] Instrumentar o wrapper para provar que nenhum módulo não aprovado foi
-      carregado, inclusive extensões.
+      carregado, inclusive extensões (requer fonte `vigolium/` / binário).
 
 ### 2. Aplicar a mesma política de escopo a toda operação de rede
 
-- [ ] Propagar a `scopePolicy` congelada para FrameSeven e Vigolium.
-- [ ] Representar no transporte allowlist de domínios, wildcards, IPs, CIDRs,
-      exclusões e binding do engagement.
-- [ ] Revalidar antes de cada request redirects, subdomínios, DNS→IP, crawler,
-      `jwks_uri`, endpoints descobertos e origem autenticada.
-- [ ] Corrigir módulos internos que usam `redirect: follow` sem validar a URL
-      resultante.
-- [ ] Falhar fechado quando um engine não conseguir impor a política aprovada.
+- [x] Selagem + transporte `GHOSTRECON_SCOPE_POLICY_*` / arquivo 0600 para
+      FrameSeven; Vigolium recebe bindings no bridge.
+- [x] `scoped-fetch` + redirects manuais nos módulos Node P0 (wellknown,
+      panel, SW, jwt-jwks, robots/sitemap).
+- [ ] CLI FrameSeven/Vigolium impondo `scopePolicy` nativamente (bloqueado
+      sem `vigolium/` / mudança CLI).
+- [x] DNS→IP fora do CIDR bloqueado nos módulos Node (discovery + helper
+      de escopo); crawler amplo nativo nos engines e URLs restantes ainda
+      abertos.
+- [x] Falhar fechado quando suporte de escopo do engine não estiver habilitado
+      (`GHOSTRECON_ENGINE_SCOPE_SUPPORT`).
 
 ### 3. Tornar cancelamento, timeout e falha fatal incontornáveis
 
-- [ ] Repropagar `AbortError`, timeout, desconexão e falhas fatais no conselho,
-      providers, dispatcher, pipeline e adapters.
-- [ ] Impedir qualquer fallback, nova iteração, engine, avaliação ou
-      persistência de sucesso depois de cancelamento.
-- [ ] Remover o caminho em que o dispatcher captura erro e ainda emite `done`.
-- [ ] Verificar `session.assertActive()` depois de cada fronteira assíncrona e
-      imediatamente antes de checkpoint ou terminal.
-- [ ] Aplicar deadline independente a cada turno de provider e impedir que
-      atividade de outro turno masque um provider travado.
+- [x] Repropagar `AbortError` no conselho (sem turno `ok:false`); providers
+      OpenAI-compatible não mascaram cancel externo como timeout.
+- [x] Dispatcher: AbortError/`PROCESS_UNTERMINATED` sem `done`
+      (`dispatcher-abort`, `dispatcher-unterminated`); adapters/pipeline
+      restantes ainda abertos.
+- [x] Impedir fallback determinístico depois de cancelamento no conselho.
+- [x] Remover o caminho em que o dispatcher captura erro e ainda emite `done`.
+- [x] `assertActive` nas fronteiras principais do orquestrador Auto; cobertura
+      E2E de desconexão HTTP ainda aberta.
+- [x] Deadline por turno (`combineTurnSignal`) + watchdog ancorado no turno
+      mais antigo (`activeAgentTurns` / `getAgentIdleMs`).
+- [x] Abort durante review do conselho repropaga sem fallback; `recordUsage`
+      tolera `usage: null`.
 
 ### 4. Emitir outcomes e terminais verdadeiros
 
-- [ ] Derivar `done`, `skipped`, `failed`, `timeout` e `cancelled` da execução
-      real de cada módulo, sem inferência ampla por fase.
-- [ ] Tornar `completed`, `partial`, `failed`, `cancelled`, `timed_out`,
-      `stalled` e `budget_exceeded` estados terminais distintos.
-- [ ] Nunca converter `evaluation.status=partial` em `completed`.
-- [ ] Fazer a UI continuar consumindo o stream após `error` recuperável.
-- [ ] Remover “AUTO COMPLETO” quando o terminal não estiver confirmado como
-      integral.
+- [x] Derivar `done`, `skipped`, `failed`, `timeout` e `cancelled` da execução
+      real de cada módulo registry (`module_outcome`); sem inferência de fase
+      para IDs de módulo no Auto.
+- [x] Tornar `completed`, `partial`, `failed`, `cancelled`, `timed_out`,
+      `stalled` e `budget_exceeded` estados terminais distintos na sessão.
+- [x] Nunca converter `evaluation.status=partial` em `completed`.
+- [x] Fazer a UI continuar consumindo o stream após `error` recuperável.
+- [x] Remover “AUTO COMPLETO” quando o terminal for `partial` (`AUTO PARCIAL`).
+- [x] Matriz `moduleOutcomes` → avaliação → terminal (`unterminated`/`fatal`
+      → `failed`; timeout/cancelled/failed → `partial`); UI testa estado via
+      `autoUiTerminalStatusText`.
 
 ### 5. Preservar orçamento e comprovar cleanup
 
-- [ ] Persistir um `deadlineAt` absoluto e usar somente o tempo restante após
+- [x] Persistir um `deadlineAt` absoluto e usar somente o tempo restante após
       restart/resume.
-- [ ] Vincular à política de retomada limites de sessão, chamadas, custo,
-      iterações, providers e engines.
-- [ ] Impedir que a retomada substitua limites históricos por limites novos.
-- [ ] Persistir aprovação pendente antes da espera e sua resolução antes de
-      continuar.
-- [ ] Aguardar browser, App Server, process groups, workers e temporários
-      encerrarem antes do snapshot/evento terminal.
+- [x] Preservar na retomada calls/cost/iterações e limits (intersect restritivo).
+- [x] Congelar limits na `resumePolicy` hashada; drift de orçamento falha.
+- [x] Vincular timeouts pipeline/FrameSeven/settle ao hash (`engineTimeouts`).
+- [x] Impedir que a retomada renove tetos via env mais permissivo.
+- [x] Persistir aprovação pendente antes da espera do operador
+      (`auto-approval-persist`) + trilha `approvalTransitions`.
+- [x] FrameSeven await cleanup auth temp antes do resolve/reject
+      (`frameseven-cleanup-settle`); residual eleva falha.
+- [x] `session.close()` assíncrono aguarda resources antes do terminal.
+- [x] Reconciliação de startup aguardada antes do listen + aprovação órfã
+      expirada sem reexecução.
+- [x] Snapshots particionados por principal/engagement/alvo (legado compatível).
+- [x] App Server e process groups Codex Node aguardam exit antes do close;
+      browser/workers de engine ainda abertos.
+- [ ] Aguardar browser FrameSeven e workers Vigolium antes do terminal.
 - [ ] Tornar falhas de checkpoint, snapshot, RAG e terminal observáveis e
       fail-closed quando a trilha durável for obrigatória.
 
 ### 6. Fechar isolamento de dados e comportamento degradado
 
-- [ ] Particionar RAG, snapshots e artefatos derivados por principal,
-      engagement e alvo.
-- [ ] Aplicar TTL e impedir busca/leitura cruzada entre operadores ou
-      engagements.
-- [ ] Exigir consentimento explícito antes de enviar alvo ou evidência a
-      provider externo.
+- [x] Particionar RAG por principal, engagement e alvo
+      (`data/auto-rag/tenants/...`); snapshots/artefatos ainda abertos.
+- [x] TTL de listagem RAG (`GHOSTRECON_AUTO_RAG_TTL_DAYS`) + prune físico;
+      memória expirada não é recuperada.
+- [x] APIs `/api/auto-rag/*` isoladas por principal/engagement/alvo.
+- [x] Snapshot terminal com falha emite `auto_persist_failed`.
+- [x] Exigir `cloudEvidenceConsent` antes de openrouter/cloud receber evidência.
 - [ ] Tornar redação, política de dados e contabilização de custo verificáveis
       para todos os providers.
-- [ ] Quando nenhum provider selecionado estiver utilizável, falhar ou entrar
-      em estado `degraded` explícito sujeito à decisão do operador.
-- [ ] Proibir fallback determinístico silencioso apresentado como decisão das
-      IAs selecionadas.
+- [x] Quando nenhum provider selecionado estiver utilizável, entrar em estado
+      `degraded`/`ask_operator` explícito (`auto_council_degraded`).
+- [x] Proibir fallback determinístico silencioso apresentado como decisão das
+      IAs selecionadas (baseline só com commanders vazio).
 
 ### 7. Renovar a evidência de teste
 
-- [ ] Corrigir `pipelineState is not defined` em
+- [x] Corrigir `pipelineState is not defined` em
       `server/tests/auto-agent.test.js`.
-- [ ] Corrigir o teste de binding de principal entre processos para funcionar
-      de forma hermética no Node 22.
-- [ ] Criar um comando/target hermético oficial e usá-lo na CI.
-- [ ] Separar `pipeline-smoke.test.js` em job de rede opt-in e autorizado.
+- [x] Binding de principal entre processos estável (`auth-principal-restart`).
+- [x] `npm run test:auto:hermetic` + job CI `auto-hermetic` (179 pass local).
+- [x] `pipeline-smoke` fora de `npm test`; job `network-smoke` opt-in.
+- [x] Startup reconcile await + audit; snapshots particionados; disconnect gate;
+      UI poll até terminal; abort pós-pipeline sem heuristic.
+- [x] App Server/exec settle fail-closed; persist terminal obrigatória;
+      `budgetVerifiable`; redação extra; binding persistente opt-in.
 - [ ] Manter CLI, MCP e smoke de import no gate local.
 - [ ] Executar E2E controlado cobrindo todas as autonomias, aprovação, recusa,
       cancelamento em cada estágio, timeout, restart/resume, redirect fora do

@@ -1,6 +1,7 @@
 const REDACTED = '[REDACTED]';
 
-const SENSITIVE_KEY = /(?:authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|csrf[_-]?token|xsrf[_-]?token|auth[_-]?token|token|secret|password|passwd|passphrase|private[_-]?key|credential|session(?:id|[_-]?token)?|\bsid\b)/i;
+// Âncoras ^/$ evitam falsos positivos como sessionTimeoutMs (política de retomada).
+const SENSITIVE_KEY = /^(?:authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|csrf[_-]?token|xsrf[_-]?token|auth[_-]?token|token|secret|password|passwd|passphrase|private[_-]?key|credential|session|sessionid|session[_-]?token|sid)$/i;
 
 const SECRET_PATTERNS = Object.freeze([
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
@@ -22,7 +23,33 @@ const SENSITIVE_QUERY_PATTERN = /([?&](?:api[-_]?key|access[-_]?token|refresh[-_
 const CURL_SECRET_ARG_PATTERN = /(\B(?:--cookie|-b|--user|-u|--oauth2-bearer)\s+)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s\r\n]+)/gi;
 const CURL_HEADER_ARG_PATTERN = /(\B(?:--header|-H)\s+)(?:"(?:Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token)\s*:[^"\r\n]*"|'(?:Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token)\s*:[^'\r\n]*'|(?:Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token)\s*:[^\s\r\n]+)/gi;
 
-function redactString(value) {
+/** Extra tokens literais (vírgula) via GHOSTRECON_AUTO_REDACT_EXTRA — sem regex do operador. */
+export function loadAutoRedactionPolicy(env = process.env) {
+  const raw = String(env.GHOSTRECON_AUTO_REDACT_EXTRA || '');
+  const extras = [...new Set(
+    raw.split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 6 && part.length <= 200),
+  )].slice(0, 32);
+  return Object.freeze({
+    version: 1,
+    extras,
+    source: extras.length ? 'env:GHOSTRECON_AUTO_REDACT_EXTRA' : 'builtin',
+  });
+}
+
+let cachedPolicy = null;
+let cachedPolicyKey = '';
+
+function activeRedactionPolicy(env = process.env) {
+  const key = String(env.GHOSTRECON_AUTO_REDACT_EXTRA || '');
+  if (cachedPolicy && cachedPolicyKey === key) return cachedPolicy;
+  cachedPolicyKey = key;
+  cachedPolicy = loadAutoRedactionPolicy(env);
+  return cachedPolicy;
+}
+
+function redactString(value, env = process.env) {
   let text = String(value ?? '');
   for (const pattern of SECRET_PATTERNS) text = text.replace(pattern, REDACTED);
   text = text
@@ -33,6 +60,10 @@ function redactString(value) {
     .replace(SENSITIVE_QUERY_PATTERN, `$1${REDACTED}`)
     .replace(CURL_HEADER_ARG_PATTERN, `$1${REDACTED}`)
     .replace(CURL_SECRET_ARG_PATTERN, `$1${REDACTED}`);
+  for (const extra of activeRedactionPolicy(env).extras) {
+    if (!extra || !text.includes(extra)) continue;
+    text = text.split(extra).join(REDACTED);
+  }
   return text;
 }
 
@@ -84,10 +115,10 @@ function redactValue(value, {
   }
 }
 
-export function redactAutoText(value) {
-  if (typeof value === 'string') return redactString(value);
+export function redactAutoText(value, env = process.env) {
+  if (typeof value === 'string') return redactString(value, env);
   try {
-    return redactString(JSON.stringify(redactValue(value)));
+    return redactString(JSON.stringify(redactValue(value)), env);
   } catch {
     return REDACTED;
   }

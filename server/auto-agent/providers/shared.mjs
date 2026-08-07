@@ -43,7 +43,41 @@ export function isCatalogModuleAllowed(module, {
   return false;
 }
 
-export function buildAgentPrompt({ target, mode, catalog, ragContext, role = 'planner', iteration = 1, peerDecisions = [], observationBundle = null, maxContextChars = 120_000, allowIntrusive = false, autonomyLevel = 'observation' }) {
+export function isCloudDataPlaneProvider(providerId, dataPlane = null) {
+  if (String(dataPlane || '').toLowerCase() === 'cloud') return true;
+  return String(providerId || '').toLowerCase() === 'openrouter';
+}
+
+export function assertCloudEvidenceConsent({
+  providerId,
+  dataPlane = null,
+  cloudEvidenceConsent = false,
+} = {}) {
+  if (!isCloudDataPlaneProvider(providerId, dataPlane)) return;
+  if (cloudEvidenceConsent === true) return;
+  const error = new Error(
+    `Provider cloud (${providerId}) exige cloudEvidenceConsent=true para receber alvo/evidência`,
+  );
+  error.code = 'CLOUD_EVIDENCE_CONSENT_REQUIRED';
+  throw error;
+}
+
+export function buildAgentPrompt({
+  target,
+  mode,
+  catalog,
+  ragContext,
+  role = 'planner',
+  iteration = 1,
+  peerDecisions = [],
+  observationBundle = null,
+  maxContextChars = 120_000,
+  allowIntrusive = false,
+  autonomyLevel = 'observation',
+  cloudEvidenceConsent = false,
+  dataPlane = 'local',
+  providerId = null,
+} = {}) {
   const intrusivePermitted = allowIntrusive === true
     && ['authorized', 'authorized_opsec'].includes(autonomyLevel);
   const modules = (catalog?.modules || []).map((m) => ({
@@ -53,11 +87,19 @@ export function buildAgentPrompt({ target, mode, catalog, ragContext, role = 'pl
     intrusive: catalogModuleRiskClass(m) === 'intrusive',
     description: m.manifest?.name || m.id,
   }));
-  const memories = (ragContext?.items || []).slice(0, 8).map((m) => ({
-    ref: `memory:${m.name}`,
-    title: m.title,
-    preview: String(m.preview || '').slice(0, 900),
-  }));
+  const cloudLocked = isCloudDataPlaneProvider(providerId, dataPlane)
+    && cloudEvidenceConsent !== true;
+  const memories = cloudLocked
+    ? []
+    : (ragContext?.items || []).slice(0, 8).map((m) => ({
+      ref: `memory:${m.name}`,
+      title: m.title,
+      preview: String(m.preview || '').slice(0, 900),
+    }));
+  const safeObservation = cloudLocked
+    ? { redacted: true, reason: 'cloud_evidence_consent_required' }
+    : observationBundle;
+  const safeTarget = cloudLocked ? '[redacted_pending_cloud_consent]' : target;
   const roleInstruction = role === 'reviewer'
     ? 'Revise criticamente as propostas dos outros agentes. Conserve apenas módulos sustentados por evidência e policy; sua requestedModules representa seu veredito final.'
     : 'Decida o plano desta iteração com base no catálogo, memória compartilhada e evidências.';
@@ -74,14 +116,14 @@ export function buildAgentPrompt({ target, mode, catalog, ragContext, role = 'pl
     'Regras de ação: run_modules/continue_with_context exigem requestedModules não vazio; finish/abstain/ask_operator/forge_module exigem requestedModules vazio; ask_operator exige operatorQuestion; forge_module exige forgeRequest completo e não intrusivo; nas demais ações operatorQuestion e forgeRequest devem ser null.',
     'Modelo mínimo válido: {"action":"abstain","objective":"authorized_recon","reasoningSummary":["sem evidência suficiente"],"evidenceRefs":[],"requestedModules":[],"rejectedModules":[],"confidence":0,"assumptions":[],"operatorQuestion":null,"forgeRequest":null}',
     '',
-    `ALVO: ${target}`,
+    `ALVO: ${safeTarget}`,
     `MODO: ${mode}`,
     `NÍVEL DE AUTONOMIA: ${autonomyLevel}`,
     `CATALOGO: ${JSON.stringify(modules)}`,
     `MEMORIAS_COMPARTILHADAS: ${JSON.stringify(memories)}`,
     `PROPOSTAS_DOS_PARES: ${JSON.stringify(peerDecisions)}`,
-    `OBSERVACOES_DA_ITERACAO: ${JSON.stringify(observationBundle)}`,
-    `EVIDENCIAS_PERMITIDAS: ${JSON.stringify(availableEvidenceRefs({ ragContext, observationBundle }))}`,
+    `OBSERVACOES_DA_ITERACAO: ${JSON.stringify(safeObservation)}`,
+    `EVIDENCIAS_PERMITIDAS: ${JSON.stringify(cloudLocked ? [] : availableEvidenceRefs({ ragContext, observationBundle }))}`,
   ].join('\n')).slice(0, Math.max(10_000, Number(maxContextChars) || 120_000));
 }
 

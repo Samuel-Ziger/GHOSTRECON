@@ -58,6 +58,7 @@ export const moduleRunners = {
       origins: activeOriginsFromState(s),
       modules: s.modules,
       log: s.log,
+      urlAllowed: (url) => s.urlInScope(url),
     });
     return {
       findings,
@@ -100,6 +101,7 @@ export const moduleRunners = {
       origins: activeOriginsFromState(s),
       modules: s.modules,
       log: s.log,
+      urlAllowed: (url) => s.urlInScope(url),
     });
     return {
       findings,
@@ -114,6 +116,7 @@ export const moduleRunners = {
       origins: activeOriginsFromState(s),
       modules: s.modules,
       log: s.log,
+      urlAllowed: (url) => s.urlInScope(url),
     });
     return {
       findings,

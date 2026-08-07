@@ -7,6 +7,7 @@ import {
   createEngagementScopePolicy,
   hostInReconScope,
   urlInReconScope,
+  dnsResolvedAddressesEligibleForProbe,
 } from '../modules/scope.js';
 import { createPipelineState } from '../pipeline/pipeline-state.mjs';
 import { filterDiscoveredHostsInScope } from '../pipeline/phases/discovery.mjs';
@@ -115,6 +116,59 @@ describe('scope / fora de escopo', () => {
     assert.equal(hostInReconScope('192.0.2.10', '192.0.2.10', [], policy), true);
     assert.equal(hostInReconScope('192.0.2.200', '192.0.2.10', [], policy), false);
     assert.deepEqual(policy.exclusions, ['192.0.2.128/25']);
+  });
+
+  it('DNS→IP fora do CIDR não é elegível para probe quando scopeIps está fechado', () => {
+    const policy = createEngagementScopePolicy({
+      rootDomain: 'lab.acme.test',
+      engagement: {
+        id: 'ENG-DNS-IP',
+        scopeDomains: ['lab.acme.test', '*.lab.acme.test'],
+        scopeIps: ['192.0.2.0/27'],
+        exclusions: [],
+      },
+      engagementId: 'ENG-DNS-IP',
+      authorizationBinding: 'binding-dns-ip',
+    });
+    const blocked = dnsResolvedAddressesEligibleForProbe(
+      ['198.51.100.10', '198.51.100.11'],
+      'lab.acme.test',
+      [],
+      policy,
+    );
+    assert.equal(blocked.eligible, false);
+    assert.deepEqual(blocked.allowedIps, []);
+    assert.deepEqual(blocked.rejectedIps, ['198.51.100.10', '198.51.100.11']);
+
+    const allowed = dnsResolvedAddressesEligibleForProbe(
+      ['192.0.2.10', '198.51.100.10'],
+      'lab.acme.test',
+      [],
+      policy,
+    );
+    assert.equal(allowed.eligible, true);
+    assert.deepEqual(allowed.allowedIps, ['192.0.2.10']);
+    assert.deepEqual(allowed.rejectedIps, ['198.51.100.10']);
+
+    const noIpAllowlist = createEngagementScopePolicy({
+      rootDomain: 'lab.acme.test',
+      engagement: {
+        id: 'ENG-DNS-DOMAIN',
+        scopeDomains: ['lab.acme.test'],
+        scopeIps: [],
+        exclusions: [],
+      },
+      engagementId: 'ENG-DNS-DOMAIN',
+      authorizationBinding: 'binding-dns-domain',
+    });
+    const hostnameOnly = dnsResolvedAddressesEligibleForProbe(
+      ['198.51.100.10'],
+      'lab.acme.test',
+      [],
+      noIpAllowlist,
+    );
+    assert.equal(hostnameOnly.eligible, true);
+    assert.deepEqual(hostnameOnly.allowedIps, ['198.51.100.10']);
   });
 
   it('IP derivado de domínio exige allowlist IP formal explícita', () => {

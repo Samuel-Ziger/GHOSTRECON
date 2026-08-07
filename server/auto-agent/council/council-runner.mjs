@@ -7,6 +7,7 @@ import { decideWithCodexAppServer } from '../providers/codex-app-server.mjs';
 import { decideWithCursor } from '../providers/cursor.mjs';
 import { normalizeAndValidateAgentDecision } from '../decision-contract.mjs';
 import {
+  assertCloudEvidenceConsent,
   availableCatalogIds,
   availableEvidenceRefs,
   catalogModuleRiskClass,
@@ -28,6 +29,59 @@ function effectiveSelected(providers = []) {
 
 function validTurns(turns) {
   return turns.filter((turn) => turn.ok && turn.decision);
+}
+
+function isCouncilAbortError(error, session = null) {
+  if (session?.signal?.aborted) return true;
+  if (!error) return false;
+  if (error?.name === 'AbortError') return true;
+  if (error?.code === 'AUTO_PROVIDER_TURN_TIMEOUT') return true;
+  const message = String(error?.message || error || '');
+  return /aborted|cancelled|canceled|client_disconnected|provider_turn_timeout/i.test(message);
+}
+
+function combineTurnSignal(sessionSignal, turnMs, providerId) {
+  const turnCtrl = new AbortController();
+  const timer = setTimeout(() => {
+    const error = new Error(`provider_turn_timeout:${providerId}`);
+    error.name = 'AbortError';
+    error.code = 'AUTO_PROVIDER_TURN_TIMEOUT';
+    turnCtrl.abort(error);
+  }, Math.max(1_000, turnMs));
+  timer.unref?.();
+  let combined = turnCtrl.signal;
+  if (sessionSignal) {
+    if (typeof AbortSignal.any === 'function') {
+      combined = AbortSignal.any([sessionSignal, turnCtrl.signal]);
+    } else if (sessionSignal.aborted) {
+      combined = sessionSignal;
+    } else {
+      const onParent = () => turnCtrl.abort(sessionSignal.reason || new Error('council_cancelled'));
+      sessionSignal.addEventListener('abort', onParent, { once: true });
+      combined = turnCtrl.signal;
+      const prevCleanup = () => sessionSignal.removeEventListener('abort', onParent);
+      return {
+        signal: combined,
+        cleanup() {
+          clearTimeout(timer);
+          prevCleanup();
+        },
+      };
+    }
+  }
+  return {
+    signal: combined,
+    cleanup() { clearTimeout(timer); },
+  };
+}
+
+function assertCouncilSessionActive(session) {
+  if (!session?.signal?.aborted) return;
+  const reason = session.signal.reason;
+  if (reason instanceof Error) throw reason;
+  const error = new Error(String(reason || 'council_cancelled'));
+  error.name = 'AbortError';
+  throw error;
 }
 
 function turnWeight(turn) {
@@ -222,10 +276,20 @@ export async function runAgentCouncil({
   autonomyLevel = 'observation',
 } = {}) {
   const selected = effectiveSelected(providers);
+  const cloudEvidenceConsent = session?.state?.cloudEvidenceConsent === true
+    || env.GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT === '1';
   const runTurn = async (p, role, peerDecisions = []) => {
     const runner = providerRunner(p.id);
     onTurn({ phase: 'started', provider: p.id, role, iteration });
+    assertCouncilSessionActive(session);
+    const turnMs = Number(session?.limits?.agentTimeoutMs) || 180_000;
+    const turnProbe = combineTurnSignal(session?.signal, turnMs, p.id);
     try {
+      assertCloudEvidenceConsent({
+        providerId: p.id,
+        dataPlane: p.dataPlane,
+        cloudEvidenceConsent,
+      });
       session?.reserveAgentCall(p.id);
       const preferredRunner = p.id === 'codex' && session && !/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_CODEX_APP_SERVER || '1'))
         ? decideWithCodexAppServer : runner;
@@ -236,23 +300,31 @@ export async function runAgentCouncil({
           role, iteration, peerDecisions,
           observationBundle,
           model: p.id === 'openrouter' ? p.defaultModel : null,
-          signal: session?.signal,
+          signal: turnProbe.signal,
           maxContextChars: session?.limits?.maxContextChars,
           session,
           allowIntrusive,
           autonomyLevel,
+          cloudEvidenceConsent,
+          dataPlane: p.dataPlane || 'local',
+          providerId: p.id,
         });
       } catch (error) {
-        if (preferredRunner !== runner && !session?.signal?.aborted) {
+        if (isCouncilAbortError(error, session)) throw error;
+        if (preferredRunner !== runner && !session?.signal?.aborted && !turnProbe.signal.aborted) {
           try {
             result = await runner({
               target, mode, catalog, ragContext, root, env, fetchImpl, execFileImpl,
-              role, iteration, peerDecisions, observationBundle, signal: session?.signal,
+              role, iteration, peerDecisions, observationBundle, signal: turnProbe.signal,
               maxContextChars: session?.limits?.maxContextChars,
               allowIntrusive,
               autonomyLevel,
+              cloudEvidenceConsent,
+              dataPlane: p.dataPlane || 'local',
+              providerId: p.id,
             });
           } catch (fallbackError) {
+            if (isCouncilAbortError(fallbackError, session)) throw fallbackError;
             throw new Error(
               `Codex App Server falhou: ${error?.message || error}; `
               + `fallback codex exec falhou: ${fallbackError?.message || fallbackError}`,
@@ -267,13 +339,17 @@ export async function runAgentCouncil({
       onTurn({ phase: 'completed', ...turn });
       return turn;
     } catch (e) {
+      if (isCouncilAbortError(e, session)) throw e;
       const turn = { ok: false, provider: p.id, role, iteration, error: e?.message || String(e) };
       onTurn({ phase: 'failed', ...turn });
       return turn;
+    } finally {
+      turnProbe.cleanup();
     }
   };
 
   const proposals = await Promise.all(selected.map((p) => runTurn(p, 'planner')));
+  assertCouncilSessionActive(session);
   const successfulProposals = proposals.filter((t) => t.ok).map((t) => ({
     provider: t.provider,
     model: t.model || null,
@@ -286,6 +362,7 @@ export async function runAgentCouncil({
       successfulProposals.filter((x) => x.provider !== p.id),
     )))
     : [];
+  assertCouncilSessionActive(session);
   const verdictTurns = reviews.some((t) => t.ok) ? reviews : proposals;
   const moduleVerdict = moduleConsensus(verdictTurns, catalog);
   const forgeVerdict = forgeConsensus(verdictTurns);

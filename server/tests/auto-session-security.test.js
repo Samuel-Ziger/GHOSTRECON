@@ -276,7 +276,10 @@ test('snapshots são atômicos, privados e validados na leitura', async () => {
   try {
     const file = await writeAutoSessionSnapshot(root, session.state, {});
     const stat = await fs.stat(file);
-    assert.equal(stat.mode & 0o777, 0o600);
+    // Windows não aplica POSIX mode; em *nix o snapshot deve ser 0600.
+    if (process.platform !== 'win32') {
+      assert.equal(stat.mode & 0o777, 0o600);
+    }
     const restored = await readAutoSessionSnapshot(root, session.state.sessionId, {});
     assert.equal(restored.owner.sub, 'alice');
     const entries = await fs.readdir(path.dirname(file));

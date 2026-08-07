@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { cosineSimilarity, localTextEmbedding } from './semantic-ranker.mjs';
 import { redactAutoText, redactAutoValue } from './redaction.mjs';
@@ -65,11 +65,50 @@ function clampBytes(value, fallback = 512 * 1024, min = 4096, max = 4 * 1024 * 1
 }
 
 function ragLimits(env = process.env) {
+  const ttlDaysRaw = Number(env.GHOSTRECON_AUTO_RAG_TTL_DAYS ?? 30);
+  const ttlDays = Number.isFinite(ttlDaysRaw)
+    ? Math.max(0, Math.min(3650, Math.floor(ttlDaysRaw)))
+    : 30;
   return {
     maxFileBytes: clampBytes(env.GHOSTRECON_AUTO_RAG_MAX_FILE_BYTES),
     maxReadBytes: clampBytes(env.GHOSTRECON_AUTO_RAG_MAX_READ_BYTES || env.GHOSTRECON_AUTO_RAG_MAX_FILE_BYTES),
     maxFilesPerFolder: clampLimit(env.GHOSTRECON_AUTO_RAG_MAX_FILES_PER_FOLDER, 2000, 20_000),
+    // 0 = sem expiração; default 30 dias.
+    ttlMs: ttlDays > 0 ? ttlDays * 86_400_000 : 0,
   };
+}
+
+function parseMemoryCreatedAt(text = '', fileName = '') {
+  const fromFrontmatter = /^created:\s*["']?([^"'\n]+)["']?/m.exec(String(text || ''));
+  if (fromFrontmatter?.[1]) {
+    const parsed = Date.parse(fromFrontmatter[1]);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const fromName = /^(\d{4}-\d{2}-\d{2})/.exec(String(fileName || ''));
+  if (fromName?.[1]) {
+    const parsed = Date.parse(fromName[1]);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function isWithinRagTtl(createdMs, ttlMs, nowMs = Date.now()) {
+  if (!ttlMs || ttlMs <= 0) return true;
+  // Sem timestamp confiável, fail-closed: não recupera memória sob TTL.
+  if (!Number.isFinite(createdMs)) return false;
+  return (nowMs - createdMs) <= ttlMs;
+}
+
+async function resolveMemoryCreatedMs(filePath, text, fileName) {
+  const fromMeta = parseMemoryCreatedAt(text, fileName);
+  if (Number.isFinite(fromMeta)) return fromMeta;
+  try {
+    const st = await fs.stat(filePath);
+    const mtime = Number(st.mtimeMs);
+    return Number.isFinite(mtime) ? mtime : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeTags(tags) {
@@ -186,9 +225,39 @@ function safeMemoryRef(name) {
   return { folder, file, ref: `${folder}/${file}` };
 }
 
-export function resolveAutoRagDir({ root = DEFAULT_ROOT, env = process.env } = {}) {
+export function resolveAutoRagPartitionKey({
+  principalId = '',
+  engagementId = '',
+  target = '',
+} = {}) {
+  const principal = slug(principalId, 'anon');
+  const engagement = slug(engagementId, 'no-engagement');
+  const targetSlug = slug(target, 'no-target');
+  const digest = createHash('sha256')
+    .update(`${principal}\0${engagement}\0${targetSlug}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `p-${principal}/e-${engagement}/t-${targetSlug}-${digest}`;
+}
+
+export function resolveAutoRagDir({
+  root = DEFAULT_ROOT,
+  env = process.env,
+  principalId = '',
+  engagementId = '',
+  target = '',
+  partition = null,
+} = {}) {
   const raw = String(env.GHOSTRECON_AUTO_RAG_DIR || '').trim();
-  return raw ? path.resolve(raw) : path.join(root, 'data', 'auto-rag');
+  const base = raw ? path.resolve(raw) : path.join(root, 'data', 'auto-rag');
+  const partitionEnabled = !/^(0|false|no|off)$/i.test(
+    String(env.GHOSTRECON_AUTO_RAG_PARTITION ?? '1').trim(),
+  );
+  const part = partition
+    || (partitionEnabled && (principalId || engagementId || target)
+      ? resolveAutoRagPartitionKey({ principalId, engagementId, target })
+      : null);
+  return part ? path.join(base, 'tenants', part) : base;
 }
 
 export async function ensureAutoRagDirs(opts = {}) {
@@ -216,11 +285,19 @@ export async function writeAutoDecisionMarkdown({
   catalog = null,
   events = [],
   tags = [],
+  principalId = '',
+  engagementId = '',
 } = {}) {
   if (/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_RAG_ENABLED || '1').trim())) {
     return null;
   }
-  const dirs = await ensureAutoRagDirs({ root, env });
+  const dirs = await ensureAutoRagDirs({
+    root,
+    env,
+    principalId,
+    engagementId,
+    target,
+  });
   const limits = ragLimits(env);
   const now = new Date();
   const safeKind = slug(kind, 'decision');
@@ -303,7 +380,7 @@ export async function writeAutoDecisionMarkdown({
   if (!written) {
     return { skipped: true, reason: 'rag_file_limit', folder: MEMORY_FOLDERS.decisions, limit: limits.maxFilesPerFolder, baseDir: dirs.base };
   }
-  await updateAutoRagIndex({ root, env });
+  await updateAutoRagIndex({ root, env, principalId, engagementId, target });
   return { filePath, filename, baseDir: dirs.base };
 }
 
@@ -316,11 +393,13 @@ export async function writeAutoRagNote({
   target = '',
   tags = [],
   metadata = null,
+  principalId = '',
+  engagementId = '',
 } = {}) {
   if (/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_RAG_ENABLED || '1').trim())) {
     return null;
   }
-  const dirs = await ensureAutoRagDirs({ root, env });
+  const dirs = await ensureAutoRagDirs({ root, env, principalId, engagementId, target });
   const limits = ragLimits(env);
   const now = new Date();
   const folder = folderForKind(kind);
@@ -358,7 +437,7 @@ export async function writeAutoRagNote({
   if (!written) {
     return { skipped: true, reason: 'rag_file_limit', folder, limit: limits.maxFilesPerFolder, baseDir: dirs.base };
   }
-  await updateAutoRagIndex({ root, env });
+  await updateAutoRagIndex({ root, env, principalId, engagementId, target });
   return { filePath, filename, name: `${folder}/${filename}`, kind, baseDir: dirs.base };
 }
 
@@ -374,6 +453,8 @@ export async function writeAutoLesson({
   confidence = '',
   tags = [],
   metadata = null,
+  principalId = '',
+  engagementId = '',
 } = {}) {
   const title = `Lesson - ${target || slug(problem, 'auto')}`;
   const body = [
@@ -410,11 +491,20 @@ export async function writeAutoLesson({
     target,
     tags: ['lesson', ...tags],
     metadata,
+    principalId,
+    engagementId,
   });
 }
 
-export async function listAutoRagMarkdown({ root = DEFAULT_ROOT, env = process.env, limit = 20 } = {}) {
-  const dirs = await ensureAutoRagDirs({ root, env });
+export async function listAutoRagMarkdown({
+  root = DEFAULT_ROOT,
+  env = process.env,
+  limit = 20,
+  principalId = '',
+  engagementId = '',
+  target = '',
+} = {}) {
+  const dirs = await ensureAutoRagDirs({ root, env, principalId, engagementId, target });
   const limits = ragLimits(env);
   const files = [];
   for (const [key, folder] of Object.entries({
@@ -431,37 +521,96 @@ export async function listAutoRagMarkdown({ root = DEFAULT_ROOT, env = process.e
       }
     }
   }
-  const selected = files
-    .sort((a, b) => b.name.localeCompare(a.name))
-    .slice(0, clampLimit(limit, 20, 500));
-  return Promise.all(selected.map(async (item) => {
+  const ranked = files.sort((a, b) => b.name.localeCompare(a.name));
+  const out = [];
+  const nowMs = Date.now();
+  for (const item of ranked) {
+    if (out.length >= clampLimit(limit, 20, 500)) break;
     const text = await readUtf8Limited(item.path, limits.maxReadBytes).catch(() => '');
+    const createdMs = await resolveMemoryCreatedMs(item.path, text, item.name);
+    if (!isWithinRagTtl(createdMs, limits.ttlMs, nowMs)) continue;
     const firstHeading = /^#\s+(.+)$/m.exec(text)?.[1] || item.name;
-    return {
+    out.push({
       name: `${item.folder}/${item.name}`,
       file: item.name,
       folder: item.folder,
       path: item.path,
       title: redactAutoText(firstHeading).slice(0, 300),
       preview: redactAutoText(stripFrontmatter(text)).slice(0, 900),
-    };
-  }));
+      createdAt: Number.isFinite(createdMs) ? new Date(createdMs).toISOString() : null,
+    });
+  }
+  return out;
 }
 
-export async function readAutoRagMarkdown(name, { root = DEFAULT_ROOT, env = process.env } = {}) {
-  const dirs = await ensureAutoRagDirs({ root, env });
+/**
+ * Remove arquivos de memória fora do TTL. Retorna contagem/caminhos removidos.
+ * Não atravessa partições: exige o mesmo escopo de list/search.
+ */
+export async function pruneExpiredAutoRagMarkdown({
+  root = DEFAULT_ROOT,
+  env = process.env,
+  principalId = '',
+  engagementId = '',
+  target = '',
+  dryRun = false,
+} = {}) {
+  const dirs = await ensureAutoRagDirs({ root, env, principalId, engagementId, target });
+  const limits = ragLimits(env);
+  if (!limits.ttlMs) return { removed: 0, paths: [], dryRun: Boolean(dryRun) };
+  const removed = [];
+  const nowMs = Date.now();
+  for (const folder of Object.values({
+    decisions: dirs.decisions,
+    lessons: dirs.lessons,
+    notes: dirs.notes,
+    'cursor-tasks': dirs.cursorTasks,
+    'forge-requests': dirs.forgeRequests,
+  })) {
+    const entries = await fs.readdir(folder, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.toLowerCase().endsWith('.md')) continue;
+      const filePath = path.join(folder, e.name);
+      const text = await readUtf8Limited(filePath, limits.maxReadBytes).catch(() => '');
+      const createdMs = await resolveMemoryCreatedMs(filePath, text, e.name);
+      if (isWithinRagTtl(createdMs, limits.ttlMs, nowMs)) continue;
+      if (!dryRun) await fs.unlink(filePath).catch(() => null);
+      removed.push(filePath);
+    }
+  }
+  if (!dryRun && removed.length) {
+    await updateAutoRagIndex({ root, env, principalId, engagementId, target }).catch(() => null);
+  }
+  return { removed: removed.length, paths: removed, dryRun: Boolean(dryRun) };
+}
+
+export async function readAutoRagMarkdown(name, {
+  root = DEFAULT_ROOT,
+  env = process.env,
+  principalId = '',
+  engagementId = '',
+  target = '',
+} = {}) {
+  const dirs = await ensureAutoRagDirs({ root, env, principalId, engagementId, target });
   const limits = ragLimits(env);
   const safe = safeMemoryRef(name);
   const dirKey = safe.folder === MEMORY_FOLDERS.cursorTasks ? 'cursorTasks'
     : safe.folder === MEMORY_FOLDERS.forgeRequests ? 'forgeRequests'
       : safe.folder;
   const filePath = path.join(dirs[dirKey], safe.file);
+  const text = await readUtf8Limited(filePath, limits.maxReadBytes);
+  const createdMs = await resolveMemoryCreatedMs(filePath, text, safe.file);
+  if (!isWithinRagTtl(createdMs, limits.ttlMs)) {
+    const error = new Error(`memória RAG expirada: ${safe.ref}`);
+    error.code = 'AUTO_RAG_EXPIRED';
+    throw error;
+  }
   return {
     name: safe.ref,
     file: safe.file,
     folder: safe.folder,
     path: filePath,
-    text: await readUtf8Limited(filePath, limits.maxReadBytes),
+    text,
   };
 }
 
@@ -475,6 +624,8 @@ export async function searchAutoRagMarkdown({
   env = process.env,
   limit = 8,
   scanLimit = 120,
+  principalId = '',
+  engagementId = '',
 } = {}) {
   const limits = ragLimits(env);
   const q = [query, target, decisionType, ...(technologies || []), ...(modules || [])].join(' ').trim().toLowerCase();
@@ -482,7 +633,9 @@ export async function searchAutoRagMarkdown({
     .split(/[^a-z0-9._-]+/i)
     .map((x) => x.trim().toLowerCase())
     .filter((x) => x.length >= 2);
-  const items = await listAutoRagMarkdown({ root, env, limit: scanLimit });
+  const items = await listAutoRagMarkdown({
+    root, env, limit: scanLimit, principalId, engagementId, target,
+  });
   if (!terms.length) return items.slice(0, clampLimit(limit, 8, 50));
 
   const scored = [];
@@ -518,13 +671,27 @@ export async function searchAutoRagMarkdown({
     .slice(0, clampLimit(limit, 8, 50));
 }
 
-export async function loadAutoRagContext({ root = DEFAULT_ROOT, env = process.env, limit = 6, target = '', technologies = [], modules = [], decisionType = 'plan' } = {}) {
-  const targeted = target ? await searchAutoRagMarkdown({ root, env, query: target, target, technologies, modules, decisionType, limit }) : [];
-  const recent = target ? [] : await listAutoRagMarkdown({ root, env, limit });
+export async function loadAutoRagContext({
+  root = DEFAULT_ROOT,
+  env = process.env,
+  limit = 6,
+  target = '',
+  technologies = [],
+  modules = [],
+  decisionType = 'plan',
+  principalId = '',
+  engagementId = '',
+} = {}) {
+  const ragOpts = { root, env, principalId, engagementId, target };
+  const targeted = target
+    ? await searchAutoRagMarkdown({ ...ragOpts, query: target, technologies, modules, decisionType, limit })
+    : [];
+  const recent = target ? [] : await listAutoRagMarkdown({ ...ragOpts, limit });
   const byName = new Map([...targeted, ...recent].map((item) => [item.name, item]));
   const items = [...byName.values()].slice(0, clampLimit(limit, 6, 50));
   return {
-    dir: resolveAutoRagDir({ root, env }),
+    dir: resolveAutoRagDir(ragOpts),
+    partition: resolveAutoRagPartitionKey({ principalId, engagementId, target }),
     items: items.map((item) => ({
       name: item.name,
       folder: item.folder,
@@ -534,9 +701,17 @@ export async function loadAutoRagContext({ root = DEFAULT_ROOT, env = process.en
   };
 }
 
-export async function updateAutoRagIndex({ root = DEFAULT_ROOT, env = process.env } = {}) {
-  const dirs = await ensureAutoRagDirs({ root, env });
-  const items = await listAutoRagMarkdown({ root, env, limit: 200 });
+export async function updateAutoRagIndex({
+  root = DEFAULT_ROOT,
+  env = process.env,
+  principalId = '',
+  engagementId = '',
+  target = '',
+} = {}) {
+  const dirs = await ensureAutoRagDirs({ root, env, principalId, engagementId, target });
+  const items = await listAutoRagMarkdown({
+    root, env, limit: 200, principalId, engagementId, target,
+  });
   const indexPath = path.join(dirs.base, 'README.md');
   const byFolder = new Map();
   for (const item of items) {

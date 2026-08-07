@@ -579,7 +579,9 @@ export async function runProbePhase(s) {
         await mapPool(origins, limits.wellKnownConcurrency, async (baseOrigin) => {
           if (modules.includes('wellknown_security_txt')) {
             try {
-              const sec = await fetchWellKnownSecurityTxt(baseOrigin);
+              const sec = await fetchWellKnownSecurityTxt(baseOrigin, {
+                urlAllowed: (url) => s.urlInScope(url),
+              });
               if (sec.ok && sec.findings?.length) {
                 for (const f of sec.findings) addFinding(f, null);
               }
@@ -590,7 +592,9 @@ export async function runProbePhase(s) {
 
           if (modules.includes('wellknown_openid') || modules.includes('client_surface_audit')) {
             try {
-              const oid = await fetchWellKnownOpenIdConfiguration(baseOrigin);
+              const oid = await fetchWellKnownOpenIdConfiguration(baseOrigin, {
+                urlAllowed: (url) => s.urlInScope(url),
+              });
               if (oid.ok && oid.endpoints?.length) {
                 for (const ep of oid.endpoints) {
                   let pathname = '/';

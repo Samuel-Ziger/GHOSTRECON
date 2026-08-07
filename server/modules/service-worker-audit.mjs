@@ -1,6 +1,7 @@
 import { limits } from '../config.js';
 import { pickStealthUserAgent, stealthPause } from './request-policy.js';
 import { readResponseSnippet } from './module-runner.mjs';
+import { fetchScoped, urlAllowedOrSameOrigin } from './scoped-fetch.mjs';
 
 export const moduleManifest = {
   id: 'service_worker_audit',
@@ -109,10 +110,16 @@ export function auditServiceWorkerScript(text, { url = '', headers = null, regis
   return findings;
 }
 
-async function fetchWorker(url, { fetchImpl = fetch, timeoutMs = 8_000, headers = {} } = {}) {
-  const res = await fetchImpl(url, {
+async function fetchWorker(url, {
+  fetchImpl = fetch,
+  timeoutMs = 8_000,
+  headers = {},
+  urlAllowed = null,
+} = {}) {
+  const res = await fetchScoped(url, {
+    fetchImpl,
     method: 'GET',
-    redirect: 'follow',
+    urlAllowed: urlAllowedOrSameOrigin(url, urlAllowed),
     signal: AbortSignal.timeout(timeoutMs),
     headers: {
       Accept: 'application/javascript,text/javascript,*/*;q=0.8',
@@ -134,6 +141,7 @@ export async function runServiceWorkerAudit({
   origins = [],
   modules = [],
   fetchImpl = fetch,
+  urlAllowed = null,
   log = () => {},
 } = {}) {
   const ua = pickStealthUserAgent(modules);
@@ -162,6 +170,7 @@ export async function runServiceWorkerAudit({
     const worker = await fetchWorker(c.scriptUrl, {
       fetchImpl,
       timeoutMs,
+      urlAllowed,
       headers: { 'User-Agent': ua },
     }).catch(() => null);
     if (!worker) continue;

@@ -22,6 +22,9 @@ export async function decideWithOpenAiCompatible({
   maxContextChars = 120_000,
   allowIntrusive = false,
   autonomyLevel = 'observation',
+  cloudEvidenceConsent = false,
+  dataPlane = 'local',
+  providerId = null,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error(`${provider}: fetch indisponível`);
   if (!baseUrl || !model) throw new Error(`${provider}: baseUrl/model ausente`);
@@ -42,6 +45,9 @@ export async function decideWithOpenAiCompatible({
             content: buildAgentPrompt({
               target, mode, catalog, ragContext, role, iteration, peerDecisions,
               observationBundle, maxContextChars, allowIntrusive, autonomyLevel,
+              cloudEvidenceConsent,
+              dataPlane,
+              providerId: providerId || provider,
             }),
           },
         ],
@@ -110,7 +116,11 @@ export async function decideWithOpenAiCompatible({
       transport: { type: 'openai-compatible', baseUrl: String(baseUrl).replace(/\/+$/, ''), repaired },
     };
   } catch (e) {
-    if (e?.name === 'AbortError') throw new Error(`${provider}: timeout (${timeoutMs}ms)`);
+    if (e?.name === 'AbortError') {
+      // Abort do signal externo (cancelamento) não pode mascarar-se como timeout.
+      if (signal?.aborted) throw e;
+      throw new Error(`${provider}: timeout (${timeoutMs}ms)`);
+    }
     throw e;
   } finally {
     clearTimeout(timer);

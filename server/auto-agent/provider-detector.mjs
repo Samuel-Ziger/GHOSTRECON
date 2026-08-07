@@ -22,36 +22,83 @@ function isWindows(platform = process.platform) {
   return /^win/i.test(String(platform || ''));
 }
 
-async function commandAvailable(command, { execFileImpl = execFileDefault, platform = process.platform } = {}) {
+async function commandAvailable(command, {
+  execFileImpl = execFileDefault,
+  platform = process.platform,
+  signal = null,
+} = {}) {
+  throwIfAborted(signal);
   const bin = isWindows(platform) ? 'where' : 'which';
   try {
-    await execFileImpl(bin, [command], { timeout: 2500, windowsHide: true });
+    await execFileImpl(bin, [command], { timeout: 2500, windowsHide: true, signal });
     return true;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     return false;
   }
 }
 
-async function commandSucceeds(command, args, { execFileImpl = execFileDefault, timeoutMs = 5000 } = {}) {
+async function commandSucceeds(command, args, {
+  execFileImpl = execFileDefault,
+  timeoutMs = 5000,
+  signal = null,
+} = {}) {
+  throwIfAborted(signal);
   try {
-    await execFileImpl(command, args, { timeout: timeoutMs, windowsHide: true });
+    await execFileImpl(command, args, { timeout: timeoutMs, windowsHide: true, signal });
     return true;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     return false;
   }
 }
 
-async function httpReachable(url, { fetchImpl = globalThis.fetch, timeoutMs = 2500, headers = {} } = {}) {
-  if (typeof fetchImpl !== 'function' || !url) return false;
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw signal.reason || new Error('detecção de providers cancelada');
+  }
+}
+
+function combineSignals(parentSignal, timeoutMs) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error('provider_probe_timeout')), timeoutMs);
+  const onParentAbort = () => {
+    controller.abort(parentSignal?.reason || new Error('detecção de providers cancelada'));
+  };
+  if (parentSignal) {
+    if (parentSignal.aborted) onParentAbort();
+    else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener?.('abort', onParentAbort);
+    },
+  };
+}
+
+async function httpReachable(url, {
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 2500,
+  headers = {},
+  signal = null,
+} = {}) {
+  if (typeof fetchImpl !== 'function' || !url) return false;
+  throwIfAborted(signal);
+  const probe = combineSignals(signal, timeoutMs);
   try {
-    const res = await fetchImpl(url, { method: 'GET', signal: controller.signal, headers: { accept: 'application/json', ...headers } });
+    const res = await fetchImpl(url, {
+      method: 'GET',
+      signal: probe.signal,
+      headers: { accept: 'application/json', ...headers },
+    });
     return Boolean(res?.ok || (res?.status >= 200 && res?.status < 500));
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     return false;
   } finally {
-    clearTimeout(timer);
+    probe.cleanup();
   }
 }
 
@@ -64,6 +111,7 @@ function provider(id, fields = {}) {
     authenticated: false,
     reachable: false,
     roleHint: 'unavailable',
+    dataPlane: 'local',
     ...fields,
   };
   out.usable = fields.usable ?? Boolean(out.selected && out.configured && out.authenticated && out.reachable);
@@ -89,13 +137,16 @@ export async function detectAutoProviders({
   fetchImpl = globalThis.fetch,
   execFileImpl = execFileDefault,
   platform = process.platform,
+  signal = null,
 } = {}) {
+  throwIfAborted(signal);
   const selectedSet = new Set(normalizeCommanderSelection(selected));
   const skynetUrl = String(env.GHOSTRECON_SKYNET_URL || env.GHOSTRECON_GHOST_BASE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
   const lmstudioUrl = String(env.GHOSTRECON_LMSTUDIO_BASE_URL || '').replace(/\/+$/, '');
   const ollamaUrl = String(env.OLLAMA_HOST || env.GHOSTRECON_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
   const openrouterKey = String(env.OPENROUTER_API_KEY || '').trim();
   const cursorExecEnabled = envFlag(env, 'GHOSTRECON_CURSOR_PROVIDER_EXEC');
+  const probe = { fetchImpl, signal };
 
   const [
     codexInstalled,
@@ -108,29 +159,30 @@ export async function detectAutoProviders({
     ollamaReachable,
     openrouterReachable,
   ] = await Promise.all([
-    commandAvailable('codex', { execFileImpl, platform }),
-    commandAvailable('claude', { execFileImpl, platform }),
-    commandAvailable('cursor', { execFileImpl, platform }),
-    commandAvailable('agent', { execFileImpl, platform }),
-    httpReachable(`${skynetUrl}/health`, { fetchImpl }),
-    httpReachable(`${skynetUrl}/v1/models`, { fetchImpl }),
-    lmstudioUrl ? httpReachable(`${lmstudioUrl}/models`, { fetchImpl }) : false,
-    httpReachable(`${ollamaUrl}/api/tags`, { fetchImpl }),
+    commandAvailable('codex', { execFileImpl, platform, signal }),
+    commandAvailable('claude', { execFileImpl, platform, signal }),
+    commandAvailable('cursor', { execFileImpl, platform, signal }),
+    commandAvailable('agent', { execFileImpl, platform, signal }),
+    httpReachable(`${skynetUrl}/health`, probe),
+    httpReachable(`${skynetUrl}/v1/models`, probe),
+    lmstudioUrl ? httpReachable(`${lmstudioUrl}/models`, probe) : false,
+    httpReachable(`${ollamaUrl}/api/tags`, probe),
     openrouterKey ? httpReachable('https://openrouter.ai/api/v1/models', {
-      fetchImpl,
+      ...probe,
       headers: { Authorization: `Bearer ${openrouterKey}` },
     }) : false,
   ]);
 
+  throwIfAborted(signal);
   const [codexAuthenticated, claudeAuthenticated, cursorAuthenticated] = await Promise.all([
     codexInstalled && selectedSet.has('codex')
-      ? commandSucceeds('codex', ['login', 'status'], { execFileImpl })
+      ? commandSucceeds('codex', ['login', 'status'], { execFileImpl, signal })
       : false,
     claudeInstalled && (selectedSet.has('claude') || selectedSet.has('claude_code'))
-      ? commandSucceeds('claude', ['auth', 'status'], { execFileImpl })
+      ? commandSucceeds('claude', ['auth', 'status'], { execFileImpl, signal })
       : false,
     cursorAgentInstalled && selectedSet.has('cursor') && cursorExecEnabled
-      ? commandSucceeds(String(env.GHOSTRECON_CURSOR_AGENT_COMMAND || 'agent'), ['status'], { execFileImpl })
+      ? commandSucceeds(String(env.GHOSTRECON_CURSOR_AGENT_COMMAND || 'agent'), ['status'], { execFileImpl, signal })
       : false,
   ]);
 
@@ -192,6 +244,7 @@ export async function detectAutoProviders({
       authenticated: openrouterReachable,
       reachable: openrouterReachable,
       roleHint: 'cloud_planner_reviewer',
+      dataPlane: 'cloud',
       defaultModel: env.GHOSTRECON_OPENROUTER_AUTO_MODEL || env.GHOSTRECON_OPENROUTER_MODEL || OPENROUTER_AUTO_MODELS[0],
       models: [...OPENROUTER_AUTO_MODELS],
     }),

@@ -24,8 +24,12 @@ class CodexAppServerClient {
     this.closed = false;
     this.exited = false;
     this.killTimer = null;
+    this.closePromise = null;
+    this.exitWaiters = [];
     this.parentSignal = signal || null;
-    this.onParentAbort = () => this.close(abortError(this.parentSignal?.reason, 'sessão AUTO cancelada'));
+    this.onParentAbort = () => {
+      void this.close(abortError(this.parentSignal?.reason, 'sessão AUTO cancelada'));
+    };
     this.proc = spawnImpl(command, ['app-server', '--listen', 'stdio://'], {
       cwd: root, env: codexChildEnv(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
       // Em POSIX isto cria um process group próprio. Assim o watchdog encerra
@@ -58,6 +62,12 @@ class CodexAppServerClient {
     this.killTimer = null;
     this.parentSignal?.removeEventListener('abort', this.onParentAbort);
     try { this.lines?.close(); } catch { /* já encerrado */ }
+    const waiters = this.exitWaiters;
+    this.exitWaiters = [];
+    for (const waiter of waiters) {
+      clearTimeout(waiter.hardDeadline);
+      waiter.resolve();
+    }
   }
 
   rejectAll(error) {
@@ -228,19 +238,38 @@ class CodexAppServerClient {
     try { this.proc.kill(signalName); } catch { /* já encerrado */ }
   }
 
+  /**
+   * Encerra o App Server e aguarda exit (TERM→KILL). Falha com
+   * CODEX_APP_SERVER_UNTERMINATED se o processo não morrer a tempo.
+   */
   close(reason = new Error('codex app-server encerrado')) {
-    if (this.closed) return;
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
     this.parentSignal?.removeEventListener('abort', this.onParentAbort);
     try { this.proc?.stdin?.end(); } catch { /* já encerrado */ }
     try { this.lines?.close(); } catch { /* já encerrado */ }
     this.rejectAll(abortError(reason));
-    if (this.exited) return;
-    this.signalProcess('SIGTERM');
-    this.killTimer = setTimeout(() => {
-      if (!this.exited) this.signalProcess('SIGKILL');
-    }, APP_SERVER_KILL_GRACE_MS);
-    this.killTimer.unref?.();
+    this.closePromise = new Promise((resolve, reject) => {
+      if (this.exited) {
+        resolve();
+        return;
+      }
+      const hardDeadline = setTimeout(() => {
+        if (this.exited) return;
+        const error = new Error('codex app-server não encerrou após SIGKILL');
+        error.code = 'CODEX_APP_SERVER_UNTERMINATED';
+        reject(error);
+      }, APP_SERVER_KILL_GRACE_MS + 2_000);
+      hardDeadline.unref?.();
+      // Registrar waiter antes do kill: exit síncrono do mock não pode perder o resolve.
+      this.exitWaiters.push({ resolve, reject, hardDeadline });
+      this.signalProcess('SIGTERM');
+      this.killTimer = setTimeout(() => {
+        if (!this.exited) this.signalProcess('SIGKILL');
+      }, APP_SERVER_KILL_GRACE_MS);
+      this.killTimer.unref?.();
+    });
+    return this.closePromise;
   }
 }
 

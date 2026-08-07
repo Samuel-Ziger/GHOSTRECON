@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { redactAutoText, redactAutoValue } from './redaction.mjs';
+import { resolveAutoRagPartitionKey } from './rag-memory.mjs';
 
 const SESSION_ID_RE = /^session-[a-z0-9-]{8,100}$/i;
 const CHECKPOINT_ID_RE = /^checkpoint-[a-z0-9-]{8,140}$/i;
@@ -41,6 +42,7 @@ export const AUTO_CHECKPOINT_VERSION = 2;
 const AUTO_SESSION_STATUSES = new Set([
   'running',
   'completed',
+  'partial',
   'cancelled',
   'failed',
   'interrupted',
@@ -62,6 +64,55 @@ export function autoSessionLimits(env = process.env) {
     maxAgentCalls: bounded(env, 'GHOSTRECON_AUTO_MAX_AGENT_CALLS', 12, 1, 100),
     maxContextChars: bounded(env, 'GHOSTRECON_AUTO_MAX_CONTEXT_CHARS', 120_000, 10_000, 1_000_000),
     maxCostUsd: bounded(env, 'GHOSTRECON_AUTO_MAX_COST_USD', 10, 0, 10_000),
+  });
+}
+
+/** Timeouts de engines congelados na resumePolicy (não renovados no resume). */
+export function autoEngineTimeouts(env = process.env) {
+  return Object.freeze({
+    pipelineTimeoutMs: bounded(env, 'GHOSTRECON_AUTO_PIPELINE_TIMEOUT_MS', 20 * 60_000, 30_000, 7_200_000),
+    engineSettleGraceMs: bounded(env, 'GHOSTRECON_AUTO_ENGINE_SETTLE_GRACE_MS', 7_500, 500, 30_000),
+    phaseSettleGraceMs: bounded(env, 'GHOSTRECON_AUTO_PHASE_SETTLE_GRACE_MS', 2_000, 100, 30_000),
+    framesevenAuthTimeoutMs: bounded(env, 'GHOSTRECON_FRAMESEVEN_AUTH_TIMEOUT_MS', 10 * 60_000, 5_000, 30 * 60_000),
+    framesevenBeforeScanTimeoutMs: bounded(
+      env,
+      'GHOSTRECON_FRAMESEVEN_BEFORE_SCAN_TIMEOUT_MS',
+      30 * 60_000,
+      5_000,
+      60 * 60_000,
+    ),
+  });
+}
+
+/** Intersecta limits restaurados com o env atual (sempre o mais restritivo). */
+export function intersectAutoSessionLimits(restoredLimits, envLimits) {
+  const left = restoredLimits && typeof restoredLimits === 'object' ? restoredLimits : {};
+  const right = envLimits && typeof envLimits === 'object' ? envLimits : autoSessionLimits();
+  return Object.freeze({
+    maxIterations: Math.min(
+      Number(left.maxIterations) || right.maxIterations,
+      right.maxIterations,
+    ),
+    sessionTimeoutMs: Math.min(
+      Number(left.sessionTimeoutMs) || right.sessionTimeoutMs,
+      right.sessionTimeoutMs,
+    ),
+    agentTimeoutMs: Math.min(
+      Number(left.agentTimeoutMs) || right.agentTimeoutMs,
+      right.agentTimeoutMs,
+    ),
+    maxAgentCalls: Math.min(
+      Number(left.maxAgentCalls) || right.maxAgentCalls,
+      right.maxAgentCalls,
+    ),
+    maxContextChars: Math.min(
+      Number(left.maxContextChars) || right.maxContextChars,
+      right.maxContextChars,
+    ),
+    maxCostUsd: Math.min(
+      Number(left.maxCostUsd) || right.maxCostUsd,
+      right.maxCostUsd,
+    ),
   });
 }
 
@@ -467,17 +518,46 @@ export function assertAutoResumeSnapshotCompatible(snapshot, {
   return snapshot;
 }
 
+function recordApprovalTransition(state, {
+  approvalId,
+  from,
+  to,
+  reason = '',
+  at = new Date().toISOString(),
+} = {}) {
+  if (!state || typeof state !== 'object') return;
+  if (!Array.isArray(state.approvalTransitions)) state.approvalTransitions = [];
+  state.approvalTransitions.push({
+    approvalId: String(approvalId || ''),
+    from: String(from || ''),
+    to: String(to || ''),
+    reason: redactAutoText(String(reason || '')).slice(0, 500),
+    at: String(at || new Date().toISOString()),
+  });
+  if (state.approvalTransitions.length > 40) {
+    state.approvalTransitions = state.approvalTransitions.slice(-40);
+  }
+}
+
 function expireOrphanedApproval(state, {
   now = Date.now(),
   reason = 'approval_restored_without_live_resolver',
 } = {}) {
   if (state?.pendingApproval?.status !== 'pending') return false;
+  const previousStatus = state.pendingApproval.status;
   state.pendingApproval = {
     ...state.pendingApproval,
     status: 'expired',
     reason: redactAutoText(String(reason)).slice(0, 500),
     resolvedAt: new Date(now).toISOString(),
   };
+  recordApprovalTransition(state, {
+    approvalId: state.pendingApproval.approvalId,
+    from: previousStatus,
+    to: 'expired',
+    reason,
+    at: state.pendingApproval.resolvedAt,
+  });
   return true;
 }
 
@@ -515,6 +595,15 @@ export function validateAutoSessionSnapshot(snapshot, expectedSessionId = null) 
         && typeof snapshot.pendingApproval.approvalId === 'string',
       'pendingApproval',
     );
+  }
+  if (snapshot.approvalTransitions != null) {
+    assertSnapshot(Array.isArray(snapshot.approvalTransitions), 'approvalTransitions');
+    assertSnapshot(snapshot.approvalTransitions.length <= 40, 'approvalTransitions excede o limite');
+    for (const row of snapshot.approvalTransitions) {
+      assertSnapshot(row && typeof row === 'object' && !Array.isArray(row), 'approvalTransitions item');
+      assertSnapshot(typeof row.approvalId === 'string', 'approvalTransitions.approvalId');
+      assertSnapshot(typeof row.to === 'string' && row.to.trim(), 'approvalTransitions.to');
+    }
   }
   if (snapshot.checkpoint != null) {
     assertSnapshot(snapshot.checkpoint && typeof snapshot.checkpoint === 'object' && !Array.isArray(snapshot.checkpoint), 'checkpoint');
@@ -560,10 +649,22 @@ async function writeJsonAtomic(file, value) {
     await fs.chmod(file, 0o600);
     // O rename é atômico; o fsync do diretório torna a troca durável frente a
     // queda do processo/host depois que o checkpoint foi anunciado.
-    directoryHandle = await fs.open(path.dirname(file), 'r');
-    await directoryHandle.sync();
-    await directoryHandle.close();
-    directoryHandle = null;
+    // Em Windows, fsync de diretório costuma falhar com EPERM/EINVAL — o
+    // rename já garante a troca atômica; ignore só esses códigos de plataforma.
+    try {
+      directoryHandle = await fs.open(path.dirname(file), 'r');
+      await directoryHandle.sync();
+      await directoryHandle.close();
+      directoryHandle = null;
+    } catch (error) {
+      if (directoryHandle) {
+        await directoryHandle.close().catch(() => {});
+        directoryHandle = null;
+      }
+      if (!['EPERM', 'EINVAL', 'EBADF', 'ENOTSUP'].includes(String(error?.code || ''))) {
+        throw error;
+      }
+    }
   } finally {
     if (handle) await handle.close().catch(() => {});
     if (directoryHandle) await directoryHandle.close().catch(() => {});
@@ -574,6 +675,76 @@ async function writeJsonAtomic(file, value) {
 function resolveAutoRagRoot(root, env = process.env) {
   const configured = String(env.GHOSTRECON_AUTO_RAG_DIR || '').trim();
   return configured ? path.resolve(configured) : path.join(root, 'data', 'auto-rag');
+}
+
+function sessionPartitionEnabled(env = process.env) {
+  return !/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_SESSION_PARTITION ?? '1'));
+}
+
+function ownerSub(owner) {
+  return String(normalizeOwner(owner)?.sub || '').trim();
+}
+
+/** Diretório do snapshot: tenants/…/sessions/{id} quando há owner; legado sessions/{id}. */
+export function resolveAutoSessionSnapshotDir(root, {
+  sessionId,
+  owner = null,
+  engagementId = '',
+  target = '',
+  env = process.env,
+} = {}) {
+  const ragRoot = resolveAutoRagRoot(root, env);
+  const safeId = String(sessionId || '').trim();
+  const legacy = path.join(ragRoot, 'sessions', safeId);
+  const principalId = ownerSub(owner);
+  if (!sessionPartitionEnabled(env) || !principalId || !SESSION_ID_RE.test(safeId)) {
+    return legacy;
+  }
+  const part = resolveAutoRagPartitionKey({
+    principalId,
+    engagementId: String(engagementId || ''),
+    target: String(target || ''),
+  });
+  return path.join(ragRoot, 'tenants', part, 'sessions', safeId);
+}
+
+async function listSessionSnapshotDirs(ragRoot) {
+  const dirs = [];
+  const legacyRoot = path.join(ragRoot, 'sessions');
+  for (const entry of await fs.readdir(legacyRoot, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) dirs.push(path.join(legacyRoot, entry.name));
+  }
+  const tenantsRoot = path.join(ragRoot, 'tenants');
+  const stack = [tenantsRoot];
+  while (stack.length) {
+    const current = stack.pop();
+    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const full = path.join(current, entry.name);
+      if (entry.name === 'sessions') {
+        for (const sessionEntry of await fs.readdir(full, { withFileTypes: true }).catch(() => [])) {
+          if (sessionEntry.isDirectory()) dirs.push(path.join(full, sessionEntry.name));
+        }
+      } else {
+        stack.push(full);
+      }
+    }
+  }
+  return dirs;
+}
+
+async function loadSessionSnapshotFile(file, expectedSessionId = null, env = process.env) {
+  const stat = await fs.stat(file);
+  const maxBytes = bounded(env, 'GHOSTRECON_AUTO_SESSION_SNAPSHOT_MAX_BYTES', 5_000_000, 10_000, 50_000_000);
+  if (stat.size > maxBytes) throw new Error(`snapshot de sessão AUTO excede ${maxBytes} bytes`);
+  let snapshot;
+  try {
+    snapshot = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (error) {
+    throw new Error(`snapshot de sessão AUTO inválido: ${error?.message || error}`);
+  }
+  return validateAutoSessionSnapshot(snapshot, expectedSessionId || snapshot?.sessionId);
 }
 
 function autoResumeClaimError(message, code = 'AUTO_RESUME_CHECKPOINT_CLAIM_FAILED') {
@@ -595,8 +766,14 @@ export async function claimAutoResumeCheckpoint(root, snapshot, {
 } = {}) {
   assertAutoResumeSnapshotCompatible(snapshot);
   const checkpoint = snapshot.checkpoint;
-  const ragRoot = resolveAutoRagRoot(root, env);
-  const claimsDir = path.join(ragRoot, 'sessions', snapshot.sessionId, 'resume-claims');
+  const sessionDir = resolveAutoSessionSnapshotDir(root, {
+    sessionId: snapshot.sessionId,
+    owner: principal || snapshot.owner,
+    engagementId: snapshot.engagementId || snapshot.resumePolicy?.engagementId || '',
+    target: snapshot.target || '',
+    env,
+  });
+  const claimsDir = path.join(sessionDir, 'resume-claims');
   await fs.mkdir(claimsDir, { recursive: true, mode: 0o700 });
   await fs.chmod(claimsDir, 0o700);
   const claimFile = path.join(claimsDir, `${checkpoint.checkpointHash}.json`);
@@ -625,10 +802,20 @@ export async function claimAutoResumeCheckpoint(root, snapshot, {
     await handle.sync();
     await handle.close();
     handle = null;
-    directoryHandle = await fs.open(claimsDir, 'r');
-    await directoryHandle.sync();
-    await directoryHandle.close();
-    directoryHandle = null;
+    try {
+      directoryHandle = await fs.open(claimsDir, 'r');
+      await directoryHandle.sync();
+      await directoryHandle.close();
+      directoryHandle = null;
+    } catch (syncError) {
+      if (directoryHandle) {
+        await directoryHandle.close().catch(() => {});
+        directoryHandle = null;
+      }
+      if (!['EPERM', 'EINVAL', 'EBADF', 'ENOTSUP'].includes(String(syncError?.code || ''))) {
+        throw syncError;
+      }
+    }
     return Object.freeze({ ...claim, file: claimFile });
   } catch (error) {
     if (error?.code === 'EEXIST') {
@@ -644,18 +831,36 @@ export async function claimAutoResumeCheckpoint(root, snapshot, {
   }
 }
 
-export async function readAutoResumeCheckpointClaim(root, sessionId, checkpointHash, env = process.env) {
+export async function readAutoResumeCheckpointClaim(root, sessionId, checkpointHash, env = process.env, {
+  owner = null,
+  engagementId = '',
+  target = '',
+} = {}) {
   const safeSessionId = String(sessionId || '').trim();
   const safeHash = String(checkpointHash || '').trim().toLowerCase();
   if (!SESSION_ID_RE.test(safeSessionId)) throw new Error('sessionId inválido');
   if (!SHA256_RE.test(safeHash)) throw new Error('checkpointHash inválido');
-  const file = path.join(
-    resolveAutoRagRoot(root, env),
-    'sessions',
-    safeSessionId,
-    'resume-claims',
-    `${safeHash}.json`,
-  );
+  const sessionDir = resolveAutoSessionSnapshotDir(root, {
+    sessionId: safeSessionId,
+    owner,
+    engagementId,
+    target,
+    env,
+  });
+  const candidates = [
+    path.join(sessionDir, 'resume-claims', `${safeHash}.json`),
+    path.join(resolveAutoRagRoot(root, env), 'sessions', safeSessionId, 'resume-claims', `${safeHash}.json`),
+  ];
+  let file = candidates[0];
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      await fs.stat(candidate);
+      file = candidate;
+      break;
+    } catch {
+      // try next
+    }
+  }
   return JSON.parse(await fs.readFile(file, 'utf8'));
 }
 
@@ -712,33 +917,61 @@ export function createAutoSession({
   env = process.env,
   restoredState = null,
 } = {}) {
-  const limits = autoSessionLimits(env);
+  const envLimits = autoSessionLimits(env);
+  const limits = restoredState?.limits
+    ? intersectAutoSessionLimits(restoredState.limits, envLimits)
+    : envLimits;
   const controller = new AbortController();
-  const startedAt = Date.now();
+  const nowMs = Date.now();
   const requestedOwner = normalizeOwner(ownerPrincipal);
   const restoredOwner = normalizeOwner(restoredState?.owner);
   if (requestedOwner && restoredOwner && requestedOwner.sub !== restoredOwner.sub) {
     throw new Error('sessão AUTO pertence a outro principal');
   }
+  const restoredStartedMs = Date.parse(String(restoredState?.startedAt || ''));
+  const startedAtMs = Number.isFinite(restoredStartedMs) ? restoredStartedMs : nowMs;
+  const restoredDeadlineMs = Date.parse(String(restoredState?.deadlineAt || ''));
+  const deadlineAt = Number.isFinite(restoredDeadlineMs)
+    ? new Date(restoredDeadlineMs).toISOString()
+    : new Date(nowMs + limits.sessionTimeoutMs).toISOString();
+  const remainingMs = Math.max(1_000, Date.parse(deadlineAt) - nowMs);
   const state = {
-    schemaVersion: 1, sessionId, requestRunId, target, startedAt: new Date(startedAt).toISOString(),
+    schemaVersion: 1, sessionId, requestRunId, target, startedAt: new Date(startedAtMs).toISOString(),
     status: 'running', iteration: 0, agentCalls: 0, usage: {}, costUsd: 0,
-    lastActivityAt: new Date(startedAt).toISOString(), currentStage: 'starting', currentModule: null,
+    lastActivityAt: new Date(nowMs).toISOString(), currentStage: 'starting', currentModule: null,
     providers: providers.map((p) => typeof p === 'string' ? p : p?.id).filter(Boolean),
     owner: requestedOwner,
     limits,
+    deadlineAt,
     ...(restoredState || {}),
-    sessionId, requestRunId, target, status: 'running', limits,
-    runtimeLease: createAutoRuntimeLease(startedAt),
+    // Identidade/status/deadline/limits congelados; counters (agentCalls/costUsd/usage/iteration)
+    // vêm do spread de restoredState e não são zerados aqui.
+    sessionId, requestRunId, target, status: 'running', limits, deadlineAt,
+    budgetVerifiable: restoredState?.budgetVerifiable !== false,
+    startedAt: Number.isFinite(restoredStartedMs)
+      ? new Date(restoredStartedMs).toISOString()
+      : (restoredState?.startedAt || new Date(startedAtMs).toISOString()),
+    runtimeLease: createAutoRuntimeLease(nowMs),
   };
   state.owner = requestedOwner || restoredOwner || null;
+  state.deadlineAt = deadlineAt;
+  state.limits = limits;
+  // Runtime-only: não vai ao snapshot. Turnos concorrentes não podem mascarar stall.
+  const activeAgentTurns = new Map();
+  const agentTurnKey = (event) => `${event?.provider || 'unknown'}:${event?.role || 'turn'}`;
+  const oldestAgentTurnMs = () => (activeAgentTurns.size
+    ? Math.min(...activeAgentTurns.values())
+    : null);
   if (restoredState) {
     expireOrphanedApproval(state, {
-      now: startedAt,
+      now: nowMs,
       reason: 'approval_expired_during_session_restore',
     });
   }
-  const timer = setTimeout(() => controller.abort(new Error('auto_session_timeout')), limits.sessionTimeoutMs);
+  const timer = setTimeout(
+    () => controller.abort(new Error('auto_session_timeout')),
+    remainingMs,
+  );
   timer.unref?.();
   return {
     state,
@@ -779,12 +1012,21 @@ export function createAutoSession({
           clearTimeout(approvalTimer);
           controller.signal.removeEventListener('abort', onAbort);
           if (state.pendingApproval?.approvalId === approvalId) {
+            const previousStatus = state.pendingApproval.status;
+            const resolvedAt = new Date().toISOString();
             state.pendingApproval = {
               ...state.pendingApproval,
               status,
               reason: redactAutoText(String(reason || '')).slice(0, 500),
-              resolvedAt: new Date().toISOString(),
+              resolvedAt,
             };
+            recordApprovalTransition(state, {
+              approvalId,
+              from: previousStatus,
+              to: status,
+              reason,
+              at: resolvedAt,
+            });
           }
           if (this.resolveApproval === resolveApproval) this.resolveApproval = null;
           if (error) reject(error);
@@ -801,57 +1043,128 @@ export function createAutoSession({
     },
     touch(event = null) {
       if (event?.type === 'auto_heartbeat') return;
-      state.lastActivityAt = new Date().toISOString();
       if (event?.type === 'auto_agent_turn_started') {
+        activeAgentTurns.set(agentTurnKey(event), Date.now());
         state.currentStage = `agent:${event.provider || 'unknown'}:${event.role || 'turn'}`;
         state.currentModule = null;
-      } else if (event?.type === 'auto_step') {
-        state.currentStage = `${event.step || 'step'}:${event.status || 'running'}`;
+        const oldest = oldestAgentTurnMs();
+        state.lastActivityAt = new Date(oldest || Date.now()).toISOString();
+        return;
+      }
+      if (event?.type === 'auto_agent_turn_completed' || event?.type === 'auto_agent_turn_failed') {
+        activeAgentTurns.delete(agentTurnKey(event));
+        if (activeAgentTurns.size === 0) {
+          state.currentStage = 'idle';
+          state.currentModule = null;
+          state.lastActivityAt = new Date().toISOString();
+        } else {
+          const [remaining] = activeAgentTurns.keys();
+          state.currentStage = `agent:${remaining}`;
+          state.lastActivityAt = new Date(oldestAgentTurnMs()).toISOString();
+        }
+        return;
+      }
+      state.lastActivityAt = new Date().toISOString();
+      if (event?.type === 'auto_step') {
+        const stepStatus = String(event.status || 'running');
+        if (['done', 'blocked', 'failed', 'cancelled', 'skipped'].includes(stepStatus)) {
+          state.currentStage = 'idle';
+          state.currentModule = null;
+        } else {
+          state.currentStage = `${event.step || 'step'}:${stepStatus}`;
+        }
       } else if (event?.type === 'auto_iteration_started') {
         state.currentStage = `iteration:${event.iteration || state.iteration}`;
       } else if (event?.type === 'pipe' && event.state === 'active') {
         state.currentStage = 'pipeline';
         state.currentModule = event.name || null;
-      } else if (event?.type === 'pipe' && event.name === state.currentModule && ['done', 'skip'].includes(event.state)) {
+      } else if (event?.type === 'pipe' && event.name === state.currentModule
+        && ['done', 'skip', 'failed', 'timeout', 'cancelled'].includes(event.state)) {
         state.currentModule = null;
       }
     },
+    /** Idle para stall: com turns paralelos, ancora no turno mais antigo. */
+    getAgentIdleMs(now = Date.now()) {
+      if (activeAgentTurns.size > 0) return now - oldestAgentTurnMs();
+      return now - Date.parse(state.lastActivityAt || state.startedAt);
+    },
+    hasActiveAgentTurns() {
+      return activeAgentTurns.size > 0;
+    },
     assertActive() {
       if (controller.signal.aborted) throw controller.signal.reason || new Error('sessão AUTO cancelada');
-      if (Date.now() - startedAt >= limits.sessionTimeoutMs) throw new Error('limite de tempo da sessão AUTO atingido');
+      const deadlineMs = Date.parse(String(state.deadlineAt || ''));
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+        throw new Error('limite de tempo da sessão AUTO atingido');
+      }
     },
     reserveAgentCall(provider) {
       this.assertActive();
-      if (state.agentCalls >= limits.maxAgentCalls) throw new Error('limite de chamadas de IA atingido');
+      const maxCalls = Number(state.limits?.maxAgentCalls ?? limits.maxAgentCalls);
+      if (state.agentCalls >= maxCalls) throw new Error('limite de chamadas de IA atingido');
       state.agentCalls += 1;
       state.usage[provider] ||= { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0 };
       state.usage[provider].calls += 1;
     },
     recordUsage(provider, usage = {}) {
+      const u = usage && typeof usage === 'object' ? usage : {};
       const row = state.usage[provider] ||= { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0 };
-      row.promptTokens += Number(usage.prompt_tokens ?? usage.input_tokens ?? 0) || 0;
-      row.completionTokens += Number(usage.completion_tokens ?? usage.output_tokens ?? 0) || 0;
-      row.totalTokens += Number(usage.total_tokens ?? 0) || 0;
+      row.promptTokens += Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
+      row.completionTokens += Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0;
+      row.totalTokens += Number(u.total_tokens ?? 0) || 0;
       const key = String(provider || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
       const inputRate = Number(env[`GHOSTRECON_AUTO_${key}_INPUT_USD_PER_MILLION`] || 0);
       const outputRate = Number(env[`GHOSTRECON_AUTO_${key}_OUTPUT_USD_PER_MILLION`] || 0);
-      const estimated = ((Number(usage.prompt_tokens ?? usage.input_tokens ?? 0) || 0) * inputRate
-        + (Number(usage.completion_tokens ?? usage.output_tokens ?? 0) || 0) * outputRate) / 1_000_000;
-      const reported = Number(usage.cost ?? usage.cost_usd);
+      const estimated = ((Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0) * inputRate
+        + (Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0) * outputRate) / 1_000_000;
+      const reported = Number(u.cost ?? u.cost_usd);
       const cost = Number.isFinite(reported) ? reported : estimated;
       row.costUsd += cost;
       row.costEstimated = !Number.isFinite(reported);
-      state.costUsd += cost;
-      if (limits.maxCostUsd > 0 && state.costUsd > limits.maxCostUsd) controller.abort(new Error('budget de custo da sessão atingido'));
-    },
-    close(status = 'completed') {
-      clearTimeout(timer);
-      for (const resource of this.resources || []) {
-        try { resource.close?.(); } catch { /* ignore */ }
+      if (!Number.isFinite(reported)) {
+        // Sem custo reportado pelo provider, o orçamento deixa de ser verificável.
+        state.budgetVerifiable = false;
       }
-      state.status = status;
+      state.costUsd += cost;
+      const maxCost = Number(state.limits?.maxCostUsd ?? limits.maxCostUsd);
+      if (maxCost > 0 && state.costUsd > maxCost) {
+        const reason = state.budgetVerifiable === false
+          ? 'budget de custo da sessão atingido (estimativa não verificável)'
+          : 'budget de custo da sessão atingido';
+        controller.abort(new Error(reason));
+      }
+    },
+    async close(status = 'completed') {
+      clearTimeout(timer);
+      activeAgentTurns.clear();
+      state.currentStage = 'closing';
+      state.currentModule = null;
+      const pending = [...(this.resources || [])];
+      this.resources = [];
+      const cleanupErrors = [];
+      for (const resource of pending) {
+        try {
+          const result = resource?.close?.() ?? resource?.dispose?.();
+          if (result && typeof result.then === 'function') await result;
+        } catch (error) {
+          cleanupErrors.push(String(error?.message || error).slice(0, 500));
+        }
+      }
+      let finalStatus = status;
+      if (cleanupErrors.length) {
+        state.cleanupErrors = cleanupErrors.slice(0, 20);
+        state.cleanupFailed = true;
+        if (['completed', 'partial'].includes(String(finalStatus))) {
+          finalStatus = 'failed';
+          state.error = state.error || `cleanup_failed: ${cleanupErrors[0]}`;
+          state.terminationCause = 'cleanup_failed';
+        }
+      }
+      state.status = finalStatus;
       state.finishedAt = new Date().toISOString();
-      state.durationMs = Date.now() - startedAt;
+      state.currentStage = null;
+      const originMs = Date.parse(String(state.startedAt || '')) || startedAtMs;
+      state.durationMs = Date.now() - originMs;
       if (state.runtimeLease && !state.runtimeLease.releasedAt) {
         state.runtimeLease = {
           ...state.runtimeLease,
@@ -874,8 +1187,13 @@ export async function writeAutoSessionSnapshot(root, session, env = process.env)
     preserveSensitiveKeys: new Set(['sessionId']),
   });
   validateAutoSessionSnapshot(safeSession, session?.sessionId);
-  const ragRoot = resolveAutoRagRoot(root, env);
-  const dir = path.join(ragRoot, 'sessions', safeSession.sessionId);
+  const dir = resolveAutoSessionSnapshotDir(root, {
+    sessionId: safeSession.sessionId,
+    owner: safeSession.owner,
+    engagementId: safeSession.engagementId || safeSession.resumePolicy?.engagementId || '',
+    target: safeSession.target || '',
+    env,
+  });
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   await fs.chmod(dir, 0o700);
   const file = path.join(dir, 'session.json');
@@ -883,31 +1201,68 @@ export async function writeAutoSessionSnapshot(root, session, env = process.env)
   return file;
 }
 
-export async function readAutoSessionSnapshot(root, sessionId, env = process.env) {
+export async function readAutoSessionSnapshot(root, sessionId, env = process.env, {
+  principal = null,
+  engagementId = '',
+  target = '',
+} = {}) {
   const safe = String(sessionId || '').trim();
   if (!SESSION_ID_RE.test(safe)) throw new Error('sessionId inválido');
-  const ragRoot = resolveAutoRagRoot(root, env);
-  const file = path.join(ragRoot, 'sessions', safe, 'session.json');
-  const stat = await fs.stat(file);
-  const maxBytes = bounded(env, 'GHOSTRECON_AUTO_SESSION_SNAPSHOT_MAX_BYTES', 5_000_000, 10_000, 50_000_000);
-  if (stat.size > maxBytes) throw new Error(`snapshot de sessão AUTO excede ${maxBytes} bytes`);
-  let snapshot;
-  try {
-    snapshot = JSON.parse(await fs.readFile(file, 'utf8'));
-  } catch (error) {
-    throw new Error(`snapshot de sessão AUTO inválido: ${error?.message || error}`);
+  const preferredDir = resolveAutoSessionSnapshotDir(root, {
+    sessionId: safe,
+    owner: principal,
+    engagementId,
+    target,
+    env,
+  });
+  const candidates = [
+    path.join(preferredDir, 'session.json'),
+    path.join(resolveAutoRagRoot(root, env), 'sessions', safe, 'session.json'),
+  ];
+  const seen = new Set();
+  for (const file of candidates) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    try {
+      return await loadSessionSnapshotFile(file, safe, env);
+    } catch (error) {
+      if (error?.code === 'ENOENT' || /ENOENT|não encontr|no such file/i.test(String(error?.message || ''))) {
+        continue;
+      }
+      if (error?.message?.includes('snapshot de sessão AUTO')) throw error;
+    }
   }
-  return validateAutoSessionSnapshot(snapshot, safe);
+  for (const dir of await listSessionSnapshotDirs(resolveAutoRagRoot(root, env))) {
+    if (path.basename(dir) !== safe) continue;
+    const file = path.join(dir, 'session.json');
+    if (seen.has(file)) continue;
+    try {
+      const snapshot = await loadSessionSnapshotFile(file, safe, env);
+      if (principal) {
+        const owner = normalizeOwner(snapshot.owner);
+        const want = normalizeOwner(principal);
+        if (owner?.sub && want?.sub && owner.sub !== want.sub) {
+          throw new Error('sessão AUTO pertence a outro principal');
+        }
+      }
+      return snapshot;
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      if (error?.message === 'sessão AUTO pertence a outro principal') throw error;
+      // Snapshot encontrado mas inválido/corrompido: não mascarar como missing.
+      if (/inválido|excede/i.test(String(error?.message || ''))) throw error;
+    }
+  }
+  throw new Error(`snapshot de sessão AUTO não encontrado: ${safe}`);
 }
 
 export async function reconcileOrphanedAutoSessions(root, env = process.env, now = Date.now()) {
   const ragRoot = resolveAutoRagRoot(root, env);
-  const sessionsDir = path.join(ragRoot, 'sessions');
-  const entries = await fs.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
+  const dirs = await listSessionSnapshotDirs(ragRoot);
   const reconciled = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const file = path.join(sessionsDir, entry.name, 'session.json');
+  const errors = [];
+  for (const dir of dirs) {
+    const file = path.join(dir, 'session.json');
     try {
       const state = JSON.parse(await fs.readFile(file, 'utf8'));
       if (state.status !== 'running') continue;
@@ -936,16 +1291,65 @@ export async function reconcileOrphanedAutoSessions(root, env = process.env, now
         now,
         reason: 'approval_expired_after_server_restart',
       });
-      validateAutoSessionSnapshot(state, state.sessionId || entry.name);
+      validateAutoSessionSnapshot(state, state.sessionId || path.basename(dir));
       const safeState = redactAutoValue(state, {
         preserveSensitiveKeys: new Set(['sessionId']),
       });
-      validateAutoSessionSnapshot(safeState, state.sessionId || entry.name);
+      validateAutoSessionSnapshot(safeState, state.sessionId || path.basename(dir));
       await writeJsonAtomic(file, safeState);
-      reconciled.push(state.sessionId || entry.name);
-    } catch {
-      // Keep malformed snapshots available for manual inspection.
+      reconciled.push(state.sessionId || path.basename(dir));
+    } catch (error) {
+      errors.push({
+        dir,
+        error: error?.message || String(error),
+      });
     }
   }
+  // Metadados de auditoria sem poluir o array (deepEqual dos testes).
+  reconcileOrphanedAutoSessions.lastReport = {
+    scanned: dirs.length,
+    reconciled: reconciled.length,
+    errors,
+    at: new Date(now).toISOString(),
+  };
   return reconciled;
+}
+
+/**
+ * Reconciliação de startup aguardável e auditável (antes de aceitar tráfego Auto).
+ */
+export async function runAutoStartupReconciliation(root, env = process.env, {
+  now = Date.now(),
+  logger = console,
+  onAudit = null,
+} = {}) {
+  const dirsBefore = await listSessionSnapshotDirs(resolveAutoRagRoot(root, env));
+  const reconciled = await reconcileOrphanedAutoSessions(root, env, now);
+  const last = reconcileOrphanedAutoSessions.lastReport || {
+    scanned: dirsBefore.length,
+    reconciled: reconciled.length,
+    errors: [],
+    at: new Date(now).toISOString(),
+  };
+  const report = {
+    ok: true,
+    ...last,
+    sessionIds: [...reconciled],
+  };
+  if (report.sessionIds.length) {
+    logger?.warn?.(
+      `[auto] reconciliadas ${report.sessionIds.length} sessão(ões) órfã(s): ${report.sessionIds.join(', ')}`,
+    );
+  }
+  if (report.errors?.length) {
+    logger?.warn?.(
+      `[auto] falhas ao reconciliar snapshots: ${report.errors.length}`,
+    );
+  }
+  try {
+    onAudit?.(report);
+  } catch {
+    // auditoria não pode impedir o boot
+  }
+  return report;
 }

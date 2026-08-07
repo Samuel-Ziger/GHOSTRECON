@@ -1,4 +1,5 @@
 import { limits, UA } from '../config.js';
+import { fetchScoped, urlAllowedOrSameOrigin } from './scoped-fetch.mjs';
 
 function parseSecurityTxt(text) {
   const out = {};
@@ -29,32 +30,35 @@ function normalizeEndpointUrl(endpointValue, baseOrigin) {
   }
 }
 
-async function fetchText(url, timeoutMs) {
+async function fetchText(url, timeoutMs, urlAllowed = null) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), Math.max(1, timeoutMs || 8000));
   try {
-    const res = await fetch(url, {
+    const res = await fetchScoped(url, {
       method: 'GET',
       signal: controller.signal,
       headers: { 'User-Agent': UA, Accept: 'text/plain,*/*;q=0.8' },
-      redirect: 'follow',
+      urlAllowed: urlAllowedOrSameOrigin(url, urlAllowed),
     });
     if (!res.ok) return null;
     return await res.text();
+  } catch (error) {
+    if (error?.code === 'OUT_OF_SCOPE' || error?.code === 'TOO_MANY_REDIRECTS') return null;
+    throw error;
   } finally {
     clearTimeout(t);
   }
 }
 
-async function fetchJson(url, timeoutMs) {
+async function fetchJson(url, timeoutMs, urlAllowed = null) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), Math.max(1, timeoutMs || 8000));
   try {
-    const res = await fetch(url, {
+    const res = await fetchScoped(url, {
       method: 'GET',
       signal: controller.signal,
       headers: { 'User-Agent': UA, Accept: 'application/json,*/*;q=0.8' },
-      redirect: 'follow',
+      urlAllowed: urlAllowedOrSameOrigin(url, urlAllowed),
     });
     if (!res.ok) return null;
     const txt = await res.text();
@@ -63,6 +67,9 @@ async function fetchJson(url, timeoutMs) {
     } catch {
       return null;
     }
+  } catch (error) {
+    if (error?.code === 'OUT_OF_SCOPE' || error?.code === 'TOO_MANY_REDIRECTS') return null;
+    throw error;
   } finally {
     clearTimeout(t);
   }
@@ -72,9 +79,9 @@ async function fetchJson(url, timeoutMs) {
  * security.txt via /.well-known (origem já inclui http/https e trailing "/")
  * @returns {Promise<{findings:Array<object>, raw?:string}>}
  */
-export async function fetchWellKnownSecurityTxt(baseOrigin) {
+export async function fetchWellKnownSecurityTxt(baseOrigin, { urlAllowed = null } = {}) {
   const url = new URL('/.well-known/security.txt', baseOrigin).href;
-  const text = await fetchText(url, limits.wellKnownSecurityTxtTimeoutMs);
+  const text = await fetchText(url, limits.wellKnownSecurityTxtTimeoutMs, urlAllowed);
   if (!text) return { ok: false, findings: [] };
 
   const parsed = parseSecurityTxt(text);
@@ -118,9 +125,10 @@ export async function fetchWellKnownSecurityTxt(baseOrigin) {
  * Descoberta OIDC (open id-configuration) via /.well-known
  * @returns {Promise<{ok:boolean, endpoints:Array<{url:string, label:string}>}>}
  */
-export async function fetchWellKnownOpenIdConfiguration(baseOrigin) {
+export async function fetchWellKnownOpenIdConfiguration(baseOrigin, { urlAllowed = null } = {}) {
   const url = new URL('/.well-known/openid-configuration', baseOrigin).href;
-  const data = await fetchJson(url, limits.wellKnownOpenIdTimeoutMs);
+  const allowed = urlAllowedOrSameOrigin(url, urlAllowed);
+  const data = await fetchJson(url, limits.wellKnownOpenIdTimeoutMs, allowed);
   if (!data) return { ok: false, endpoints: [] };
 
   const fields = [
@@ -138,7 +146,7 @@ export async function fetchWellKnownOpenIdConfiguration(baseOrigin) {
   for (const f of fields) {
     if (data[f]) {
       const u = normalizeEndpointUrl(data[f], baseOrigin);
-      if (u) endpoints.push({ url: u, label: f });
+      if (u && allowed(u) === true) endpoints.push({ url: u, label: f });
     }
   }
 
@@ -153,4 +161,3 @@ export async function fetchWellKnownOpenIdConfiguration(baseOrigin) {
 
   return { ok: true, endpoints: dedup.slice(0, limits.wellKnownOpenIdMaxEndpoints), metadata: data };
 }
-

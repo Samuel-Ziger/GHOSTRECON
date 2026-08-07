@@ -7,7 +7,11 @@ import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 
 import { detectAutoProviders } from '../auto-agent/provider-detector.mjs';
-import { createAutoPlan, evaluateAutoRun } from '../auto-agent/planner.mjs';
+import {
+  classifyModuleOutcomeStatus,
+  createAutoPlan,
+  evaluateAutoRun,
+} from '../auto-agent/planner.mjs';
 import {
   computeAutoCatalogHash,
   computeAutoEngagementAuthorizationBinding,
@@ -16,6 +20,7 @@ import {
   normalizeAutoRequest,
   runAutoRecon,
   runWithDeadline,
+  sessionTerminalFromEvaluation,
 } from '../auto-agent/orchestrator.mjs';
 import { decideWithCodex, execFileClosedStdin } from '../auto-agent/providers/codex.mjs';
 import { decideWithOpenAiCompatible } from '../auto-agent/providers/openai-compatible.mjs';
@@ -43,6 +48,7 @@ import { computeForgeArtifactIntegrity } from '../auto-agent/forge/artifact-inte
 import { repairDecisionEnvelope, validateAgentDecision } from '../auto-agent/decision-contract.mjs';
 import { autoSessionLimits, createAutoSession, reconcileOrphanedAutoSessions } from '../auto-agent/session-store.mjs';
 import { writeAutoSessionSnapshot } from '../auto-agent/session-store.mjs';
+import { listFixtureVigoliumModules } from './fixtures/vigolium-auto-catalog.mjs';
 import { CodexAppServerClient } from '../auto-agent/providers/codex-app-server.mjs';
 import {
   buildForgeCanaryPipelineContext,
@@ -57,7 +63,6 @@ import {
   unregisterActiveAutoSession,
 } from '../auto-agent/active-sessions.mjs';
 import { readAndMergeFrameSevenReport } from '../integrations/frameseven-report.mjs';
-import { createPipelineState } from '../pipeline/pipeline-state.mjs';
 
 function strongForgeSandbox(overrides = {}) {
   return {
@@ -185,7 +190,7 @@ async function createRouteForgeFixture(root, {
   return { pending, manifest, artifactIntegrity };
 }
 
-test('política de retomada congela providers, motores, engagement e opções da sessão', () => {
+test('política de retomada congela providers, motores, engagement, limits e opções da sessão', () => {
   const request = normalizeAutoRequest({
     domain: 'example.com',
     mode: 'deep',
@@ -196,14 +201,26 @@ test('política de retomada congela providers, motores, engagement e opções da
     includeVigolium: false,
     engagementId: 'ENG-1',
   });
+  const fixedLimits = {
+    maxIterations: 3,
+    sessionTimeoutMs: 600_000,
+    agentTimeoutMs: 60_000,
+    maxAgentCalls: 10,
+    maxContextChars: 50_000,
+    maxCostUsd: 5,
+  };
   const policy = buildAutoResumePolicy(request, {
     opsecProfile: 'standard',
     autoAiReports: true,
-  });
+  }, fixedLimits);
   assert.deepEqual(policy.commanders, ['codex']);
   assert.equal(policy.includeFrameSeven, true);
   assert.equal(policy.engagementId, 'ENG-1');
   assert.equal(policy.approvalMode, 'interactive');
+  assert.deepEqual(policy.limits, fixedLimits);
+  assert.equal(policy.cloudEvidenceConsent, false);
+  assert.ok(policy.engineTimeouts?.pipelineTimeoutMs > 0);
+  assert.ok(policy.engineTimeouts?.framesevenAuthTimeoutMs > 0);
   assert.doesNotThrow(() => assertAutoResumePolicyCompatible({ resumePolicy: policy }, policy));
   assert.throws(
     () => assertAutoResumePolicyCompatible(
@@ -216,6 +233,26 @@ test('política de retomada congela providers, motores, engagement e opções da
     () => assertAutoResumePolicyCompatible(
       { resumePolicy: policy },
       { ...policy, approvalMode: 'deny' },
+    ),
+    /retomada não pode alterar/,
+  );
+  assert.throws(
+    () => assertAutoResumePolicyCompatible(
+      { resumePolicy: policy },
+      { ...policy, limits: { ...fixedLimits, maxAgentCalls: 99 } },
+    ),
+    /retomada não pode alterar/,
+  );
+  assert.throws(
+    () => assertAutoResumePolicyCompatible(
+      { resumePolicy: policy },
+      {
+        ...policy,
+        engineTimeouts: {
+          ...policy.engineTimeouts,
+          pipelineTimeoutMs: policy.engineTimeouts.pipelineTimeoutMs + 1,
+        },
+      },
     ),
     /retomada não pode alterar/,
   );
@@ -334,7 +371,11 @@ test('catalogHash de retomada cobre metadados executáveis e independe da ordem'
 });
 
 test('execFileClosedStdin envia EOF para processos que leem stdin', async () => {
-  const result = await execFileClosedStdin('/bin/sh', ['-c', 'read value || true; printf eof'], { timeout: 2_000 });
+  const result = await execFileClosedStdin(
+    process.execPath,
+    ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("eof"))'],
+    { timeout: 2_000 },
+  );
   assert.equal(result.stdout, 'eof');
 });
 
@@ -465,14 +506,15 @@ test('contrato aceita alias legado request_modules', () => {
   assert.equal(repaired.action, 'run_modules');
 });
 
-test('sessão AUTO aplica limites de chamadas e registra usage', () => {
+test('sessão AUTO aplica limites de chamadas e registra usage', async () => {
   const limits = autoSessionLimits({ GHOSTRECON_AUTO_MAX_AGENT_CALLS: '1', GHOSTRECON_AUTO_MAX_ITERATIONS: '2' });
   assert.equal(limits.maxAgentCalls, 1);
   const session = createAutoSession({ sessionId: 's1', requestRunId: 'r1', target: 'example.com', providers: ['codex'], env: { GHOSTRECON_AUTO_MAX_AGENT_CALLS: '1' } });
   session.reserveAgentCall('codex');
   session.recordUsage('codex', { prompt_tokens: 10, completion_tokens: 5, cost: 0.01 });
   assert.throws(() => session.reserveAgentCall('codex'), /limite de chamadas/);
-  assert.equal(session.close().usage.codex.promptTokens, 10);
+  const closed = await session.close();
+  assert.equal(closed.usage.codex.promptTokens, 10);
 });
 
 test('Codex App Server mantém uma thread para múltiplos turnos', async () => {
@@ -502,11 +544,16 @@ test('Codex App Server mantém uma thread para múltiplos turnos', async () => {
       callback();
     },
   });
+  proc.kill = () => {
+    queueMicrotask(() => proc.emit('exit', 0, null));
+    return true;
+  };
   const client = new CodexAppServerClient({ root: process.cwd(), env: {}, spawnImpl: () => proc });
   assert.equal(await client.turn({ prompt: 'one', timeoutMs: 1000 }), 'answer-1');
   assert.equal(await client.turn({ prompt: 'two', timeoutMs: 1000 }), 'answer-2');
   assert.equal(sent.filter((message) => message.method === 'thread/start').length, 1);
-  client.close();
+  await client.close();
+  assert.equal(client.exited, true);
 });
 
 test('timeout RPC encerra Codex App Server antes do fallback', async () => {
@@ -1107,7 +1154,12 @@ test('conselho multi-IA executa proposta, revisão cruzada e quórum', async () 
     ],
     target: 'example.com', mode: 'balanced',
     catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
-    ragContext: { items: [] }, root: process.cwd(), env: { OPENROUTER_API_KEY: 'test' },
+    ragContext: { items: [] },
+    root: process.cwd(),
+    env: {
+      OPENROUTER_API_KEY: 'test',
+      GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
+    },
     fetchImpl, execFileImpl,
   });
   assert.equal(out.proposals.filter((x) => x.ok).length, 2);
@@ -1133,7 +1185,7 @@ test('Module Forge salva proposta por autor sem habilitar pipeline', async () =>
       },
       council: { proposals: [], reviews: [] },
     });
-    assert.match(forge.dir, /by-model\/codex\/pending\/forge-/);
+    assert.match(forge.dir, /by-model[\\/]codex[\\/]pending[\\/]forge-/);
     const verdict = JSON.parse(await fs.readFile(path.join(forge.dir, 'verdict.json'), 'utf8'));
     assert.equal(verdict.policy.pipelineEnabled, false);
   } finally {
@@ -1371,7 +1423,7 @@ test('lifecycle ativa pacote aprovado e loader executa somente no alvo original'
     assert.equal(moved.state, 'active');
     assert.equal(moved.pipelineEnabled, false);
     assert.equal(typeof moved.activationId, 'string');
-    assert.match(moved.dir, /active\/approved_module/);
+    assert.match(moved.dir, /active[\\/]approved_module/);
     const findings = [];
     const events = [];
     let isolatedRuntimeCalls = 0;
@@ -1474,17 +1526,88 @@ test('evaluateAutoRun preserva sucesso parcial quando um erro recuperável foi i
   assert.equal(evaluation.phaseFailures[0].phase, 'probe');
 });
 
+test('evaluateAutoRun marca partial por moduleOutcomes distintos na mesma fase', () => {
+  const evaluation = evaluateAutoRun({
+    plan: { target: 'example.com' },
+    events: [{ type: 'finding', finding: { prio: 'low' } }],
+    moduleOutcomes: [
+      { moduleId: 'panel_exposure_audit', status: 'done', source: 'registry' },
+      { moduleId: 'jwt_jwks_audit', status: 'failed', source: 'registry' },
+    ],
+  });
+  assert.equal(evaluation.ok, true);
+  assert.equal(evaluation.status, 'partial');
+  assert.equal(evaluation.moduleFailures[0].moduleId, 'jwt_jwks_audit');
+});
+
+test('matriz terminal ↔ moduleOutcomes (done/timeout/cancelled/unterminated)', () => {
+  const matrix = [
+    {
+      outcomes: [{ moduleId: 'a', status: 'done' }, { moduleId: 'b', status: 'skipped' }],
+      evaluationStatus: 'completed',
+      terminal: 'completed',
+    },
+    {
+      outcomes: [{ moduleId: 'a', status: 'done' }, { moduleId: 'b', status: 'timeout' }],
+      evaluationStatus: 'partial',
+      terminal: 'partial',
+    },
+    {
+      outcomes: [{ moduleId: 'a', status: 'cancelled' }],
+      evaluationStatus: 'partial',
+      terminal: 'partial',
+    },
+    {
+      outcomes: [{ moduleId: 'a', status: 'failed' }, { moduleId: 'b', status: 'done' }],
+      evaluationStatus: 'partial',
+      terminal: 'partial',
+    },
+    {
+      outcomes: [{ moduleId: 'a', status: 'unterminated' }],
+      evaluationStatus: 'failed',
+      terminal: 'failed',
+    },
+    {
+      outcomes: [{ moduleId: 'a', status: 'process_unterminated' }],
+      evaluationStatus: 'failed',
+      terminal: 'failed',
+    },
+  ];
+  for (const row of matrix) {
+    const evaluation = evaluateAutoRun({
+      plan: { target: 'example.com' },
+      events: [],
+      moduleOutcomes: row.outcomes,
+    });
+    assert.equal(
+      evaluation.status,
+      row.evaluationStatus,
+      `outcomes=${JSON.stringify(row.outcomes)}`,
+    );
+    assert.equal(
+      sessionTerminalFromEvaluation(evaluation),
+      row.terminal,
+      `terminal para ${row.evaluationStatus}`,
+    );
+  }
+  assert.equal(classifyModuleOutcomeStatus('done'), 'ok');
+  assert.equal(classifyModuleOutcomeStatus('timeout'), 'partial');
+  assert.equal(classifyModuleOutcomeStatus('unterminated'), 'fatal');
+  assert.equal(classifyModuleOutcomeStatus('mystery'), 'partial');
+  assert.equal(sessionTerminalFromEvaluation({ status: 'weird' }), 'failed');
+});
+
 test('runAutoRecon emite plano e chama runPipeline com modulos planejados', async () => {
   const emitted = [];
   let pipelineCtx = null;
-  let pipelineState = null;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-run-'));
   try {
   const result = await runAutoRecon({
     body: {
       domain: 'example.com',
       mode: 'balanced',
-      commanders: ['openrouter'],
+      // Sem commanders: baseline determinístico intencional (não degradado).
+      commanders: [],
       includeHexstrike: false,
       vigoliumSource: '/tmp/nao-autorizado',
       vigoliumModules: ['audit'],
@@ -1492,7 +1615,7 @@ test('runAutoRecon emite plano e chama runPipeline com modulos planejados', asyn
       auth: { headers: { Authorization: 'Bearer should-not-pass' } },
     },
     ROOT: root,
-    env: { OPENROUTER_API_KEY: 'sk-test', GHOSTRECON_AUTO_RAG_ENABLED: '0' },
+    env: { GHOSTRECON_AUTO_RAG_ENABLED: '0', GHOSTRECON_AUTO_HEARTBEAT_MS: '60000' },
     execFileImpl: async () => {
       throw new Error('not found');
     },
@@ -1526,14 +1649,55 @@ test('runAutoRecon emite plano e chama runPipeline com modulos planejados', asyn
   assert.equal(result.evaluation.ok, true);
   assert.equal(result.evaluation.status, 'partial');
   assert.equal(result.evaluation.findings, 1);
-  assert.equal(
-    result.evaluation.moduleOutcomes.find((item) => item.moduleId === 'subdomains')?.status,
-    'timeout',
-  );
-  assert.equal(
-    result.evaluation.moduleOutcomes.find((item) => item.moduleId === 'subdomains')?.phase,
-    'discovery',
-  );
+  // Timeout de fase não carimba todos os módulos da fase; partial vem do phase_outcome.
+  assert.ok(result.evaluation.phaseFailures.some((row) => row.phase === 'discovery'));
+  const subdomainOutcome = result.evaluation.moduleOutcomes
+    .find((item) => item.moduleId === 'subdomains');
+  assert.ok(subdomainOutcome);
+  assert.equal(subdomainOutcome.phase, 'discovery');
+  assert.equal(subdomainOutcome.source, 'inferred');
+  assert.ok(emitted.some((e) => e.type === 'auto_session' && e.phase === 'partial'));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('providers selecionados indisponíveis degradam para ask_operator sem baseline silencioso', async () => {
+  const emitted = [];
+  let pipelineCalled = false;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-degraded-'));
+  try {
+    const result = await runAutoRecon({
+      body: {
+        domain: 'example.com',
+        mode: 'balanced',
+        commanders: ['openrouter'],
+        includeHexstrike: false,
+        approvalMode: 'deny',
+      },
+      ROOT: root,
+      env: {
+        OPENROUTER_API_KEY: 'sk-test',
+        GHOSTRECON_AUTO_RAG_ENABLED: '0',
+        GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+      },
+      execFileImpl: async () => {
+        throw new Error('provider indisponível na fixture');
+      },
+      fetchImpl: async () => ({ ok: false, status: 503 }),
+      emit: (e) => emitted.push(e),
+      runPipeline: async () => {
+        pipelineCalled = true;
+        throw new Error('pipeline não deveria executar no estado degradado');
+      },
+    });
+
+    assert.equal(pipelineCalled, false);
+    assert.ok(emitted.some((e) => e.type === 'auto_council_degraded'));
+    assert.ok(emitted.some((e) => e.type === 'auto_council_verdict' && e.degraded === true));
+    assert.ok(emitted.some((e) => e.type === 'auto_approval_auto_denied' || e.type === 'auto_no_execution'));
+    assert.equal(result.plan?.moduleSelection?.strategy?.startsWith('control_action:') || result.plan?.action === 'finish', true);
+    assert.deepEqual(result.plan?.modules || [], []);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -1568,7 +1732,6 @@ test('Auto funde outOfScope do operador com exclusions do engagement no plano e 
       getEngagementImpl: async () => engagement,
       runPipeline: async (ctx) => {
         pipelineCtx = ctx;
-        pipelineState = createPipelineState(ctx);
       },
       fetchImpl: async () => ({ ok: false, status: 503 }),
       execFileImpl: async () => {
@@ -1820,7 +1983,10 @@ test('Auto não inicia FrameSeven após falha terminal do Vigolium', async () =>
           env: {
             GHOSTRECON_AUTO_RAG_ENABLED: '0',
             GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+            GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
+            GHOSTRECON_VIGOLIUM_MODULES: 'headers,audit',
           },
+          listVigoliumModulesImpl: listFixtureVigoliumModules,
           getEngagementImpl: async () => engagement,
           runPipeline: async () => {
             throw fatal;
@@ -1926,7 +2092,10 @@ test('Auto autenticado não libera o scan FrameSeven nem inicia novo ciclo após
         env: {
           GHOSTRECON_AUTO_RAG_ENABLED: '0',
           GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+          GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
+          GHOSTRECON_VIGOLIUM_MODULES: 'headers,audit',
         },
+        listVigoliumModulesImpl: listFixtureVigoliumModules,
         getEngagementImpl: async () => engagement,
         runPipeline: async () => {
           pipelineCalls += 1;
@@ -1989,6 +2158,98 @@ test('Auto autenticado não libera o scan FrameSeven nem inicia novo ciclo após
   }
 });
 
+test('Auto invalida plano quando scopeDomains/scopeIps mudam após aprovação', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-engagement-scope-'));
+  const binary = path.join(root, 'FrameSeven', 'bin', 'frameseven', 'cli', 'v1');
+  const emitted = [];
+  let engagementReads = 0;
+  let pipelineCalls = 0;
+  let frameSevenCalls = 0;
+  try {
+    await fs.mkdir(path.dirname(binary), { recursive: true });
+    await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await fs.chmod(binary, 0o755);
+    const active = {
+      id: 'ENG-AUTO-SCOPE-FLIP',
+      status: 'active',
+      roeSigned: true,
+      scopeDomains: ['example.com'],
+      scopeIps: ['192.0.2.0/24'],
+      exclusions: [],
+      window: {
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        endsAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+
+    await assert.rejects(
+      runAutoRecon({
+        body: {
+          domain: 'example.com',
+          mode: 'balanced',
+          commanders: [],
+          modules: ['frameseven_recon'],
+          includeFrameSeven: true,
+          autonomyLevel: 'assisted',
+          approvalMode: 'interactive',
+          engagementId: active.id,
+        },
+        ROOT: root,
+        env: {
+          GHOSTRECON_AUTO_RAG_ENABLED: '0',
+          GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+          GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
+        },
+        getEngagementImpl: async () => {
+          engagementReads += 1;
+          if (engagementReads === 1) return active;
+          // Mantém status ativo e domínio do alvo; só scopeIps muda — binding
+          // diverge sem falhar o checklist de target.
+          return {
+            ...active,
+            scopeIps: ['198.51.100.0/24'],
+            updatedAt: new Date().toISOString(),
+          };
+        },
+        runPipeline: async () => {
+          pipelineCalls += 1;
+        },
+        runFrameSevenImpl: async () => {
+          frameSevenCalls += 1;
+          return { status: 'done', code: 0, outputDir: root };
+        },
+        emit: (event) => {
+          emitted.push(event);
+          if (event.type === 'auto_approval_required') {
+            const session = getActiveAutoSession(event.sessionId);
+            session?.resolveApproval(
+              event.approval.approvalId,
+              true,
+              'fixture local aprovada',
+            );
+          }
+        },
+        fetchImpl: async () => ({ ok: false, status: 503 }),
+        execFileImpl: async () => {
+          throw new Error('provider indisponível na fixture');
+        },
+      }),
+      (error) => error?.code === 'AUTO_ENGAGEMENT_CHANGED',
+    );
+
+    assert.ok(engagementReads >= 2);
+    assert.equal(pipelineCalls, 0);
+    assert.equal(frameSevenCalls, 0);
+    assert.ok(emitted.some((event) => (
+      event.type === 'auto_preflight_revalidated'
+      && event.stage === 'after_plan_approval'
+      && event.bindingMatches === false
+    )));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Auto revalida engagement após aprovação e não inicia motores se a autorização mudou', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-engagement-toctou-'));
   const binary = path.join(root, 'FrameSeven', 'bin', 'frameseven', 'cli', 'v1');
@@ -2029,6 +2290,7 @@ test('Auto revalida engagement após aprovação e não inicia motores se a auto
         env: {
           GHOSTRECON_AUTO_RAG_ENABLED: '0',
           GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+          GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
         },
         getEngagementImpl: async () => {
           engagementReads += 1;
@@ -2120,6 +2382,7 @@ test('Auto autenticado revalida engagement após o pipeline e antes de continuar
         env: {
           GHOSTRECON_AUTO_RAG_ENABLED: '0',
           GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+          GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
         },
         getEngagementImpl: async () => {
           engagementReads += 1;
@@ -2277,6 +2540,7 @@ test('Auto congela configuração Vigolium antes do popup e ignora drift posteri
     PATH: '/safe/bin',
     GHOSTRECON_AUTO_RAG_ENABLED: '0',
     GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+    GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
     GHOSTRECON_VIGOLIUM_STRATEGY: 'balanced',
     GHOSTRECON_VIGOLIUM_MODULES: 'headers,audit',
     GHOSTRECON_VIGOLIUM_HTML_REPORT: '0',
@@ -2301,6 +2565,7 @@ test('Auto congela configuração Vigolium antes do popup e ignora drift posteri
       },
       ROOT: root,
       env,
+      listVigoliumModulesImpl: listFixtureVigoliumModules,
       principal: {
         sub: 'red-runtime-fixture',
         role: 'red',
@@ -2335,13 +2600,9 @@ test('Auto congela configuração Vigolium antes do popup e ignora drift posteri
     assert.equal(pipelineCtx.vigoliumRuntimeConfigFrozen, true);
     assert.equal(pipelineCtx.vigoliumRuntimeConfigVersion, 1);
     assert.equal(pipelineCtx.vigoliumStrategy, 'balanced');
-    assert.deepEqual(pipelineCtx.vigoliumModules, ['headers', 'audit']);
+    assert.deepEqual(pipelineCtx.vigoliumModules, ['audit', 'headers']);
     assert.equal(pipelineCtx.vigoliumChildEnv.PATH, '/safe/bin');
-    assert.equal(pipelineState.vigoliumRuntimeConfigFrozen, true);
-    assert.equal(pipelineState.vigoliumStrategy, 'balanced');
-    assert.deepEqual(pipelineState.vigoliumModules, ['headers', 'audit']);
-    assert.equal(pipelineState.vigoliumChildEnv.PATH, '/safe/bin');
-    assert.equal(pipelineState.vigoliumBinaryPath, binary);
+    assert.equal(pipelineCtx.vigoliumBinaryPath, binary);
     const effective = emitted.find((event) => event.type === 'auto_effective_plan');
     assert.equal(effective?.effectivePlan?.engines?.vigolium?.runtime?.strategy, 'balanced');
     assert.match(
@@ -2411,7 +2672,10 @@ test('Auto sela identidade da fonte Vigolium antes da aprovação e a propaga ao
       env: {
         GHOSTRECON_AUTO_RAG_ENABLED: '0',
         GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+        GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
+        GHOSTRECON_VIGOLIUM_MODULES: 'headers,audit',
       },
+      listVigoliumModulesImpl: listFixtureVigoliumModules,
       principal: {
         sub: 'red-source-fixture',
         role: 'red',

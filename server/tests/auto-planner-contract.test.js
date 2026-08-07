@@ -13,6 +13,7 @@ import {
 } from '../auto-agent/providers/shared.mjs';
 import { decideWithCodex, execFileClosedStdin } from '../auto-agent/providers/codex.mjs';
 import { runAgentCouncil } from '../auto-agent/council/council-runner.mjs';
+import { createAutoSession } from '../auto-agent/session-store.mjs';
 
 function decision({
   action = 'run_modules',
@@ -256,7 +257,8 @@ test('erro de subprocesso Codex não ecoa argumentos sensíveis', async () => {
     execFileClosedStdin('/bin/sh', ['-c', 'exit 2', 'prompt-sensitive-marker'], { timeout: 2_000 }),
     (error) => {
       assert.doesNotMatch(error.message, /prompt-sensitive-marker/);
-      assert.match(error.message, /Command failed: \/bin\/sh/);
+      // Unix: exit code; Windows sem /bin/sh: ENOENT — em ambos o argv sensível não ecoa.
+      assert.match(error.message, /Command failed: \/bin\/sh|spawn \/bin\/sh ENOENT/);
       return true;
     },
   );
@@ -281,7 +283,11 @@ test('conselho converte empate de módulos em ask_operator', async () => {
     catalog,
     ragContext: { items: [] },
     root: process.cwd(),
-    env: { OPENROUTER_API_KEY: 'test', GHOSTRECON_CODEX_APP_SERVER: '0' },
+    env: {
+      OPENROUTER_API_KEY: 'test',
+      GHOSTRECON_CODEX_APP_SERVER: '0',
+      GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
+    },
     execFileImpl: async (_command, args) => {
       const outputPath = args[args.indexOf('--output-last-message') + 1];
       await fs.writeFile(outputPath, JSON.stringify(codexDecision), 'utf8');
@@ -320,6 +326,7 @@ test('conselho exige operador quando há maioria não unânime para intrusivo', 
       OPENROUTER_API_KEY: 'test',
       GHOSTRECON_CODEX_APP_SERVER: '0',
       GHOSTRECON_LMSTUDIO_BASE_URL: 'http://local-model.test/v1',
+      GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
     },
     execFileImpl: async (_command, args) => {
       const outputPath = args[args.indexOf('--output-last-message') + 1];
@@ -335,4 +342,108 @@ test('conselho exige operador quando há maioria não unânime para intrusivo', 
   assert.equal(result.finalDecision.action, 'ask_operator');
   assert.deepEqual(result.finalDecision.requestedModules, []);
   assert.deepEqual(result.finalDecision.council.conflicts.riskDivergence, ['intrusive_module']);
+});
+
+test('conselho repropaga AbortError sem converter em turno ok:false', async () => {
+  const session = createAutoSession({
+    sessionId: 'session-council-abort',
+    requestRunId: 'run-council-abort',
+    target: 'example.test',
+  });
+  const abortError = new Error('cancelled_during_proposal');
+  abortError.name = 'AbortError';
+  let failedTurnEmitted = false;
+  await assert.rejects(
+    runAgentCouncil({
+      providers: [
+        { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
+      ],
+      target: 'example.test',
+      mode: 'balanced',
+      catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
+      ragContext: { items: [] },
+      root: process.cwd(),
+      env: {
+        OPENROUTER_API_KEY: 'test',
+        GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
+      },
+      session,
+      onTurn: (turn) => {
+        if (turn.phase === 'failed') failedTurnEmitted = true;
+      },
+      fetchImpl: async () => {
+        session.abort('cancelled_during_proposal');
+        throw abortError;
+      },
+    }),
+    (error) => {
+      assert.equal(session.signal.aborted, true);
+      assert.equal(error?.name, 'AbortError');
+      assert.match(String(error?.message || ''), /cancelled_during_proposal/i);
+      return true;
+    },
+  );
+  assert.equal(failedTurnEmitted, false);
+  await session.close('cancelled');
+});
+
+test('conselho repropaga AbortError durante review sem fallback', async () => {
+  const session = createAutoSession({
+    sessionId: 'session-council-review-abort',
+    requestRunId: 'run-council-review-abort',
+    target: 'example.test',
+  });
+  const abortError = new Error('cancelled_during_review');
+  abortError.name = 'AbortError';
+  let failedTurnEmitted = false;
+  let openrouterCalls = 0;
+  let reviewStarted = false;
+  await assert.rejects(
+    runAgentCouncil({
+      providers: [
+        { id: 'codex', selected: true, usable: true },
+        { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
+      ],
+      target: 'example.test',
+      mode: 'balanced',
+      catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
+      ragContext: { items: [] },
+      root: process.cwd(),
+      env: {
+        OPENROUTER_API_KEY: 'test',
+        GHOSTRECON_CODEX_APP_SERVER: '0',
+        GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
+      },
+      session,
+      onTurn: (turn) => {
+        if (turn.phase === 'failed') failedTurnEmitted = true;
+        if (turn.phase === 'started' && turn.role === 'reviewer') reviewStarted = true;
+      },
+      execFileImpl: async (_command, args) => {
+        if (session.signal.aborted) throw abortError;
+        const outputPath = args[args.indexOf('--output-last-message') + 1];
+        await fs.writeFile(outputPath, JSON.stringify(decision({ modules: ['security_headers'] })), 'utf8');
+        return { stdout: '', stderr: '' };
+      },
+      fetchImpl: async () => {
+        openrouterCalls += 1;
+        // 1ª chamada = proposta; 2ª = review cruzada.
+        if (openrouterCalls >= 2) {
+          session.abort('cancelled_during_review');
+          throw abortError;
+        }
+        return openAiResponse(decision({ modules: ['security_headers'] }));
+      },
+    }),
+    (error) => {
+      assert.equal(reviewStarted, true);
+      assert.ok(openrouterCalls >= 2);
+      assert.equal(session.signal.aborted, true);
+      assert.equal(error?.name, 'AbortError');
+      assert.match(String(error?.message || error?.cause?.message || ''), /cancelled_during_review/i);
+      return true;
+    },
+  );
+  assert.equal(failedTurnEmitted, false);
+  await session.close('cancelled');
 });

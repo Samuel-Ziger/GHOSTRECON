@@ -337,7 +337,7 @@ test('snapshot histórico incompleto falha antes de provider ou pipeline', async
           throw new Error('provider não deveria executar');
         },
       }),
-      /catalogHash ausente|checkpoint/,
+      /catalogHash ausente|checkpoint|política de retomada/,
     );
     assert.equal(providerCalls, 0);
     assert.equal(pipelineCalls, 0);

@@ -14,6 +14,7 @@ import {
   urlInReconScope,
   parseOutOfScopeClientInput,
   mergeOutOfScopeLists,
+  dnsResolvedAddressesEligibleForProbe,
 } from '../../modules/scope.js';
 import { fetchCommonCrawlUrls } from '../../modules/commoncrawl.js';
 import { fetchRdapSummary } from '../../modules/rdap.js';
@@ -247,7 +248,24 @@ export async function runDiscoveryPhase(s) {
       for (const host of capped) {
         const r = await resolves(host);
         if (r.ok) {
-          log(`✓ ${host} → ${r.records.slice(0, 2).join(', ')}`, 'success');
+          const dnsGate = dnsResolvedAddressesEligibleForProbe(
+            r.records,
+            domain,
+            s.outOfScopeList,
+            s.scopePolicy,
+          );
+          if (!dnsGate.eligible) {
+            log(
+              `Escopo formal: ${host} → ${dnsGate.rejectedIps.slice(0, 3).join(', ')} `
+              + 'fora da allowlist IP — ignorado para alive/probe',
+              'warn',
+            );
+            continue;
+          }
+          const probeRecords = dnsGate.allowedIps.length
+            ? dnsGate.allowedIps
+            : r.records;
+          log(`✓ ${host} → ${probeRecords.slice(0, 2).join(', ')}`, 'success');
           const { score, prio } = { score: 52, prio: 'med' };
           const hn = String(host).trim().toLowerCase();
           const viaSubfinder = subfinderHostsNorm.has(hn);
@@ -273,7 +291,7 @@ export async function runDiscoveryPhase(s) {
                 prio,
                 score,
                 value: host,
-                meta: `DNS: ${r.records.join(', ')}${viaSubfinder ? ' · tool=subfinder' : ''}`,
+                meta: `DNS: ${probeRecords.join(', ')}${viaSubfinder ? ' · tool=subfinder' : ''}`,
                 url: `https://${hostLiteralForUrl(host)}/`,
               },
               { how, relation },
@@ -282,7 +300,7 @@ export async function runDiscoveryPhase(s) {
           );
           subdomainsAlive.push(host);
           probedHosts.add(host);
-          const ipv4 = firstIpv4FromDnsRecords(r.records);
+          const ipv4 = firstIpv4FromDnsRecords(probeRecords);
           if (ipv4) dnsAForHost.set(String(host).trim().toLowerCase(), ipv4);
         } else {
           log(`✗ ${host} (sem A/AAAA)`, 'warn');
@@ -418,8 +436,24 @@ export async function runDiscoveryPhase(s) {
         try {
           const rApex = await resolves(domain);
           if (rApex.ok) {
-            const ipv4 = firstIpv4FromDnsRecords(rApex.records);
-            if (ipv4) dnsAForHost.set(hn, ipv4);
+            const dnsGate = dnsResolvedAddressesEligibleForProbe(
+              rApex.records,
+              domain,
+              s.outOfScopeList,
+              s.scopePolicy,
+            );
+            if (!dnsGate.eligible) {
+              log(
+                `Escopo formal: apex ${domain} resolve fora da allowlist IP `
+                + `(${dnsGate.rejectedIps.slice(0, 3).join(', ')}) — IP não entra em probe`,
+                'warn',
+              );
+            } else {
+              const ipv4 = firstIpv4FromDnsRecords(
+                dnsGate.allowedIps.length ? dnsGate.allowedIps : rApex.records,
+              );
+              if (ipv4) dnsAForHost.set(hn, ipv4);
+            }
           }
         } catch {
           /* ignore */

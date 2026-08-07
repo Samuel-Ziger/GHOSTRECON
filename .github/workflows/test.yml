@@ -4,6 +4,16 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      network_smoke:
+        description: 'Rodar pipeline-smoke (rede autorizada / example.com)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   node:
@@ -15,5 +25,29 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      # Gate padrão sem rede (exclui pipeline-smoke).
       - run: npm test
       - run: npm run test:cli
+
+  auto-hermetic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:auto:hermetic
+
+  network-smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.network_smoke == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:network

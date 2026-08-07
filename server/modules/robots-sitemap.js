@@ -1,5 +1,6 @@
 import { UA, limits } from '../config.js';
 import { hostInReconScope, urlInReconScope } from './scope.js';
+import { fetchScoped } from './scoped-fetch.mjs';
 
 export { hostnameInScope } from './scope.js';
 
@@ -26,15 +27,29 @@ function extractDisallowInteresting(robotsText, rootDomain) {
   return [...new Set(paths)].slice(0, 30);
 }
 
-async function fetchText(url, timeoutMs) {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA, Accept: 'text/plain,text/html,application/xml,*/*' },
-    signal: AbortSignal.timeout(timeoutMs),
-    redirect: 'manual',
-  });
-  if (!res.ok) return null;
-  const t = await res.text();
-  return t.length > 2_000_000 ? t.slice(0, 2_000_000) : t;
+async function fetchText(url, timeoutMs, {
+  rootDomain = '',
+  outOfScopeRules = [],
+  scopePolicy = null,
+} = {}) {
+  try {
+    const res = await fetchScoped(url, {
+      headers: { 'User-Agent': UA, Accept: 'text/plain,text/html,application/xml,*/*' },
+      signal: AbortSignal.timeout(timeoutMs),
+      urlAllowed: (candidate) => urlInReconScope(
+        candidate,
+        rootDomain,
+        outOfScopeRules,
+        scopePolicy,
+      ),
+    });
+    if (!res.ok) return null;
+    const t = await res.text();
+    return t.length > 2_000_000 ? t.slice(0, 2_000_000) : t;
+  } catch (error) {
+    if (error?.code === 'OUT_OF_SCOPE' || error?.code === 'TOO_MANY_REDIRECTS') return null;
+    throw error;
+  }
 }
 
 function parseSitemapLocs(
@@ -95,12 +110,14 @@ export async function crawlRobotsAndSitemapsForOrigin(
   const robotsUrl = new URL('/robots.txt', origin).href;
   result.robotsUrl = robotsUrl;
   const to = limits.robotsFetchTimeoutMs;
+  const scopeOpts = { rootDomain, outOfScopeRules, scopePolicy };
 
   try {
-    const robots = await fetchText(robotsUrl, to);
+    const robots = await fetchText(robotsUrl, to, scopeOpts);
     if (robots) {
       result.robotsOk = true;
-      result.sitemapUrls = extractSitemapLines(robots);
+      result.sitemapUrls = extractSitemapLines(robots)
+        .filter((sm) => urlInReconScope(sm, rootDomain, outOfScopeRules, scopePolicy));
       result.disallowHints = extractDisallowInteresting(robots, rootDomain);
     }
   } catch (e) {
@@ -108,7 +125,10 @@ export async function crawlRobotsAndSitemapsForOrigin(
   }
 
   const defaultSitemap = new URL('/sitemap.xml', origin).href;
-  if (!result.sitemapUrls.includes(defaultSitemap)) {
+  if (
+    urlInReconScope(defaultSitemap, rootDomain, outOfScopeRules, scopePolicy)
+    && !result.sitemapUrls.includes(defaultSitemap)
+  ) {
     result.sitemapUrls.unshift(defaultSitemap);
   }
 
@@ -127,7 +147,7 @@ export async function crawlRobotsAndSitemapsForOrigin(
 
     let xml;
     try {
-      xml = await fetchText(sm, to);
+      xml = await fetchText(sm, to, scopeOpts);
     } catch {
       continue;
     }
@@ -145,7 +165,7 @@ export async function crawlRobotsAndSitemapsForOrigin(
         seenSitemaps.add(inner);
         sitemapCount++;
         try {
-          const innerXml = await fetchText(inner, to);
+          const innerXml = await fetchText(inner, to, scopeOpts);
           if (innerXml) {
             for (const u of parseSitemapLocs(
               innerXml,

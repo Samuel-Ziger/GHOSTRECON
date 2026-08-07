@@ -52,6 +52,10 @@ const FRAMESEVEN_ENV_ALLOWLIST = Object.freeze([
   'WINDIR',
   'COMSPEC',
   'PATHEXT',
+  // ScopePolicy selada (sem authorizationBinding); CLI deve impor ou falhar.
+  'GHOSTRECON_SCOPE_POLICY_HASH',
+  'GHOSTRECON_SCOPE_POLICY_JSON',
+  'GHOSTRECON_SCOPE_POLICY_FILE',
 ]);
 
 function safeTarget(value) {
@@ -236,11 +240,12 @@ export function resolveFrameSevenBinary(root, env = process.env) {
   return String(env.GHOSTRECON_FRAMESEVEN_BIN || path.join(root, 'FrameSeven', 'bin', 'frameseven', 'cli', 'v1'));
 }
 
-export function frameSevenChildEnv(env = process.env) {
+export function frameSevenChildEnv(env = process.env, extra = {}) {
   const source = env && typeof env === 'object' ? env : {};
+  const merged = { ...source, ...(extra && typeof extra === 'object' ? extra : {}) };
   return Object.fromEntries(FRAMESEVEN_ENV_ALLOWLIST
-    .filter((key) => typeof source[key] === 'string' && source[key])
-    .map((key) => [key, source[key]]));
+    .filter((key) => typeof merged[key] === 'string' && merged[key])
+    .map((key) => [key, merged[key]]));
 }
 
 /** Executes FrameSeven with argument arrays only; credentials are never accepted here. */
@@ -269,6 +274,7 @@ export async function runFrameSeven({
   waitForAuth = null,
   beforeScan = null,
   env = process.env,
+  scopePolicyEnv = null,
   spawnImpl = spawn,
   killImpl = process.kill,
   inspectBinaryIdentityImpl = inspectFrameSevenBinaryIdentity,
@@ -332,7 +338,20 @@ export async function runFrameSeven({
 
   const cleanupAuth = async () => {
     if (authContext) await cleanupFrameSevenAuthContext(authContext.contextId, authFile);
-    if (authDir) await fs.rm(authDir, { recursive: true, force: true }).catch(() => {});
+    if (authDir) {
+      await fs.rm(authDir, { recursive: true, force: true });
+      try {
+        await fs.access(authDir);
+        const residual = new Error(`FrameSeven authDir residual após cleanup: ${authDir}`);
+        residual.code = 'FRAMESEVEN_AUTH_RESIDUAL';
+        residual.fatal = true;
+        residual.recoverable = false;
+        throw residual;
+      } catch (error) {
+        if (error?.code === 'FRAMESEVEN_AUTH_RESIDUAL') throw error;
+        // ENOENT/ausência esperada — residual limpo.
+      }
+    }
   };
 
   if (signal?.aborted) {
@@ -365,7 +384,7 @@ export async function runFrameSeven({
     });
     child = spawnImpl(binary, args, {
       cwd: root,
-      env: frameSevenChildEnv(env),
+      env: frameSevenChildEnv(env, scopePolicyEnv),
       stdio: [authBrowser ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       windowsHide: true,
       detached: process.platform !== 'win32',
@@ -504,10 +523,28 @@ export async function runFrameSeven({
           phase: stopIntent?.phase || status,
         });
       }
-      void cleanup().finally(() => {
-        if (recoverable) resolve(value);
-        else reject(publicFailure);
-      });
+      // Terminal só após cleanup awaitado: residual/auth temp não pode sobreviver
+      // ao resolve/reject. Falha de cleanup eleva done/partial a falha fechada.
+      cleanup()
+        .then(() => {
+          if (recoverable) resolve(value);
+          else reject(publicFailure);
+        })
+        .catch((cleanupError) => {
+          const failure = new Error(
+            publicError(cleanupError, 'FrameSeven cleanup falhou'),
+            { cause: cleanupError },
+          );
+          failure.code = cleanupError?.code || 'FRAMESEVEN_CLEANUP_FAILED';
+          failure.fatal = true;
+          failure.recoverable = false;
+          if (!recoverable && publicFailure) {
+            publicFailure.cleanupError = failure.message;
+            reject(publicFailure);
+            return;
+          }
+          reject(failure);
+        });
     };
 
     const settleUnterminated = () => {

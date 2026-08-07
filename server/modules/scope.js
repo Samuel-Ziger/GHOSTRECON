@@ -307,6 +307,44 @@ export function hostInReconScope(
   return hostMatchesEngagementPolicy(hostname, engagementScopePolicy);
 }
 
+/**
+ * Quando a política formal declara `scopeIps`, endereços DNS fora da allowlist
+ * não podem alimentar alive/probe. Sem `scopeIps`, discovery por hostname
+ * segue; o gate de IP literal permanece em `hostInReconScope`.
+ */
+export function dnsResolvedAddressesEligibleForProbe(
+  records,
+  rootDomain,
+  outOfScopeRules = [],
+  engagementScopePolicy = null,
+) {
+  const ips = [...new Set(
+    (Array.isArray(records) ? records : [])
+      .map((value) => String(value || '').trim())
+      .filter((value) => net.isIP(value)),
+  )];
+  if (!engagementScopePolicy?.scopeIps?.length) {
+    return { eligible: true, allowedIps: ips, rejectedIps: [] };
+  }
+  if (!ips.length) {
+    return { eligible: true, allowedIps: [], rejectedIps: [] };
+  }
+  const allowedIps = [];
+  const rejectedIps = [];
+  for (const ip of ips) {
+    if (hostInReconScope(ip, rootDomain, outOfScopeRules, engagementScopePolicy)) {
+      allowedIps.push(ip);
+    } else {
+      rejectedIps.push(ip);
+    }
+  }
+  return {
+    eligible: allowedIps.length > 0,
+    allowedIps,
+    rejectedIps,
+  };
+}
+
 export function urlInReconScope(
   urlStr,
   rootDomain,

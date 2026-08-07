@@ -208,26 +208,62 @@ export function createAutoPlan({
   };
 }
 
-export function evaluateAutoRun({ events = [], plan = null } = {}) {
+const MODULE_OK_STATUSES = new Set(['done', 'skipped', 'skip']);
+/** Outcomes que degradam a sessão para partial (não elevam a failed sozinhos). */
+const MODULE_PARTIAL_STATUSES = new Set([
+  'failed', 'timeout', 'cancelled', 'partial', 'error', 'blocked',
+]);
+/** Outcomes fatais de motor — sessão failed mesmo sem error event. */
+const MODULE_FATAL_STATUSES = new Set([
+  'unterminated', 'fatal', 'process_unterminated',
+]);
+
+export function classifyModuleOutcomeStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (!normalized || MODULE_OK_STATUSES.has(normalized)) return 'ok';
+  if (MODULE_FATAL_STATUSES.has(normalized)) return 'fatal';
+  if (MODULE_PARTIAL_STATUSES.has(normalized)) return 'partial';
+  // Status desconhecido: fail-closed como partial (não inventa completed).
+  return 'partial';
+}
+
+export function evaluateAutoRun({ events = [], plan = null, moduleOutcomes = null } = {}) {
   const findings = events.filter((e) => e?.type === 'finding').length;
   const errors = events.filter((e) => e?.type === 'error');
   const fatalErrors = errors.filter((e) => e?.recoverable !== true);
   const recoverableErrors = errors.filter((e) => e?.recoverable === true);
   const phaseFailures = events.filter((e) => e?.type === 'phase_outcome'
     && !['done', 'skipped'].includes(String(e?.status || '')));
+  const outcomes = Array.isArray(moduleOutcomes)
+    ? moduleOutcomes
+    : events
+      .filter((e) => e?.type === 'auto_module_outcome' || (e?.type === 'module_outcome' && e.source !== 'pipeline_phase'))
+      .map((e) => ({ moduleId: e.moduleId, status: e.status, source: e.source }));
+  const moduleFailures = outcomes.filter((row) => classifyModuleOutcomeStatus(row?.status) !== 'ok');
+  const fatalModuleFailures = moduleFailures.filter(
+    (row) => classifyModuleOutcomeStatus(row?.status) === 'fatal',
+  );
   const warnings = events.filter((e) => e?.type === 'log' && e.level === 'warn');
   const highSignals = events.filter((e) => e?.type === 'finding' && ['high', 'critical'].includes(String(e.finding?.prio || e.prio || '').toLowerCase())).length;
-  const partial = recoverableErrors.length > 0 || phaseFailures.length > 0;
+  const hasFatal = fatalErrors.length > 0 || fatalModuleFailures.length > 0;
+  const partial = !hasFatal && (
+    recoverableErrors.length > 0 || phaseFailures.length > 0 || moduleFailures.length > 0
+  );
   return {
     schemaVersion: 1,
     kind: 'ghostrecon.auto.evaluation',
     target: plan?.target || null,
-    ok: fatalErrors.length === 0,
-    status: fatalErrors.length ? 'failed' : partial ? 'partial' : 'completed',
+    ok: !hasFatal,
+    status: hasFatal ? 'failed' : partial ? 'partial' : 'completed',
     findings,
     highSignals,
     warnings: warnings.length + recoverableErrors.length,
-    errors: fatalErrors.map((e) => e.message || e.msg || 'erro'),
+    errors: [
+      ...fatalErrors.map((e) => e.message || e.msg || 'erro'),
+      ...fatalModuleFailures.map((row) => (
+        `módulo ${row.moduleId || '?'}: ${row.status || 'fatal'}`
+      )),
+    ],
     recoverableErrors: recoverableErrors.map((e) => e.message || e.msg || 'erro recuperável'),
     phaseFailures: phaseFailures.map((e) => ({
       phase: e.phase || null,
@@ -235,7 +271,13 @@ export function evaluateAutoRun({ events = [], plan = null } = {}) {
       recoverable: e.recoverable === true,
       error: e.error || null,
     })),
-    next: fatalErrors.length
+    moduleFailures: moduleFailures.map((row) => ({
+      moduleId: row.moduleId || null,
+      status: row.status || 'failed',
+      source: row.source || null,
+      class: classifyModuleOutcomeStatus(row?.status),
+    })),
+    next: hasFatal
       ? 'review_errors_before_next_iteration'
       : partial
         ? 'review_partial_results_and_recoverable_failures'

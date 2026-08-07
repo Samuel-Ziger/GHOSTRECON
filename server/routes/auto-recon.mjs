@@ -5,6 +5,7 @@ import { reconHttpContext } from '../lib/http-history.mjs';
 import { runAutoRecon } from '../auto-agent/orchestrator.mjs';
 import {
   listAutoRagMarkdown,
+  resolveAutoRagPartitionKey,
   searchAutoRagMarkdown,
   writeAutoLesson,
   writeAutoRagNote,
@@ -27,7 +28,10 @@ import {
   getActiveAutoSession,
   listActiveAutoSessions,
 } from '../auto-agent/active-sessions.mjs';
-import { readAutoSessionSnapshot, reconcileOrphanedAutoSessions } from '../auto-agent/session-store.mjs';
+import {
+  readAutoSessionSnapshot,
+  runAutoStartupReconciliation,
+} from '../auto-agent/session-store.mjs';
 import {
   getFrameSevenApproval,
   readFrameSevenPublicReport,
@@ -75,6 +79,26 @@ function publicForgeItem(item) {
 
 function publicRagMemory(item) {
   return publicArtifactValue(item);
+}
+
+/** Partição obrigatória do vault Auto RAG: nunca lista o vault global. */
+export function resolveAutoRagRequestPartition(req, { fromBody = false } = {}) {
+  const principalId = String(req?.principal?.sub || '').trim();
+  if (!principalId) {
+    const error = new Error('principal obrigatório para vault auto-rag');
+    error.status = 401;
+    throw error;
+  }
+  const source = fromBody ? (req?.body || {}) : (req?.query || {});
+  const body = req?.body || {};
+  const query = req?.query || {};
+  return {
+    principalId,
+    engagementId: String(
+      source.engagementId || body.engagementId || query.engagementId || '',
+    ).trim(),
+    target: String(source.target || body.target || query.target || '').trim(),
+  };
 }
 
 export function validateForgeCanaryEngagement({ candidate, engagement, engagementId } = {}) {
@@ -264,10 +288,52 @@ export function registerAutoReconRoutes(app, deps = {}) {
     return forgeSandboxRunnerPromise;
   };
 
-  void reconcileOrphanedAutoSessions(ROOT).catch(() => []);
+  // Reconciliação de startup é aguardada em `prepareAutoReconStartup` / index.js
+  // antes do listen — não fire-and-forget aqui.
 
   app.get('/api/recon/auto/sessions', requireScope('recon.read'), (req, res) => {
     res.json({ ok: true, sessions: listActiveAutoSessions({ principal: req.principal }) });
+  });
+
+  app.get('/api/recon/auto/sessions/:sessionId', requireScope('recon.read'), async (req, res) => {
+    const sessionId = String(req.params.sessionId || '').trim();
+    try {
+      const live = getActiveAutoSession(sessionId);
+      if (live) {
+        const ownership = autoSessionOwnership(live.state, req.principal);
+        if (ownership !== 'owned') {
+          auditEvent(req, req.principal, 'deny', {
+            action: 'recon.auto.session.read',
+            sessionId,
+            reason: `session_${ownership}`,
+          });
+          res.status(403).json({ ok: false, error: 'sessão AUTO pertence a outro principal' });
+          return;
+        }
+        res.json({
+          ok: true,
+          source: 'memory',
+          session: redactAutoValue(live.state, { preserveSensitiveKeys: new Set(['sessionId']) }),
+        });
+        return;
+      }
+      const snapshot = await readAutoSessionSnapshot(ROOT, sessionId, env, {
+        principal: req.principal,
+      });
+      const ownership = autoSessionOwnership(snapshot, req.principal);
+      if (ownership !== 'owned') {
+        auditEvent(req, req.principal, 'deny', {
+          action: 'recon.auto.session.read',
+          sessionId,
+          reason: `session_${ownership}`,
+        });
+        res.status(403).json({ ok: false, error: 'sessão AUTO pertence a outro principal' });
+        return;
+      }
+      res.json({ ok: true, source: 'snapshot', session: snapshot });
+    } catch (error) {
+      res.status(404).json({ ok: false, error: error?.message || 'sessão AUTO não encontrada' });
+    }
   });
 
   app.get(
@@ -726,9 +792,14 @@ export function registerAutoReconRoutes(app, deps = {}) {
     }
   });
 
-  app.get('/api/auto-rag/status', requireScope('recon.read'), async (_req, res) => {
+  app.get('/api/auto-rag/status', requireScope('recon.read'), async (req, res) => {
     try {
-      const memories = await listAutoRagMarkdown({ root: ROOT, limit: 500 });
+      const partition = resolveAutoRagRequestPartition(req);
+      const memories = await listAutoRagMarkdown({
+        root: ROOT,
+        limit: 500,
+        ...partition,
+      });
       const counts = memories.reduce((acc, item) => {
         acc[item.folder || 'decisions'] = (acc[item.folder || 'decisions'] || 0) + 1;
         return acc;
@@ -736,27 +807,37 @@ export function registerAutoReconRoutes(app, deps = {}) {
       res.json({
         ok: true,
         vault: 'auto-rag',
+        partition: resolveAutoRagPartitionKey(partition),
         count: memories.length,
         counts,
         recent: memories.slice(0, 12).map(publicRagMemory),
       });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      const status = Number(e?.status) || 500;
+      res.status(status).json({ ok: false, error: e?.message || String(e) });
     }
   });
 
   app.get('/api/auto-rag/search', requireScope('recon.read'), async (req, res) => {
     try {
+      const partition = resolveAutoRagRequestPartition(req);
       const query = String(req.query?.q || req.query?.query || '').trim();
       const limit = Math.max(1, Math.min(50, Number(req.query?.limit || 8)));
       res.json({
         ok: true,
         vault: 'auto-rag',
+        partition: resolveAutoRagPartitionKey(partition),
         query,
-        memories: (await searchAutoRagMarkdown({ root: ROOT, query, limit })).map(publicRagMemory),
+        memories: (await searchAutoRagMarkdown({
+          root: ROOT,
+          query,
+          limit,
+          ...partition,
+        })).map(publicRagMemory),
       });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      const status = Number(e?.status) || 500;
+      res.status(status).json({ ok: false, error: e?.message || String(e) });
     }
   });
 
@@ -767,10 +848,11 @@ export function registerAutoReconRoutes(app, deps = {}) {
     }
     try {
       const body = req.body || {};
+      const partition = resolveAutoRagRequestPartition(req, { fromBody: true });
       const note = body.kind === 'lesson'
         ? await writeAutoLesson({
           root: ROOT,
-          target: body.target,
+          target: partition.target || body.target,
           problem: body.problem,
           decision: body.decision,
           outcome: body.outcome,
@@ -779,19 +861,28 @@ export function registerAutoReconRoutes(app, deps = {}) {
           confidence: body.confidence,
           tags: Array.isArray(body.tags) ? body.tags : [],
           metadata: body.metadata || null,
+          principalId: partition.principalId,
+          engagementId: partition.engagementId,
         })
         : await writeAutoRagNote({
           root: ROOT,
           kind: body.kind || 'note',
           title: body.title || 'Auto note',
           body: body.body || '',
-          target: body.target || '',
+          target: partition.target || body.target || '',
           tags: Array.isArray(body.tags) ? body.tags : [],
           metadata: body.metadata || null,
+          principalId: partition.principalId,
+          engagementId: partition.engagementId,
         });
-      res.json({ ok: true, note: publicRagMemory(note) });
+      res.json({
+        ok: true,
+        partition: resolveAutoRagPartitionKey(partition),
+        note: publicRagMemory(note),
+      });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      const status = Number(e?.status) || 500;
+      res.status(status).json({ ok: false, error: e?.message || String(e) });
     }
   });
 
@@ -802,7 +893,20 @@ export function registerAutoReconRoutes(app, deps = {}) {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Accel-Buffering', 'no');
 
+    const controller = new AbortController();
+    req.once?.('aborted', () => controller.abort(new Error('cliente desconectado')));
+    res.once?.('close', () => {
+      if (!res.writableEnded) controller.abort(new Error('stream encerrado pelo cliente'));
+    });
+
     const send = (obj) => {
+      if (controller.signal.aborted) {
+        const allow = obj?.type === 'auto_session'
+          || obj?.type === 'error'
+          || obj?.type === 'auto_persist_failed';
+        if (!allow) return;
+      }
+      if (res.writableEnded || res.destroyed) return;
       if (obj?.type === 'auto_session' && obj?.phase === 'started' && obj?.sessionId) {
         const bound = bindActiveAutoSessionOwner(obj.sessionId, req.principal);
         auditEvent(req, req.principal, bound ? 'allow' : 'deny', {
@@ -812,7 +916,11 @@ export function registerAutoReconRoutes(app, deps = {}) {
         });
         if (!bound) getActiveAutoSession(obj.sessionId)?.abort('session_owner_binding_failed');
       }
-      res.write(`${JSON.stringify(obj)}\n`);
+      try {
+        res.write(`${JSON.stringify(obj)}\n`);
+      } catch {
+        // socket já morto
+      }
     };
 
     if (!validateCsrfToken(req)) {
@@ -841,7 +949,11 @@ export function registerAutoReconRoutes(app, deps = {}) {
 
     if (body.resumeSessionId) {
       try {
-        const snapshot = await readAutoSessionSnapshot(ROOT, String(body.resumeSessionId));
+        const snapshot = await readAutoSessionSnapshot(ROOT, String(body.resumeSessionId), env, {
+          principal: req.principal,
+          engagementId: body.engagementId || '',
+          target: parsed.target,
+        });
         const ownership = autoSessionOwnership(snapshot, req.principal);
         if (ownership !== 'owned') {
           auditEvent(req, req.principal, 'deny', {
@@ -875,11 +987,6 @@ export function registerAutoReconRoutes(app, deps = {}) {
     });
 
     const requestRunId = `auto-http-${Date.now().toString(36)}`;
-    const controller = new AbortController();
-    req.once('aborted', () => controller.abort(new Error('cliente desconectado')));
-    res.once('close', () => {
-      if (!res.writableEnded) controller.abort(new Error('stream encerrado pelo cliente'));
-    });
     try {
       const forgeSandboxRunner = await getForgeSandboxRunner();
       await reconHttpContext.run({ requestRunId, target: parsed.target, emit: send }, async () => {
@@ -900,4 +1007,14 @@ export function registerAutoReconRoutes(app, deps = {}) {
       res.end();
     }
   });
+}
+
+/** Aguardar antes do listen: reconcilia snapshots running órfãos. */
+export async function prepareAutoReconStartup({
+  ROOT,
+  env = process.env,
+  logger = console,
+  onAudit = null,
+} = {}) {
+  return runAutoStartupReconciliation(ROOT, env, { logger, onAudit });
 }

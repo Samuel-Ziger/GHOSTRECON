@@ -18,6 +18,8 @@ import {
   computeAutoReadyPlanHash,
   computeAutoResumePolicyHash,
   createAutoCheckpoint,
+  autoEngineTimeouts,
+  autoSessionLimits,
   createAutoSession,
   readAutoSessionSnapshot,
   writeAutoSessionSnapshot,
@@ -41,16 +43,27 @@ import {
   mergeOutOfScopeLists,
   parseOutOfScopeClientInput,
 } from '../modules/scope.js';
-import { redactAutoValue } from './redaction.mjs';
+import { loadAutoRedactionPolicy, redactAutoValue } from './redaction.mjs';
+import { _authStateForTests } from '../modules/auth.js';
 import { isFatalVigoliumExecutionError } from '../../bridge/vigolium-errors.mjs';
 import {
   buildVigoliumChildEnv,
   resolveVigoliumEffectiveConfig,
 } from '../../bridge/vigolium-config.mjs';
 import {
+  applyVigoliumExpansionToRuntime,
+  expandVigoliumEffectiveModules,
+} from '../../bridge/vigolium-plan-expand.mjs';
+import {
   inspectVigoliumSourceIdentity,
   resolveVigoliumSourceAllowedRoots,
 } from '../../bridge/vigolium-source-integrity.mjs';
+import {
+  assertEngineScopeEnforcementAvailable,
+  scopePolicyEnvBindings,
+  sealEngineScopePolicy,
+  writeSealedScopePolicyFile,
+} from '../modules/engine-scope-policy.mjs';
 
 const AUTO_PROMPT_VERSION = 'auto-council-v3';
 
@@ -117,7 +130,7 @@ function autoVigoliumRuntimeContext(body, effectivePlan, useCodex) {
  * O plano público recebe somente valores não sensíveis e bindings; o snapshot
  * privado completo é entregue ao pipeline sem voltar a consultar `process.env`.
  */
-export function resolveAutoVigoliumRuntimeSnapshot({
+export async function resolveAutoVigoliumRuntimeSnapshot({
   body = {},
   effectivePlan,
   catalog,
@@ -125,6 +138,9 @@ export function resolveAutoVigoliumRuntimeSnapshot({
   useCodex = false,
   sourceIdentity = null,
   sourceAllowedRoots = [],
+  listVigoliumModulesImpl = null,
+  ghostRoot = null,
+  sealedScopePolicy = null,
 } = {}) {
   if (!effectivePlan?.engines?.vigolium?.enabled) {
     return Object.freeze({ runtime: null, publicPlan: null });
@@ -133,20 +149,57 @@ export function resolveAutoVigoliumRuntimeSnapshot({
     autoVigoliumRuntimeContext(body, effectivePlan, useCodex),
     { env },
   );
-  const childEnv = Object.freeze({ ...buildVigoliumChildEnv(resolved, env) });
+  const dastSelected = effectivePlan?.engines?.vigolium?.engine === 'both'
+    || effectivePlan?.engines?.vigolium?.engine === 'go'
+    || (effectivePlan?.pipelineModules || []).includes('vigolium_dast');
+  let expansion = Object.freeze({
+    schemaVersion: 1,
+    moduleIds: Object.freeze([]),
+    modules: Object.freeze([]),
+    catalogHash: null,
+    catalogCount: 0,
+  });
+  let expandedResolved = resolved;
+  if (dastSelected) {
+    expansion = await expandVigoliumEffectiveModules({
+      modules: resolved.vigoliumModules,
+      moduleTags: resolved.vigoliumModuleTags,
+      only: resolved.vigoliumOnly,
+      root: ghostRoot || process.cwd(),
+      forAuto: true,
+      ...(typeof listVigoliumModulesImpl === 'function'
+        ? { listModulesImpl: listVigoliumModulesImpl }
+        : {}),
+    });
+    expandedResolved = applyVigoliumExpansionToRuntime(resolved, expansion);
+  }
+  if (sealedScopePolicy) {
+    assertEngineScopeEnforcementAvailable({
+      engine: 'vigolium',
+      sealedPolicy: sealedScopePolicy,
+      env,
+      engineDeclaresSupport: catalog?.engines?.vigolium?.supportsSealedScopePolicy === true,
+    });
+  }
+  const scopeEnv = scopePolicyEnvBindings(sealedScopePolicy);
+  const childEnv = Object.freeze({
+    ...buildVigoliumChildEnv(expandedResolved, env),
+    ...scopeEnv,
+  });
   const binaryPath = String(catalog?.engines?.vigolium?.binary || '').trim() || null;
   const binarySource = String(catalog?.engines?.vigolium?.source || '').trim() || null;
   if (!binaryPath || !effectivePlan.engines.vigolium.identity) {
     throw new Error('Vigolium exige binário e identidade selados antes do plano efetivo');
   }
   const runtime = Object.freeze({
-    ...resolved,
+    ...expandedResolved,
     vigoliumChildEnv: childEnv,
     vigoliumBinaryPath: binaryPath,
     vigoliumBinarySource: binarySource,
     vigoliumExpectedIdentity: effectivePlan.engines.vigolium.identity,
     vigoliumExpectedSourceIdentity: sourceIdentity,
     vigoliumSourceAllowedRoots: Object.freeze([...(sourceAllowedRoots || [])]),
+    vigoliumSealedScopePolicyHash: sealedScopePolicy?.policyHash || null,
     // Auth pré-carregada é proibida no Auto. Mantenha o contrato completo no
     // snapshot para que o pipeline não precise inferir defaults nem consultar
     // o ambiente depois da aprovação.
@@ -156,6 +209,9 @@ export function resolveAutoVigoliumRuntimeSnapshot({
   const publicPlan = Object.freeze({
     strategy: runtime.vigoliumStrategy,
     modules: [...runtime.vigoliumModules],
+    resolvedModules: expansion.modules,
+    catalogHash: expansion.catalogHash,
+    catalogCount: expansion.catalogCount,
     moduleTags: [...runtime.vigoliumModuleTags],
     auditMode: runtime.vigoliumAuditMode,
     only: runtime.vigoliumOnly,
@@ -166,6 +222,7 @@ export function resolveAutoVigoliumRuntimeSnapshot({
     skipExternalHarvest: runtime.vigoliumSkipExternalHarvest,
     scanTimeoutMs: runtime.vigoliumTimeoutMs,
     agentTimeoutMs: runtime.vigoliumAgentTimeoutMs,
+    scopePolicyHash: sealedScopePolicy?.policyHash || null,
     binarySource,
     binaryPathBinding: bindAutoRuntimeValue(binaryPath),
     sourceMode: runtime.vigoliumSource ? 'configured_local' : 'none',
@@ -188,7 +245,7 @@ export function resolveAutoVigoliumRuntimeSnapshot({
       vigoliumExpectedIdentity: effectivePlan.engines.vigolium.identity,
     }),
   });
-  return Object.freeze({ runtime, publicPlan });
+  return Object.freeze({ runtime, publicPlan, expansion });
 }
 
 export function computeAutoCatalogHash(catalog = {}) {
@@ -365,7 +422,7 @@ export async function runWithDeadline({
   }
 }
 
-function terminalStatus(error, session) {
+export function terminalStatus(error, session) {
   if (!session?.signal?.aborted) return { status: 'failed', cause: 'failed' };
   const reason = String(session.signal.reason?.message || session.signal.reason || error?.message || '');
   if (/stall/i.test(reason)) return { status: 'stalled', cause: reason };
@@ -373,6 +430,111 @@ function terminalStatus(error, session) {
   if (/budget|custo/i.test(reason)) return { status: 'budget_exceeded', cause: reason };
   if (/client|stream|disconnect/i.test(reason)) return { status: 'cancelled', cause: 'client_disconnected' };
   return { status: 'cancelled', cause: reason || 'operator_cancelled' };
+}
+
+export function sessionTerminalFromEvaluation(evaluation) {
+  const status = String(evaluation?.status || 'completed');
+  if (status === 'failed') return 'failed';
+  if (status === 'partial') return 'partial';
+  if (status === 'completed') return 'completed';
+  // Status de avaliação desconhecido: fail-closed (não promove a completed).
+  return 'failed';
+}
+
+function assertPersistentPrincipalBinding(env = process.env) {
+  if (/^(0|false|no|off)$/i.test(String(env.GHOSTRECON_AUTO_REQUIRE_PERSISTENT_BINDING || '0'))) {
+    return;
+  }
+  const binding = _authStateForTests()?.principalBinding;
+  if (binding?.persistent === true) return;
+  const error = new Error(
+    'binding persistente do principal obrigatório (AUTH_PRINCIPAL_BINDING_SECRET ou AUTH_JWT_SECRET HS256 >=32)',
+  );
+  error.code = 'AUTO_PRINCIPAL_BINDING_REQUIRED';
+  throw error;
+}
+
+async function persistTerminalSession({
+  ROOT,
+  env,
+  session,
+  finalSession,
+  captureEmit,
+  sessionId,
+  requestRunId,
+  preferredPhase,
+}) {
+  let phase = String(finalSession?.status || preferredPhase || 'failed');
+  try {
+    await writeAutoSessionSnapshot(ROOT, finalSession, env);
+  } catch (snapshotError) {
+    captureEmit({
+      type: 'auto_persist_failed',
+      stage: 'terminal_snapshot',
+      sessionId,
+      requestRunId,
+      error: snapshotError?.message || String(snapshotError),
+    });
+    if (['completed', 'partial'].includes(phase)) {
+      phase = 'failed';
+      finalSession.status = 'failed';
+      finalSession.error = finalSession.error
+        || `persist_failed: ${snapshotError?.message || snapshotError}`;
+      finalSession.terminationCause = 'persist_failed';
+    }
+    // Persistência terminal obrigatória: não reportar sucesso sem snapshot.
+    if (['completed', 'partial'].includes(String(preferredPhase || ''))) {
+      throw Object.assign(
+        new Error(finalSession.error || 'falha ao persistir snapshot terminal'),
+        { code: 'AUTO_TERMINAL_PERSIST_FAILED', cause: snapshotError },
+      );
+    }
+  }
+  captureEmit({ type: 'auto_session', phase, session: finalSession });
+  return { phase, finalSession };
+}
+
+function buildDegradedCouncilDecision({
+  selectedCommanders = [],
+  proposals = [],
+  reviews = [],
+} = {}) {
+  const failures = [...proposals, ...reviews]
+    .filter((turn) => turn && turn.ok === false)
+    .map((turn) => `${turn.provider || 'provider'}: ${turn.error || 'falhou'}`)
+    .slice(0, 8);
+  return {
+    action: 'ask_operator',
+    objective: 'Providers selecionados indisponíveis; aguardar decisão do operador',
+    reasoningSummary: [
+      'Nenhum provider selecionado produziu decisão válida.',
+      'O baseline determinístico não será apresentado como decisão da IA.',
+      ...failures.map((item) => `Falha: ${item}`),
+    ].slice(0, 20),
+    evidenceRefs: [],
+    requestedModules: [],
+    rejectedModules: [],
+    confidence: 0,
+    assumptions: ['O operador precisa confirmar se deseja continuar sem conselho de IA.'],
+    operatorQuestion: selectedCommanders.length
+      ? `Os providers selecionados (${selectedCommanders.join(', ')}) falharam ou ficaram indisponíveis. Deseja continuar com um plano explícito do operador ou encerrar?`
+      : 'O conselho não produziu decisão válida. Deseja continuar ou encerrar?',
+    forgeRequest: null,
+    council: {
+      selected: selectedCommanders,
+      proposalProviders: [],
+      reviewProviders: [],
+      quorum: 0,
+      validationErrors: ['council_degraded_no_usable_decision'],
+      degraded: true,
+      conflicts: {
+        tiedModules: [],
+        riskDivergence: [],
+        explicitConflicts: [],
+        forge: [],
+      },
+    },
+  };
 }
 
 export function normalizeAutoRequest(body = {}) {
@@ -407,13 +569,22 @@ export function normalizeAutoRequest(body = {}) {
     engagementId: body.engagementId ? String(body.engagementId).trim() : null,
     resumeSessionId: body.resumeSessionId ? String(body.resumeSessionId).trim() : null,
     approvalMode: body.approvalMode === 'deny' ? 'deny' : 'interactive',
+    // Consentimento explícito para enviar alvo/evidência/RAG a provider cloud.
+    cloudEvidenceConsent: body.cloudEvidenceConsent === true,
   };
 }
 
-export function buildAutoResumePolicy(req, body = {}) {
+export function buildAutoResumePolicy(req, body = {}, limits = null, engineTimeouts = null) {
   const uniqueSorted = (values) => [...new Set((values || [])
     .map((value) => String(value || '').trim())
     .filter(Boolean))].sort();
+  const envSource = body?.env || process.env;
+  const effectiveLimits = limits && typeof limits === 'object'
+    ? limits
+    : autoSessionLimits(envSource);
+  const effectiveEngineTimeouts = engineTimeouts && typeof engineTimeouts === 'object'
+    ? engineTimeouts
+    : autoEngineTimeouts(envSource);
   return Object.freeze({
     schemaVersion: 1,
     mode: String(req?.mode || 'balanced'),
@@ -426,11 +597,27 @@ export function buildAutoResumePolicy(req, body = {}) {
     frameSevenAuth: req?.frameSevenAuth === true,
     includeVigolium: req?.includeVigolium === true,
     vigoliumUseCodex: req?.vigoliumUseCodex === true,
+    cloudEvidenceConsent: req?.cloudEvidenceConsent === true,
     autonomyLevel: String(req?.autonomyLevel || 'observation'),
     engagementId: req?.engagementId || null,
     approvalMode: req?.approvalMode === 'deny' ? 'deny' : 'interactive',
     opsecProfile: String(body?.opsecProfile || '').trim().toLowerCase() || null,
     autoAiReports: body?.autoAiReports === true,
+    limits: Object.freeze({
+      maxIterations: Number(effectiveLimits.maxIterations),
+      sessionTimeoutMs: Number(effectiveLimits.sessionTimeoutMs),
+      agentTimeoutMs: Number(effectiveLimits.agentTimeoutMs),
+      maxAgentCalls: Number(effectiveLimits.maxAgentCalls),
+      maxContextChars: Number(effectiveLimits.maxContextChars),
+      maxCostUsd: Number(effectiveLimits.maxCostUsd),
+    }),
+    engineTimeouts: Object.freeze({
+      pipelineTimeoutMs: Number(effectiveEngineTimeouts.pipelineTimeoutMs),
+      engineSettleGraceMs: Number(effectiveEngineTimeouts.engineSettleGraceMs),
+      phaseSettleGraceMs: Number(effectiveEngineTimeouts.phaseSettleGraceMs),
+      framesevenAuthTimeoutMs: Number(effectiveEngineTimeouts.framesevenAuthTimeoutMs),
+      framesevenBeforeScanTimeoutMs: Number(effectiveEngineTimeouts.framesevenBeforeScanTimeoutMs),
+    }),
   });
 }
 
@@ -461,14 +648,17 @@ export async function runAutoRecon({
   principal = null,
   getEngagementImpl = getEngagement,
   inspectVigoliumSourceIdentityImpl = inspectVigoliumSourceIdentity,
+  listVigoliumModulesImpl = null,
 } = {}) {
   if (typeof runPipeline !== 'function') {
     throw new Error('runPipeline ausente para Modo Auto');
   }
+  assertPersistentPrincipalBinding(env);
   const req = normalizeAutoRequest(body);
   // Copie o ambiente executável uma única vez. Mudanças posteriores no objeto
   // injetado ou em `process.env` não podem alterar o plano já apresentado.
   const executionEnv = Object.freeze({ ...env });
+  const redactionPolicy = loadAutoRedactionPolicy(executionEnv);
   if (
     req.includeVigolium
     && (
@@ -508,7 +698,6 @@ export async function runAutoRecon({
         vigoliumChildEnv: buildVigoliumChildEnv(baseVigoliumRuntime, executionEnv),
       })
     : null;
-  const resumePolicy = buildAutoResumePolicy(req, body);
   if (pipelineOverrides && Object.keys(pipelineOverrides).length > 0) {
     throw new Error(
       'pipelineOverrides não é permitido no Auto: todo parâmetro executável deve integrar o plano efetivo hashado',
@@ -540,7 +729,20 @@ export async function runAutoRecon({
   if (restoredState?.autonomyLevel && restoredState.autonomyLevel !== req.autonomyLevel) {
     throw new Error('retomada não pode alterar o nível de autonomia');
   }
+  // Na retomada, a policy usa limits/timeouts congelados do snapshot (não o env).
+  const resumePolicyLimits = restoredState?.resumePolicy?.limits
+    || restoredState?.limits
+    || autoSessionLimits(executionEnv);
+  const resumeEngineTimeouts = restoredState?.resumePolicy?.engineTimeouts
+    || autoEngineTimeouts(executionEnv);
+  const resumePolicy = buildAutoResumePolicy(
+    req,
+    body,
+    resumePolicyLimits,
+    resumeEngineTimeouts,
+  );
   assertAutoResumePolicyCompatible(restoredState, resumePolicy);
+  const engineTimeouts = resumePolicy.engineTimeouts;
   if (restoredState) {
     // Valide a estrutura e a versão antes de detectar providers, carregar RAG
     // ou iniciar qualquer planner. Snapshots históricos/incompletos nunca
@@ -599,6 +801,7 @@ export async function runAutoRecon({
   session.state.frameSevenAuth = req.frameSevenAuth;
   session.state.includeVigolium = req.includeVigolium;
   session.state.vigoliumUseCodex = req.vigoliumUseCodex;
+  session.state.cloudEvidenceConsent = req.cloudEvidenceConsent === true;
   session.state.engagementId = req.engagementId;
   session.state.mode = req.mode;
   session.state.resumePolicy = resumePolicy;
@@ -608,7 +811,7 @@ export async function runAutoRecon({
   try {
     registerActiveAutoSession(session);
   } catch (error) {
-    session.close('failed');
+    await session.close('failed');
     throw error;
   }
   let propagateExternalAbort = null;
@@ -622,22 +825,35 @@ export async function runAutoRecon({
       });
     }
   }
+  const AUTO_TERMINAL_PHASES = new Set([
+    'completed', 'partial', 'failed', 'cancelled', 'interrupted',
+    'timed_out', 'stalled', 'budget_exceeded',
+  ]);
   const captureEmit = (event) => {
+    if (session.signal.aborted) {
+      const phase = event?.type === 'auto_session' ? String(event.phase || '') : '';
+      const allowAfterAbort = (
+        (event?.type === 'auto_session' && AUTO_TERMINAL_PHASES.has(phase))
+        || event?.type === 'auto_persist_failed'
+        || event?.type === 'error'
+      );
+      if (!allowAfterAbort) return;
+    }
     const safeEvent = publicAutoEvent(event, { root: ROOT });
     session.touch(safeEvent);
     events.push(safeEvent);
     sendSafe(emit, safeEvent);
   };
   const rawRequestApproval = session.requestApproval.bind(session);
-  session.requestApproval = (details = {}, timeoutMs) => {
+  session.requestApproval = async (details = {}, timeoutMs) => {
     const pending = rawRequestApproval(details, timeoutMs);
-    if (session.state.pendingApproval) captureEmit({
-      type: 'auto_approval_required',
-      sessionId,
-      approval: session.state.pendingApproval,
-    });
     if (req.approvalMode === 'deny' && session.state.pendingApproval?.status === 'pending') {
       const approvalId = session.state.pendingApproval.approvalId;
+      captureEmit({
+        type: 'auto_approval_required',
+        sessionId,
+        approval: session.state.pendingApproval,
+      });
       captureEmit({
         type: 'auto_approval_auto_denied',
         sessionId,
@@ -649,6 +865,16 @@ export async function runAutoRecon({
         false,
         'cliente não interativo: aprovação antecipada não é aceita',
       );
+      return pending;
+    }
+    if (session.state.pendingApproval?.status === 'pending') {
+      // Persistir aprovação pendente antes do NDJSON/espera (crash-safe).
+      await writeAutoSessionSnapshot(ROOT, session.state, env);
+      captureEmit({
+        type: 'auto_approval_required',
+        sessionId,
+        approval: session.state.pendingApproval,
+      });
     }
     return pending;
   };
@@ -673,15 +899,21 @@ export async function runAutoRecon({
       ? configuredStallTimeout : session.limits.agentTimeoutMs + 30_000),
   );
   const watchdog = setInterval(() => {
-    const idleMs = Date.now() - Date.parse(session.state.lastActivityAt || session.state.startedAt);
-    // O limite de turno do agente não se aplica a módulos do pipeline. Audits
-    // passivos (como CORS) podem aguardar vários requests sequenciais.
-    const inAgentTurn = String(session.state.currentStage || '').startsWith('agent:');
+    // Turns paralelos: idle ancora no provider mais antigo (A não mascara B).
+    const idleMs = typeof session.getAgentIdleMs === 'function'
+      ? session.getAgentIdleMs()
+      : Date.now() - Date.parse(session.state.lastActivityAt || session.state.startedAt);
+    const inAgentTurn = (typeof session.hasActiveAgentTurns === 'function' && session.hasActiveAgentTurns())
+      || String(session.state.currentStage || '').startsWith('agent:');
+    // O limite de turno do agente não se aplica a módulos do pipeline.
     const effectiveTimeoutMs = inAgentTurn ? stallTimeoutMs : session.limits.sessionTimeoutMs;
     if (idleMs < effectiveTimeoutMs || session.signal.aborted) return;
     captureEmit({
       type: 'auto_stall_detected', idleMs, stallTimeoutMs: effectiveTimeoutMs,
       currentStage: session.state.currentStage, currentModule: session.state.currentModule,
+      concurrentAgentTurns: typeof session.hasActiveAgentTurns === 'function'
+        ? session.hasActiveAgentTurns()
+        : false,
     });
     session.abort(`auto_stall_timeout:${session.state.currentStage || 'unknown'}`);
   }, Math.max(5_000, Math.min(30_000, Math.floor(stallTimeoutMs / 4))));
@@ -700,6 +932,12 @@ export async function runAutoRecon({
     vigoliumUseCodex: req.vigoliumUseCodex,
     commanders: req.commanders,
     limits: session.limits,
+    budgetVerifiable: session.state.budgetVerifiable !== false,
+    redactionPolicy: {
+      version: redactionPolicy.version,
+      source: redactionPolicy.source,
+      extrasCount: redactionPolicy.extras.length,
+    },
   });
   if (!restoredState || restoredState.checkpoint.status === 'planning') {
     session.state.iteration = 0;
@@ -727,6 +965,8 @@ export async function runAutoRecon({
     target: req.target,
     modules: req.modules,
     decisionType: 'plan',
+    principalId: principalId || '',
+    engagementId: req.engagementId || '',
   }).catch((e) => ({
     dir: '',
     items: [],
@@ -740,12 +980,20 @@ export async function runAutoRecon({
     items: Array.isArray(ragContext.items) ? ragContext.items.length : 0,
     error: ragContext.error || null,
   });
-  const providers = await detectAutoProviders({ selected: req.commanders, env, fetchImpl, execFileImpl });
+  session.assertActive();
+  const providers = await detectAutoProviders({
+    selected: req.commanders,
+    env,
+    fetchImpl,
+    execFileImpl,
+    signal: session.signal,
+  });
   if (req.openrouterModel) {
     const openrouter = providers.providers.find((p) => p.id === 'openrouter');
     if (openrouter) openrouter.defaultModel = req.openrouterModel;
   }
   captureEmit({ type: 'auto_providers', ...providers });
+  session.assertActive();
 
   const resumedReadyCheckpoint = restoredState
     && ['ready_for_iteration', 'ready_for_next_iteration'].includes(restoredState.checkpoint.status)
@@ -800,6 +1048,25 @@ export async function runAutoRecon({
     autonomyLevel: req.autonomyLevel,
         frameSevenAuth: req.frameSevenAuth,
       });
+  session.assertActive();
+  const selectedCommanders = [...new Set((req.commanders || []).map((id) => String(id || '').trim()).filter(Boolean))];
+  const intentionalDeterministic = selectedCommanders.length === 0;
+  if (!council.finalDecision && !intentionalDeterministic && !resumedReadyCheckpoint) {
+    const degradedDecision = buildDegradedCouncilDecision({
+      selectedCommanders,
+      proposals: council.proposals || [],
+      reviews: council.reviews || [],
+    });
+    council = { ...council, finalDecision: degradedDecision };
+    captureEmit({
+      type: 'auto_council_degraded',
+      sessionId,
+      reason: 'selected_providers_unavailable',
+      selected: selectedCommanders,
+      proposalsFailed: (council.proposals || []).filter((t) => t && t.ok === false).map((t) => t.provider),
+      decision: degradedDecision,
+    });
+  }
   if (council.finalDecision?.action === 'ask_operator') {
     const question = council.finalDecision.operatorQuestion || 'O conselho precisa de uma decisão do operador.';
     const approved = await session.requestApproval({
@@ -878,12 +1145,18 @@ export async function runAutoRecon({
           }
         : resumedCouncil;
     } else {
+      const priorCouncilMeta = council.finalDecision?.council || null;
       council = {
         ...council,
         finalDecision: {
           action: 'finish',
           objective: 'Encerrar após decisão do operador',
-          reasoningSummary: ['O operador não autorizou continuar após a pergunta do conselho.'],
+          reasoningSummary: [
+            'O operador não autorizou continuar após a pergunta do conselho.',
+            ...(priorCouncilMeta?.degraded
+              ? ['Estado degradado: providers selecionados estavam indisponíveis.']
+              : []),
+          ].slice(0, 20),
           evidenceRefs: [],
           requestedModules: [],
           rejectedModules: [],
@@ -891,6 +1164,7 @@ export async function runAutoRecon({
           assumptions: [],
           operatorQuestion: null,
           forgeRequest: null,
+          council: priorCouncilMeta,
         },
       };
     }
@@ -933,7 +1207,10 @@ export async function runAutoRecon({
     proposals: council.proposals.filter((t) => t.ok).map((t) => t.provider),
     reviews: council.reviews.filter((t) => t.ok).map((t) => t.provider),
     decision: agentDecision,
-    fallback: agentDecision ? null : 'deterministic_plan',
+    fallback: agentDecision
+      ? (agentDecision.council?.degraded ? 'ask_operator_degraded' : null)
+      : (intentionalDeterministic ? 'deterministic_plan' : null),
+    degraded: Boolean(agentDecision?.council?.degraded),
   });
   let forge = null;
   if (agentDecision?.action === 'forge_module' && agentDecision.forgeRequest) {
@@ -1139,6 +1416,8 @@ export async function runAutoRecon({
     },
     events,
     tags: ['plan', req.mode],
+    principalId: principalId || session.state.owner?.sub || '',
+    engagementId: req.engagementId || '',
   }).catch((e) => ({ error: e?.message || String(e) }));
   captureEmit({ type: 'auto_rag', phase: 'plan_saved', memory: planMemory });
 
@@ -1179,10 +1458,12 @@ export async function runAutoRecon({
     });
     captureEmit({ type: 'auto_evaluation', evaluation });
     captureEmit({ type: 'auto_no_execution', sessionId, action: planAction });
-    const finalSession = session.close('completed');
-    await writeAutoSessionSnapshot(ROOT, finalSession, env);
-    captureEmit({ type: 'auto_session', phase: 'completed', session: finalSession });
-    return { sessionId, requestRunId, plan, evaluation, events };
+    const finalSession = await session.close('completed');
+    const terminal = await persistTerminalSession({
+      ROOT, env, session, finalSession, captureEmit, sessionId, requestRunId,
+      preferredPhase: 'completed',
+    });
+    return { sessionId, requestRunId, plan, evaluation, events, session: terminal.finalSession };
   }
 
   let iteration = Number(session.state.checkpoint?.nextIteration || 1);
@@ -1190,6 +1471,7 @@ export async function runAutoRecon({
     ? { ...plan, modules: session.state.checkpoint.nextModules }
     : plan;
   let evaluation = null;
+  let iterationSealedScopePolicy = null;
   const executedModules = new Set(session.state.checkpoint?.executedModules || []);
   const iterationHistory = [...(session.state.checkpoint?.iterationHistory || [])];
   let engagement = req.engagementId ? await getEngagementImpl(req.engagementId) : null;
@@ -1199,12 +1481,7 @@ export async function runAutoRecon({
     req.engagementId,
   );
   const frameSevenAvailable = Boolean(catalog.engines?.frameseven?.available);
-  const phaseSettleGraceMs = boundedNumber(
-    env.GHOSTRECON_AUTO_PHASE_SETTLE_GRACE_MS,
-    2_000,
-    100,
-    30_000,
-  );
+  const phaseSettleGraceMs = Number(engineTimeouts.phaseSettleGraceMs);
   const requestedOutOfScope = parseOutOfScopeClientInput(body.outOfScope);
   const engagementOutOfScope = parseOutOfScopeClientInput(engagement?.exclusions);
   const effectivePlanBody = Object.freeze({
@@ -1233,12 +1510,31 @@ export async function runAutoRecon({
       frameSevenAvailable,
       forceFrameSevenRecon,
     });
-    let snapshot = resolveAutoVigoliumRuntimeSnapshot({
+    const sealedScopePolicy = engagement
+      ? sealEngineScopePolicy(createEngagementScopePolicy({
+          rootDomain: req.target,
+          engagement,
+          engagementId: req.engagementId,
+          authorizationBinding: engagementAuthorizationBinding,
+        }))
+      : null;
+    if (sealedScopePolicy && candidate.engines?.frameseven?.enabled) {
+      assertEngineScopeEnforcementAvailable({
+        engine: 'frameseven',
+        sealedPolicy: sealedScopePolicy,
+        env: executionEnv,
+        engineDeclaresSupport: catalog?.engines?.frameseven?.supportsSealedScopePolicy === true,
+      });
+    }
+    let snapshot = await resolveAutoVigoliumRuntimeSnapshot({
       body,
       effectivePlan: candidate,
       catalog,
       env: executionEnv,
       useCodex: req.vigoliumUseCodex,
+      listVigoliumModulesImpl,
+      ghostRoot: ROOT,
+      sealedScopePolicy,
     });
     if (
       candidate.engines.vigolium.agent === 'audit'
@@ -1259,7 +1555,7 @@ export async function runAutoRecon({
           env: executionEnv,
         },
       );
-      snapshot = resolveAutoVigoliumRuntimeSnapshot({
+      snapshot = await resolveAutoVigoliumRuntimeSnapshot({
         body,
         effectivePlan: candidate,
         catalog,
@@ -1267,6 +1563,9 @@ export async function runAutoRecon({
         useCodex: req.vigoliumUseCodex,
         sourceIdentity,
         sourceAllowedRoots,
+        listVigoliumModulesImpl,
+        ghostRoot: ROOT,
+        sealedScopePolicy,
       });
     }
     if (snapshot.publicPlan) {
@@ -1282,7 +1581,11 @@ export async function runAutoRecon({
         forceFrameSevenRecon,
       });
     }
-    return { plan: candidate, vigoliumRuntime: snapshot.runtime };
+    return {
+      plan: candidate,
+      vigoliumRuntime: snapshot.runtime,
+      sealedScopePolicy,
+    };
   };
   const forceFrameSevenRecon = req.includeFrameSeven
     && iteration === 1
@@ -1295,6 +1598,7 @@ export async function runAutoRecon({
   );
   let effectivePlan = builtIteration.plan;
   let vigoliumRuntimeConfig = builtIteration.vigoliumRuntime;
+  iterationSealedScopePolicy = builtIteration.sealedScopePolicy || null;
   const revalidateEngagementForPlan = async (stage) => {
     const currentEngagement = req.engagementId
       ? await getEngagementImpl(req.engagementId)
@@ -1389,6 +1693,7 @@ export async function runAutoRecon({
       );
       effectivePlan = builtIteration.plan;
       vigoliumRuntimeConfig = builtIteration.vigoliumRuntime;
+      iterationSealedScopePolicy = builtIteration.sealedScopePolicy || null;
     } else {
       approvalGranted = true;
       captureEmit({
@@ -1399,6 +1704,7 @@ export async function runAutoRecon({
       });
     }
   }
+  session.assertActive();
 
   if (!effectivePlan.selectedModules.length) {
     evaluation = evaluateAutoRun({ events: events.slice(iterationEventStart), plan: iterationPlan });
@@ -1517,13 +1823,24 @@ export async function runAutoRecon({
     await writeAutoSessionSnapshot(ROOT, session.state, env);
   };
   const recordModuleOutcome = (outcome) => {
-    moduleOutcomes.push(outcome);
+    const source = String(outcome?.source || 'inferred');
+    const existingIdx = moduleOutcomes.findIndex((item) => item.moduleId === outcome.moduleId);
+    if (existingIdx >= 0) {
+      const existing = moduleOutcomes[existingIdx];
+      const existingSource = String(existing.source || 'inferred');
+      // Não sobrescrever outcome real (registry/pipe/engine) com inferência de fase.
+      if (existingSource !== 'inferred' && source === 'inferred') return;
+      moduleOutcomes[existingIdx] = { ...existing, ...outcome, source };
+    } else {
+      moduleOutcomes.push({ ...outcome, source });
+    }
     captureEmit({
       type: 'auto_module_outcome',
       sessionId,
       iteration,
       planHash: effectivePlan.hash,
       ...outcome,
+      source,
     });
     if (outcome.status === 'done') executedModules.add(outcome.moduleId);
   };
@@ -1535,38 +1852,46 @@ export async function runAutoRecon({
     const pipelineEventStart = events.length;
     const collectPipelineOutcomes = (fallbackStatus, fallbackError = null) => {
       const lastPipeState = new Map();
-      const lastPhaseOutcome = new Map();
+      const lastModuleOutcome = new Map();
       for (const event of events.slice(pipelineEventStart)) {
         if (event?.type === 'pipe' && event.name) {
           lastPipeState.set(String(event.name), String(event.state || ''));
         }
-        if (event?.type === 'phase_outcome' && event.phase) {
-          lastPhaseOutcome.set(String(event.phase), event);
+        if (event?.type === 'module_outcome' && event.moduleId) {
+          // Ignorar module_outcome com moduleId=fase (source pipeline_phase).
+          if (event.source === 'pipeline_phase') continue;
+          const status = String(event.status || '');
+          if (['done', 'skipped', 'skip', 'timeout', 'failed', 'cancelled'].includes(status)) {
+            lastModuleOutcome.set(String(event.moduleId), event);
+          }
         }
       }
       const knownStatuses = new Set(['done', 'skip', 'skipped', 'timeout', 'failed', 'cancelled']);
       for (const moduleId of effectivePlan.pipelineModules) {
-        if (moduleOutcomes.some((item) => item.moduleId === moduleId)) continue;
-        const raw = lastPipeState.get(moduleId);
+        if (moduleOutcomes.some((item) => item.moduleId === moduleId && item.source !== 'inferred')) {
+          continue;
+        }
         const catalogItem = catalog.modules.find((item) => item.id === moduleId);
         const phase = autoCapabilityPhase(moduleId, {
           ...(catalogItem?.manifest || {}),
           source: catalogItem?.source || catalogItem?.manifest?.source,
         });
-        const phaseOutcome = phase ? lastPhaseOutcome.get(phase) : null;
-        const phaseStatus = String(phaseOutcome?.status || '');
+        const fromEvent = lastModuleOutcome.get(moduleId);
+        const raw = fromEvent
+          ? String(fromEvent.status || '')
+          : lastPipeState.get(moduleId);
         const status = raw === 'skip' ? 'skipped'
-          : knownStatuses.has(raw) ? raw
-            : knownStatuses.has(phaseStatus) ? phaseStatus
-              : fallbackStatus;
+          : knownStatuses.has(raw) ? (raw === 'skip' ? 'skipped' : raw)
+            : fallbackStatus;
         recordModuleOutcome({
           moduleId,
           engine: moduleId.startsWith('vigolium_') ? 'vigolium' : 'ghostrecon',
           status,
           phase,
+          source: fromEvent ? (fromEvent.source || 'registry') : (raw ? 'pipe' : 'inferred'),
           error: ['done', 'skipped'].includes(status)
             ? null
-            : phaseOutcome?.error || fallbackError,
+            : fromEvent?.error || fallbackError,
         });
       }
     };
@@ -1575,22 +1900,15 @@ export async function runAutoRecon({
       captureEmit({ type: 'engine_started', engine: 'vigolium', iteration, planHash: effectivePlan.hash });
     }
     try {
-      const timeoutMs = boundedNumber(
-        env.GHOSTRECON_AUTO_PIPELINE_TIMEOUT_MS,
-        20 * 60_000,
-        30_000,
-        session.limits.sessionTimeoutMs,
+      const timeoutMs = Math.min(
+        Number(engineTimeouts.pipelineTimeoutMs),
+        Number(session.limits.sessionTimeoutMs),
       );
       await runWithDeadline({
         name: 'ghostrecon_pipeline',
         timeoutMs,
         parentSignal: stageSignal || session.signal,
-        settleGraceMs: boundedNumber(
-          env.GHOSTRECON_AUTO_ENGINE_SETTLE_GRACE_MS,
-          7_500,
-          500,
-          30_000,
-        ),
+        settleGraceMs: Number(engineTimeouts.engineSettleGraceMs),
         work: (iterationSignal) => runPipeline({
           ...pipelineBody,
           auth: capturedAuth || pipelineBody.auth,
@@ -1600,6 +1918,7 @@ export async function runAutoRecon({
         }),
       });
       collectPipelineOutcomes('done');
+      session.assertActive();
       const phaseFailures = events.slice(pipelineEventStart).filter((event) => (
         event?.type === 'phase_outcome' && !['done', 'skipped'].includes(String(event.status))
       ));
@@ -1673,20 +1992,35 @@ export async function runAutoRecon({
     planHash: effectivePlan.hash,
   });
   const frameSevenTarget = /^https?:\/\//i.test(req.target) ? req.target : `https://${req.target}`;
-  const frameSevenAuthTimeoutMs = boundedNumber(
-    env.GHOSTRECON_FRAMESEVEN_AUTH_TIMEOUT_MS,
-    10 * 60_000,
-    5_000,
-    30 * 60_000,
-  );
+  const frameSevenAuthTimeoutMs = Number(engineTimeouts.framesevenAuthTimeoutMs);
   const runFrameSevenEngine = async (options = {}) => {
     if (!effectivePlan.engines.frameseven.enabled) return true;
+    session.assertActive();
     await revalidateEngagementForPlan('immediately_before_frameseven');
     const {
       waitForAuth = null,
       beforeScan = null,
     } = options;
+    let scopeFileResource = null;
     try {
+      let scopePolicyEnv = null;
+      if (iterationSealedScopePolicy) {
+        assertEngineScopeEnforcementAvailable({
+          engine: 'frameseven',
+          sealedPolicy: iterationSealedScopePolicy,
+          env: executionEnv,
+          engineDeclaresSupport: catalog?.engines?.frameseven?.supportsSealedScopePolicy === true,
+        });
+        scopeFileResource = await writeSealedScopePolicyFile(iterationSealedScopePolicy);
+        if (scopeFileResource) {
+          session.resources.push(scopeFileResource);
+          scopePolicyEnv = scopePolicyEnvBindings(iterationSealedScopePolicy, {
+            policyFile: scopeFileResource.filePath,
+          });
+        } else {
+          scopePolicyEnv = scopePolicyEnvBindings(iterationSealedScopePolicy);
+        }
+      }
       const result = await runFrameSevenImpl({
         root: ROOT,
         target: frameSevenTarget,
@@ -1697,16 +2031,12 @@ export async function runAutoRecon({
         runTimeoutMs: effectivePlan.engines.frameseven.runTimeoutMs,
         authCaptureTimeoutMs: frameSevenAuthTimeoutMs,
         approvalTimeoutMs: frameSevenAuthTimeoutMs,
-        beforeScanTimeoutMs: boundedNumber(
-          env.GHOSTRECON_FRAMESEVEN_BEFORE_SCAN_TIMEOUT_MS,
-          30 * 60_000,
-          5_000,
-          60 * 60_000,
-        ),
+        beforeScanTimeoutMs: Number(engineTimeouts.framesevenBeforeScanTimeoutMs),
         expectedBinaryIdentity: effectivePlan.engines.frameseven.identity,
         signal: session.signal,
         emit: captureEmit,
         env,
+        scopePolicyEnv,
         waitForAuth,
         beforeScan,
         deferDoneEvent: true,
@@ -1907,8 +2237,14 @@ export async function runAutoRecon({
   const observationBundle = buildAutoObservationBundle({ events: iterationEvents, plan: observedPlan });
   const technologies = [...new Set(observationBundle.findings.map((finding) => finding.type).filter(Boolean))];
   ragContext = await loadAutoRagContext({
-    root: ROOT, env, target: req.target, technologies,
-    modules: effectivePlan.selectedModules, decisionType: 'evaluation',
+    root: ROOT,
+    env,
+    target: req.target,
+    technologies,
+    modules: effectivePlan.selectedModules,
+    decisionType: 'evaluation',
+    principalId: principalId || '',
+    engagementId: req.engagementId || '',
   }).catch(() => ragContext);
   captureEmit({
     type: 'auto_observation',
@@ -1926,12 +2262,17 @@ export async function runAutoRecon({
         iteration: iteration + 1, latencyMs: turn.latencyMs, decision: turn.decision,
       });
     } else {
+      // Abort/cancel nunca anuncia heuristic_evaluation como fallback de IA.
+      const abortish = session.signal.aborted
+        || /abort|cancel|disconnect/i.test(String(turn.error || ''));
       captureEmit({
         type: 'auto_agent_turn_failed', provider: turn.provider, role: turn.role,
-        iteration: iteration + 1, error: turn.error, fallback: 'heuristic_evaluation',
+        iteration: iteration + 1, error: turn.error,
+        fallback: abortish ? null : 'heuristic_evaluation',
       });
     }
   };
+  session.assertActive();
   let evaluationCouncil = await runAgentCouncil({
     providers: providers.providers,
     target: req.target,
@@ -1949,6 +2290,7 @@ export async function runAutoRecon({
     allowIntrusive: ['authorized', 'authorized_opsec'].includes(req.autonomyLevel),
     autonomyLevel: req.autonomyLevel,
   });
+  session.assertActive();
   if (evaluationCouncil.finalDecision?.action === 'ask_operator') {
     const question = evaluationCouncil.finalDecision.operatorQuestion
       || 'O conselho precisa de uma decisão do operador antes de continuar.';
@@ -2147,7 +2489,11 @@ export async function runAutoRecon({
     }).catch(() => null);
   }
 
-  evaluation = evaluateAutoRun({ events: iterationEvents, plan: observedPlan });
+  evaluation = evaluateAutoRun({
+    events: iterationEvents,
+    plan: observedPlan,
+    moduleOutcomes,
+  });
   evaluation.agentDecision = nextDecision;
   evaluation.observation = {
     findings: observationBundle.findings.length,
@@ -2172,6 +2518,8 @@ export async function runAutoRecon({
     providers,
     events,
     tags: ['evaluation', evaluation.ok ? 'ok' : 'error'],
+    principalId: principalId || session.state.owner?.sub || '',
+    engagementId: req.engagementId || '',
   }).catch((e) => ({ error: e?.message || String(e) }));
   captureEmit({ type: 'auto_rag', phase: 'evaluation_saved', memory: evalMemory });
   iterationHistory.push({
@@ -2239,10 +2587,21 @@ export async function runAutoRecon({
   break;
   }
   evaluation.iterations = iterationHistory;
-  const finalSession = session.close('completed');
-  await writeAutoSessionSnapshot(ROOT, finalSession, env);
-  captureEmit({ type: 'auto_session', phase: 'completed', session: finalSession });
-  return { sessionId, requestRunId, plan, evaluation, events };
+  const terminalPhase = sessionTerminalFromEvaluation(evaluation);
+  session.assertActive();
+  const finalSession = await session.close(terminalPhase);
+  const terminal = await persistTerminalSession({
+    ROOT, env, session, finalSession, captureEmit, sessionId, requestRunId,
+    preferredPhase: terminalPhase,
+  });
+  return {
+    sessionId,
+    requestRunId,
+    plan,
+    evaluation,
+    events,
+    session: terminal.finalSession,
+  };
   } catch (error) {
     const { status, cause } = terminalStatus(error, session);
     if (session.state.catalogHash && session.state.promptVersion) {
@@ -2257,10 +2616,19 @@ export async function runAutoRecon({
         activePlan,
       });
     }
-    const failedSession = session.close(status);
+    const failedSession = await session.close(status);
     failedSession.error = error?.message || String(error);
     failedSession.terminationCause = cause;
-    await writeAutoSessionSnapshot(ROOT, failedSession, env).catch(() => null);
+    await writeAutoSessionSnapshot(ROOT, failedSession, env).catch((snapshotError) => {
+      captureEmit({
+        type: 'auto_persist_failed',
+        stage: 'terminal_snapshot',
+        sessionId,
+        requestRunId,
+        error: snapshotError?.message || String(snapshotError),
+      });
+      return null;
+    });
     captureEmit({
       type: 'auto_session',
       phase: status,

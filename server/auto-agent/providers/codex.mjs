@@ -57,9 +57,19 @@ export function execFileClosedStdin(command, args, options = {}) {
       terminationError = error;
       signalProcess(options.killSignal || 'SIGTERM');
       killTimer = setTimeout(() => signalProcess('SIGKILL'), killGraceMs);
-      // Libera o fallback apenas depois de tentar encerrar todo o grupo. Um
-      // handle quebrado não pode manter o planner indefinidamente em running.
-      forceSettleTimer = setTimeout(() => finish(terminationError), killGraceMs + 1_000);
+      // Só libera a Promise sem evento `close` como PROCESS_UNTERMINATED —
+      // nunca finge sucesso/timeout limpo com PID potencialmente vivo.
+      forceSettleTimer = setTimeout(() => {
+        const unterminated = Object.assign(
+          new Error(terminationError?.message || 'processo filho não encerrou após SIGKILL'),
+          {
+            code: 'PROCESS_UNTERMINATED',
+            killed: true,
+            cause: terminationError || undefined,
+          },
+        );
+        finish(unterminated);
+      }, killGraceMs + 2_000);
       killTimer.unref?.();
       forceSettleTimer.unref?.();
     };

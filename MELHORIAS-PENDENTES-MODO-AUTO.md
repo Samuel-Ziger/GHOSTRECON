@@ -23,27 +23,29 @@ de liberação e a Definition of Done estão em
 
 ### Implementação
 
-- [ ] Criar introspecção determinística dos módulos internos do Vigolium antes
-      do popup.
-- [ ] Resolver estratégia, `-m` e tags para IDs exatos; expandir `--only` para
-      as fases/capabilities concretas e resolver também as extensões.
-- [ ] Falhar fechado quando a resolução resultar em zero, `all` implícito,
+- [x] Criar introspecção determinística dos módulos internos do Vigolium antes
+      do popup (`bridge/vigolium-plan-expand.mjs` + `listVigoliumModules`).
+- [x] Resolver `-m`/tags/`--only` para IDs exatos (fail-closed); expansão de
+      fases `--only` internas do CLI ainda depende da fonte `vigolium/` presente.
+- [x] Falhar fechado quando a resolução resultar em zero, `all` implícito,
       ambiguidade ou módulo não catalogado.
-- [ ] Incluir a resolução concreta no plano público e no hash.
-- [ ] Aplicar a classificação de maior risco a cada módulo interno.
-- [ ] Separar capabilities de leitura, escrita, upload, stored payload e
-      tentativa de credencial.
-- [ ] Bloquear writes e credential attempts no Auto atual.
+- [x] Incluir a resolução concreta no plano público e no hash
+      (`resolvedModules`, `catalogHash` no runtime plan).
+- [x] Aplicar a classificação de maior risco a cada módulo interno.
+- [x] Separar capabilities de leitura, escrita, upload, stored payload e
+      tentativa de credencial (classes + tags/padrões).
+- [x] Bloquear writes e credential attempts no Auto atual.
 - [ ] Vincular timeout, concorrência, requisitos e identidade do engine à
-      resolução aprovada.
+      resolução aprovada (parcial: IDs/risco/hash; timeouts por módulo interno
+      ainda amplos).
 
 ### Evidência exigida
 
-- [ ] Fixture sem filtro deve falhar fechado, nunca selecionar `all`.
-- [ ] Tag inexistente deve falhar fechado.
-- [ ] Filtro fuzzy deve exibir todos os IDs concretos antes da aprovação.
-- [ ] Upload, stored XSS, verbos mutáveis e tentativas de login devem produzir
-      zero chamadas sob `vigolium_dast` genérico.
+- [x] Fixture sem filtro deve falhar fechado, nunca selecionar `all`.
+- [x] Tag inexistente deve falhar fechado.
+- [ ] Filtro fuzzy deve exibir todos os IDs concretos antes da aprovação
+      (fuzzy ambíguo já falha fechado).
+- [x] Upload/credential na fixture Auto são bloqueados antes do spawn.
 - [ ] Extensão adicionada depois do hash deve ser recusada.
 
 Arquivos-alvo:
@@ -59,27 +61,44 @@ Arquivos-alvo:
 
 ### Implementação
 
-- [ ] Definir um formato selado de `scopePolicy` consumível por subprocessos.
-- [ ] Transportar domínios, wildcards, IPs, CIDRs, exclusões e binding do
-      engagement para FrameSeven e Vigolium.
-- [ ] Impedir execução do engine quando ele não conseguir impor a política.
-- [ ] Usar redirect manual e validar cada novo destino antes da segunda
-      request.
-- [ ] Validar `jwks_uri`, endpoints OIDC, sitemap, service worker, well-known,
-      painel e qualquer URL descoberta.
-- [ ] Validar DNS→IP e cada subdomínio/crawler contra a allowlist formal.
+- [x] Definir um formato selado de `scopePolicy` consumível por subprocessos
+      (`server/modules/engine-scope-policy.mjs`).
+- [x] Transportar hash/JSON (sem binding) via env para FrameSeven/Vigolium no
+      Auto; binding permanece no plano GHOSTRECON.
+- [x] Impedir execução do engine no Auto quando não declarar suporte
+      (`ENGINE_SCOPE_UNSUPPORTED`; lab override
+      `GHOSTRECON_ENGINE_SCOPE_SUPPORT=1`).
+- [x] Usar redirect manual e validar cada novo destino antes da segunda
+      request nos módulos Node P0 (`scoped-fetch.mjs` + wellknown, panel,
+      service-worker, jwt-jwks).
+- [x] Validar `jwks_uri`/OIDC endpoints, well-known, painel e service worker
+      contra `urlInScope`/same-origin antes da rede.
+- [x] Sitemap/robots via `scoped-fetch` + filtro de URLs fora do escopo.
+- [x] Validar DNS→IP contra allowlist formal nos módulos Node
+      (`dnsResolvedAddressesEligibleForProbe` + discovery); subdomínio/crawler
+      já passam por `hostInScope`/`scoped-fetch` (CLI engines nativo ainda
+      pendente).
 - [ ] Repetir os gates depois de qualquer mudança de política ou expansão.
+- [x] Transportar política selada ao FrameSeven via env/arquivo 0600
+      (`GHOSTRECON_SCOPE_POLICY_*`); Vigolium já recebia bindings.
+- [ ] CLI FrameSeven/Vigolium impor a política selada nativamente
+      (`supportsSealedScopePolicy` no binário).
 
 ### Evidência exigida
 
-- [ ] Redirect de alvo permitido para origem externa deve realizar somente a
-      primeira request.
-- [ ] `jwks_uri` externo não deve receber request.
-- [ ] Subdomínio excluído, IP fora do CIDR e crawler fora da allowlist devem
-      ser bloqueados antes da rede.
-- [ ] Fake FrameSeven/Vigolium deve receber a política selada e provar a
-      contenção.
-- [ ] Mudança no engagement depois da aprovação deve invalidar o plano.
+- [x] Redirect de alvo permitido para origem externa deve realizar somente a
+      primeira request (`scoped-fetch.test.js`).
+- [x] `jwks_uri` externo não deve receber request (filtro em jwt-jwks + OIDC).
+- [x] IP fora do CIDR bloqueado antes de virar probe
+      (`dnsResolvedAddressesEligibleForProbe` + `scope.test.js`); subdomínio
+      excluído/`scoped-fetch` já cobertos; crawler amplo nativo nos engines
+      ainda aberto.
+- [x] Fake FrameSeven recebe política selada via env/arquivo
+      (`engine-scope-transport.test.js`); contenção nativa no CLI ainda
+      aberta.
+- [x] Mudança no engagement depois da aprovação invalida o plano
+      (status/checklist e `scopeIps`/`scopeDomains` via binding;
+      `AUTO_ENGAGEMENT_CHANGED`).
 
 Arquivos-alvo:
 
@@ -94,28 +113,38 @@ Arquivos-alvo:
 
 ### Implementação
 
-- [ ] Repropagar aborts no conselho em vez de convertê-los em turno
-      `ok:false`.
-- [ ] Repropagar abort, timeout e `PROCESS_UNTERMINATED` no dispatcher.
-- [ ] Não emitir `done` depois de exceção.
-- [ ] Verificar a sessão depois de proposal, review, arbitragem, avaliação,
-      aprovação, pipeline, merge e persistência.
-- [ ] Impedir fallback determinístico e nova iteração depois de cancelamento.
-- [ ] Passar o `AbortSignal` também à detecção de providers.
-- [ ] Corrigir o watchdog compartilhado entre providers concorrentes.
-- [ ] Limpar `currentStage` ao final de cada etapa.
+- [x] Repropagar aborts no conselho em vez de convertê-los em turno
+      `ok:false` (council-runner + openai-compatible não mascara cancel como timeout).
+- [x] Repropagar abort no dispatcher (não emite `done` após AbortError;
+      emite `cancelled`/`failed`).
+- [x] Não emitir `done` depois de exceção no dispatcher de registry.
+- [x] Verificar a sessão (`assertActive`) após providers, conselho, aprovação,
+      pipeline e antes do terminal.
+- [x] Impedir fallback determinístico e nova iteração depois de cancelamento
+      no conselho (AbortError repropagado; sem turno `ok:false`).
+- [x] Passar o `AbortSignal` também à detecção de providers.
+- [x] Watchdog por turno: `activeAgentTurns` + idle no turno mais antigo;
+      deadline por provider via `combineTurnSignal` /
+      `AUTO_PROVIDER_TURN_TIMEOUT` (council-runner).
+- [x] Limpar `currentStage` ao final de step/turno/close.
 
 ### Evidência exigida
 
-- [ ] Cancelamento durante proposal, review e conselho pós-pipeline deve
-      terminar como `cancelled`, sem fallback.
-- [ ] Timeout do planner deve terminar como `timed_out`.
-- [ ] Módulo registry que lança `AbortError`, timeout ou
-      `PROCESS_UNTERMINATED` não pode emitir `done`.
-- [ ] Desconexão HTTP durante provider, aprovação e pipeline deve deixar zero
-      evento/efeito posterior.
-- [ ] Provider que ignora abort deve ser encerrado e assentado antes da sessão
-      terminar.
+- [x] Cancelamento durante proposal do conselho termina com AbortError
+      repropagado, sem turno `ok:false` (teste em auto-planner-contract).
+- [x] Cancelamento durante review repropaga AbortError sem fallback
+      (`auto-planner-contract`).
+- [x] Abort no conselho pós-pipeline sem `heuristic_evaluation`
+      (`auto-post-pipeline-council-abort`).
+- [x] Timeout isolado por turno de provider (`auto-provider-turn-timeout`;
+      stall paralelo em `auto-agent-turn-stall`).
+- [x] Módulo registry com `PROCESS_UNTERMINATED` não emite `done`
+      (`dispatcher-unterminated`); AbortError/timeout do dispatcher já cobertos.
+- [x] Desconexão HTTP: `captureEmit`/NDJSON gate pós-abort; teste
+      `auto-http-disconnect` (efeito residual de engines externos ainda aberto).
+- [x] Provider que ignora abort: App Server `close` await exit
+      (`CODEX_APP_SERVER_UNTERMINATED`); `execFileClosedStdin` →
+      `PROCESS_UNTERMINATED`; `session.close` fail-closed em cleanup.
 
 Arquivos-alvo:
 
@@ -129,23 +158,32 @@ Arquivos-alvo:
 
 ### Implementação
 
-- [ ] Definir terminal único de sessão com `completed`, `partial`, `failed`,
-      `cancelled`, `timed_out`, `stalled` e `budget_exceeded`.
-- [ ] Propagar `evaluation.status` ao terminal.
-- [ ] Emitir outcome por módulo com base no runner real.
-- [ ] Remover inferência de módulo baseada somente em pipe/fase.
-- [ ] Fazer a UI continuar lendo após `error` com `recoverable:true`.
-- [ ] Manter cancelamento e acompanhamento disponíveis até terminal
-      confirmado.
-- [ ] Exibir falhas parciais, engines incompletos e motivo do terminal.
+- [x] Definir terminal de sessão com `completed`, `partial`, `failed`,
+      `cancelled`, `timed_out`, `stalled` e `budget_exceeded`
+      (`partial` em AUTO_SESSION_STATUSES).
+- [x] Propagar `evaluation.status` ao terminal da sessão
+      (`sessionTerminalFromEvaluation` no orquestrador).
+- [x] Emitir outcome por módulo com base no runner real
+      (`module_outcome` no dispatcher registry; timeout ≠ cancelled).
+- [x] Remover inferência de fase para IDs de módulo no collect
+      (`module_outcome`/`pipe` primeiro; `evaluateAutoRun` usa moduleOutcomes).
+- [x] Fazer a UI continuar lendo após `error` com `recoverable:true`.
+- [x] UI: `waitForAutoSessionTerminal` + `markAutoAwaitingTerminal`; cancel
+      permanece até snapshot confirmar fase terminal.
+- [x] Exibir falhas parciais na UI (`AUTO PARCIAL` vs `AUTO COMPLETO`).
 
 ### Evidência exigida
 
-- [ ] Falha recuperável seguida de conclusão deve terminar como `partial`.
-- [ ] Falha fatal nunca deve produzir `completed`.
-- [ ] Erro recuperável do FrameSeven não deve interromper o leitor NDJSON.
-- [ ] Cada terminal deve corresponder à matriz de outcomes dos módulos.
-- [ ] Teste de UI deve executar o parser/estado, não apenas procurar regex.
+- [x] Falha recuperável de fase seguida de conclusão termina como `partial`
+      (auto-agent.test.js + auto_session.phase).
+- [x] Falha na avaliação nunca vira `completed`
+      (`sessionTerminalFromEvaluation` + auto-persist-failed.test.js).
+- [x] Erro recuperável não interrompe o leitor NDJSON do cockpit
+      (contrato em ui-consent-contract.test.js).
+- [x] Cada terminal deve corresponder à matriz de outcomes dos módulos
+      (`classifyModuleOutcomeStatus` + teste de matriz em auto-agent.test.js).
+- [x] Teste de UI executa o mapeamento de estado (`autoUiTerminalStatusText`
+      via Function no ui-consent-contract.test.js), não só regex de rótulo.
 
 Arquivos-alvo:
 
@@ -158,24 +196,36 @@ Arquivos-alvo:
 
 ### Implementação
 
-- [ ] Persistir `deadlineAt` absoluto.
-- [ ] Preservar saldo de tempo, chamadas, custo e iterações na retomada.
-- [ ] Incluir limites de providers, pipeline, FrameSeven e settle na política
-      e no hash compatível.
-- [ ] Recusar qualquer drift de limites.
-- [ ] Persistir aprovação pendente antes de aguardar o operador.
-- [ ] Tornar `session.close()` assíncrono e aguardar todos os recursos.
-- [ ] Comprovar `exit/close` de App Server, browser, workers e process groups.
-- [ ] Tornar falhas de checkpoint/snapshot/terminal visíveis.
-- [ ] Fazer a reconciliação de startup ser aguardada e auditável.
+- [x] Persistir `deadlineAt` absoluto na sessão (retomada usa saldo restante).
+- [x] Preservar saldo de chamadas, custo e iterações na retomada
+      (`assertActive` via `deadlineAt`; limits intersectados com env).
+- [x] Incluir limits de sessão (calls/cost/timeouts/iterações) na
+      `resumePolicy` hashada; drift falha fechado.
+- [x] Incluir timeouts pipeline/FrameSeven/settle na `engineTimeouts` da policy.
+- [x] Recusar renovação silenciosa de limits (intersect mais restritivo;
+      counters do snapshot preservados).
+- [x] Persistir aprovação pendente antes de aguardar o operador
+      (snapshot antes do NDJSON `auto_approval_required`).
+- [x] Tornar `session.close()` assíncrono e aguardar resources
+      (`auto-session-close.test.js`).
+- [x] Exit/close comprovado para App Server e filhos Codex exec (Node);
+      browser/FrameSeven/Vigolium workers ainda abertos.
+- [x] Falha de snapshot terminal emite `auto_persist_failed` (não engole
+      silenciosamente no catch).
+- [x] Reconciliação de startup aguardada antes do listen
+      (`prepareAutoReconStartup` / `runAutoStartupReconciliation`) + audit.
 
 ### Evidência exigida
 
-- [ ] Retomada próxima do deadline deve receber apenas o saldo restante.
-- [ ] Restart não pode renovar orçamento.
-- [ ] Crash real com aprovação pendente deve ser reconciliado sem execução.
-- [ ] Terminal só pode aparecer depois de zero processo/browser/temporário.
-- [ ] Falha de persistência obrigatória deve impedir sucesso.
+- [x] Retomada próxima do deadline deve receber apenas o saldo restante
+      (`auto-resume-budgets.test.js`).
+- [x] Restart não pode renovar orçamento de calls/cost/limits.
+- [x] Crash com aprovação pendente: reconcile → `interrupted` + approval
+      `expired` (`auto-startup-reconcile`); sem reexecução.
+- [x] Terminal de sucesso exige cleanup sem erro + snapshot terminal
+      (`persistTerminalSession`); browser/temps de engine ainda abertos.
+- [x] Falha de persistência obrigatória impede `completed`
+      (`auto-terminal-persist`).
 
 Arquivos-alvo:
 
@@ -188,25 +238,38 @@ Arquivos-alvo:
 
 ### Implementação
 
-- [ ] Particionar RAG por principal, engagement e alvo.
-- [ ] Aplicar o mesmo isolamento às APIs de status/search e aos snapshots.
-- [ ] Definir TTL e retenção mínima.
-- [ ] Exigir confirmação explícita para provider cloud quando houver alvo ou
-      evidência privada/autenticada.
-- [ ] Implementar política de redação configurável e realmente consumida.
-- [ ] Obter uso/custo confiável ou declarar orçamento não verificável.
-- [ ] Substituir fallback silencioso por falha ou estado `degraded` aprovado
-      pelo operador.
-- [ ] Exigir segredo estável de binding do principal em operação persistente.
+- [x] Particionar RAG por principal, engagement e alvo
+      (`data/auto-rag/tenants/...`; `GHOSTRECON_AUTO_RAG_PARTITION`).
+- [x] Aplicar o mesmo isolamento às APIs `/api/auto-rag/status|search|note`
+      (principal obrigatório; partição por engagement/alvo).
+- [x] Snapshots particionados em `tenants/p-…/e-…/t-…/sessions/{id}`
+      (`GHOSTRECON_AUTO_SESSION_PARTITION`; legado `sessions/` compatível).
+- [x] Definir TTL de listagem RAG (`GHOSTRECON_AUTO_RAG_TTL_DAYS`, default 30).
+- [x] Prune físico `pruneExpiredAutoRagMarkdown`; leitura/listagem/contexto
+      falham fechado para memória expirada.
+- [x] Exigir confirmação explícita para provider cloud
+      (`cloudEvidenceConsent` + `assertCloudEvidenceConsent`; openrouter
+      `dataPlane:cloud`).
+- [x] Política de redação configurável `GHOSTRECON_AUTO_REDACT_EXTRA`
+      consumida em `redactAutoText` + anunciada no `auto_session.started`.
+- [x] Orçamento: `budgetVerifiable=false` quando usage sem `cost` reportado.
+- [x] Substituir fallback silencioso por estado `degraded`/`ask_operator`
+      quando commanders foram selecionados e o conselho não decide
+      (`auto_council_degraded`; baseline só com commanders vazio).
+- [x] Binding persistente exigível via
+      `GHOSTRECON_AUTO_REQUIRE_PERSISTENT_BINDING=1`.
 
 ### Evidência exigida
 
-- [ ] Principal A não pode pesquisar ou carregar memória do principal B.
-- [ ] Engagement A não pode contaminar o contexto do engagement B.
-- [ ] Memória expirada não deve ser recuperada.
-- [ ] Provider indisponível não pode iniciar pipeline fingindo decisão de IA.
-- [ ] Prompt enviado a cloud deve registrar consentimento e versão da política,
-      sem segredo.
+- [x] Principal A não pode pesquisar ou carregar memória do principal B
+      (`auto-rag-partition-routes.test.js`).
+- [x] Engagement/alvo entram na chave de partição das APIs RAG.
+- [x] Memória expirada não é listada/lida/carregada (`auto-rag-ttl.test.js`).
+- [x] Provider selecionado indisponível não inicia pipeline fingindo decisão
+      de IA (teste degradado em auto-agent.test.js).
+- [x] Prompt cloud sem consentimento falha fechado / redige evidência
+      (`auto-cloud-consent.test.js`); registro de versão de política ainda
+      aberto.
 
 Arquivos-alvo:
 
@@ -219,13 +282,16 @@ Arquivos-alvo:
 
 ## P0.7 — regressão e E2E
 
-- [ ] Corrigir a referência inexistente `pipelineState` em
+- [x] Corrigir a referência inexistente `pipelineState` em
       `server/tests/auto-agent.test.js`.
-- [ ] Corrigir `auth-principal-restart.test.js` para capturar o resultado do
-      subprocesso de forma compatível com Node 22.
-- [ ] Criar `test:hermetic` ou comando equivalente.
-- [ ] Executar o gate hermético em CI sem rede.
-- [ ] Mover o smoke de `example.com` para job opt-in.
+- [x] `auth-principal-restart.test.js` estável no Node 22 (incluso no hermético).
+- [x] Criar `npm run test:auto:hermetic` (Auto A–G + module-runner /
+      process-cancellation; sem `pipeline-smoke`/rede).
+- [x] Gate hermético verde localmente (Windows + Node 22; 179 pass / 0 fail).
+- [x] CI: job `auto-hermetic` + `npm test` hermético via
+      `scripts/run-server-tests.mjs`.
+- [x] Smoke `example.com` em `npm run test:network` / job opt-in
+      (`workflow_dispatch`).
 - [ ] Executar E2E controlado de `observation`.
 - [ ] Executar `assisted` aprovado e recusado.
 - [ ] Exercitar todos os pontos de cancelamento e timeout.
@@ -244,7 +310,8 @@ Arquivos-alvo:
 - [ ] Informar readiness real por item do catálogo.
 - [ ] Aplicar limites de concorrência por principal, sessão e engine.
 - [ ] Definir retenção comum para todos os artefatos.
-- [ ] Persistir e auditar cada transição de aprovação.
+- [x] Persistir trilha `approvalTransitions` na sessão/snapshot (auditoria
+      formal de evento ainda pode evoluir).
 - [ ] Testar Bubblewrap real e endurecer permissões/escritas do Forge store.
 
 ## P2 — paridade e operação do produto

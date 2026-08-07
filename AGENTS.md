@@ -484,9 +484,10 @@ npm run test:mcp
 npm test
 ```
 
-`npm test` não é totalmente hermético: `pipeline-smoke.test.js` pode consultar
-um alvo público. Não rode a suíte completa em ambiente sem rede/autorização sem
-antes isolar ou excluir esse cenário. Não existe lint/typecheck global na raiz.
+`npm test` é hermético por padrão (`scripts/run-server-tests.mjs` exclui
+`pipeline-smoke.test.js`). Use `npm run test:network` ou `npm run test:all`
+apenas com rede/autorização. Para o gate Auto focado:
+`npm run test:auto:hermetic`. Não existe lint/typecheck global na raiz.
 
 Para mudanças de segurança ou Auto, selecione conforme o escopo:
 
