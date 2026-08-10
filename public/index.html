@@ -3719,6 +3719,39 @@
             </span>
           </button>
         </div>
+        <div class="hub-actions-row-mitre">
+          <button
+            type="button"
+            class="mitre-map-btn postex-btn"
+            id="wifiPentestHubBtn"
+            title="Pentest WiFi — ALFA AWUS036ACM / MT7612U, Wifite no Kali, alvos autorizados."
+            aria-label="Abrir Pentest WiFi em nova janela"
+            onclick="openWifiPentestPage()"
+          >
+            <span class="mitre-map-btn-skin" aria-hidden="true">
+              <span class="mitre-map-btn-shine"></span>
+              <span class="mitre-map-btn-inner">
+                <span class="mitre-map-btn-icon-wrap ghostmap-globe-frame">
+                  <span class="ghostmap-orbit ghostmap-orbit--a" aria-hidden="true"></span>
+                  <span class="ghostmap-orbit ghostmap-orbit--b" aria-hidden="true"></span>
+                  <svg class="postex-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <path d="M12 3c-1.5 2.5-2 4.5-2 6a2 2 0 104 0c0-1.5-.5-3.5-2-6z"/>
+                    <path d="M5 12h14"/>
+                    <path d="M7 16c1.5 1.2 3.2 2 5 2s3.5-.8 5-2"/>
+                    <path d="M8.5 20h7"/>
+                  </svg>
+                </span>
+                <span class="mitre-map-btn-copy">
+                  <span class="mitre-map-btn-title">Pentest WiFi</span>
+                </span>
+                <span class="mitre-map-btn-aside">
+                  <span class="mitre-map-btn-live"><span class="mitre-map-btn-live-dot"></span> kali</span>
+                  <span class="mitre-map-btn-arrow" aria-hidden="true">↗</span>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
       </div>
 
       <div class="section-label" style="margin-top:18px">Histórico (SQLite)</div>
@@ -7557,6 +7590,12 @@ function openPostExPage() {
   if (t) u.searchParams.set('target', t);
   const w = window.open(u.href, 'ghostrecon_postex', 'noopener,noreferrer');
   if (!w) addLog('Pós-Exploração: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
+}
+
+function openWifiPentestPage() {
+  const u = new URL('wifi-pentest.html', window.location.href);
+  const w = window.open(u.href, 'ghostrecon_wifi_pentest', 'noopener,noreferrer');
+  if (!w) addLog('Pentest WiFi: popup bloqueado — permite popups ou abre: ' + u.href, 'warn');
 }
 
 function resolveGhostDeskUrl() {

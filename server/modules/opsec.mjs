@@ -99,7 +99,7 @@ export const INTRUSIVE_MODULES = new Set([
   'secret_validation',
   'ftp_write_probe', 'kali_dalfox', 'kali_dirsearch', 'kali_ffuf',
   'kali_nmap', 'kali_nmap_aggressive', 'kali_nmap_udp', 'kali_nuclei', 'kali_proxychains',
-  'kali_wpscan', 'kali_xss_vibes', 'micro_exploit', 'mysql_3306_intel',
+  'kali_wifi', 'kali_wpscan', 'kali_xss_vibes', 'micro_exploit', 'mysql_3306_intel',
   'nmap_backport_review', 'nmap_cve_match', 'nmap_service_followups', 'race_harness',
   'sandbox_exec', 'sandbox-exec', 'secret_validation', 'shannon_whitebox', 'verify_sqli_deep',
   'naabu-active', 'masscan',

@@ -1,4 +1,5 @@
 import { getKaliCapabilities } from '../modules/kali-scan.js';
+import { getWifiCapabilities } from '../modules/kali-wifi.mjs';
 import { aiKeysConfigured } from '../modules/ai-dual-report.js';
 import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
 import { getPentestGptCapabilities } from '../modules/pentestgpt-capabilities.js';
@@ -12,6 +13,20 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
   app.get('/api/capabilities', async (_req, res) => {
     try {
       const cap = await getKaliCapabilities();
+      let wifi = null;
+      try {
+        wifi = await getWifiCapabilities();
+      } catch (e) {
+        wifi = {
+          ok: false,
+          kali: Boolean(cap?.kali),
+          message: e?.message || String(e),
+          adapter: { found: false, matches: [] },
+          tools: {},
+          preferredIface: null,
+          readyForAttack: false,
+        };
+      }
       let shannon = null;
       try {
         shannon = await getShannonCapabilities({ ghostRoot: ROOT });
@@ -64,6 +79,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         pentestgpt,
         hexstrike,
         vigolium,
+        wifi,
       });
     } catch (e) {
       res.status(500).json({
@@ -78,6 +94,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         pentestgpt: null,
         hexstrike: null,
         vigolium: null,
+        wifi: null,
       });
     }
   });

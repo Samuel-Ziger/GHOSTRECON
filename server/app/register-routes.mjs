@@ -7,6 +7,7 @@ import { registerAutoReconRoutes } from '../routes/auto-recon.mjs';
 import { registerProxyTunnelRoutes } from '../routes/proxy-tunnel.mjs';
 import { registerMiscRoutes } from '../routes/misc.mjs';
 import { registerCapabilitiesRoutes } from '../routes/capabilities.mjs';
+import { registerWifiRoutes } from '../routes/wifi.mjs';
 import { registerAiRoutes } from '../routes/ai.mjs';
 import { registerRunsRoutes } from '../routes/runs.mjs';
 import { registerBrainRoutes } from '../routes/brain.mjs';
@@ -58,6 +59,7 @@ export function registerAllRoutes(app, deps) {
   registerProxyTunnelRoutes(app, { validateCsrfToken, ghostProxy, ROOT });
   registerMiscRoutes(app);
   registerCapabilitiesRoutes(app, { ROOT });
+  registerWifiRoutes(app, { validateCsrfToken, allowReconRequest });
   registerAiRoutes(app, { validateCsrfToken, ROOT });
   registerRunsRoutes(app);
   registerBrainRoutes(app, { validateCsrfToken });
