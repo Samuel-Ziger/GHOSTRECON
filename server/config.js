@@ -39,9 +39,11 @@ export const limits = {
   whoisSubdomainsMax: 3,
   /** Superfície extraída do HTML (href/forms) por host vivo */
   htmlSurfaceMaxEndpoints: 100,
-  /** Shodan (módulo passivo): resolução e IPs consultados */
+  /** Shodan membership (módulo passivo): DNS/search/host */
   shodanResolveMaxHosts: 14,
-  shodanMaxIps: 5,
+  shodanMaxIps: 12,
+  shodanSearchMaxMatches: 40,
+  shodanDomainMaxSubdomains: 200,
   /** OpenAPI/Swagger — quantas origens HTTPS tentar */
   openapiMaxOrigins: 10,
   /** Stealth (jitter entre pedidos, ms) */

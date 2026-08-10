@@ -3896,7 +3896,7 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wafw00f"><div class="checkbox-box"></div><span class="checkbox-text">WAF fingerprint (wafw00f)</span><span class="tag tag-med">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="robots_sitemap" checked><div class="checkbox-box"></div><span class="checkbox-text">robots.txt / sitemap</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="virustotal"><div class="checkbox-box"></div><span class="checkbox-text">VirusTotal subs</span><span class="tag tag-med">API</span></label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="shodan"><div class="checkbox-box"></div><span class="checkbox-text">Shodan (IP lookup)</span><span class="tag tag-med">API</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="shodan"><div class="checkbox-box"></div><span class="checkbox-text">Shodan (DNS + search + host)</span><span class="tag tag-med">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="dns_enrichment" checked><div class="checkbox-box"></div><span class="checkbox-text">DNS TXT/MX (SPF/DMARC)</span><span class="tag tag-low">LOW</span></label>
         <label class="checkbox-item" title="Aprofunda SPF/DMARC/DKIM/BIMI/MTA-STS/TLS-RPT via DNS TXT/MX, com timeouts curtos. Passivo."><input type="checkbox" class="mod" value="email_security_deep"><div class="checkbox-box"></div><span class="checkbox-text">Email security deep (SPF/DMARC/DKIM)</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wellknown_security_txt"><div class="checkbox-box"></div><span class="checkbox-text">.well-known/security.txt</span><span class="tag tag-med">MED</span></label>
@@ -6108,7 +6108,7 @@ const PIPE_PHASES = [
       ['wellknown_security_txt', 'SEC.TXT', '.well-known/security.txt'],
       ['wellknown_openid', 'OIDC', '.well-known/openid-configuration'],
       ['surface', 'SURFACE', 'Surface aggregation checkpoint'],
-      ['shodan', 'SHODAN', 'Shodan IP lookup'],
+      ['shodan', 'SHODAN', 'Shodan DNS + search + host'],
       ['openapi_specs', 'OPENAPI', 'OpenAPI/Swagger harvest'],
       ['api_contract_diff', 'API DIFF', 'API contract snapshot diff'],
     ],
@@ -10309,8 +10309,8 @@ function closeXssHelpModal() {
         <dd>Crawl de Disallow e URLs de sitemap por origem viva.</dd>
         <dt>VirusTotal subs</dt>
         <dd>Subdomínios via API (<code>VIRUSTOTAL_API_KEY</code>).</dd>
-        <dt>Shodan (IP lookup)</dt>
-        <dd>IPv4 resolvidos + API Shodan (<code>SHODAN_API_KEY</code>).</dd>
+        <dt>Shodan (DNS + search + host)</dt>
+        <dd>DNS domain, search (hostname/ssl) e host lookup via API membership (<code>SHODAN_API_KEY</code>). Passivo; orçamento de query credits via <code>GHOSTRECON_SHODAN_MAX_QUERY_CREDITS</code>.</dd>
         <dt>DNS TXT/MX (SPF/DMARC)</dt>
         <dd>Enriquecimento MX, SPF, DMARC, TXT de verificação.</dd>
         <dt>.well-known/security.txt</dt>

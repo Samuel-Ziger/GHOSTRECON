@@ -43,7 +43,8 @@ import { crawlWithKatana } from '../../modules/js-crawler.js';
 import { validateSecretFindings } from '../../modules/secret-validation.js';
 import { limits } from '../../config.js';
 import { listRuns } from '../../modules/db.js';
-import { collectUniqueIpv4, shodanHostSummary } from '../../modules/ip-intel.js';
+import { collectUniqueIpv4 } from '../../modules/ip-intel.js';
+import { runShodanMembershipRecon } from '../../modules/shodan-client.mjs';
 import { googleCseSearch } from '../../modules/google-cse.js';
 import { getKaliCapabilities, runKaliAggressiveScan } from '../../modules/kali-scan.js';
 import {
@@ -667,52 +668,38 @@ export async function runProbePhase(s) {
       if (!sk) {
         log('Shodan: define SHODAN_API_KEY para lookup passivo (api.shodan.io)', 'warn');
       } else {
-        log('Shodan: resolução IPv4 + host lookup (passivo)...', 'info');
+        log('Shodan: DNS domain + search + host lookup (membership, passivo)...', 'info');
         try {
-          const discoveredIps = await collectUniqueIpv4(
-            hostsToProbe,
-            limits.shodanResolveMaxHosts,
-            limits.shodanMaxIps,
-          );
-          const ips = discoveredIps.filter((ip) => s.hostInScope(ip));
-          if (discoveredIps.length > ips.length) {
-            log(
-              `Shodan: ${discoveredIps.length - ips.length} IP(s) derivado(s) ignorado(s) por não constarem na allowlist formal`,
-              'info',
-            );
+          const shodanResult = await runShodanMembershipRecon({
+            domain,
+            hosts: hostsToProbe,
+            apiKey: sk,
+            hostInScope: (host) => s.hostInScope(host),
+            limits,
+            signal: s.signal,
+            collectIpv4Impl: collectUniqueIpv4,
+          });
+          for (const entry of shodanResult.logs || []) {
+            log(entry.message, entry.level || 'info');
           }
-          for (const ip of ips) {
-            const s = await shodanHostSummary(ip, sk);
-            if (!s.ok) {
-              log(`Shodan ${ip}: ${s.note}`, 'warn');
-              continue;
+          if (shodanResult.subdomains?.length) {
+            const beforeVt = s.vtHostnames.length;
+            s.vtHostnames = [...new Set([...s.vtHostnames, ...shodanResult.subdomains])];
+            if (Array.isArray(s.allSubs)) {
+              s.allSubs = [...new Set([...s.allSubs, ...shodanResult.subdomains])];
             }
-            const portStr = s.ports?.length ? s.ports.join(', ') : '—';
-            const hn = s.hostnames?.length ? s.hostnames.join(', ') : '—';
-            const vn = s.vulns?.length ? s.vulns.join(', ') : '';
+            const added = s.vtHostnames.length - beforeVt;
+            if (added > 0) {
+              log(`Shodan: +${added} hostname(s) fundido(s) no inventário`, 'info');
+            }
+          }
+          for (const draft of shodanResult.findings || []) {
+            const { how, relation, ...finding } = draft;
             addFinding(
-              withProvenance(
-                {
-                  type: 'intel',
-                  prio: s.vulns?.length ? 'high' : 'med',
-                  score: s.vulns?.length ? 74 : 50,
-                  value: `Shodan host ${ip}`,
-                  meta: [
-                    s.org && `org: ${s.org}`,
-                    `ports: ${portStr}`,
-                    `hostnames: ${hn}`,
-                    vn && `cve/tags: ${vn}`,
-                  ]
-                    .filter(Boolean)
-                    .join(' · '),
-                  url: `https://www.shodan.io/host/${ip}`,
-                },
-                {
-                  how: `API Shodan (GET /shodan/host/{ip}) com a tua chave. O **${ip}** foi escolhido após resolver IPv4 de hosts do alvo **${domain}** em DNS.`,
-                  relation:
-                    'O IP aparece porque um ou mais hostnames do recon resolvem para ele. O Shodan mostra portos/serviços e hostnames historicamente vistos — liga o endereço à superfície exposta na Internet relacionada ao programa.',
-                },
-              ),
+              withProvenance(finding, {
+                how: how || 'API Shodan passiva (membership).',
+                relation: relation || 'Inventário passivo Shodan ligado ao domínio do programa.',
+              }),
               null,
             );
           }
