@@ -3883,6 +3883,7 @@
         <label class="checkbox-item" title="Analisa formularios HTML ja coletados: POST/PUT/PATCH/DELETE sem token CSRF visivel e acoes sensiveis via GET. Passivo."><input type="checkbox" class="mod" value="csrf_flow_audit"><div class="checkbox-box"></div><span class="checkbox-text">CSRF flow audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Inventario passivo de HTTP/3/QUIC por Alt-Svc h3 e evidencias Nmap/UDP 443."><input type="checkbox" class="mod" value="http3_quic_surface" checked><div class="checkbox-box"></div><span class="checkbox-text">HTTP/3 / QUIC surface</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Checagem passiva da CVE-2026-42530: cruza banner nginx 1.31.0-1.31.1 com evidencia HTTP/3/QUIC em Alt-Svc. Nao envia payload de exploit."><input type="checkbox" class="mod" value="nginx_http3_cve_2026_42530" checked><div class="checkbox-box"></div><span class="checkbox-text">NGINX HTTP/3 CVE-2026-42530</span><span class="tag tag-high">CVE</span></label>
+        <label class="checkbox-item" title="Correlaciona tecnologias/versoes detectadas (tech/nmap) com dataset local de CVEs web e, se habilitado, consulta NVD em tempo real. Passivo — nao envia payload ao alvo."><input type="checkbox" class="mod" value="cve_correlation" checked><div class="checkbox-box"></div><span class="checkbox-text">CVE web correlation (local + NVD opt-in)</span><span class="tag tag-high">CVE</span></label>
         <label class="checkbox-item" title="GET leve em poucos paths comuns (/admin, /dashboard, /actuator, /metrics etc.) para detectar painéis expostos. Nao faz brute force nem login."><input type="checkbox" class="mod" value="panel_exposure_audit"><div class="checkbox-box"></div><span class="checkbox-text">Panel exposure audit</span><span class="tag tag-med">NET</span></label>
         <label class="checkbox-item" title="Descobre service workers registrados e paths comuns; revisa scope, Cache API, importScripts e padroes sensiveis. Passivo."><input type="checkbox" class="mod" value="service_worker_audit"><div class="checkbox-box"></div><span class="checkbox-text">Service Worker audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
@@ -6098,6 +6099,7 @@ const PIPE_PHASES = [
       ['csrf_flow_audit', 'CSRF', 'CSRF flow audit from collected forms'],
       ['http3_quic_surface', 'HTTP3', 'HTTP/3 and QUIC surface inventory'],
       ['nginx_http3_cve_2026_42530', 'CVE-42530', 'NGINX HTTP/3 CVE-2026-42530 passive check'],
+      ['cve_correlation', 'CVE WEB', 'Local web CVE dataset correlation (+ optional NVD)'],
       ['panel_exposure_audit', 'PANELS', 'Common admin/status panel exposure checks'],
       ['cors_audit', 'CORS', 'Active CORS misconfiguration audit'],
       ['jwt_jwks_audit', 'JWKS', 'JWKS/OIDC key audit'],
@@ -9251,6 +9253,7 @@ function applySmartFastPreset() {
     'robots_sitemap',
     'http3_quic_surface',
     'nginx_http3_cve_2026_42530',
+    'cve_correlation',
     'panel_exposure_audit',
     'cookie_session_audit',
     'csrf_flow_audit',

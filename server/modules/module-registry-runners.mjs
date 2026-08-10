@@ -3,6 +3,7 @@ import { auditCsrfFlows } from './csrf-flow-audit.mjs';
 import { auditHttp3QuicSurface } from './http3-quic-surface.mjs';
 import { runJwtJwksAudit } from './jwt-jwks-audit.mjs';
 import { auditNginxHttp3Cve202642530 } from './nginx-http3-cve-2026-42530.mjs';
+import { runCveCorrelation } from './cve-correlation.mjs';
 import { runPanelExposureAudit } from './panel-exposure-audit.mjs';
 import { runServiceWorkerAudit } from './service-worker-audit.mjs';
 import {
@@ -94,6 +95,16 @@ export const moduleRunners = {
         : 'NGINX HTTP/3 CVE-2026-42530: sem versao vulneravel confirmada',
       logLevel: findings.some((f) => f.prio === 'high') ? 'warn' : 'info',
     };
+  },
+
+  async cve_correlation(s) {
+    return runCveCorrelation({
+      findings: s.findings || [],
+      probeResults: s.probeResults || [],
+      fetchImpl: s.fetchImpl || globalThis.fetch,
+      env: s.env || process.env,
+      signal: s.signal || null,
+    });
   },
 
   async panel_exposure_audit(s) {

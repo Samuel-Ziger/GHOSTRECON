@@ -38,6 +38,7 @@ tokens/
 
 data/*.db
 data/*.db-*
+data/cve/
 
 # Relatórios IA sem pasta de projeto
 data/ai_reports/

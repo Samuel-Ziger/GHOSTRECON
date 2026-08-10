@@ -9,6 +9,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { getVigoliumCapabilities } from '../bridge/vigolium-capabilities.mjs';
+import { ensureCveWebDb } from './ensure-cve-web-db.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -83,7 +84,7 @@ function warn(msg) {
   process.stderr.write(`[STACK][WARN] ${msg}\n`);
 }
 
-/** @param {'VIGOLIUM'|'GHOST'|'GHOSTTRACE'|'GHOSTMAP'|'GHOSTDESK'|'HEXSTRIKE'|'API'} name */
+/** @param {'VIGOLIUM'|'GHOST'|'GHOSTTRACE'|'GHOSTMAP'|'GHOSTDESK'|'HEXSTRIKE'|'API'|'CVE'} name */
 function stackEnabled(name, defaultOn = true) {
   const key = `GHOSTRECON_STACK_${name}`;
   const v = String(process.env[key] ?? '').trim().toLowerCase();
@@ -475,6 +476,27 @@ function startApi() {
   });
 }
 
+async function ensureCveDataset() {
+  if (!stackEnabled('CVE', true)) {
+    noteService('CVE web DB', 'skip', 'GHOSTRECON_STACK_CVE=0');
+    return;
+  }
+  try {
+    const result = await ensureCveWebDb();
+    if (result.status === 'skip') {
+      noteService('CVE web DB', 'skip', result.detail);
+    } else if (result.status === 'warn') {
+      noteService('CVE web DB', 'warn', result.detail);
+    } else {
+      noteService('CVE web DB', 'ok', result.detail);
+    }
+  } catch (error) {
+    warn(`CVE web DB: ${error?.message || error}`);
+    noteService('CVE web DB', 'warn', error?.message || 'erro');
+  }
+}
+
+await ensureCveDataset();
 await ensureVigoliumEngine();
 await startGhostIfNeeded();
 await startGhosttraceIfNeeded();

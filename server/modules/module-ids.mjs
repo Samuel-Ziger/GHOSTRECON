@@ -5,6 +5,7 @@ const MODULE_ALIASES = new Map([
   ['jwt-jwks-audit', 'jwt_jwks_audit'],
   ['http3-quic-surface', 'http3_quic_surface'],
   ['nginx-http3-cve-2026-42530', 'nginx_http3_cve_2026_42530'],
+  ['cve-correlation', 'cve_correlation'],
   ['panel-exposure-audit', 'panel_exposure_audit'],
   ['service-worker-audit', 'service_worker_audit'],
   ['api-contract-diff', 'api_contract_diff'],

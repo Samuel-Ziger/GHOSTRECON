@@ -35,6 +35,7 @@ import {
   emitIaProximosPassosToLog,
 } from '../pipeline-helpers.mjs';
 import { pipelineCapabilityAllowed } from '../pipeline-state.mjs';
+import { dispatchRegistryModule } from '../dispatcher.mjs';
 
 /**
  * Priorização, correlação, Shannon, PentestGPT, persistência, IA automática e webhooks.
@@ -73,6 +74,9 @@ export async function runFinalizePhase(ctx) {
 
   let reconCoverageSnapshot = ctx.reconCoverageSnapshot ?? null;
   let pipelineAiOut = ctx.pipelineAiOut ?? null;
+
+    // Correlação passiva de CVEs web (dataset local + NVD opt-in) antes do score.
+    await dispatchRegistryModule(ctx, 'cve_correlation');
 
     // ── PRIORIZAÇÃO V2 + CVE hints + CORRELATION + INTEL ──
     pipe('score', 'active');

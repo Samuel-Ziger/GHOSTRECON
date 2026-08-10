@@ -8,6 +8,7 @@ import { moduleManifest as hexstrikeOrchestrator } from './hexstrike-orchestrato
 import { moduleManifest as http3QuicSurface } from './http3-quic-surface.mjs';
 import { moduleManifest as jwtJwksAudit } from './jwt-jwks-audit.mjs';
 import { moduleManifest as nginxHttp3Cve202642530 } from './nginx-http3-cve-2026-42530.mjs';
+import { moduleManifest as cveCorrelation } from './cve-correlation.mjs';
 import { moduleManifest as panelExposureAudit } from './panel-exposure-audit.mjs';
 import { moduleManifest as riskExplainer } from './risk-explainer.mjs';
 import { moduleManifest as secretsContextRanker } from './secrets-context-ranker.mjs';
@@ -25,6 +26,7 @@ export const moduleManifests = [
   jwtJwksAudit,
   http3QuicSurface,
   nginxHttp3Cve202642530,
+  cveCorrelation,
   panelExposureAudit,
   serviceWorkerAudit,
   apiContractDiff,

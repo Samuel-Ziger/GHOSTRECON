@@ -33,6 +33,7 @@ export const AUTO_BASE_MODULES = Object.freeze([
   'header_intel',
   'chaining',
   'risk_explainer',
+  'cve_correlation',
 ]);
 
 export const AUTO_HEXSTRIKE_MODULES = Object.freeze([
