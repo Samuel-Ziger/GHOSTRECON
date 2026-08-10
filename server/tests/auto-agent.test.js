@@ -105,6 +105,23 @@ function storedTestAttestation(label = 'fixture') {
   });
 }
 
+/** Engagement formal mínimo para planos assisted/active em fixtures. */
+function fixtureActiveEngagement(target = 'example.com', id = 'ENG-AUTO-ACTIVE') {
+  return {
+    id,
+    status: 'active',
+    roeSigned: true,
+    scopeDomains: [target],
+    scopeIps: [],
+    exclusions: [],
+    window: {
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function forgeActivationGuards({ target, artifactIntegrity }) {
   const engagement = {
     id: 'ENG-FORGE-TEST',
@@ -1540,6 +1557,35 @@ test('evaluateAutoRun marca partial por moduleOutcomes distintos na mesma fase',
   assert.equal(evaluation.moduleFailures[0].moduleId, 'jwt_jwks_audit');
 });
 
+test('Auto assisted com módulo active sem engagement é bloqueado no checklist', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-active-roe-'));
+  try {
+    await assert.rejects(
+      runAutoRecon({
+        body: {
+          domain: 'example.com',
+          autonomyLevel: 'assisted',
+          approvalMode: 'interactive',
+          modules: ['security_headers'],
+          includeHexstrike: false,
+        },
+        ROOT: root,
+        env: { GHOSTRECON_AUTO_RAG_ENABLED: '0' },
+        runPipeline: async () => {
+          throw new Error('pipeline não deveria iniciar');
+        },
+        fetchImpl: async () => ({ ok: false, status: 503 }),
+        execFileImpl: async () => {
+          throw new Error('provider indisponível');
+        },
+      }),
+      /engagement formal obrigatório para módulos active ou intrusive/,
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('matriz terminal ↔ moduleOutcomes (done/timeout/cancelled/unterminated)', () => {
   const matrix = [
     {
@@ -1763,6 +1809,7 @@ test('Auto FrameSeven emite um único terminal parcial somente após o merge', a
     await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     await fs.chmod(binary, 0o755);
 
+    const engagement = fixtureActiveEngagement('example.com', 'ENG-FS-PARTIAL');
     const result = await runAutoRecon({
       body: {
         domain: 'example.com',
@@ -1772,12 +1819,15 @@ test('Auto FrameSeven emite um único terminal parcial somente após o merge', a
         includeFrameSeven: true,
         autonomyLevel: 'assisted',
         approvalMode: 'interactive',
+        engagementId: engagement.id,
       },
       ROOT: root,
       env: {
         GHOSTRECON_AUTO_RAG_ENABLED: '0',
         GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+        GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
       },
+      getEngagementImpl: async () => engagement,
       runPipeline: async ({ emit }) => {
         emit({ type: 'pipe', name: 'rdap', state: 'done' });
       },
@@ -1864,6 +1914,7 @@ test('Auto falha fechado quando FrameSeven não confirma encerramento do subproc
     await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     await fs.chmod(binary, 0o755);
 
+    const engagement = fixtureActiveEngagement('example.com', 'ENG-FS-UNTERM');
     await assert.rejects(
       runAutoRecon({
         body: {
@@ -1874,12 +1925,15 @@ test('Auto falha fechado quando FrameSeven não confirma encerramento do subproc
           includeFrameSeven: true,
           autonomyLevel: 'assisted',
           approvalMode: 'interactive',
+          engagementId: engagement.id,
         },
         ROOT: root,
         env: {
           GHOSTRECON_AUTO_RAG_ENABLED: '0',
           GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
+          GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
         },
+        getEngagementImpl: async () => engagement,
         runPipeline: async () => {
           pipelineCalls += 1;
         },
@@ -2725,6 +2779,7 @@ test('cliente Auto não interativo nega o plano exato sem executar pipeline', as
   const emitted = [];
   let pipelineCalls = 0;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-noninteractive-'));
+  const engagement = fixtureActiveEngagement('example.com', 'ENG-AUTO-DENY');
   try {
     const result = await runAutoRecon({
       body: {
@@ -2732,9 +2787,11 @@ test('cliente Auto não interativo nega o plano exato sem executar pipeline', as
         autonomyLevel: 'assisted',
         approvalMode: 'deny',
         includeHexstrike: false,
+        engagementId: engagement.id,
       },
       ROOT: root,
       env: { GHOSTRECON_AUTO_RAG_ENABLED: '0' },
+      getEngagementImpl: async () => engagement,
       execFileImpl: async () => {
         throw new Error('not found');
       },

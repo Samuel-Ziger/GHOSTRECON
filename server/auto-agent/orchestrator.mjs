@@ -25,6 +25,7 @@ import {
   writeAutoSessionSnapshot,
 } from './session-store.mjs';
 import { registerActiveAutoSession, unregisterActiveAutoSession } from './active-sessions.mjs';
+import { persistAutoRunReport } from './auto-run-report.mjs';
 import { runFrameSeven } from '../integrations/frameseven-adapter.mjs';
 import { readAndMergeFrameSevenReport } from '../integrations/frameseven-report.mjs';
 import { publicFrameSevenReportUrl } from '../integrations/frameseven-runner.mjs';
@@ -463,8 +464,13 @@ async function persistTerminalSession({
   sessionId,
   requestRunId,
   preferredPhase,
+  evaluation = null,
+  moduleOutcomes = [],
+  plan = null,
+  events = [],
 }) {
   let phase = String(finalSession?.status || preferredPhase || 'failed');
+  finalSession.runId = String(finalSession.requestRunId || requestRunId || '').trim() || null;
   try {
     await writeAutoSessionSnapshot(ROOT, finalSession, env);
   } catch (snapshotError) {
@@ -489,6 +495,36 @@ async function persistTerminalSession({
         { code: 'AUTO_TERMINAL_PERSIST_FAILED', cause: snapshotError },
       );
     }
+  }
+  try {
+    const report = await persistAutoRunReport({
+      root: ROOT,
+      session: finalSession,
+      evaluation,
+      moduleOutcomes,
+      plan,
+      events,
+      env,
+    });
+    if (report) {
+      finalSession.reportUrl = report.reportUrl;
+      finalSession.reportPath = report.jsonPath;
+      captureEmit({
+        type: 'auto_report_ready',
+        sessionId,
+        requestRunId,
+        runId: report.runId,
+        reportUrl: report.reportUrl,
+      });
+    }
+  } catch (reportError) {
+    captureEmit({
+      type: 'auto_persist_failed',
+      stage: 'terminal_report',
+      sessionId,
+      requestRunId,
+      error: reportError?.message || String(reportError),
+    });
   }
   captureEmit({ type: 'auto_session', phase, session: finalSession });
   return { phase, finalSession };
@@ -809,7 +845,7 @@ export async function runAutoRecon({
   session.state.promptVersion = AUTO_PROMPT_VERSION;
   session.state.resumeClaimId = resumeClaim?.claimId || null;
   try {
-    registerActiveAutoSession(session);
+    registerActiveAutoSession(session, env);
   } catch (error) {
     await session.close('failed');
     throw error;
@@ -1462,6 +1498,10 @@ export async function runAutoRecon({
     const terminal = await persistTerminalSession({
       ROOT, env, session, finalSession, captureEmit, sessionId, requestRunId,
       preferredPhase: 'completed',
+      evaluation,
+      moduleOutcomes: [],
+      plan,
+      events,
     });
     return { sessionId, requestRunId, plan, evaluation, events, session: terminal.finalSession };
   }
@@ -1613,7 +1653,9 @@ export async function runAutoRecon({
       modules: effectivePlan.expandedModules,
       playbook: null,
       intrusiveModules: effectivePlan.intrusiveModules,
-      requireFormalAuthorization: effectivePlan.intrusiveModules.length > 0,
+      requireFormalAuthorization: effectivePlan.requiresFormalAuthorization === true
+        || (effectivePlan.activeModules?.length || 0) > 0
+        || (effectivePlan.intrusiveModules?.length || 0) > 0,
     });
     const bindingMatches = currentBinding === engagementAuthorizationBinding;
     captureEmit({
@@ -1664,7 +1706,9 @@ export async function runAutoRecon({
     modules: effectivePlan.expandedModules,
     playbook: null,
     intrusiveModules: effectivePlan.intrusiveModules,
-    requireFormalAuthorization: effectivePlan.intrusiveModules.length > 0,
+    requireFormalAuthorization: effectivePlan.requiresFormalAuthorization === true
+      || (effectivePlan.activeModules?.length || 0) > 0
+      || (effectivePlan.intrusiveModules?.length || 0) > 0,
   });
   captureEmit({
     type: 'auto_preflight',
@@ -1914,7 +1958,39 @@ export async function runAutoRecon({
           auth: capturedAuth || pipelineBody.auth,
           scopePolicy,
           signal: iterationSignal,
-          emit: captureEmit,
+          emit: (event) => {
+            captureEmit(event);
+            // Legado Auto: pipe terminal de módulo do plano → outcome estável
+            // (elimina `inferred` quando o pipeline já emitiu pipe).
+            if (event?.type === 'pipe' && event.name) {
+              const moduleId = String(event.name);
+              if (!effectivePlan.pipelineModules.includes(moduleId)) return;
+              const raw = String(event.state || '');
+              const status = raw === 'skip' ? 'skipped'
+                : raw === 'active' || raw === 'started' ? null
+                  : ['done', 'skipped', 'timeout', 'failed', 'cancelled'].includes(raw)
+                    ? raw
+                    : null;
+              if (!status) return;
+              if (moduleOutcomes.some((item) => (
+                item.moduleId === moduleId && item.source !== 'inferred'
+              ))) {
+                return;
+              }
+              const catalogItem = catalog.modules.find((item) => item.id === moduleId);
+              recordModuleOutcome({
+                moduleId,
+                engine: moduleId.startsWith('vigolium_') ? 'vigolium' : 'ghostrecon',
+                status,
+                phase: autoCapabilityPhase(moduleId, {
+                  ...(catalogItem?.manifest || {}),
+                  source: catalogItem?.source || catalogItem?.manifest?.source,
+                }),
+                source: 'pipe',
+                error: ['done', 'skipped'].includes(status) ? null : (event.error || null),
+              });
+            }
+          },
         }),
       });
       collectPipelineOutcomes('done');
@@ -2593,10 +2669,15 @@ export async function runAutoRecon({
   const terminal = await persistTerminalSession({
     ROOT, env, session, finalSession, captureEmit, sessionId, requestRunId,
     preferredPhase: terminalPhase,
+    evaluation,
+    moduleOutcomes: evaluation?.moduleOutcomes || [],
+    plan,
+    events,
   });
   return {
     sessionId,
     requestRunId,
+    runId: requestRunId,
     plan,
     evaluation,
     events,

@@ -57,6 +57,23 @@ const VIGOLIUM_ENGINE_PATH = path.join(ROOT, 'engines', 'vigolium');
 const SERVER_ENTRY = path.join(ROOT, 'server', 'index.js');
 
 const stackStatus = [];
+const trackedPids = [];
+const PID_FILE = path.join(ROOT, '.runtime', 'stack-pids.json');
+
+function trackPid(name, child, detail = '') {
+  const pid = Number(child?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  trackedPids.push({ name, pid, detail, startedAt: new Date().toISOString() });
+  try {
+    fs.mkdirSync(path.dirname(PID_FILE), { recursive: true });
+    fs.writeFileSync(PID_FILE, `${JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      processes: trackedPids,
+    }, null, 2)}\n`, { mode: 0o600 });
+  } catch {
+    // PID file é best-effort
+  }
+}
 
 function log(msg) {
   process.stdout.write(`[STACK] ${msg}\n`);
@@ -137,6 +154,7 @@ function startDetachedBash(scriptPath, logFile, env = process.env) {
     stdio: ['ignore', outFd, errFd],
     windowsHide: true,
   });
+  trackPid(path.basename(scriptPath, path.extname(scriptPath)), child, scriptPath);
   child.unref();
   return child;
 }
@@ -164,6 +182,7 @@ function startDetachedPython(pythonPath, scriptPath, logFile, { cwd = ROOT, args
     stdio: ['ignore', outFd, errFd],
     windowsHide: true,
   });
+  trackPid(path.basename(scriptPath, path.extname(scriptPath)), child, scriptPath);
   child.unref();
   return child;
 }
@@ -446,6 +465,7 @@ function startApi() {
     stdio: 'inherit',
     windowsHide: true,
   });
+  trackPid('api', child, API_URL);
   child.on('exit', (code, signal) => {
     if (signal) {
       process.kill(process.pid, signal);

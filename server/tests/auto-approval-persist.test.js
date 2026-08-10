@@ -18,6 +18,18 @@ test('aprovação pendente é persistida no snapshot antes da espera', async () 
     await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     await fs.chmod(binary, 0o755);
 
+    const engagement = {
+      id: 'ENG-APPROVAL-PERSIST',
+      status: 'active',
+      roeSigned: true,
+      scopeDomains: ['example.com'],
+      scopeIps: [],
+      exclusions: [],
+      window: {
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+    };
     const runPromise = runAutoRecon({
       body: {
         domain: 'example.com',
@@ -27,6 +39,7 @@ test('aprovação pendente é persistida no snapshot antes da espera', async () 
         includeFrameSeven: true,
         autonomyLevel: 'assisted',
         approvalMode: 'interactive',
+        engagementId: engagement.id,
       },
       ROOT: root,
       env: {
@@ -34,6 +47,7 @@ test('aprovação pendente é persistida no snapshot antes da espera', async () 
         GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
         GHOSTRECON_ENGINE_SCOPE_SUPPORT: '1',
       },
+      getEngagementImpl: async () => engagement,
       runPipeline: async () => {},
       runFrameSevenImpl: async () => ({ status: 'done', code: 0, outputDir: root }),
       emit: async (event) => {

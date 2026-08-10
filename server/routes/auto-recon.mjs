@@ -29,9 +29,14 @@ import {
   listActiveAutoSessions,
 } from '../auto-agent/active-sessions.mjs';
 import {
+  listResumableAutoSessions,
   readAutoSessionSnapshot,
   runAutoStartupReconciliation,
 } from '../auto-agent/session-store.mjs';
+import { resolveAutoRunReportDir } from '../auto-agent/auto-run-report.mjs';
+import { pruneExpiredAutoArtifacts } from '../auto-agent/artifact-retention.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import {
   getFrameSevenApproval,
   readFrameSevenPublicReport,
@@ -291,8 +296,43 @@ export function registerAutoReconRoutes(app, deps = {}) {
   // Reconciliação de startup é aguardada em `prepareAutoReconStartup` / index.js
   // antes do listen — não fire-and-forget aqui.
 
-  app.get('/api/recon/auto/sessions', requireScope('recon.read'), (req, res) => {
-    res.json({ ok: true, sessions: listActiveAutoSessions({ principal: req.principal }) });
+  app.get('/api/recon/auto/sessions', requireScope('recon.read'), async (req, res) => {
+    const resumable = String(req.query?.resumable || '') === '1'
+      || String(req.query?.resumable || '').toLowerCase() === 'true';
+    if (!resumable) {
+      res.json({ ok: true, sessions: listActiveAutoSessions({ principal: req.principal }) });
+      return;
+    }
+    try {
+      const sessions = await listResumableAutoSessions(ROOT, env, { principal: req.principal });
+      res.json({ ok: true, source: 'snapshots', sessions });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || 'falha ao listar sessões retomáveis' });
+    }
+  });
+
+  app.get('/api/recon/auto/reports/:runId/:file', requireScope('recon.read'), async (req, res) => {
+    const runId = String(req.params.runId || '').trim();
+    const fileName = String(req.params.file || '').trim();
+    if (!['summary.json', 'summary.md'].includes(fileName)) {
+      res.status(404).type('text/plain').send('report not found');
+      return;
+    }
+    try {
+      const dir = resolveAutoRunReportDir(ROOT, runId);
+      const filePath = path.join(dir, fileName);
+      const resolved = path.resolve(filePath);
+      if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
+        res.status(404).type('text/plain').send('report not found');
+        return;
+      }
+      const body = await fs.readFile(resolved);
+      res.status(200)
+        .type(fileName.endsWith('.md') ? 'text/markdown' : 'application/json')
+        .send(body);
+    } catch {
+      res.status(404).type('text/plain').send('report not found');
+    }
   });
 
   app.get('/api/recon/auto/sessions/:sessionId', requireScope('recon.read'), async (req, res) => {
@@ -1002,7 +1042,12 @@ export function registerAutoReconRoutes(app, deps = {}) {
         });
       });
     } catch (e) {
-      send({ type: 'error', message: e?.message || String(e) });
+      send({
+        type: 'error',
+        message: e?.message || String(e),
+        code: e?.code || null,
+        recoverable: e?.code === 'AUTO_CONCURRENCY_LIMIT',
+      });
     } finally {
       res.end();
     }
@@ -1016,5 +1061,17 @@ export async function prepareAutoReconStartup({
   logger = console,
   onAudit = null,
 } = {}) {
-  return runAutoStartupReconciliation(ROOT, env, { logger, onAudit });
+  const reconciliation = await runAutoStartupReconciliation(ROOT, env, { logger, onAudit });
+  let retention = null;
+  try {
+    retention = await pruneExpiredAutoArtifacts(ROOT, env);
+    if (retention?.removedCount) {
+      logger?.info?.(
+        `[auto] retenção removeu ${retention.removedCount} artefato(s) expirado(s)`,
+      );
+    }
+  } catch (error) {
+    logger?.warn?.(`[auto] falha na retenção de artefatos: ${error?.message || error}`);
+  }
+  return { ...reconciliation, retention };
 }

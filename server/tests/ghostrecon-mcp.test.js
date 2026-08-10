@@ -44,6 +44,13 @@ test('MCP stdio negocia protocolo e publica ferramentas sem iniciar a API', asyn
     assert.equal(autoTool.inputSchema.properties.vigoliumUseCodex.default, false);
   }
 
+  for (const toolName of ['ghostrecon_auto_approve', 'ghostrecon_auto_deny']) {
+    const tool = byId.get(2)?.result?.tools?.find((row) => row.name === toolName);
+    assert.ok(tool, `${toolName} deve ser publicado`);
+    assert.ok(tool.inputSchema.properties.sessionId);
+    assert.ok(tool.inputSchema.properties.approvalId);
+  }
+
   const runTool = byId.get(2)?.result?.tools?.find(
     (tool) => tool.name === 'ghostrecon_run_recon',
   );

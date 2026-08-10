@@ -1,6 +1,6 @@
 # Melhorias pendentes do Modo Auto
 
-Atualizado em: 2026-07-30
+Atualizado em: 2026-08-10
 
 Este arquivo é o backlog executável e contém somente trabalho aberto. O estado
 de liberação e a Definition of Done estão em
@@ -303,27 +303,46 @@ Arquivos-alvo:
 
 ## P1 — operação real
 
-- [ ] Exigir engagement/ROE para qualquer plano ativo.
-- [ ] Migrar módulos legados para deadline, cancelamento, outcome e progresso
-      individuais.
-- [ ] Criar `runId` e relatório Auto consolidado.
-- [ ] Informar readiness real por item do catálogo.
-- [ ] Aplicar limites de concorrência por principal, sessão e engine.
-- [ ] Definir retenção comum para todos os artefatos.
+- [x] Exigir engagement/ROE para qualquer plano ativo (`active` + `intrusive`).
+- [x] Mapear pipe terminal legado → `auto_module_outcome` (`source: pipe`) no
+      caminho Auto; migração integral de deadline/progresso por módulo legado
+      permanece parcial fora do registry.
+- [x] Criar `runId` e relatório Auto consolidado (`reports/auto/{runId}/`,
+      evento `auto_report_ready`, rota dedicada).
+- [x] Informar readiness real por item do catálogo (`readiness.{ok,reason,checks}`).
+- [x] Aplicar limites de concorrência por principal/global/engine
+      (`GHOSTRECON_AUTO_MAX_SESSIONS_*`, código `AUTO_CONCURRENCY_LIMIT`).
+- [x] Definir retenção comum para artefatos Auto
+      (`GHOSTRECON_AUTO_ARTIFACT_TTL_DAYS` + prune no startup).
 - [x] Persistir trilha `approvalTransitions` na sessão/snapshot (auditoria
       formal de evento ainda pode evoluir).
-- [ ] Testar Bubblewrap real e endurecer permissões/escritas do Forge store.
+- [x] Endurecer Forge store (0700/0600 + path containment); Bubblewrap E2E
+      real permanece Linux-only / não alegado no Windows.
 
 ## P2 — paridade e operação do produto
 
-- [ ] Unificar a classificação de risco e adicionar teste de paridade.
-- [ ] Integrar Tor/proxy estrito ao FrameSeven.
-- [ ] Criar listagem/seleção de sessões retomáveis na UI.
-- [ ] Expor claramente fallback, bloqueio e estado degradado.
-- [ ] Adicionar comando Auto à CLI ou documentar a decisão de não suportá-lo.
-- [ ] Definir aprovação interativa do Auto no MCP.
-- [ ] Implementar `stop/status` confiáveis para sidecars.
-- [ ] Remover ou implementar configurações Auto sem consumidor real.
+- [x] Unificar a classificação de risco e adicionar teste de paridade.
+- [x] Tor/proxy estrito → FrameSeven fail-closed Node (`FRAMESEVEN_TOR_UNSUPPORTED`);
+      enforcement inicial de `scopePolicy` no CLI Go; SOCKS completo ainda
+      não implementado (documentado).
+- [x] Listagem/seleção de sessões retomáveis na UI (`?resumable=1`).
+- [x] Expor claramente fallback/degradado (`auto_council_degraded` na UI).
+- [x] Comando `ghostrecon auto` na CLI.
+- [x] Aprovação interativa Auto no MCP (`ghostrecon_auto_approve` /
+      `ghostrecon_auto_deny`; `run_auto` default deny).
+- [x] `stack:status` / `stack:stop` via `.runtime/stack-pids.json`.
+- [x] Auditar/wire `GHOSTRECON_AUTO_*` mortas (`CLOUD_REDACTION` ligada;
+      concurrency/TTL/report documentadas em `.env.example`).
+
+## Bloqueados (não marcar como feito)
+
+| Item | Motivo |
+| --- | --- |
+| CLI Vigolium impondo `scopePolicy` nativo | sem fonte `vigolium/` |
+| E2E lab com rede / browser real / zero residual físico | precisa alvo + autorização |
+| Bubblewrap E2E no Windows | plataforma |
+| Liberação operacional `authorized` | política de produto |
+| Tor SOCKS completo no FrameSeven | só fail-closed + scopePolicy inicial |
 
 ## Matriz de regressões que ainda faltam
 

@@ -18,6 +18,7 @@ import (
 	"github.com/sayseven7/frameseven/internal/config"
 	"github.com/sayseven7/frameseven/internal/finding"
 	"github.com/sayseven7/frameseven/internal/report"
+	scopepolicy "github.com/sayseven7/frameseven/internal/scopepolicy/v1"
 	"github.com/sayseven7/frameseven/internal/tools/v1/auth"
 	"github.com/sayseven7/frameseven/internal/tools/v1/scanner"
 )
@@ -114,6 +115,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, terminal bool
 	cfg.ActiveScan = opts.activeScan
 
 	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+
+	scopePolicy, err := scopepolicy.LoadFromEnv()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: sealed scope policy: %v\n", err)
+		return 2
+	}
+	if err := scopepolicy.AllowTarget(scopePolicy, cfg.Target); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}

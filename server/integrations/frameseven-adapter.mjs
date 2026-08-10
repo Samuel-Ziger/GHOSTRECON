@@ -280,6 +280,15 @@ export async function runFrameSeven({
   inspectBinaryIdentityImpl = inspectFrameSevenBinaryIdentity,
 } = {}) {
   const url = safeTarget(target);
+  if (/^(1|true|yes|on)$/i.test(String(env.GHOSTRECON_TOR_STRICT || ''))) {
+    const error = new Error(
+      'FrameSeven bloqueado sob Tor estrito até o CLI impor SOCKS/proxy (FRAMESEVEN_TOR_UNSUPPORTED)',
+    );
+    error.code = 'FRAMESEVEN_TOR_UNSUPPORTED';
+    error.fatal = true;
+    error.recoverable = false;
+    throw error;
+  }
   const toolProfile = resolveFrameSevenToolProfileV1(tools);
   if (toolProfile.offensive && offensiveApproved !== true) {
     const error = new Error(

@@ -65,6 +65,43 @@ export async function fingerprintAutoExecutable(file) {
     .catch(() => null);
 }
 
+export function buildModuleReadiness({
+  available = true,
+  reason = null,
+  checks = [],
+} = {}) {
+  const ok = available !== false;
+  const normalizedChecks = (Array.isArray(checks) ? checks : [])
+    .map((check) => ({
+      id: String(check?.id || 'check'),
+      ok: check?.ok !== false,
+      detail: check?.detail != null ? String(check.detail) : null,
+    }))
+    .slice(0, 20);
+  return Object.freeze({
+    ok,
+    reason: ok
+      ? (reason || (normalizedChecks.some((c) => c.id === 'legacy_assumed')
+        ? 'legacy_assumed'
+        : 'ready'))
+      : String(reason || 'unavailable'),
+    checks: Object.freeze(normalizedChecks),
+  });
+}
+
+function withReadiness(module, readiness) {
+  const resolved = readiness || buildModuleReadiness({
+    available: module.available !== false,
+    reason: module.unavailableReason || null,
+  });
+  return {
+    ...module,
+    available: resolved.ok,
+    unavailableReason: resolved.ok ? null : resolved.reason,
+    readiness: resolved,
+  };
+}
+
 export function classifyAutoModule(id, manifest = null) {
   const moduleId = normalizeModuleId(id || manifest?.id);
   const legacyClass = autoCapabilityClass(moduleId);
@@ -171,26 +208,37 @@ export async function buildAutoToolCatalog({
   for (const id of AUTO_BASE_MODULES) {
     if (!includeGenericCapability(id)) continue;
     const manifest = mergeCapability(id, manifestById, legacyById);
-    modules.push({
+    const hasRegistry = Boolean(manifestById.get(id));
+    modules.push(withReadiness({
       id,
       source: 'ghostrecon',
       enabledByDefault: true,
       class: classifyAutoModule(id, manifest),
-      available: true,
       manifest,
-    });
+    }, buildModuleReadiness({
+      available: true,
+      reason: hasRegistry ? 'registry_present' : 'legacy_assumed',
+      checks: [{
+        id: hasRegistry ? 'registry' : 'legacy_assumed',
+        ok: true,
+        detail: hasRegistry ? 'manifest registry' : 'pipeline legado',
+      }],
+    })));
   }
   if (includeDeepPassive) {
     for (const id of AUTO_DEEP_PASSIVE_MODULES) {
       const manifest = mergeCapability(id, manifestById, legacyById);
-      modules.push({
+      modules.push(withReadiness({
         id,
         source: 'ghostrecon',
         enabledByDefault: false,
         class: classifyAutoModule(id, manifest),
-        available: true,
         manifest,
-      });
+      }, buildModuleReadiness({
+        available: true,
+        reason: 'legacy_assumed',
+        checks: [{ id: 'legacy_assumed', ok: true, detail: 'deep_passive' }],
+      })));
     }
   }
   for (const manifest of manifests) {
@@ -201,56 +249,73 @@ export async function buildAutoToolCatalog({
     const vigoliumCapability = isVigoliumCapability(manifest.id);
     if (moduleClass === 'destructive') continue;
     if (moduleClass === 'intrusive' && !includeIntrusive) continue;
-    modules.push({
+    const available = !vigoliumCapability || vigoliumAvailable;
+    modules.push(withReadiness({
       id: manifest.id,
       source: vigoliumCapability ? 'vigolium' : capability?.source || 'ghostrecon',
       enabledByDefault: false,
       class: moduleClass,
-      available: !vigoliumCapability || vigoliumAvailable,
-      unavailableReason: vigoliumCapability && !vigoliumAvailable
-        ? 'Vigolium binary not found'
-        : null,
       manifest: capability,
-    });
+    }, buildModuleReadiness({
+      available,
+      reason: available ? 'ready' : 'Vigolium binary not found',
+      checks: [{
+        id: vigoliumCapability ? 'vigolium_binary' : 'registry',
+        ok: available,
+        detail: vigoliumCapability ? 'vigolium executable' : 'manifest',
+      }],
+    })));
   }
   for (const capability of AUTO_LEGACY_CAPABILITIES) {
     if (modules.some((item) => item.id === capability.id)) continue;
     if (!includeGenericCapability(capability.id)) continue;
     if (capability.class === 'destructive') continue;
     if (capability.class === 'intrusive' && !includeIntrusive) continue;
-    modules.push({
+    const available = capability.source !== 'vigolium' || vigoliumAvailable;
+    modules.push(withReadiness({
       id: capability.id,
       source: capability.source,
       enabledByDefault: false,
       class: capability.class,
-      available: capability.source !== 'vigolium' || vigoliumAvailable,
-      unavailableReason: capability.source === 'vigolium' && !vigoliumAvailable
-        ? 'Vigolium binary not found'
-        : null,
       manifest: capability,
-    });
+    }, buildModuleReadiness({
+      available,
+      reason: available ? 'legacy_assumed' : 'Vigolium binary not found',
+      checks: [{
+        id: available ? 'legacy_assumed' : 'vigolium_binary',
+        ok: available,
+        detail: capability.source,
+      }],
+    })));
   }
   for (const capability of includeFrameSeven ? AUTO_ENGINE_CAPABILITIES : []) {
     if (capability.id === 'frameseven_authenticated' && frameSevenAuth !== true) continue;
     if (capability.class === 'destructive') continue;
     if (capability.class === 'intrusive' && !includeIntrusive) continue;
-    modules.push({
+    const available = capability.source !== 'frameseven' || frameSevenAvailable;
+    const reason = available
+      ? 'ready'
+      : (frameSevenExecutableFound
+        ? 'FrameSeven binary identity could not be sealed'
+        : 'FrameSeven binary not found');
+    modules.push(withReadiness({
       id: capability.id,
       source: capability.source,
       enabledByDefault: capability.id === 'frameseven_recon',
       class: capability.class,
-      available: capability.source !== 'frameseven' || frameSevenAvailable,
-      unavailableReason: capability.source === 'frameseven' && !frameSevenAvailable
-        ? frameSevenExecutableFound
-          ? 'FrameSeven binary identity could not be sealed'
-          : 'FrameSeven binary not found'
-        : null,
       manifest: {
         ...capability,
         engineIdentity: frameSevenIdentity,
       },
       engineIdentity: frameSevenIdentity,
-    });
+    }, buildModuleReadiness({
+      available,
+      reason,
+      checks: [
+        { id: 'frameseven_binary', ok: frameSevenExecutableFound, detail: 'executable path' },
+        { id: 'frameseven_identity', ok: frameSevenAvailable, detail: 'sealed identity' },
+      ],
+    })));
   }
   if (includeIntrusive) {
     for (const manifest of manifests.filter((m) => m.intrusive === true)) {
@@ -326,6 +391,8 @@ export async function buildAutoToolCatalog({
         available: frameSevenAvailable,
         binary: frameSevenBinary,
         identity: frameSevenIdentity,
+        // CLI v1 enforces GHOSTRECON_SCOPE_POLICY_* when present.
+        supportsSealedScopePolicy: frameSevenAvailable === true,
       },
       vigolium: {
         available: vigoliumAvailable,

@@ -1,6 +1,6 @@
 # Status de finalização do Modo Auto
 
-Atualizado em: 2026-08-07
+Atualizado em: 2026-08-10
 
 ## Finalidade
 
@@ -146,40 +146,45 @@ recursos.
 
 ## P1 — necessário para operação real
 
-- [ ] Exigir engagement/ROE formal para qualquer plano ativo operacional, não
-      apenas para módulos classificados como intrusivos.
-- [ ] Aplicar timeout, cancelamento, outcome e progresso por módulo.
-- [ ] Criar um `runId` Auto único e relatório consolidado de todas as
-      iterações, engines, aprovações, outcomes, findings e proveniência.
-- [ ] Fazer o catálogo refletir executabilidade real, dependências, binários,
-      credenciais necessárias e motivo de indisponibilidade.
-- [ ] Exigir binding persistente do principal quando autenticação e retomada
-      owner-bound forem habilitadas.
-- [ ] Tornar reconciliação de startup aguardada, auditável e configurável pelo
-      mesmo ambiente injetado.
-- [ ] Adicionar limites de concorrência por principal, sessão e engine.
-- [ ] Definir retenção/TTL comum para RAG, snapshots, relatórios, SQLite e
-      evidência autenticada.
-- [ ] Validar o runtime Forge real em Bubblewrap, permissões do store, escrita
-      atômica, timeout e ausência de processo residual.
+- [x] Exigir engagement/ROE formal para planos `active` + `intrusive` (passivo
+      puro continua sem formal).
+- [x] Pipe legado → `auto_module_outcome` com `source: pipe` no caminho Auto;
+      deadline/progresso integral por módulo legado permanece parcial.
+- [x] `runId` canônico + relatório consolidado (`reports/auto/{runId}/`,
+      `auto_report_ready`).
+- [x] Catálogo com `readiness` tipada e `available` derivado.
+- [x] Binding persistente do principal já coberto nos testes de restart/owner
+      quando habilitado.
+- [x] Reconciliação de startup aguardada + prune TTL de artefatos Auto.
+- [x] Limites de concorrência por principal/global/engine.
+- [x] Retenção/TTL comum para snapshots e `reports/auto` (RAG já tinha TTL).
+- [x] Forge store endurecido (path + permissões); Bubblewrap E2E real só
+      Linux-gated — não alegado no Windows.
 
 > O runtime Forge atual já usa Bubblewrap. “Isolar o runtime final do Forge”
-> não é pendência vigente; falta provar e endurecer seu comportamento real.
+> não é pendência vigente; falta provar E2E real fora do Windows.
 
 ## P2 — paridade e produto
 
-- [ ] Unificar a classificação de risco entre manifests, catálogo, OPSEC, RBAC
-      e engagement, com teste exaustivo de paridade.
-- [ ] Implementar Tor/proxy estrito para FrameSeven ou bloquear explicitamente
-      o engine quando esse perfil for exigido.
-- [ ] Listar snapshots retomáveis na API/UI e exibir motivo de bloqueio,
-      degradação ou incompatibilidade.
-- [ ] Adicionar comando Auto à CLI ou documentar formalmente sua ausência.
-- [ ] Definir o fluxo de aprovação do Auto no MCP; hoje a execução interativa
-      não possui paridade com o cockpit.
-- [ ] Implementar `stop/status` confiáveis para sidecars iniciados pela stack.
-- [ ] Remover configurações mortas/enganosas ou implementá-las com testes.
-- [ ] Atualizar schemas e documentação depois da estabilização.
+- [x] Paridade de classificação de risco (`risk-classification-parity.test.js`).
+- [x] Tor estrito → FrameSeven fail-closed Node; `scopePolicy` inicial no CLI
+      Go; SOCKS completo ainda aberto.
+- [x] Sessões retomáveis na API/UI + `auto_council_degraded` / relatório na UI.
+- [x] Comando `ghostrecon auto` na CLI.
+- [x] Tools MCP `ghostrecon_auto_approve` / `ghostrecon_auto_deny`.
+- [x] `npm run stack:status` / `stack:stop` via PID file.
+- [x] `GHOSTRECON_AUTO_CLOUD_REDACTION` wired; vars de concurrency/TTL/report
+      em `.env.example`.
+- [x] Docs/backlog atualizados; E2E hermético fixture
+      (`auto-e2e-hermetic.test.js`).
+
+## Ainda bloqueado (fora do DoD desta rodada)
+
+- fonte `vigolium/` + enforcement nativo de scope no CLI Vigolium;
+- E2E lab com rede/browser real e zero residual físico;
+- Bubblewrap E2E no Windows;
+- liberação operacional de `authorized` / FS ofensivo autenticado;
+- Tor SOCKS completo no FrameSeven.
 
 ## Definition of Done
 

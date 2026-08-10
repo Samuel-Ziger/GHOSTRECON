@@ -679,26 +679,23 @@ em `npm run test:network` / job CI opt-in. Gate Auto: `npm run test:auto:hermeti
 
 ## Limitações conhecidas
 
-1. módulos internos do Vigolium não são expandidos individualmente antes dos
-   gates e podem incluir writes/credential attempts;
-2. FrameSeven/Vigolium não recebem a `scopePolicy` formal completa;
-3. alguns redirects e `jwks_uri` ainda podem sair do escopo;
-4. cancelamento no conselho é repropagado; timeout/abort no dispatcher e
-   pós-pipeline ainda têm lacunas;
-5. o dispatcher pode emitir `done` depois de erro;
-6. terminal `partial` e UI recuperável estão no caminho Auto; outcomes por
-   módulo ainda podem ser inferidos por fase;
-7. retomada reinicia orçamento temporal e não vincula todos os limites;
-8. recursos assíncronos não são aguardados integralmente antes do terminal;
-9. RAG não está isolado por principal/engagement e não possui TTL comum;
-10. planos ativos podem rodar sem engagement formal;
-11. timeout, outcome e progresso ainda são amplos por fase;
-12. não existe `runId`/relatório Auto consolidado entre iterações e engines;
-13. catálogo/classificação/readiness continuam híbridos;
-14. degradado explícito cobre providers selecionados falhos; consentimento
-    cloud e custo ainda não são plenamente verificáveis;
-15. FrameSeven não transporta Tor/proxy estrito;
-16. regressão hermética completa e E2E autenticado continuam pendentes.
+1. expansão nativa completa do Vigolium (timeouts/fases CLI) depende da fonte
+   `vigolium/`; Node é fail-closed com fixture;
+2. `scopePolicy` selada no FrameSeven (transporte Node + gate Go inicial);
+   Vigolium nativo e crawler amplo ainda abertos;
+3. Tor estrito bloqueia spawn FrameSeven no Node; SOCKS completo no Go não;
+4. outcomes Auto preferem registry/pipe; módulos legados sem pipe ainda
+   inferem;
+5. browser FrameSeven / workers Vigolium podem não assentir antes do terminal;
+6. engagement/ROE formal exige planos Auto ativos/intrusivos; passivo puro não;
+7. `runId` + relatório consolidado existem; proveniência multi-engine ainda
+   evolui;
+8. catálogo tem readiness tipada; progresso por módulo legado é parcial;
+9. CLI `ghostrecon auto`, MCP approve/deny e `stack:status|stop` existem;
+10. E2E hermético com fixtures cobre caminhos principais; E2E lab com rede/
+    browser real permanece fora;
+11. `authorized` / Vigolium Auto / FS ofensivo autenticado permanecem off por
+    política.
 
 O backlog atualizado está em
 `MELHORIAS-PENDENTES-MODO-AUTO.md`.

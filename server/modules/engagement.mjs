@@ -204,7 +204,7 @@ export function preRunChecklist({
 
   if (!engagement) {
     if (requireFormalAuthorization) {
-      errors.push('engagement formal obrigatório para módulos intrusivos.');
+      errors.push('engagement formal obrigatório para módulos active ou intrusive.');
     } else {
       warnings.push('sem engagement — rodando fora de ROE formal (ok para bug bounty passivo).');
     }
@@ -232,8 +232,11 @@ export function preRunChecklist({
 
   // ROE assinado
   if (!engagement.roeSigned) {
-    if (requireFormalAuthorization) errors.push('ROE assinado obrigatório para módulos intrusivos.');
-    else warnings.push('ROE não marcado como assinado (roeSigned=false).');
+    if (requireFormalAuthorization) {
+      errors.push('ROE assinado obrigatório para módulos active ou intrusive.');
+    } else {
+      warnings.push('ROE não marcado como assinado (roeSigned=false).');
+    }
   }
 
   const scopeEntries =

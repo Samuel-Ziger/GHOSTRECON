@@ -672,7 +672,7 @@ async function writeJsonAtomic(file, value) {
   }
 }
 
-function resolveAutoRagRoot(root, env = process.env) {
+export function resolveAutoRagRoot(root, env = process.env) {
   const configured = String(env.GHOSTRECON_AUTO_RAG_DIR || '').trim();
   return configured ? path.resolve(configured) : path.join(root, 'data', 'auto-rag');
 }
@@ -708,7 +708,7 @@ export function resolveAutoSessionSnapshotDir(root, {
   return path.join(ragRoot, 'tenants', part, 'sessions', safeId);
 }
 
-async function listSessionSnapshotDirs(ragRoot) {
+export async function listSessionSnapshotDirs(ragRoot) {
   const dirs = [];
   const legacyRoot = path.join(ragRoot, 'sessions');
   for (const entry of await fs.readdir(legacyRoot, { withFileTypes: true }).catch(() => [])) {
@@ -1352,4 +1352,60 @@ export async function runAutoStartupReconciliation(root, env = process.env, {
     // auditoria não pode impedir o boot
   }
   return report;
+}
+
+const RESUMABLE_STATUSES = new Set(['interrupted', 'cancelled', 'failed', 'timed_out', 'stalled']);
+
+export async function listResumableAutoSessions(root, env = process.env, {
+  principal = null,
+} = {}) {
+  const want = normalizeOwner(principal);
+  const ragRoot = resolveAutoRagRoot(root, env);
+  const dirs = await listSessionSnapshotDirs(ragRoot);
+  const items = [];
+  for (const dir of dirs) {
+    const file = path.join(dir, 'session.json');
+    try {
+      const snapshot = await loadSessionSnapshotFile(file, null, env);
+      const owner = normalizeOwner(snapshot.owner);
+      if (want?.sub && owner?.sub && owner.sub !== want.sub) continue;
+      if (want?.sub && !owner?.sub) continue;
+      let resumable = false;
+      let blockReason = null;
+      try {
+        if (snapshot.status === 'running') {
+          blockReason = 'still_running_or_orphan';
+        } else if (!RESUMABLE_STATUSES.has(String(snapshot.status || ''))) {
+          blockReason = `status_${snapshot.status || 'unknown'}`;
+        } else if (!snapshot.checkpoint) {
+          blockReason = 'checkpoint_missing';
+        } else {
+          validateAutoCheckpoint(snapshot.checkpoint, {
+            session: snapshot,
+            maxIterations: snapshot.limits?.maxIterations,
+            requireResumable: true,
+          });
+          resumable = true;
+        }
+      } catch (error) {
+        blockReason = error?.message || 'checkpoint_incompatible';
+      }
+      items.push({
+        sessionId: snapshot.sessionId,
+        requestRunId: snapshot.requestRunId || snapshot.runId || null,
+        runId: snapshot.runId || snapshot.requestRunId || null,
+        target: snapshot.target,
+        status: snapshot.status,
+        autonomyLevel: snapshot.autonomyLevel || null,
+        startedAt: snapshot.startedAt || null,
+        finishedAt: snapshot.finishedAt || null,
+        resumable,
+        blockReason,
+      });
+    } catch {
+      // snapshot ilegível: ignorar na listagem
+    }
+  }
+  items.sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
+  return items.slice(0, 200);
 }

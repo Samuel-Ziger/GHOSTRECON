@@ -553,42 +553,34 @@ executado sem evidência verificável.
 Até que código e testes comprovem a correção, trate estes itens como pendências,
 não como salvaguardas já garantidas:
 
-1. expandir todos os IDs internos do Vigolium antes de RBAC, engagement, OPSEC
-   e aprovação; seleção vazia/inválida não pode virar `all`;
-2. separar e bloquear por padrão writes, uploads, stored payloads e tentativas
-   de credencial do Vigolium;
-3. propagar a `scopePolicy` congelada para FrameSeven/Vigolium e revalidar
-   redirects, crawler, subdomínios, DNS→IP, CIDRs, `jwks_uri` e origem
-   autenticada;
-4. exigir engagement/ROE formal para toda execução ativa operacional, não
-   apenas para itens classificados como intrusivos;
-5. repropagar abort, timeout e falhas fatais no conselho, providers e
-   dispatcher; nenhum catch pode convertê-los em fallback, `done` ou
-   `completed`;
-6. derivar outcomes por módulo da execução real e emitir terminais distintos
-   para completo, parcial, falha, cancelamento e timeout;
-7. corrigir a UI para continuar o NDJSON em erro recuperável e não mostrar
-   “AUTO COMPLETO” para resultado parcial/incompleto;
-8. persistir deadline e orçamentos absolutos; resume não pode renovar tempo,
-   chamadas, custo ou iterações;
-9. aguardar browser, App Server, process groups, workers e temporários
-   encerrarem antes do evento terminal;
-10. persistir aprovação pendente antes da espera e tornar reconciliação/falhas
-    de snapshot observáveis;
-11. particionar RAG, snapshots e artefatos por principal/engagement/alvo, com
-    TTL e política de retenção;
-12. tornar fallback de IA degradado explícito e exigir consentimento/política de
-    dados/custo antes de provider externo receber evidência privada;
-13. criar um `runId` e relatório Auto consolidado entre iterações e motores,
-    preservando proveniência e estado parcial;
-14. unificar classificação/readiness do catálogo e aplicar deadline,
-    cancelamento e progresso reais por módulo;
-15. transportar Tor/proxy estrito ao FrameSeven ou bloquear o engine nesse
-    perfil; fechar a paridade residual de UI, CLI, MCP, RUN e Auto e fornecer
-    `stop/status` confiáveis para sidecars;
-16. criar regressão hermética verde, separar o smoke de rede e executar E2E
-    controlado de escopo, autenticação, cancelamento, timeout, restart, redação
-    e ausência de resíduos.
+1. expansão nativa completa do Vigolium (fase/timeouts/requisitos CLI) ainda
+   depende da fonte `vigolium/`; o caminho Node é fail-closed com fixture;
+2. writes/uploads/credential do Vigolium estão bloqueados no plano Auto Node;
+   enforcement nativo no CLI requer fonte;
+3. `scopePolicy` selada é transportada ao FrameSeven (Node + enforcement Go
+   inicial); Vigolium nativo e crawler amplo de engines ainda abertos;
+4. engagement/ROE formal já cobre planos Auto `active`+`intrusive`; passivo
+   puro segue sem formal;
+5. abort/timeout/fatal no conselho e dispatcher principais estão cobertos;
+   adapters/pipeline restantes ainda abertos;
+6. outcomes registry/pipe no Auto são preferidos a `inferred`; fases legadas
+   sem pipe terminal ainda inferem;
+7. UI distingue `partial` (`AUTO PARCIAL`) e continua NDJSON recuperável;
+8. resume preserva deadline/orçamentos absolutos (não renova tetos);
+9. cleanup FrameSeven/App Server/process groups Node aguardados; browser
+   engine / workers Vigolium ainda abertos;
+10. aprovação pendente persistida + prune TTL de artefatos Auto no startup;
+11. RAG/snapshots particionados com TTL; retenção SQLite/evidência auth ampla
+    ainda parcial;
+12. degradado explícito + consentimento cloud; custo/redação total por
+    provider ainda evolui;
+13. `runId` + relatório Auto consolidado implementados;
+14. readiness tipada no catálogo; deadline/progresso integral por módulo legado
+    permanece parcial;
+15. Tor estrito → FrameSeven fail-closed Node; SOCKS completo no Go ainda não;
+    CLI Auto, MCP approve/deny e `stack:status|stop` existem;
+16. regressão hermética (`test:auto:hermetic` + E2E fixture) existe; E2E lab
+    com rede/browser real permanece fora.
 
 Mudanças nessas áreas exigem testes de regressão que cubram caminho positivo,
 negação, timeout, cancelamento, desconexão, restart e ausência de segredos.

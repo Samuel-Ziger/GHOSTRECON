@@ -267,6 +267,11 @@ export function buildEffectiveAutoPlan({
     const item = byId.get(id);
     return moduleClass(item) === 'intrusive' || item?.manifest?.intrusive === true || isIntrusive(id);
   });
+  const activeModules = expandedModules.filter((id) => {
+    if (intrusiveModules.includes(id)) return false;
+    return moduleClass(byId.get(id)) === 'active';
+  });
+  const requiresFormalAuthorization = activeModules.length > 0 || intrusiveModules.length > 0;
   const requiresKali = pipelineModules.some((id) => byId.get(id)?.manifest?.requiresKali === true
     || byId.get(id)?.requiresKali === true
     || id.startsWith('kali_'));
@@ -320,7 +325,9 @@ export function buildEffectiveAutoPlan({
     selectedModules: selected,
     pipelineModules,
     expandedModules,
+    activeModules,
     intrusiveModules,
+    requiresFormalAuthorization,
     moduleLimits,
     requiresHumanApproval: selected.length > 0
       && (policy.requirePlanApproval || intrusiveModules.length > 0),

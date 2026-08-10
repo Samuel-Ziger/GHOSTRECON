@@ -60,6 +60,12 @@ test('parseArgs: unknown argv captured', () => {
   assert.deepEqual(unknown, ['--zzz']);
 });
 
+test('CLI auto: exige --target e valida approval-mode', async () => {
+  const { autoCommand } = await import('../modules/cli/commands/auto.mjs');
+  assert.equal(await autoCommand([]), 2);
+  assert.equal(await autoCommand(['--target', 'example.com', '--approval-mode', 'nope']), 2);
+});
+
 test('parseArgs: int validation', () => {
   const { opts } = parseArgs(['--timeout', '120'], [
     { name: 'timeout', type: 'int', default: 60 },

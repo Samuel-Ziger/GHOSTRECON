@@ -31,9 +31,13 @@ export function loadAutoRedactionPolicy(env = process.env) {
       .map((part) => part.trim())
       .filter((part) => part.length >= 6 && part.length <= 200),
   )].slice(0, 32);
+  const cloudRedaction = !/^(0|false|no|off)$/i.test(
+    String(env.GHOSTRECON_AUTO_CLOUD_REDACTION ?? '1'),
+  );
   return Object.freeze({
     version: 1,
     extras,
+    cloudRedaction,
     source: extras.length ? 'env:GHOSTRECON_AUTO_REDACT_EXTRA' : 'builtin',
   });
 }
@@ -42,14 +46,14 @@ let cachedPolicy = null;
 let cachedPolicyKey = '';
 
 function activeRedactionPolicy(env = process.env) {
-  const key = String(env.GHOSTRECON_AUTO_REDACT_EXTRA || '');
+  const key = `${env.GHOSTRECON_AUTO_REDACT_EXTRA || ''}|${env.GHOSTRECON_AUTO_CLOUD_REDACTION ?? '1'}`;
   if (cachedPolicy && cachedPolicyKey === key) return cachedPolicy;
   cachedPolicyKey = key;
   cachedPolicy = loadAutoRedactionPolicy(env);
   return cachedPolicy;
 }
 
-function redactString(value, env = process.env) {
+function redactString(value, env = process.env, { cloud = false } = {}) {
   let text = String(value ?? '');
   for (const pattern of SECRET_PATTERNS) text = text.replace(pattern, REDACTED);
   text = text
@@ -60,9 +64,17 @@ function redactString(value, env = process.env) {
     .replace(SENSITIVE_QUERY_PATTERN, `$1${REDACTED}`)
     .replace(CURL_HEADER_ARG_PATTERN, `$1${REDACTED}`)
     .replace(CURL_SECRET_ARG_PATTERN, `$1${REDACTED}`);
-  for (const extra of activeRedactionPolicy(env).extras) {
+  const policy = activeRedactionPolicy(env);
+  for (const extra of policy.extras) {
     if (!extra || !text.includes(extra)) continue;
     text = text.split(extra).join(REDACTED);
+  }
+  // Cloud-only: e-mails/hashes longos em evidência enviada a providers externos.
+  // Nunca aplicar em snapshots/checkpoints (catalogHash/planHash são SHA-256).
+  if (cloud && policy.cloudRedaction) {
+    text = text
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, REDACTED)
+      .replace(/\b[a-f0-9]{64}\b/gi, REDACTED);
   }
   return text;
 }
@@ -73,20 +85,22 @@ function redactValue(value, {
   maxArrayItems = 500,
   maxObjectKeys = 500,
   preserveSensitiveKeys = new Set(),
+  cloud = false,
+  env = process.env,
   seen = new WeakSet(),
 } = {}) {
   if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
   if (typeof value === 'bigint') return String(value);
-  if (typeof value === 'string') return redactString(value);
+  if (typeof value === 'string') return redactString(value, env, { cloud });
   if (typeof value === 'function' || typeof value === 'symbol') return `[${typeof value}]`;
   if (depth >= maxDepth) return '[TRUNCATED_DEPTH]';
-  if (typeof value !== 'object') return redactString(value);
+  if (typeof value !== 'object') return redactString(value, env, { cloud });
   if (seen.has(value)) return '[CIRCULAR]';
   seen.add(value);
   try {
     if (Array.isArray(value)) {
       const rows = value.slice(0, maxArrayItems).map((item) => redactValue(item, {
-        depth: depth + 1, maxDepth, maxArrayItems, maxObjectKeys, preserveSensitiveKeys, seen,
+        depth: depth + 1, maxDepth, maxArrayItems, maxObjectKeys, preserveSensitiveKeys, cloud, env, seen,
       }));
       if (value.length > maxArrayItems) rows.push(`[TRUNCATED_ITEMS:${value.length - maxArrayItems}]`);
       return rows;
@@ -94,7 +108,7 @@ function redactValue(value, {
     const out = {};
     const entries = Object.entries(value).slice(0, maxObjectKeys);
     for (const [key, item] of entries) {
-      const safeKey = redactString(key).slice(0, 300);
+      const safeKey = redactString(key, env, { cloud: false }).slice(0, 300);
       out[safeKey] = SENSITIVE_KEY.test(key) && !preserveSensitiveKeys.has(key)
         ? REDACTED
         : redactValue(item, {
@@ -103,6 +117,8 @@ function redactValue(value, {
             maxArrayItems,
             maxObjectKeys,
             preserveSensitiveKeys,
+            cloud,
+            env,
             seen,
           });
     }
@@ -115,17 +131,19 @@ function redactValue(value, {
   }
 }
 
-export function redactAutoText(value, env = process.env) {
-  if (typeof value === 'string') return redactString(value, env);
+export function redactAutoText(value, env = process.env, options = {}) {
+  const cloud = options.cloud !== false;
+  if (typeof value === 'string') return redactString(value, env, { cloud });
   try {
-    return redactString(JSON.stringify(redactValue(value)), env);
+    return redactString(JSON.stringify(redactValue(value, { ...options, cloud, env })), env, { cloud });
   } catch {
     return REDACTED;
   }
 }
 
 export function redactAutoValue(value, options = {}) {
-  return redactValue(value, options);
+  // Persistência estrutural: cloud=false por padrão (preserva SHA-256 de plano/checkpoint).
+  return redactValue(value, { cloud: false, ...options });
 }
 
 export function isSensitiveAutoKey(key) {

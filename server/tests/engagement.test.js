@@ -104,6 +104,16 @@ test('engagement: autorização formal exige engagement ativo, ROE e escopo expl
   });
   assert.equal(missing.ok, false);
   assert.ok(missing.errors.some((error) => /engagement formal obrigatório/.test(error)));
+  assert.ok(missing.errors.some((error) => /active ou intrusive/.test(error)));
+
+  const activeMissing = preRunChecklist({
+    engagement: null,
+    target: 'lab.acme.com',
+    modules: ['http_probe'],
+    requireFormalAuthorization: true,
+  });
+  assert.equal(activeMissing.ok, false);
+  assert.ok(activeMissing.errors.some((error) => /active ou intrusive/.test(error)));
 
   const incomplete = preRunChecklist({
     engagement: {

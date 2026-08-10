@@ -212,6 +212,16 @@ export class GhostClient {
     return this._streamNdjson('/api/recon/auto/stream', body, onEvent, { timeoutMs });
   }
 
+  async resolveAutoApproval(sessionId, { approvalId, approved, reason = '' } = {}) {
+    const id = String(sessionId || '').trim();
+    if (!id) throw new Error('sessionId inválido');
+    return this.postJson(`/api/recon/auto/${encodeURIComponent(id)}/approval`, {
+      approvalId,
+      approved: Boolean(approved),
+      reason: String(reason || ''),
+    });
+  }
+
   async _streamNdjson(pathname, body, onEvent, { timeoutMs = 1_800_000 } = {}) {
     const csrf = await this.getCsrfToken();
     const url = new URL(`${this.baseUrl}${pathname}`);

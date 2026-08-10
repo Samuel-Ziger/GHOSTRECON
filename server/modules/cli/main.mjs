@@ -18,6 +18,7 @@ import { replayCommand } from './commands/replay.mjs';
 import { obsidianCommand } from './commands/obsidian.mjs';
 import { phishInfraCommand } from './commands/phish-infra.mjs';
 import { ghostwatchCommand } from './commands/ghostwatch.mjs';
+import { autoCommand } from './commands/auto.mjs';
 
 const VERSION = '1.1.0-cli';
 
@@ -28,6 +29,7 @@ Uso:
 
 Comandos:
   run, scan          Executa um recon e grava o resultado (scan = alias de run).
+  auto               Modo Auto (NDJSON); aprovação interactive/deny via --approval-mode.
   runs               Lista os últimos runs (--target opcional).
   diff               Mostra a diferença entre dois runs (baseline vs newer).
   playbooks          Lista playbooks disponíveis e seus módulos.
@@ -137,6 +139,8 @@ export async function cliMain(argv) {
       return phishInfraCommand(rest);
     case 'ghostwatch':
       return ghostwatchCommand(rest);
+    case 'auto':
+      return autoCommand(rest);
     default:
       process.stderr.write(`ghostrecon: comando desconhecido "${cmd}"\n${HELP}`);
       return 2;

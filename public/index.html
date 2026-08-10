@@ -3413,11 +3413,18 @@
               </div>
             </div>
             <div class="auto-field">
+              <label for="autoResumeSessionSelect">Sessões retomáveis</label>
+              <select id="autoResumeSessionSelect" class="domain-input">
+                <option value="">— selecionar snapshot —</option>
+              </select>
+              <small class="auto-hint">Lista snapshots do principal atual; preenche o campo abaixo.</small>
+            </div>
+            <div class="auto-field">
               <label for="autoResumeSessionInput">Retomar sessão (opcional)</label>
               <input id="autoResumeSessionInput" class="domain-input" type="text" placeholder="session-..." autocomplete="off" spellcheck="false">
             </div>
             <div class="auto-field">
-              <label for="autoEngagementIdInput">Engagement autorizado (necessário para plano intrusivo)</label>
+              <label for="autoEngagementIdInput">Engagement autorizado (necessário para plano active/intrusive)</label>
               <input id="autoEngagementIdInput" class="domain-input" type="text" placeholder="uuid ou id do engagement" autocomplete="off" spellcheck="false">
               <small class="auto-hint">Precisa estar aberto, no escopo e com ROE assinado. Autonomia não substitui autorização.</small>
             </div>
@@ -5264,6 +5271,35 @@ function syncOptionalEngineToggles() {
   }
 }
 
+async function refreshResumableAutoSessions() {
+  const select = document.getElementById('autoResumeSessionSelect');
+  const input = document.getElementById('autoResumeSessionInput');
+  if (!select) return;
+  select.onchange = () => {
+    if (input && select.value) input.value = select.value;
+  };
+  try {
+    const res = await fetch(apiUrl('/api/recon/auto/sessions?resumable=1'), {
+      headers: autoApiHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    const previous = select.value;
+    select.innerHTML = '<option value="">— selecionar snapshot —</option>';
+    for (const row of sessions.slice(0, 50)) {
+      const opt = document.createElement('option');
+      opt.value = row.sessionId || '';
+      const mark = row.resumable ? 'retomável' : (row.blockReason || 'bloqueada');
+      opt.textContent = `${row.sessionId || '?'} · ${row.status || '?'} · ${mark} · ${row.target || ''}`;
+      opt.disabled = row.resumable !== true;
+      select.appendChild(opt);
+    }
+    if (previous) select.value = previous;
+  } catch {
+    // lista opcional
+  }
+}
+
 function openAutoModeModal() {
   const modal = document.getElementById('autoModeModal');
   const target = document.getElementById('autoTargetInput');
@@ -5280,6 +5316,7 @@ function openAutoModeModal() {
   syncOptionalEngineToggles();
   syncAutoOpenrouterUi();
   refreshAutoRagStatus({ quiet: true });
+  void refreshResumableAutoSessions();
   if (modal) modal.style.display = 'flex';
   setTimeout(() => target?.focus(), 0);
 }
@@ -5630,11 +5667,27 @@ function summarizeAutoEvent(ev) {
       level: ev.decision ? 'info' : 'warn',
     };
   }
+  if (ev.type === 'auto_council_degraded') {
+    const statusEl = document.getElementById('autoModeStatus');
+    if (statusEl) {
+      statusEl.textContent = `AUTO DEGRADADO: ${ev.reason || ev.message || 'providers indisponíveis — aguardando operador'}`;
+    }
+    return {
+      msg: `AUTO degradado: ${ev.reason || ev.message || 'providers selecionados indisponíveis'} | ação=${ev.decision?.action || 'ask_operator'}`,
+      level: 'warn',
+    };
+  }
   if (ev.type === 'auto_council_verdict') {
     const modules = Array.isArray(ev.decision?.requestedModules) ? ev.decision.requestedModules : [];
     return {
       msg: `AUTO conselho: propostas=${(ev.proposals || []).join(', ') || '-'} | revisões=${(ev.reviews || []).join(', ') || '-'} | veredito=${ev.decision?.action || ev.fallback || '-'} | módulos=${modules.join(', ') || '(nenhum)'}`,
       level: ev.decision ? 'success' : 'warn',
+    };
+  }
+  if (ev.type === 'auto_report_ready') {
+    return {
+      msg: `AUTO relatório consolidado: ${ev.reportUrl || ev.runId || '?'}`,
+      level: 'success',
     };
   }
   if (ev.type === 'auto_observation') {

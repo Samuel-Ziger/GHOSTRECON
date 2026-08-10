@@ -540,7 +540,7 @@ const tools = [
   },
   {
     name: 'ghostrecon_run_auto',
-    description: 'Executa Modo Auto não interativo. Se o plano exigir confirmação humana, nenhuma ação é executada e a tool devolve os detalhes para aprovação pela UI.',
+    description: 'Executa Modo Auto não interativo. Se o plano exigir confirmação humana, nenhuma ação é executada e a tool devolve os detalhes para aprovação pela UI ou ghostrecon_auto_approve/deny.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -574,6 +574,34 @@ const tools = [
         findingsLimit: { type: 'integer', default: 80 },
       },
       required: ['target'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ghostrecon_auto_approve',
+    description: 'Aprova um plano Auto pendente (sessionId + approvalId). Default do run_auto continua deny/não-interativo.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string' },
+        approvalId: { type: 'string' },
+        reason: { type: 'string', default: 'mcp_approved' },
+      },
+      required: ['sessionId', 'approvalId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ghostrecon_auto_deny',
+    description: 'Nega um plano Auto pendente (sessionId + approvalId).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string' },
+        approvalId: { type: 'string' },
+        reason: { type: 'string', default: 'mcp_denied' },
+      },
+      required: ['sessionId', 'approvalId'],
       additionalProperties: false,
     },
   },
@@ -1046,7 +1074,7 @@ export async function callTool(name, args = {}, {
     summary.findingsReturned = summary.findings.length;
     if (summary.approvalRequired) {
       return errorResult(
-        'O plano Auto exige aprovação humana interativa. Nada foi executado; revise os detalhes e inicie pela UI para aprovar o plano exato.',
+        'O plano Auto exige aprovação humana. Nada foi executado; use ghostrecon_auto_approve/deny ou a UI com sessionId+approvalId.',
         {
           approvalRequired: summary.approvalRequired,
           preconfirmationAccepted: false,
@@ -1055,6 +1083,28 @@ export async function callTool(name, args = {}, {
       );
     }
     return toolResult(summary);
+  }
+
+  if (name === 'ghostrecon_auto_approve' || name === 'ghostrecon_auto_deny') {
+    const sessionId = String(args.sessionId || '').trim();
+    const approvalId = String(args.approvalId || '').trim();
+    if (!sessionId || !approvalId) return errorResult('sessionId e approvalId são obrigatórios');
+    try {
+      const response = await client.resolveAutoApproval(sessionId, {
+        approvalId,
+        approved: name === 'ghostrecon_auto_approve',
+        reason: String(args.reason || (name === 'ghostrecon_auto_approve' ? 'mcp_approved' : 'mcp_denied')),
+      });
+      return toolResult({
+        ok: true,
+        approved: name === 'ghostrecon_auto_approve',
+        sessionId,
+        approvalId,
+        response,
+      });
+    } catch (error) {
+      return errorResult(error?.message || String(error), { sessionId, approvalId });
+    }
   }
 
   if (name === 'ghostrecon_plan_auto') {

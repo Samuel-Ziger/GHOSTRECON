@@ -689,6 +689,8 @@ test('FrameSeven usa perfis explícitos, ofensivo aprovado e modos mutuamente ex
     frameSevenAvailable: true,
   });
 
+  assert.equal(active.requiresFormalAuthorization, true);
+  assert.ok(active.activeModules.includes('frameseven_recon') || active.intrusiveModules.length > 0);
   assert.equal(active.engines.frameseven.enabled, true);
   assert.equal(active.engines.frameseven.authBrowser, false);
   assert.equal(active.engines.frameseven.profile, 'offensive_v1');
