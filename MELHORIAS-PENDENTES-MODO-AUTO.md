@@ -78,7 +78,11 @@ Arquivos-alvo:
       (`dnsResolvedAddressesEligibleForProbe` + discovery); subdomínio/crawler
       já passam por `hostInScope`/`scoped-fetch` (CLI engines nativo ainda
       pendente).
-- [ ] Repetir os gates depois de qualquer mudança de política ou expansão.
+- [x] Repetir os gates depois de qualquer mudança de política/expansão no
+      caminho Node: `Auto invalida plano quando scopeDomains/scopeIps mudam
+      após aprovação`, `Auto revalida engagement após aprovação` e revalidação
+      pós-pipeline antes do scan FrameSeven (cobertos no gate hermético). O
+      enforcement nativo dentro do CLI dos engines segue no item abaixo.
 - [x] Transportar política selada ao FrameSeven via env/arquivo 0600
       (`GHOSTRECON_SCOPE_POLICY_*`); Vigolium já recebia bindings.
 - [ ] CLI FrameSeven/Vigolium impor a política selada nativamente

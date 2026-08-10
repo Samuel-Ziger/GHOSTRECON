@@ -3,6 +3,7 @@ import { detectAutoProviders } from './provider-detector.mjs';
 import { buildAutoToolCatalog } from './tool-catalog.mjs';
 import { createAutoPlan, evaluateAutoRun } from './planner.mjs';
 import { loadAutoRagContext, writeAutoDecisionMarkdown, writeAutoRagNote } from './rag-memory.mjs';
+import { assertDurableRagPersist } from './rag-persist-guard.mjs';
 import { createCursorHandoff } from './providers/cursor.mjs';
 import { runAgentCouncil } from './council/council-runner.mjs';
 import { createPendingForgeRequest } from './forge/forge-store.mjs';
@@ -1456,6 +1457,7 @@ export async function runAutoRecon({
     engagementId: req.engagementId || '',
   }).catch((e) => ({ error: e?.message || String(e) }));
   captureEmit({ type: 'auto_rag', phase: 'plan_saved', memory: planMemory });
+  assertDurableRagPersist(planMemory, { env, captureEmit, sessionId, requestRunId, stage: 'plan' });
 
   const cursorSelected = (plan.commanders?.selected || req.commanders || []).includes('cursor');
   if (cursorSelected) {
@@ -2598,6 +2600,7 @@ export async function runAutoRecon({
     engagementId: req.engagementId || '',
   }).catch((e) => ({ error: e?.message || String(e) }));
   captureEmit({ type: 'auto_rag', phase: 'evaluation_saved', memory: evalMemory });
+  assertDurableRagPersist(evalMemory, { env, captureEmit, sessionId, requestRunId, stage: 'evaluation' });
   iterationHistory.push({
     iteration,
     modules: [...effectivePlan.selectedModules],

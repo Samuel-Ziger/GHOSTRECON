@@ -109,8 +109,11 @@ recursos.
 - [x] App Server e process groups Codex Node aguardam exit antes do close;
       browser/workers de engine ainda abertos.
 - [ ] Aguardar browser FrameSeven e workers Vigolium antes do terminal.
-- [ ] Tornar falhas de checkpoint, snapshot, RAG e terminal observáveis e
-      fail-closed quando a trilha durável for obrigatória.
+- [x] Snapshot e terminal já fail-closed (`auto_persist_failed`,
+      `AUTO_TERMINAL_PERSIST_FAILED`); RAG agora fail-closed sob
+      `GHOSTRECON_AUTO_RAG_REQUIRED=1` via `rag-persist-guard.mjs`
+      (`auto_persist_failed` stage `rag_plan`/`rag_evaluation` +
+      `AUTO_RAG_PERSIST_FAILED`); default off preserva comportamento.
 
 ### 6. Fechar isolamento de dados e comportamento degradado
 
@@ -139,7 +142,10 @@ recursos.
       UI poll até terminal; abort pós-pipeline sem heuristic.
 - [x] App Server/exec settle fail-closed; persist terminal obrigatória;
       `budgetVerifiable`; redação extra; binding persistente opt-in.
-- [ ] Manter CLI, MCP e smoke de import no gate local.
+- [x] Gate local consolidado `npm run test:auto:gate`
+      (`scripts/run-auto-gate.mjs`): preflight de smoke de import + Auto
+      hermético + CLI (`cli-*.test.js`) + MCP (`ghostrecon-mcp.test.js`).
+      `test:auto:hermetic` reusa o mesmo runner (`--hermetic-only`).
 - [ ] Executar E2E controlado cobrindo todas as autonomias, aprovação, recusa,
       cancelamento em cada estágio, timeout, restart/resume, redirect fora do
       escopo, autenticação, redação e ausência de resíduos.
