@@ -399,8 +399,12 @@ Na UI, o popup mostra módulos, engines, ferramentas, limites, hash do plano e
 fingerprints SHA-256 abreviados dos binários. Os demais clientes mantêm o mesmo
 gate, mas não a mesma interação: a CLI exige TTY e a digitação do prefixo do
 hash; o MCP devolve `approval_required` para aprovação separada pela UI/API; o
-GhostWatch nunca aprova automaticamente e bloqueia aquele alvo. A variável
-`GHOSTRECON_CONFIRM_ACTIVE` não aprova um plano HTTP.
+GhostWatch, em VPS privada com `GHOSTWATCH_TRUSTED_OPERATOR=1` e gates
+cumulativos (confirm-active, API key red/admin, alvo em `domains.txt`, API
+loopback), pode consumir `/api/recon/approval` sem TTY; sem esses gates continua
+fail-closed e bloqueia o alvo. A variável `GHOSTRECON_CONFIRM_ACTIVE` não aprova
+um plano HTTP. Setup: `bash scripts/setup-ghostrecon-vps.sh` — ver
+`docs/GHOSTWATCH-VPS.md`.
 Na política atual do Auto, o FrameSeven é o único motor que mantém um perfil
 ofensivo. Esse perfil usa a lista explícita e read-oriented
 `recon,access,redirect,misconfig,cve,crawler,content,subdomain,ports,nmap,bannergrab`;

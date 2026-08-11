@@ -56,7 +56,9 @@ clone/
 pocs/
 Relatorio.txt
 passwords.txt
-subdomains.txt
+domains.txt
+.ghostrecon-ghostwatch/
+.ghostrecon-schedule/
 brute.py
 gerado.py
 notes.txt

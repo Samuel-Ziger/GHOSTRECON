@@ -1,9 +1,10 @@
 /**
  * ghostrecon ghostwatch - VPS sentinel mode.
  *
- * Discovers known targets from the run history, runs one target at a time,
- * compares against the previous run, and sends Discord/Slack/generic alerts
- * only when relevant changes appear.
+ * Discovers known targets from the run history / domains.txt, runs one target
+ * at a time (full-recon + Vigolium/Codex + FrameSeven), compares against the
+ * previous run, and sends Discord/Slack/generic alerts only when relevant
+ * changes appear.
  */
 
 import fs from 'node:fs/promises';
@@ -16,6 +17,7 @@ import { resolvePlaybook } from '../../playbooks/loader.mjs';
 import { summarizeDiff, shouldAlert } from '../../diff-engine.mjs';
 import { postAlert } from '../../alerting.mjs';
 import { parseReconTarget } from '../../recon-target.js';
+import { ensureCveWebDb } from '../../../../scripts/ensure-cve-web-db.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -28,6 +30,13 @@ const DEFAULT_WEBHOOK =
   process.env.GHOSTRECON_WEBHOOK_URL ||
   process.env.DISCORD_WEBHOOK ||
   '';
+const DEFAULT_DOMAINS_FILE =
+  process.env.GHOSTWATCH_DOMAINS_FILE || path.join(ROOT, 'domains.txt');
+const DEFAULT_ENGINE = String(process.env.GHOSTRECON_ENGINE || 'both').trim().toLowerCase() || 'both';
+const DEFAULT_STRATEGY = String(process.env.GHOSTRECON_VIGOLIUM_STRATEGY || 'deep').trim().toLowerCase() || 'deep';
+const DEFAULT_TIMEOUT_SEC = Number(process.env.GHOSTWATCH_TIMEOUT || 3600);
+
+/** Only strip modules unsafe / useless for unattended VPS (Tor/Navigator). */
 const FORBIDDEN_MODULES = new Set([
   'navegation',
   'navigator',
@@ -36,20 +45,6 @@ const FORBIDDEN_MODULES = new Set([
   'tor-strict',
   'kali_proxychains',
   'proxychains',
-  'shannon_whitebox',
-  'shannon-whitebox',
-  'pentestgpt_validate',
-  'pentestgpt-validate',
-  'vigolium_audit',
-  'vigolium-audit',
-  'vigolium_swarm',
-  'vigolium-swarm',
-  'vigolium_agent',
-  'vigolium-agent',
-  'vigolium_autopilot',
-  'vigolium-autopilot',
-  'vigolium_codex',
-  'vigolium-codex',
 ]);
 
 const COMMON_SPEC = [
@@ -65,6 +60,16 @@ const REGISTER_SPEC = [
   { name: 'playbook', type: 'string', default: DEFAULT_PLAYBOOK },
   { name: 'profile', type: 'string', default: process.env.GHOSTWATCH_PROFILE || 'aggressive' },
   { name: 'kali', type: 'bool', default: true },
+  { name: 'out-of-scope', type: 'csv', default: [] },
+];
+
+const SYNC_DOMAINS_SPEC = [
+  ...COMMON_SPEC,
+  { name: 'file', type: 'string', default: DEFAULT_DOMAINS_FILE },
+  { name: 'playbook', type: 'string', default: DEFAULT_PLAYBOOK },
+  { name: 'profile', type: 'string', default: process.env.GHOSTWATCH_PROFILE || 'aggressive' },
+  { name: 'kali', type: 'bool', default: true },
+  { name: 'bootstrap', type: 'bool', default: false },
   { name: 'out-of-scope', type: 'csv', default: [] },
 ];
 
@@ -88,12 +93,32 @@ const RUN_SPEC = [
   { name: 'interval', type: 'string', default: process.env.GHOSTWATCH_INTERVAL || '12h' },
   { name: 'max-targets', type: 'int', default: 0 },
   { name: 'limit-runs', type: 'int', default: 200 },
-  { name: 'timeout', type: 'int', default: 1800 },
+  { name: 'timeout', type: 'int', default: Number.isFinite(DEFAULT_TIMEOUT_SEC) ? DEFAULT_TIMEOUT_SEC : 3600 },
   { name: 'kali', type: 'bool', default: true },
   { name: 'reuse-modules', type: 'bool', default: false },
   { name: 'dry-run', type: 'bool', default: false },
   { name: 'out-of-scope', type: 'csv', default: [] },
-  { name: 'confirm-active', type: 'bool', default: false },
+  {
+    name: 'confirm-active',
+    type: 'bool',
+    default: envFlagTrue(process.env.GHOSTWATCH_CONFIRM_ACTIVE),
+  },
+  { name: 'domains-file', type: 'string', default: '' },
+  { name: 'sync-domains', type: 'bool', default: envFlagTrue(process.env.GHOSTWATCH_SYNC_DOMAINS, true) },
+  { name: 'update-cve', type: 'bool', default: envFlagTrue(process.env.GHOSTWATCH_CVE_UPDATE, true) },
+  { name: 'bootstrap', type: 'bool', default: envFlagTrue(process.env.GHOSTWATCH_BOOTSTRAP_MISSING) },
+  { name: 'engine', type: 'string', default: DEFAULT_ENGINE },
+  { name: 'strategy', type: 'string', default: DEFAULT_STRATEGY },
+  {
+    name: 'vigolium-use-codex',
+    type: 'bool',
+    default: envFlagTrue(process.env.GHOSTRECON_VIGOLIUM_USE_CODEX, true),
+  },
+  {
+    name: 'include-frameseven',
+    type: 'bool',
+    default: envFlagTrue(process.env.GHOSTWATCH_INCLUDE_FRAMESEVEN, true),
+  },
 ];
 
 export async function ghostwatchCommand(argv) {
@@ -115,6 +140,8 @@ export async function ghostwatchCommand(argv) {
       return setEnabledCommand(rest, true);
     case 'list':
       return listCommand(rest);
+    case 'sync-domains':
+      return syncDomainsCommand(rest);
     case 'sync-vps':
     case 'sync':
       return syncVpsCommand(rest);
@@ -126,6 +153,11 @@ export async function ghostwatchCommand(argv) {
       printHelp();
       return 2;
   }
+}
+
+function envFlagTrue(value, defaultTrue = false) {
+  if (value == null || value === '') return Boolean(defaultTrue);
+  return !/^(0|false|no|off)$/i.test(String(value).trim());
 }
 
 async function syncVpsCommand(argv) {
@@ -145,6 +177,134 @@ async function syncVpsCommand(argv) {
   if (opts['dry-run']) args.push('--dry-run');
   if (opts.sqlite) args.push('--sqlite', String(opts.sqlite));
   return spawnInherit(process.execPath, args, { cwd: ROOT });
+}
+
+export async function parseDomainsFile(filePath) {
+  const raw = await fs.readFile(filePath, 'utf8');
+  const out = [];
+  const seen = new Set();
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const parsed = parseReconTarget(trimmed);
+    if (!parsed.ok) continue;
+    const target = String(parsed.target || '').toLowerCase();
+    if (!target || seen.has(target)) continue;
+    seen.add(target);
+    out.push(target);
+  }
+  return out;
+}
+
+export async function applyDomainsToWatchlist({
+  state,
+  domains,
+  playbook = DEFAULT_PLAYBOOK,
+  profile = 'aggressive',
+  kali = true,
+  outOfScope = [],
+} = {}) {
+  const now = new Date().toISOString();
+  const enabledSet = new Set(domains);
+  const registered = [];
+  const disabled = [];
+
+  // Lista vazia (só comentários / arquivo novo) não desliga a watchlist inteira.
+  if (!domains.length) {
+    return { registered, disabled, enabled: [], skippedEmpty: true };
+  }
+
+  for (const target of domains) {
+    const prev = state.targets[target] || {};
+    const wasEnabled = prev.enabled !== false && Boolean(prev.registeredAt);
+    state.targets[target] = {
+      ...prev,
+      target,
+      enabled: true,
+      playbook: playbook || prev.playbook || DEFAULT_PLAYBOOK,
+      modules: Array.isArray(prev.modules) ? prev.modules : [],
+      profile: profile || prev.profile || 'aggressive',
+      kali: Boolean(kali || prev.kali),
+      outOfScope: outOfScope?.length ? outOfScope : prev.outOfScope || [],
+      registeredAt: prev.registeredAt || now,
+      updatedAt: now,
+      source: 'domains.txt',
+    };
+    if (!wasEnabled || !prev.registeredAt) registered.push(target);
+  }
+
+  for (const [target, cfg] of Object.entries(state.targets || {})) {
+    if (enabledSet.has(target)) continue;
+    if (cfg?.enabled === false) continue;
+    state.targets[target] = {
+      ...cfg,
+      target,
+      enabled: false,
+      updatedAt: now,
+    };
+    disabled.push(target);
+  }
+
+  return { registered, disabled, enabled: [...enabledSet], skippedEmpty: false };
+}
+
+async function syncDomainsCommand(argv) {
+  let opts;
+  try {
+    ({ opts } = parseArgs(argv, SYNC_DOMAINS_SPEC));
+  } catch (e) {
+    process.stderr.write(`ghostwatch sync-domains: ${e.message}\n`);
+    return 2;
+  }
+
+  const filePath = path.resolve(String(opts.file || DEFAULT_DOMAINS_FILE));
+  let domains;
+  try {
+    domains = await parseDomainsFile(filePath);
+  } catch (e) {
+    process.stderr.write(`ghostwatch sync-domains: nao leu ${filePath}: ${e.message}\n`);
+    return 2;
+  }
+
+  const state = await loadState(opts['state-dir']);
+  const result = await applyDomainsToWatchlist({
+    state,
+    domains,
+    playbook: opts.playbook,
+    profile: opts.profile,
+    kali: opts.kali,
+    outOfScope: opts['out-of-scope'],
+  });
+  await saveState(opts['state-dir'], state);
+
+  if (result.skippedEmpty) {
+    process.stdout.write(
+      `ghostwatch sync-domains: file=${filePath} vazio (so comentarios?) — watchlist inalterada\n`,
+    );
+    return 0;
+  }
+
+  process.stdout.write(
+    `ghostwatch sync-domains: file=${filePath} enabled=${result.enabled.length} `
+    + `registered=${result.registered.length} disabled=${result.disabled.length}\n`,
+  );
+  for (const t of result.registered) process.stdout.write(`  + ${t}\n`);
+  for (const t of result.disabled) process.stdout.write(`  - ${t}\n`);
+
+  if (opts.bootstrap && result.enabled.length) {
+    return runGhostwatch([
+      '--once',
+      '--bootstrap',
+      '--confirm-active',
+      '--state-dir', opts['state-dir'],
+      '--playbook', opts.playbook || DEFAULT_PLAYBOOK,
+      '--profile', opts.profile || 'aggressive',
+      ...(opts.kali ? ['--kali'] : []),
+      ...(opts.server ? ['--server', opts.server] : []),
+      ...(opts['start-server'] ? ['--start-server'] : []),
+    ], { forceOnce: true });
+  }
+  return 0;
 }
 
 async function registerCommand(argv) {
@@ -297,8 +457,143 @@ async function runGhostwatch(argv, { forceOnce = false } = {}) {
   return 0;
 }
 
-export async function runOneSweep({ client, opts, stateDir, log }) {
-  const state = await loadState(stateDir);
+export function isLoopbackServerUrl(serverUrl) {
+  try {
+    const u = new URL(String(serverUrl || 'http://127.0.0.1:3847'));
+    const host = String(u.hostname || '').toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
+export function resolveApiKeyRole(env = process.env) {
+  const apiKey = String(env.GHOSTRECON_API_KEY || '').trim();
+  const raw = String(env.AUTH_API_KEYS || '').trim();
+  if (!apiKey || !raw) return null;
+  for (const entry of raw.split(/[|\n]/)) {
+    const parts = entry.trim().split(':');
+    if (parts.length < 2) continue;
+    if (parts[0] === apiKey) return String(parts[1] || '').toLowerCase();
+  }
+  return null;
+}
+
+export function canTrustedApprove({
+  env = process.env,
+  serverUrl = '',
+  target = '',
+  watchlist = {},
+  confirmActive = false,
+} = {}) {
+  if (!envFlagTrue(env.GHOSTWATCH_TRUSTED_OPERATOR)) {
+    return { ok: false, reason: 'GHOSTWATCH_TRUSTED_OPERATOR desligado' };
+  }
+  if (!confirmActive) {
+    return { ok: false, reason: 'confirmActive obrigatorio para trusted-operator' };
+  }
+  if (!isLoopbackServerUrl(serverUrl)) {
+    return { ok: false, reason: 'API deve estar em loopback (127.0.0.1/localhost)' };
+  }
+  const role = resolveApiKeyRole(env);
+  if (role !== 'red' && role !== 'admin') {
+    return { ok: false, reason: `API key precisa role red/admin (atual=${role || 'desconhecida'})` };
+  }
+  const normalized = normalizeTargetForGhostwatch(target);
+  const cfg = watchlist?.[normalized];
+  if (!cfg || cfg.enabled === false) {
+    return { ok: false, reason: `alvo ${normalized || '(vazio)'} fora da watchlist/domains.txt` };
+  }
+  return { ok: true, reason: 'trusted_operator' };
+}
+
+export function buildGhostwatchRunBody({
+  target,
+  modules,
+  runCfg,
+  opts,
+  outOfScope = [],
+} = {}) {
+  const engine = String(opts.engine || DEFAULT_ENGINE).trim().toLowerCase() || 'both';
+  const strategy = String(opts.strategy || DEFAULT_STRATEGY).trim().toLowerCase() || 'deep';
+  const body = {
+    domain: target,
+    modules: [...modules],
+    kaliMode: Boolean(runCfg?.kali),
+    profile: runCfg?.profile || opts.profile || 'aggressive',
+    opsecProfile: opts['opsec-profile'] || 'aggressive',
+    confirmActive: Boolean(opts['confirm-active']),
+    outOfScope: outOfScope.join(','),
+    playbook: runCfg?.playbook || undefined,
+    projectName: `ghostwatch-${target}`,
+    autoAiReports: false,
+    navigatorMode: false,
+    navegation: { enabled: false },
+    tor: { required: false, strict: false },
+    engine,
+    strategy,
+    vigoliumUseCodex: Boolean(opts['vigolium-use-codex']),
+    includeFrameSeven: Boolean(opts['include-frameseven']),
+    frameSevenAuth: false,
+  };
+  if (outOfScope.length && !body.modules.includes('out_of_scope')) body.modules.push('out_of_scope');
+  return body;
+}
+
+export async function runOneSweep({
+  client,
+  opts,
+  stateDir,
+  log,
+  env = process.env,
+  ensureCve = ensureCveWebDb,
+} = {}) {
+  let state = await loadState(stateDir);
+
+  if (opts['sync-domains']) {
+    const domainsFile = path.resolve(String(opts['domains-file'] || DEFAULT_DOMAINS_FILE));
+    try {
+      const domains = await parseDomainsFile(domainsFile);
+      const syncResult = await applyDomainsToWatchlist({
+        state,
+        domains,
+        playbook: opts.playbook || DEFAULT_PLAYBOOK,
+        profile: opts.profile || 'aggressive',
+        kali: opts.kali !== false,
+        outOfScope: opts['out-of-scope'] || [],
+      });
+      await saveState(stateDir, state);
+      if (syncResult.skippedEmpty) {
+        log(`sync-domains ${domainsFile}: vazio — watchlist inalterada`);
+      } else {
+        log(
+          `sync-domains ${domainsFile}: enabled=${syncResult.enabled.length} `
+          + `+${syncResult.registered.length} -${syncResult.disabled.length}`,
+        );
+      }
+    } catch (e) {
+      if (e?.code !== 'ENOENT') {
+        log(`sync-domains avisou: ${e.message}`);
+      } else {
+        log(`domains.txt ausente (${domainsFile}); usando watchlist/runs`);
+      }
+    }
+    state = await loadState(stateDir);
+  }
+
+  if (opts['update-cve']) {
+    try {
+      const cve = await ensureCve({
+        env,
+        logImpl: (msg) => log(`cve: ${msg}`),
+        warnImpl: (msg) => log(`cve-warn: ${msg}`),
+      });
+      log(`cve status=${cve?.status || 'unknown'} detail=${cve?.detail || '-'}`);
+    } catch (e) {
+      log(`cve update falhou (seguindo): ${e.message}`);
+    }
+  }
+
   let runs;
   try {
     runs = await client.listRuns({ limit: opts['limit-runs'] });
@@ -331,8 +626,10 @@ export async function runOneSweep({ client, opts, stateDir, log }) {
     const target = item.target;
     const cfg = item.config || {};
     const baseline = latest.get(target) || null;
-    if (!baseline?.id) {
-      log(`${target}: sem baseline, pulando`);
+    const isBootstrap = !baseline?.id && Boolean(opts.bootstrap);
+
+    if (!baseline?.id && !isBootstrap) {
+      log(`${target}: sem baseline, pulando (use --bootstrap ou sync-domains --bootstrap)`);
       continue;
     }
 
@@ -345,40 +642,45 @@ export async function runOneSweep({ client, opts, stateDir, log }) {
     const outOfScope = resolveOutOfScope({ cfg, opts, baseline });
 
     if (opts['dry-run']) {
-      log(`${target}: dry-run baseline=#${baseline.id} modules=${runCfg.modules.join(',')} outOfScope=${outOfScope.join(',') || '-'}`);
-      sweep.targets.push({ target, baselineId: baseline.id, dryRun: true, modules: runCfg.modules, outOfScope });
+      log(`${target}: dry-run baseline=#${baseline?.id || 'none'} modules=${runCfg.modules.join(',')} outOfScope=${outOfScope.join(',') || '-'}`);
+      sweep.targets.push({
+        target,
+        baselineId: baseline?.id || null,
+        dryRun: true,
+        modules: runCfg.modules,
+        outOfScope,
+        bootstrap: isBootstrap,
+      });
       continue;
     }
 
-    const body = {
-      domain: target,
+    const body = buildGhostwatchRunBody({
+      target,
       modules: runCfg.modules,
-      kaliMode: Boolean(runCfg.kali),
-      profile: runCfg.profile,
-      opsecProfile: opts['opsec-profile'],
-      confirmActive: Boolean(opts['confirm-active']),
-      outOfScope: outOfScope.join(','),
-      playbook: runCfg.playbook || undefined,
-      projectName: `ghostwatch-${target}`,
-      autoAiReports: false,
-      navigatorMode: false,
-      navegation: { enabled: false },
-      tor: { required: false, strict: false },
-      vigoliumUseCodex: false,
-    };
-    if (outOfScope.length && !body.modules.includes('out_of_scope')) body.modules.push('out_of_scope');
+      runCfg,
+      opts,
+      outOfScope,
+    });
 
-    log(`${target}: recon baseline=#${baseline.id} modules=${body.modules.length} outOfScope=${outOfScope.length}`);
+    log(
+      `${target}: recon baseline=#${baseline?.id || 'bootstrap'} modules=${body.modules.length} `
+      + `engine=${body.engine} frameseven=${body.includeFrameSeven} codex=${body.vigoliumUseCodex} `
+      + `outOfScope=${outOfScope.length}`,
+    );
+
     let newRunId = null;
     let errors = [];
     let targetApprovalRequired = null;
     let preflightCompleted = false;
     let targetPreflightFailed = false;
+    let trustedApproved = false;
+
     try {
       const preflight = await client.postJson('/api/recon/preflight', body);
       preflightCompleted = true;
       if (preflight?.requiresApproval) {
         const planHash = String(preflight.plan?.hash || '').trim();
+        const approvalId = String(preflight.approval?.approvalId || '').trim();
         const intrusiveModules = Array.isArray(preflight.plan?.intrusiveModules)
           ? preflight.plan.intrusiveModules.map(String).filter(Boolean)
           : [];
@@ -387,15 +689,46 @@ export async function runOneSweep({ client, opts, stateDir, log }) {
           target: String(preflight.plan?.target || target),
           intrusiveModules,
         };
-        approvalBlocked = true;
-        errors.push(
-          `approval_required: plano ${planHash || '(sem hash)'} exige confirmação humana; `
-          + 'GhostWatch não aprova planos automaticamente',
-        );
-        log(
-          `${target}: bloqueado com segurança — aprovação humana necessária `
-          + `hash=${planHash || '-'} intrusivos=${intrusiveModules.join(',') || '-'}`,
-        );
+
+        const gate = canTrustedApprove({
+          env,
+          serverUrl: client.baseUrl || opts.server,
+          target,
+          watchlist: state.targets,
+          confirmActive: Boolean(opts['confirm-active']),
+        });
+
+        if (gate.ok && planHash && approvalId) {
+          const decision = await client.postJson('/api/recon/approval', {
+            approvalId,
+            planHash,
+            approved: true,
+          });
+          if (decision?.approval?.status !== 'approved') {
+            throw new Error('servidor nao confirmou aprovacao trusted-operator');
+          }
+          body.manualApproval = { approvalId, planHash };
+          trustedApproved = true;
+          log(`${target}: trusted_operator_approved hash=${planHash}`);
+          await client.streamRecon(
+            body,
+            (evt) => {
+              if (evt?.runId) newRunId = evt.runId;
+              if (evt?.type === 'error') errors.push(evt.message || 'erro desconhecido');
+            },
+            { timeoutMs: Math.max(60_000, Number(opts.timeout || 3600) * 1000) },
+          );
+        } else {
+          approvalBlocked = true;
+          errors.push(
+            `approval_required: plano ${planHash || '(sem hash)'} exige confirmacao; `
+            + `trusted-operator recusado (${gate.reason})`,
+          );
+          log(
+            `${target}: bloqueado — ${gate.reason} `
+            + `hash=${planHash || '-'} intrusivos=${intrusiveModules.join(',') || '-'}`,
+          );
+        }
       } else {
         await client.streamRecon(
           body,
@@ -403,7 +736,7 @@ export async function runOneSweep({ client, opts, stateDir, log }) {
             if (evt?.runId) newRunId = evt.runId;
             if (evt?.type === 'error') errors.push(evt.message || 'erro desconhecido');
           },
-          { timeoutMs: Math.max(60_000, Number(opts.timeout || 1800) * 1000) },
+          { timeoutMs: Math.max(60_000, Number(opts.timeout || 3600) * 1000) },
         );
       }
     } catch (e) {
@@ -420,21 +753,33 @@ export async function runOneSweep({ client, opts, stateDir, log }) {
       try {
         const afterRuns = await client.listRuns({ limit: opts['limit-runs'] });
         const afterLatest = latestRunsByTarget(afterRuns).get(target);
-        if (afterLatest?.id && afterLatest.id !== baseline.id) newRunId = afterLatest.id;
+        if (afterLatest?.id && afterLatest.id !== baseline?.id) newRunId = afterLatest.id;
       } catch {
         // ignore fallback failure
+      }
+    } else if (trustedApproved && !newRunId) {
+      try {
+        const afterRuns = await client.listRuns({ limit: opts['limit-runs'] });
+        const afterLatest = latestRunsByTarget(afterRuns).get(target);
+        if (afterLatest?.id && afterLatest.id !== baseline?.id) newRunId = afterLatest.id;
+      } catch {
+        // ignore
       }
     }
 
     const result = {
       target,
-      baselineId: baseline.id,
+      baselineId: baseline?.id || null,
       newerId: newRunId,
       errors,
-      ...(targetApprovalRequired ? { approvalRequired: targetApprovalRequired } : {}),
+      bootstrap: isBootstrap,
+      ...(trustedApproved ? { trustedApproved: true } : {}),
+      ...(targetApprovalRequired && !trustedApproved ? { approvalRequired: targetApprovalRequired } : {}),
       ...(targetPreflightFailed ? { preflightFailed: true } : {}),
     };
-    if (newRunId && newRunId !== baseline.id) {
+
+    // Bootstrap / first run: never Discord-spam; only diff when baseline existed.
+    if (baseline?.id && newRunId && newRunId !== baseline.id) {
       try {
         const diff = normalizeDiffForGhostwatch(await client.diffRuns(baseline.id, newRunId));
         if (!diff.error) {
@@ -460,16 +805,20 @@ export async function runOneSweep({ client, opts, stateDir, log }) {
         errors.push(`diff: ${e.message}`);
         log(`${target}: diff falhou: ${e.message}`);
       }
+    } else if (isBootstrap) {
+      log(`${target}: baseline gravada (sem alerta Discord)`);
     } else {
       log(`${target}: sem novo run salvo`);
     }
+
     sweep.targets.push(result);
     state.lastRunByTarget[target] = {
-      baselineId: baseline.id,
+      baselineId: baseline?.id || null,
       newerId: newRunId,
       at: new Date().toISOString(),
       errors,
       outOfScope,
+      trustedApproved,
     };
     await saveState(stateDir, state);
   }
@@ -494,7 +843,7 @@ async function resolveRunConfig({ cfg, opts, baseline, client }) {
   } else if (cfg.modules?.length) {
     modules = sanitizeGhostwatchModules(cfg.modules);
     playbook = cfg.playbook || '';
-  } else if (opts['reuse-modules']) {
+  } else if (opts['reuse-modules'] && baseline?.id) {
     try {
       const full = await client.getRun(baseline.id);
       if (Array.isArray(full?.modules)) modules = sanitizeGhostwatchModules(full.modules.filter((m) => m !== '__kali_scan__'));
@@ -682,7 +1031,9 @@ function writeSweepSummary(sweep) {
         ? `+${r.summary.addedCount} alert=${Boolean(r.alert)}`
         : r.errors?.length
           ? `erro=${r.errors[0]}`
-          : 'sem diff';
+          : r.bootstrap
+            ? 'baseline'
+            : 'sem diff';
     process.stdout.write(`  ${r.target}: #${r.baselineId || '-'} -> #${r.newerId || '-'} ${suffix}\n`);
   }
 }
@@ -707,31 +1058,42 @@ function printHelp() {
   process.stdout.write(`ghostrecon ghostwatch - modo sentinela para VPS.
 
 Comandos:
-  ghostwatch run [opcoes]       Roda todos os alvos conhecidos, um por vez.
-  ghostwatch once [opcoes]      Alias de run --once.
-  ghostwatch sync-vps           Envia runs SQLite pendentes para Postgres/VPS.
-  ghostwatch register -t alvo   Adiciona/ajusta alvo na watchlist local da VPS.
-  ghostwatch disable -t alvo    Desabilita alvo.
-  ghostwatch enable -t alvo     Habilita alvo.
-  ghostwatch list               Lista watchlist manual.
+  ghostwatch run [opcoes]              Roda todos os alvos conhecidos, um por vez.
+  ghostwatch once [opcoes]             Alias de run --once.
+  ghostwatch sync-domains --file FILE  Sync watchlist a partir de domains.txt.
+  ghostwatch sync-vps                  Envia runs SQLite pendentes para Postgres/VPS.
+  ghostwatch register -t alvo          Adiciona/ajusta alvo na watchlist local da VPS.
+  ghostwatch disable -t alvo           Desabilita alvo.
+  ghostwatch enable -t alvo            Habilita alvo.
+  ghostwatch list                      Lista watchlist manual.
 
 Uso recomendado na VPS:
-  ghostrecon ghostwatch run --once
+  ghostrecon ghostwatch sync-domains --file domains.txt --bootstrap
+  ghostrecon ghostwatch run --once --confirm-active
 
-Por padrao le o .env do GHOSTRECON, usa GHOSTRECON_WEBHOOK_URL, roda full-recon
-em modo agressivo/Kali e remove Tor/Navigator, Shannon, PentestGPT e Vigolium
-agent/code-review/Codex antes de chamar o pipeline. Se o preflight indicar
-plano intrusivo, falha fechado: GhostWatch nunca aprova o plano automaticamente.
+Por padrao: sync domains.txt, atualiza CVE (TTL), full-recon + Vigolium deep/Codex +
+FrameSeven (sem auth-browser), remove Tor/Navigator. Planos intrusivos so seguem com
+GHOSTWATCH_TRUSTED_OPERATOR=1 + confirm-active + API key red/admin + alvo na watchlist
++ API em loopback.
 
 Opcoes de run:
   --playbook NAME               Default: ${DEFAULT_PLAYBOOK}
   --modules CSV                 Usa modulos fixos em vez de playbook.
+  --engine MODE                 Default: ${DEFAULT_ENGINE}
+  --strategy NAME               Default: ${DEFAULT_STRATEGY}
+  --vigolium-use-codex          Liga Codex no Vigolium (default on via env).
+  --include-frameseven          Liga FrameSeven offensive_v1 (default on).
+  --update-cve                  Atualiza CVE DB no inicio (default on; desliga: GHOSTWATCH_CVE_UPDATE=0).
+  --sync-domains                Sync domains.txt no inicio (default on; desliga: GHOSTWATCH_SYNC_DOMAINS=0).
+  --domains-file PATH           Override do arquivo de dominios.
+  --bootstrap                   Roda alvos sem baseline (sem alerta Discord).
+  --confirm-active              Necessario para planos intrusivos / trusted.
   --reuse-modules               Reusa modulos do ultimo run do alvo.
-  --out-of-scope CSV            Exclusoes extras; tambem reaplica stats.outOfScope do baseline.
+  --out-of-scope CSV            Exclusoes extras.
   --min-severity LEVEL          Default: medium.
   --only-new                    Evita alerta repetido por fingerprint.
   --max-targets N               Limita quantidade por varredura.
-  --limit-runs N                Quantos runs recentes consultar (max efetivo da API: 200).
+  --timeout SEC                 Default: ${Number.isFinite(DEFAULT_TIMEOUT_SEC) ? DEFAULT_TIMEOUT_SEC : 3600}.
   --dry-run                     Mostra o plano sem rodar recon.
   --interval 12h                Usado apenas sem --once.
   --start-server                Auto-inicia API local se necessario.

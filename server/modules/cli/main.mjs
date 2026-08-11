@@ -34,6 +34,7 @@ Comandos:
   diff               Mostra a diferença entre dois runs (baseline vs newer).
   playbooks          Lista playbooks disponíveis e seus módulos.
   schedule           Agendador com cron-like interval + diff + alerta new-only.
+  ghostwatch         Sentinela VPS: domains.txt + CVE + full-recon/engines + Discord new-only.
   export             Exporta findings para Linear/Jira/GitHub Issues.
   projects           Gestor de projetos (add/list/remove/scope).
   engagement         ROE + metadata de engagement + op-report + checklist.
