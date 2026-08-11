@@ -33,7 +33,8 @@ Documentos úteis por área, sempre subordinados ao código e aos testes:
 - FrameSeven: `PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md` e
   `FRAMESEVEN-INTEGRACAO-FUTURA.md`;
 - Vigolium: `FUSAO-VIGOLIUM.md`;
-- refatoração: `REFATORACAO.md` e `ANALISE-PROJETO.md`.
+- refatoração (histórico): `docs/arquivo/REFATORACAO.md` e
+  `docs/arquivo/ANALISE-PROJETO.md`.
 
 ## Missão e limite de uso
 
