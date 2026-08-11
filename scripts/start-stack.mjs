@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { getVigoliumCapabilities } from '../bridge/vigolium-capabilities.mjs';
 import { ensureCveWebDb } from './ensure-cve-web-db.mjs';
@@ -452,6 +452,45 @@ function printStackSummary() {
   log('──────────────────────');
 }
 
+/**
+ * Último passo do start (depois dos sidecars, antes da API): desativa IPv6 via sysctl.
+ * Corre só estes três comandos com sudo para o prompt de senha não bloquear o resto da stack.
+ * Desligar: GHOSTRECON_STACK_DISABLE_IPV6=0
+ */
+function applyDisableIpv6() {
+  if (String(process.env.GHOSTRECON_STACK_DISABLE_IPV6 ?? '1').trim() === '0') {
+    noteService('IPv6', 'skip', 'GHOSTRECON_STACK_DISABLE_IPV6=0');
+    return;
+  }
+
+  const settings = [
+    'net.ipv6.conf.all.disable_ipv6=1',
+    'net.ipv6.conf.default.disable_ipv6=1',
+    'net.ipv6.conf.lo.disable_ipv6=1',
+  ];
+
+  log('Último passo: desativar IPv6 (sudo). Digite a senha se pedida...');
+  for (const setting of settings) {
+    const result = spawnSync('sudo', ['sysctl', '-w', setting], {
+      cwd: ROOT,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    if (result.error) {
+      warn(`IPv6: ${result.error.message || result.error}`);
+      noteService('IPv6', 'warn', result.error.message || 'spawn falhou');
+      return;
+    }
+    if (result.status !== 0) {
+      warn(`IPv6: sudo sysctl -w ${setting} falhou (exit ${result.status ?? '?'})`);
+      noteService('IPv6', 'warn', setting);
+      return;
+    }
+  }
+  noteService('IPv6', 'ok', 'disabled');
+  log('IPv6 desativado.');
+}
+
 function startApi() {
   noteService('API', 'start', API_URL);
   printStackSummary();
@@ -503,4 +542,5 @@ await startGhosttraceIfNeeded();
 await startGhostmapIfNeeded();
 await startGhostdeskIfNeeded();
 await startHexstrikeIfNeeded();
+applyDisableIpv6();
 startApi();
