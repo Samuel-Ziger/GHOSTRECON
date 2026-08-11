@@ -28,13 +28,14 @@ logs ou bases de dados para entender a arquitetura.
 Documentos úteis por área, sempre subordinados ao código e aos testes:
 
 - segurança/API: `docs/AUTH-RBAC.md` e `docs/MODULE-CONTRACT.md`;
-- Auto: `MODO-AUTO-GHOSTRECON.md` e
-  `MELHORIAS-PENDENTES-MODO-AUTO.md`;
-- FrameSeven: `PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md` e
-  `FRAMESEVEN-INTEGRACAO-FUTURA.md`;
-- Vigolium: `FUSAO-VIGOLIUM.md`;
-- refatoração (histórico): `docs/arquivo/REFATORACAO.md` e
-  `docs/arquivo/ANALISE-PROJETO.md`.
+- Auto: `MODO-AUTO-GHOSTRECON.md`,
+  `MELHORIAS-PENDENTES-MODO-AUTO.md` e
+  `STATUS-FINALIZACAO-MODO-AUTO.md`;
+- FrameSeven / Vigolium: lacunas em `AGENTS.md` e backlog em
+  `MELHORIAS-PENDENTES-MODO-AUTO.md` (planos de 2026-07-30 em
+  `docs/arquivo/`);
+- histórico: `docs/arquivo/` (`ANALISE-PROJETO`, `REFATORACAO`,
+  `FUSAO-VIGOLIUM`, `PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO`, etc.).
 
 ## Missão e limite de uso
 

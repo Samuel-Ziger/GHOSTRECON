@@ -464,6 +464,11 @@ para as limitações atuais.
 
 O servidor MCP em `mcp/ghostrecon-mcp.mjs` conecta clientes compatíveis ao mesmo backend usado pelo cockpit e pela CLI. A configuração local do Cursor está em `.cursor/mcp.json`.
 
+O MCP do HexStrike usa `mcp/hexstrike-mcp-launcher.mjs`: sobe a API local em
+`http://127.0.0.1:8888` se estiver offline e então expõe `hexstrike_mcp.py` via
+stdio. Logs coloridos do cliente vão para
+`IAs/hexstrike-ai/hexstrike-mcp-client.log` para não quebrar a discovery no Cursor.
+
 Principais grupos de tools:
 
 - health, capabilities, módulos e playbooks;
@@ -784,14 +789,11 @@ Verifique `GHOSTRECON_HEXSTRIKE_URL`, o ambiente Python e o health endpoint do s
 
 - [Modo Auto e conselho de IAs](MODO-AUTO-GHOSTRECON.md)
 - [Status de finalização do Modo Auto](STATUS-FINALIZACAO-MODO-AUTO.md)
-- [Pendências de IA do Modo Auto](PLANO-MELHORIAS-AUTO-IA.md)
+- [Melhorias pendentes do Modo Auto](MELHORIAS-PENDENTES-MODO-AUTO.md)
 - [Autenticação, RBAC e scopes](docs/AUTH-RBAC.md)
 - [Tor strict e proteção anti-leak](docs/TOR.md)
 - [Contrato de módulos](docs/MODULE-CONTRACT.md)
-- [Pendências da integração autenticada do FrameSeven](PLANO-INTEGRACAO-FRAMESEVEN-AUTENTICADO.md)
-- [Pendências futuras do FrameSeven](FRAMESEVEN-INTEGRACAO-FUTURA.md)
-- [Pendências GHOSTRECON + Vigolium](FUSAO-VIGOLIUM.md)
-- [Melhorias pendentes do Modo Auto](MELHORIAS-PENDENTES-MODO-AUTO.md)
+- [Arquivo histórico de planos](docs/arquivo/README.md)
 
 ## Licenças e terceiros
 
