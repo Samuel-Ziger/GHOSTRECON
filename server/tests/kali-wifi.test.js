@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseWifiTargets,
   parseWifiToolLine,
+  redactWifiLogLine,
   detectAlfaFromLsusb,
   parseIwInterfaces,
   runWifiPentest,
@@ -42,7 +43,8 @@ test('parseWifiToolLine: handshake e crack', () => {
   assert.equal(h.type, 'wifi_handshake');
   const c = parseWifiToolLine('[+] KEY FOUND! PSK: secretlab');
   assert.equal(c.type, 'wifi_crack');
-  assert.match(c.meta, /secretlab/);
+  assert.equal(c.meta.includes('secretlab'), false);
+  assert.match(redactWifiLogLine('KEY FOUND! PSK: secretlab'), /\[REDACTED\]/);
 });
 
 function mockRunner(handlers) {
@@ -143,6 +145,28 @@ test('probeWifiEnvironment degrada sem Kali tools', async () => {
   const p = await probeWifiEnvironment({ runProcessImpl });
   assert.equal(p.adapter.found, false);
   assert.equal(p.readyForAttack, false);
+});
+
+test('runWifiPentest ignora GHOSTRECON_WIFI_TARGETS do env sem body', async () => {
+  const called = [];
+  const runProcessImpl = mockRunner([
+    ['which', async (_c, args) => ({ stdout: `/usr/bin/${args[0]}\n` })],
+    ['lsusb', { stdout: 'ID 0e8d:7612 AWUS036ACM\n' }],
+    ['iw', { stdout: 'Interface wlan0\n\ttype managed\n' }],
+    ['wifite', async (_c, args) => {
+      called.push(args);
+      return { stdout: '', stderr: '' };
+    }],
+  ]);
+  const r = await runWifiPentest({
+    targetsText: '',
+    labConfirm: true,
+    runProcessImpl,
+    getKaliCapabilitiesImpl: async () => ({ kali: true, message: 'ok', tools: {} }),
+    env: { GHOSTRECON_WIFI_TARGETS: 'aa:bb:cc:dd:ee:ff' },
+  });
+  assert.equal(r.reason, 'readiness_only');
+  assert.equal(called.length, 0);
 });
 
 test('runWifiPentest not_kali skip', async () => {

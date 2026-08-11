@@ -34,6 +34,22 @@ export const AUTO_AUTONOMY_POLICIES = Object.freeze({
   }),
 });
 
+/** authorized / authorized_opsec ficam desligados até GHOSTRECON_AUTO_ALLOW_AUTHORIZED=1 */
+export function isAutoAuthorizedAutonomyEnabled(env = process.env) {
+  const raw = String(env.GHOSTRECON_AUTO_ALLOW_AUTHORIZED ?? '0').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+export function assertAutoAutonomyAllowed(autonomyLevel, env = process.env) {
+  const level = String(autonomyLevel || '').trim().toLowerCase();
+  if ((level === 'authorized' || level === 'authorized_opsec') && !isAutoAuthorizedAutonomyEnabled(env)) {
+    throw new Error(
+      `Autonomia "${level}" desabilitada por política (defina GHOSTRECON_AUTO_ALLOW_AUTHORIZED=1 para laboratório explícito)`,
+    );
+  }
+  return level;
+}
+
 const FRAMESEVEN_IDS = new Set([
   'frameseven_recon',
   'frameseven_active',

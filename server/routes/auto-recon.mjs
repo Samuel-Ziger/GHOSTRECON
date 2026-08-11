@@ -3,6 +3,7 @@ import { requireScope, reconBodyIsIntrusive, audit as auditAuth } from '../modul
 import { getEngagement, preRunChecklist } from '../modules/engagement.mjs';
 import { reconHttpContext } from '../lib/http-history.mjs';
 import { runAutoRecon } from '../auto-agent/orchestrator.mjs';
+import { assertAutoAutonomyAllowed } from '../auto-agent/effective-plan.mjs';
 import {
   listAutoRagMarkdown,
   resolveAutoRagPartitionKey,
@@ -965,6 +966,14 @@ export function registerAutoReconRoutes(app, deps = {}) {
 
     if (!validateCsrfToken(req)) {
       send({ type: 'error', message: 'CSRF token invalido/ausente' });
+      res.end();
+      return;
+    }
+
+    try {
+      assertAutoAutonomyAllowed(req.body?.autonomyLevel || 'observation');
+    } catch (e) {
+      send({ type: 'error', message: e?.message || String(e) });
       res.end();
       return;
     }

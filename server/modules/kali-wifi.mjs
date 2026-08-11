@@ -40,6 +40,12 @@ export function resolveWifiWordlist(env = process.env) {
 /**
  * Parse linhas de stdout Wifite/aircrack em findings tipados.
  */
+export function redactWifiLogLine(line) {
+  return String(line || '')
+    .replace(/((?:psk|password|passphrase|key)\s*[:=]\s*)(['"]?)([^\s'"]+)\2/gi, '$1$2[REDACTED]$2')
+    .replace(/(KEY\s+FOUND[^\n]*?:\s*)(\S+)/gi, '$1[REDACTED]');
+}
+
 export function parseWifiToolLine(line) {
   const text = String(line || '').trim();
   if (!text) return null;
@@ -68,7 +74,7 @@ export function parseWifiToolLine(line) {
       prio: 'critical',
       score: 92,
       value: 'Credencial WiFi recuperada (lab)',
-      meta: `resultado: ${cracked[1]} · ${text.slice(0, 160)}`,
+      meta: 'PSK recuperada — valor omitido do stream/UI (ver artefacto local do wifite)',
     };
   }
 
@@ -324,11 +330,8 @@ export async function runWifiPentest({
   );
 
   const fromBody = parseWifiTargets(targetsText);
-  const fromEnv = wifiTargetsFromEnv(env);
-  const targets = {
-    bssids: [...new Set([...fromBody.bssids, ...fromEnv.bssids])],
-    ssids: [...new Set([...fromBody.ssids, ...fromEnv.ssids])],
-  };
+  // Env NÃO amplia o ataque: só body (confirmado na UI). Env serve de hint via capabilities.
+  const targets = { bssids: [...fromBody.bssids], ssids: [...fromBody.ssids] };
   const hasTargets = targets.bssids.length > 0 || targets.ssids.length > 0;
   const confirm = labConfirm === true;
   const attackIface = String(iface || probe.preferredIface || '').trim() || null;
@@ -413,7 +416,7 @@ export async function runWifiPentest({
         for (const line of parts) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          emitLog(emit, `[${stream}] ${trimmed}`, 'info');
+          emitLog(emit, `[${stream}] ${redactWifiLogLine(trimmed)}`, 'info');
           const parsed = parseWifiToolLine(trimmed);
           if (parsed) pushFinding(parsed);
         }

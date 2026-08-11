@@ -599,6 +599,7 @@ export function normalizeAutoRequest(body = {}) {
     includeVigolium: body.includeVigolium === true,
     // Política explícita de autonomia da IA por sessão. O nível 4 continua
     // sujeito à confirmação humana por ação destrutiva (não há execução livre).
+    // Kill-switch operacional: assertAutoAutonomyAllowed na rota HTTP / MCP.
     autonomyLevel: ['observation', 'assisted', 'authorized', 'authorized_opsec'].includes(String(body.autonomyLevel || '').toLowerCase())
       ? String(body.autonomyLevel).toLowerCase() : 'observation',
     frameSevenAuth: body.includeFrameSeven === true && body.frameSevenAuth === true,

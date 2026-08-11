@@ -367,6 +367,36 @@ test('audit log NDJSON é gerado em AUTH_AUDIT_DIR', async () => {
   assert.ok(parsed.some((p) => p.decision === 'allow'));
 });
 
+test('JWT sem exp → 401', async () => {
+  const tok = signJwtHs256({
+    sub: 'noexp',
+    role: 'red',
+  });
+  const auth = requireAuth();
+  const req = makeReq({ headers: { authorization: `Bearer ${tok}` } });
+  const { next, res } = await callMw(auth, req);
+  assert.equal(next, false);
+  assert.equal(res.statusCode, 401);
+});
+
+test('requireScope: intrusiveCheck que lança → 500 fail-closed', async () => {
+  const auth = requireAuth();
+  const scope = requireScope('recon.run', {
+    intrusiveCheck: () => {
+      throw new Error('boom-classify');
+    },
+  });
+  const req = makeReq({
+    headers: { authorization: `Bearer ${KEY_OPERATOR}` },
+    body: { domain: 'x.com' },
+  });
+  await callMw(auth, req);
+  const { next, res } = await callMw(scope, req);
+  assert.equal(next, false);
+  assert.equal(res.statusCode, 500);
+  assert.match(res.body.error, /intrusiveCheck|classificar/i);
+});
+
 // ─── generateApiKey ─────────────────────────────────────────────────────────
 test('generateApiKey produz string com tamanho razoável', () => {
   const k = generateApiKey();

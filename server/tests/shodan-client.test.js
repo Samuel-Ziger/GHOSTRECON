@@ -195,6 +195,7 @@ test('chave nunca aparece em note/meta/logs', async () => {
   const r = await runShodanMembershipRecon({
     domain: 'example.test',
     apiKey: SECRET_KEY,
+    hostInScope: () => true,
     fetchImpl: mockFetchRouter([
       ['/api-info', async () => ({ status: 401, body: { error: SECRET_KEY } })],
       ['/dns/domain', async () => ({ status: 401, body: { error: SECRET_KEY } })],

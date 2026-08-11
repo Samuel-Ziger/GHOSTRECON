@@ -188,7 +188,7 @@ function publicVigoliumResponse(value) {
   };
 }
 
-export function registerVigoliumRoutes(app, { ROOT }) {
+export function registerVigoliumRoutes(app, { ROOT, validateCsrfToken = null }) {
   app.get('/api/vigolium/modules', async (req, res) => {
     try {
       const out = await listVigoliumModules({
@@ -253,6 +253,10 @@ export function registerVigoliumRoutes(app, { ROOT }) {
   });
 
   app.post('/api/vigolium/reports/import', requireScope('recon.run'), async (req, res) => {
+    if (typeof validateCsrfToken === 'function' && !validateCsrfToken(req)) {
+      res.status(403).json({ ok: false, error: 'CSRF token inválido/ausente' });
+      return;
+    }
     try {
       res.json(await importVigoliumReport(ROOT, req.body || {}));
     } catch (e) {

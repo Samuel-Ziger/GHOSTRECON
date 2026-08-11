@@ -65,7 +65,7 @@ export function registerAllRoutes(app, deps) {
   registerBrainRoutes(app, { validateCsrfToken });
   registerHandoffRoutes(app, { validateCsrfToken });
   registerValidationsRoutes(app, { validateCsrfToken });
-  registerVigoliumRoutes(app, { ROOT });
+  registerVigoliumRoutes(app, { ROOT, validateCsrfToken });
   registerGhostCommandRoutes(app, { runPipeline });
 
   registerInboundWebhooks(app);

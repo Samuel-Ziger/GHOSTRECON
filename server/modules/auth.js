@@ -344,7 +344,8 @@ function verifyJwt(token) {
   }
 
   const now = Math.floor(Date.now() / 1000);
-  if (payload.exp && Number(payload.exp) < now) return null;
+  if (payload.exp == null || !Number.isFinite(Number(payload.exp))) return null;
+  if (Number(payload.exp) < now) return null;
   if (payload.nbf && Number(payload.nbf) > now) return null;
   if (STATE.jwt.audience) {
     const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
@@ -468,7 +469,24 @@ export function requireAuth(opts = {}) {
 
   return function authMw(req, res, next) {
     const url = (req.originalUrl || req.url || '').split('?')[0];
-    if (allow.some((re) => re.test(url))) return next();
+    const onAllowlist = allow.some((re) => re.test(url));
+
+    const tryAttachOptionalToken = () => {
+      const tok = extractToken(req);
+      if (!tok) return;
+      let principal = null;
+      if (tok.kind === 'apikey' || (tok.kind === 'bearer' && !tok.value.includes('.'))) {
+        principal = verifyApiKey(tok.value);
+      } else if (tok.kind === 'bearer') {
+        principal = verifyJwt(tok.value) || verifyApiKey(tok.value);
+      }
+      if (principal) attachPrincipal(req, principal);
+    };
+
+    if (onAllowlist) {
+      tryAttachOptionalToken();
+      return next();
+    }
 
     if (STATE.disabled) {
       // Only attach synthetic principal for loopback. Remote requests stay unauthenticated.
@@ -530,7 +548,19 @@ export function requireScope(scope, opts = {}) {
     }
     if (typeof opts.intrusiveCheck === 'function') {
       let intrusive = false;
-      try { intrusive = Boolean(opts.intrusiveCheck(req)); } catch { /* ignore */ }
+      try {
+        intrusive = Boolean(opts.intrusiveCheck(req));
+      } catch (e) {
+        audit(req, principal, 'deny', {
+          reason: 'intrusive_check_failed',
+          error: e?.message || String(e),
+        });
+        res.status(500).json({
+          ok: false,
+          error: 'falha ao classificar risco da requisição (intrusiveCheck)',
+        });
+        return;
+      }
       if (intrusive) {
         const escalate = opts.escalateScope || 'recon.intrusive';
         if (!principalHasScope(principal, escalate)) {

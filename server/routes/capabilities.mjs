@@ -10,17 +10,30 @@ import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs'
 import { githubCapabilities } from '../modules/github-token.mjs';
 
 export function registerCapabilitiesRoutes(app, { ROOT }) {
-  app.get('/api/capabilities', async (_req, res) => {
+  app.get('/api/capabilities', async (req, res) => {
     try {
       const cap = await getKaliCapabilities();
+      const authenticated = Boolean(req.principal);
       let wifi = null;
-      try {
-        wifi = await getWifiCapabilities();
-      } catch (e) {
+      if (authenticated) {
+        try {
+          wifi = await getWifiCapabilities();
+        } catch (e) {
+          wifi = {
+            ok: false,
+            kali: Boolean(cap?.kali),
+            message: e?.message || String(e),
+            adapter: { found: false, matches: [] },
+            tools: {},
+            preferredIface: null,
+            readyForAttack: false,
+          };
+        }
+      } else {
         wifi = {
           ok: false,
           kali: Boolean(cap?.kali),
-          message: e?.message || String(e),
+          message: 'Inventário WiFi/ALFA requer autenticação',
           adapter: { found: false, matches: [] },
           tools: {},
           preferredIface: null,
@@ -69,10 +82,15 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
       } catch (e) {
         vigolium = { ok: false, installed: false, message: e?.message || String(e) };
       }
+      const github = githubCapabilities();
+      const githubPublic = authenticated
+        ? github
+        : { configured: Boolean(github?.configured), token_preview: null };
+
       res.json({
         ...cap,
         ai: aiKeysConfigured(),
-        github: githubCapabilities(),
+        github: githubPublic,
         modules: listModuleManifests(),
         externalTools: listExternalToolPacks(),
         shannon,
@@ -87,7 +105,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         message: e.message,
         tools: {},
         ai: aiKeysConfigured(),
-        github: githubCapabilities(),
+        github: { configured: false, token_preview: null },
         modules: listModuleManifests(),
         externalTools: listExternalToolPacks(),
         shannon: null,

@@ -428,10 +428,25 @@
       return j;
     }
 
+    let csrfToken = '';
+
+    async function ensureCsrf() {
+      if (csrfToken) return csrfToken;
+      const res = await fetch(apiUrl('/api/csrf-token'), { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      csrfToken = String(data?.token || '');
+      if (!csrfToken) throw new Error('token CSRF vazio');
+      return csrfToken;
+    }
+
     async function apiPost(path, body) {
+      const token = await ensureCsrf();
       const res = await fetch(apiUrl(path), {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: authHeaders({
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': token,
+        }),
         body: JSON.stringify(body || {}),
       });
       const j = await res.json().catch(() => ({}));

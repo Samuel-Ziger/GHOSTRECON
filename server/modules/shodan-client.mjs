@@ -304,7 +304,7 @@ export async function runShodanMembershipRecon({
   domain,
   hosts = [],
   apiKey,
-  hostInScope = () => true,
+  hostInScope = () => false,
   limits: lim = defaultLimits,
   fetchImpl = globalThis.fetch,
   signal,
@@ -452,6 +452,7 @@ export async function runShodanMembershipRecon({
       for (const hn of m.hostnames || []) {
         if (hostInScope(hn)) subdomains.push(String(hn).toLowerCase());
       }
+      const scopedHostnames = (m.hostnames || []).filter((hn) => hostInScope(hn));
       findings.push(
         findingDraft({
           type: 'intel',
@@ -462,7 +463,7 @@ export async function runShodanMembershipRecon({
             m.product && `product: ${m.product}`,
             m.org && `org: ${m.org}`,
             m.title && `title: ${m.title}`,
-            m.hostnames?.length && `hostnames: ${m.hostnames.join(', ')}`,
+            scopedHostnames.length && `hostnames: ${scopedHostnames.join(', ')}`,
             m.vulns?.length && `vulns: ${m.vulns.join(', ')}`,
           ]
             .filter(Boolean)
@@ -485,6 +486,7 @@ export async function runShodanMembershipRecon({
       resolveHosts,
       lim.shodanResolveMaxHosts ?? 14,
       lim.shodanMaxIps ?? 12,
+      { signal },
     );
   }
   for (const ip of resolved) {

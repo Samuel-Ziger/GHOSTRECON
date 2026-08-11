@@ -742,6 +742,19 @@
     let showDorksInList = false;
     let reporteLiveBc = null;
     let reporteLiveApplySeq = 0;
+
+    function authHeaders(extra) {
+      const h = Object.assign({}, extra || {});
+      try {
+        const raw = localStorage.getItem('ghostrecon_auth_json');
+        if (raw) {
+          const cfg = JSON.parse(raw);
+          if (cfg && cfg.ghostreconApiKey) h['X-API-Key'] = cfg.ghostreconApiKey;
+        }
+      } catch (_) {}
+      return h;
+    }
+
     const FP_URL_NORMALIZE_TYPES = new Set([
       'endpoint',
       'param',
@@ -885,7 +898,7 @@
     }
 
     async function fetchCsrf() {
-      const r = await fetch(apiUrl('/api/csrf-token'));
+      const r = await fetch(apiUrl('/api/csrf-token'), { headers: authHeaders() });
       const d = await r.json();
       csrf = String(d.token || '');
       if (!csrf) throw new Error('CSRF vazio');
@@ -899,7 +912,7 @@
       }
       let r;
       try {
-        r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)));
+        r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)), { headers: authHeaders() });
       } catch (_) {
         serverItems = [];
         validatedFp.clear();
@@ -1005,7 +1018,7 @@
 
     async function loadAiState() {
       try {
-        const r = await fetch(apiUrl('/api/capabilities'));
+        const r = await fetch(apiUrl('/api/capabilities'), { headers: authHeaders() });
         if (!r.ok) return;
         const d = await r.json().catch(() => ({}));
         aiUseOpenrouter = Boolean(d && d.ai && d.ai.openrouter);
@@ -1014,7 +1027,7 @@
 
     async function loadLatestRunIntoChecklist(preferredTargetRaw) {
       const preferredTarget = normalizeTarget(preferredTargetRaw || target);
-      const rList = await fetch(apiUrl('/api/runs?limit=50'));
+      const rList = await fetch(apiUrl('/api/runs?limit=50'), { headers: authHeaders() });
       if (!rList.ok) throw new Error('Não foi possível listar recons na base (' + rList.status + ').');
       const dList = await rList.json().catch(() => ({}));
       const runs = Array.isArray(dList.runs) ? dList.runs : [];
@@ -1028,7 +1041,7 @@
         throw new Error('Recon inválido retornado pela API.');
       }
       const runId = Number(chosen.id);
-      const rRun = await fetch(apiUrl('/api/runs/' + runId));
+      const rRun = await fetch(apiUrl('/api/runs/' + runId), { headers: authHeaders() });
       if (!rRun.ok) throw new Error('Não foi possível carregar run #' + String(runId) + ' (' + rRun.status + ').');
       const run = await rRun.json().catch(() => ({}));
       const rows0 = extractFindingsFromImportRoot(run)
@@ -1310,7 +1323,7 @@
       };
       const r = await fetch(apiUrl('/api/manual-validations'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
         body: JSON.stringify(body),
       });
       const d = await r.json().catch(() => ({}));
@@ -1349,7 +1362,7 @@
       const runPicker = async (preferredId) => {
         let cats = [];
         try {
-          const r = await fetch(apiUrl('/api/brain/categories'));
+          const r = await fetch(apiUrl('/api/brain/categories'), { headers: authHeaders() });
           const d = await r.json().catch(() => ({}));
           cats = Array.isArray(d.items) ? d.items : [];
         } catch (_) {}
@@ -1372,7 +1385,7 @@
               await fetchCsrf();
               const r = await fetch(apiUrl('/api/brain/categories'), {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
                 body: JSON.stringify({ title }),
               });
               const d = await r.json().catch(() => ({}));
@@ -1424,7 +1437,7 @@
               await fetchCsrf();
               const r = await fetch(apiUrl('/api/brain/categories'), {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
                 body: JSON.stringify({ title }),
               });
               const d = await r.json().catch(() => ({}));
@@ -1449,7 +1462,7 @@
             await fetchCsrf();
             const r = await fetch(apiUrl('/api/brain/link'), {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+              headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
               body: JSON.stringify({ target, fingerprint: fp, categoryId: selectedId }),
             });
             const d = await r.json().catch(() => ({}));
@@ -1946,7 +1959,7 @@
         await fetchCsrf();
         const r = await fetch(apiUrl('/api/anotacao-handoff'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+          headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
           body: JSON.stringify({ payload }),
         });
         const d = await r.json().catch(() => ({}));
@@ -2008,7 +2021,7 @@
         await fetchCsrf();
         const r = await fetch(apiUrl('/api/manual-validations/ai-report'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+          headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
           body: JSON.stringify({
             target,
             findings: sel,

@@ -79,7 +79,7 @@ app.use((req, res, next) => {
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, X-Engagement-Id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, X-Engagement-Id, X-API-Key, Authorization');
   if (req.method === 'OPTIONS') {
     if (!originAllowed) {
       res.sendStatus(403);

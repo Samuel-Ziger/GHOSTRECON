@@ -118,7 +118,17 @@ import { ROOT, firstIpv4FromDnsRecords, sleep } from '../pipeline-shared.mjs';
 import { dispatchRegistryModule } from '../dispatcher.mjs';
 import { pipelineCapabilityAllowed } from '../pipeline-state.mjs';
 
-
+function rethrowIfProbeAborted(error, signal = null) {
+  if (
+    signal?.aborted
+    || error?.name === 'AbortError'
+    || error?.code === 'PROCESS_ABORTED'
+    || error?.code === 'CLIENT_DISCONNECTED'
+    || error?.code === 'ABORT_ERR'
+  ) {
+    throw error;
+  }
+}
 
 export function shouldRunWafFingerprint(state) {
   if (!pipelineCapabilityAllowed(state, 'http_probe')) return false;
@@ -195,6 +205,7 @@ export async function runProbePhase(s) {
               urlAllowed: (url) => s.urlInScope(url),
             });
           } catch (e) {
+            rethrowIfProbeAborted(e, s.signal);
             r = { ok: false, url: u, error: e?.message || String(e) };
           } finally {
             emitAliveProgress(u);
@@ -382,6 +393,7 @@ export async function runProbePhase(s) {
             const hdrAudit = auditHeaderSurface(r.securityHeaders, { url: r.url });
             for (const f of hdrAudit.findings || []) addFinding(withProvenance(f, 'client_surface_audit'));
           } catch (e) {
+            rethrowIfProbeAborted(e, s.signal);
             log(`Client surface (headers): ${e.message}`, 'warn');
           }
         }
@@ -409,6 +421,7 @@ export async function runProbePhase(s) {
         }
       } catch (e) {
         if (s.signal?.aborted) throw s.signal.reason || e;
+        rethrowIfProbeAborted(e, s.signal);
         log(`CORS audit: ${e?.message || e}`, 'warn');
       }
       pipe('cors_audit', 'done');
@@ -587,6 +600,7 @@ export async function runProbePhase(s) {
                 for (const f of sec.findings) addFinding(f, null);
               }
             } catch (e) {
+              rethrowIfProbeAborted(e, s.signal);
               log(`security.txt: ${e.message}`, 'warn');
             }
           }
@@ -641,6 +655,7 @@ export async function runProbePhase(s) {
                 }
               }
             } catch (e) {
+              rethrowIfProbeAborted(e, s.signal);
               log(`OIDC discovery: ${e.message}`, 'warn');
             }
           }
@@ -665,6 +680,7 @@ export async function runProbePhase(s) {
     if (modules.includes('shodan')) {
       pipe('shodan', 'active');
       const sk = process.env.SHODAN_API_KEY?.trim();
+      let shodanFailed = false;
       if (!sk) {
         log('Shodan: define SHODAN_API_KEY para lookup passivo (api.shodan.io)', 'warn');
       } else {
@@ -704,10 +720,13 @@ export async function runProbePhase(s) {
             );
           }
         } catch (e) {
+          rethrowIfProbeAborted(e, s.signal);
           log(`Shodan: ${e.message}`, 'warn');
+          shodanFailed = true;
+          pipe('shodan', 'failed');
         }
       }
-      pipe('shodan', 'done');
+      if (!shodanFailed) pipe('shodan', 'done');
     } else {
       pipe('shodan', 'skip');
     }
@@ -727,10 +746,12 @@ export async function runProbePhase(s) {
         for (const row of specRows) {
           addFinding(row, row.type === 'param' ? 'params' : row.type === 'endpoint' ? 'endpoints' : null);
         }
+        pipe('openapi_specs', 'done');
       } catch (e) {
+        rethrowIfProbeAborted(e, s.signal);
         log(`OpenAPI harvest: ${e.message}`, 'warn');
+        pipe('openapi_specs', 'failed');
       }
-      pipe('openapi_specs', 'done');
     } else {
       pipe('openapi_specs', 'skip');
     }
