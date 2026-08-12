@@ -104,6 +104,7 @@ test('module registry lista modulos passivos implementados', () => {
     'api_contract_diff',
     'cookie_session_audit',
     'csrf_flow_audit',
+    'cve_correlation',
     'dom_clobbering_audit',
     'email_security_deep',
     'hexstrike_orchestrator',

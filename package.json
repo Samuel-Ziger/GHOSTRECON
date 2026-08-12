@@ -1,7 +1,7 @@
 {
   "name": "ghostrecon",
   "version": "1.0.0",
-  "description": "Framework passivo de OSINT / recon para bug bounty",
+  "description": "Plataforma local-first de recon autorizado, OSINT, validação defensiva e gestão de findings",
   "type": "module",
   "scripts": {
     "start": "node scripts/start-stack.mjs",
