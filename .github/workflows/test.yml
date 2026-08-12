@@ -16,7 +16,7 @@ on:
           - 'true'
 
 jobs:
-  node:
+  core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +25,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      # Gate padrão sem rede (exclui pipeline-smoke).
-      - run: npm test
+      - run: npm run test:core
       - run: npm run test:cli
 
   auto-hermetic:
@@ -39,6 +38,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:auto:hermetic
+
+  integrations-hermetic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integrations
 
   network-smoke:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.network_smoke == 'true' }}

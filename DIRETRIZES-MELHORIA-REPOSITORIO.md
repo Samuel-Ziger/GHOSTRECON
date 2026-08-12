@@ -77,9 +77,6 @@ Vigolium validam somente parsing e filtros: não executam o motor.
 - atualizar imediatamente documentação que descreva um gate antigo.
 
 ### P1 — estabilização arquitetural
-
-- criar matriz de suporte com estados `stable`, `beta`, `experimental`,
-  `external` e `unavailable`;
 - separar gates de CI em `core`, `auto`, `integrations`, `environment` e
   `network`;
 - tornar catálogos Node, Vigolium, FrameSeven e Forge determinísticos e
@@ -169,9 +166,7 @@ Uma etapa só pode ser marcada como concluída quando:
 
 ## 8. Próximo ciclo recomendado
 
-1. medir e publicar duração dos grupos de testes;
-2. implantar a matriz de suporte/readiness;
-3. consolidar a fonte de classificação de risco dos módulos;
+
 4. concluir expansão efetiva do Vigolium antes de RBAC/engagement/OPSEC;
 5. executar E2E apenas em laboratório controlado para browser, DAST e cleanup;
 6. somente depois reavaliar a liberação operacional dos níveis Auto 3 e 4.

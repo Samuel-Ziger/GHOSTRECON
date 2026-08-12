@@ -708,6 +708,11 @@ Auto, Vigolium, FrameSeven, HexStrike e integrações. Para alterações no Auto
 comece pelos testes locais e sem rede:
 
 ```bash
+# Gates herméticos separados usados pela CI
+npm run test:core
+npm run test:auto:hermetic
+npm run test:integrations
+
 node --test \
   server/tests/auto-agent.test.js \
   server/tests/auto-planner-contract.test.js \
@@ -743,6 +748,7 @@ O gate padrão `npm test` é hermético e exclui smokes de rede. Use
 `npm run test:network` somente em ambiente autorizado e controlado. O estado
 corrente do gate deve ser confirmado pela execução dos comandos acima; falhas
 temporárias não são documentadas aqui como contrato permanente.
+
 
 Mocks e fixtures não substituem o E2E controlado de navegador, DAST,
 cancelamento, restart, contenção de escopo, redação e cleanup.

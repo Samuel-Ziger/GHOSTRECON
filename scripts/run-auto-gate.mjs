@@ -102,7 +102,13 @@ async function collectFiles() {
     else missing.push(name);
   };
 
-  for (const name of HERMETIC_AUTO) add(name);
+  // Todo teste auto-*.test.js pertence ao gate Auto por convenção. A lista
+  // acima mantém também dependências de contrato compartilhadas (scope,
+  // dispatcher, runner etc.) sem duplicar manualmente cada novo teste Auto.
+  for (const name of [...entries].filter((n) => /^auto-.*\.test\.js$/.test(n)).sort()) add(name);
+  for (const name of HERMETIC_AUTO) {
+    if (!files.includes(path.join(TESTS_DIR, name))) add(name);
+  }
 
   if (!hermeticOnly) {
     for (const name of [...entries].filter((n) => /^cli-.*\.test\.js$/.test(n)).sort()) {
