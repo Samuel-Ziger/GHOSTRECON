@@ -749,10 +749,6 @@ O gate padrão `npm test` é hermético e exclui smokes de rede. Use
 corrente do gate deve ser confirmado pela execução dos comandos acima; falhas
 temporárias não são documentadas aqui como contrato permanente.
 
-`GET /api/capabilities` inclui uma matriz `support` versionada. Ela distingue
-nível de suporte, política operacional e readiness observada; disponibilidade
-de um binário nunca concede autorização nem substitui RBAC, scope, engagement,
-OPSEC ou aprovação humana.
 
 Mocks e fixtures não substituem o E2E controlado de navegador, DAST,
 cancelamento, restart, contenção de escopo, redação e cleanup.
