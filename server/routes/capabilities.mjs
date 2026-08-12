@@ -8,6 +8,7 @@ import { listModuleManifests } from '../modules/module-registry.mjs';
 import { listExternalToolPacks } from '../modules/external-tools/catalog.mjs';
 import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs';
 import { githubCapabilities } from '../modules/github-token.mjs';
+import { buildSupportMatrix } from '../app/support-matrix.mjs';
 
 export function registerCapabilitiesRoutes(app, { ROOT }) {
   app.get('/api/capabilities', async (req, res) => {
@@ -86,6 +87,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
       const githubPublic = authenticated
         ? github
         : { configured: Boolean(github?.configured), token_preview: null };
+      const support = buildSupportMatrix({ observed: { vigolium, hexstrike } });
 
       res.json({
         ...cap,
@@ -98,6 +100,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         hexstrike,
         vigolium,
         wifi,
+        support,
       });
     } catch (e) {
       res.status(500).json({
@@ -113,6 +116,7 @@ export function registerCapabilitiesRoutes(app, { ROOT }) {
         hexstrike: null,
         vigolium: null,
         wifi: null,
+        support: buildSupportMatrix(),
       });
     }
   });

@@ -1,7 +1,7 @@
 {
   "name": "ghostrecon",
   "version": "1.0.0",
-  "description": "Framework passivo de OSINT / recon para bug bounty",
+  "description": "Plataforma local-first de recon autorizado, OSINT, validação defensiva e gestão de findings",
   "type": "module",
   "scripts": {
     "start": "node scripts/start-stack.mjs",
@@ -17,6 +17,8 @@
     "start:ghost": "bash ghost-local-v5/ghost-local/start.sh",
     "dev": "node --watch server/index.js",
     "test": "node scripts/run-server-tests.mjs",
+    "test:core": "node scripts/run-server-tests.mjs --group=core",
+    "test:integrations": "node scripts/run-server-tests.mjs --group=integrations",
     "test:network": "node scripts/run-server-tests.mjs --network",
     "test:all": "node scripts/run-server-tests.mjs --include-network",
     "test:auto:hermetic": "node scripts/run-auto-gate.mjs --hermetic-only",

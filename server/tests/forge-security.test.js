@@ -894,6 +894,7 @@ test(
   async () => {
     const calls = [];
     const runner = await createBubblewrapForgeSandboxRunner({
+      bwrapPath: process.execPath,
       runProcessImpl: async (command, args, options) => {
         calls.push({ command, args, options });
         return {
@@ -918,7 +919,7 @@ test(
 
     assert.equal(result.findings[0].value, 'ok');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].command, '/usr/bin/bwrap');
+    assert.equal(calls[0].command, process.execPath);
     assert.ok(calls[0].args.includes('--unshare-all'));
     assert.ok(calls[0].args.includes('--unshare-user'));
     assert.ok(calls[0].args.includes('--disable-userns'));
@@ -928,6 +929,7 @@ test(
     assert.match(calls[0].options.input, /bwrap_fixture/);
 
     const rejecting = await createBubblewrapForgeSandboxRunner({
+      bwrapPath: process.execPath,
       runProcessImpl: async () => ({
         ok: true,
         code: 0,

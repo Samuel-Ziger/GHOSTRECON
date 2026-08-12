@@ -218,7 +218,9 @@ test('RAG usa diretórios 0700, arquivos 0600, escrita atômica e limites fail-c
       plan: { modules: ['security_headers'], context: 'y'.repeat(20_000) },
     });
     assert.equal(modeOf(await fs.stat(ragDir)), 0o700);
-    assert.equal(modeOf(await fs.stat(path.join(ragDir, 'decisions'))), 0o700);
+    // target ativa o particionamento tenant-aware; valide o diretório efetivo
+    // retornado pelo writer em vez de presumir o layout legado não particionado.
+    assert.equal(modeOf(await fs.stat(path.join(first.baseDir, 'decisions'))), 0o700);
     assert.equal(modeOf(await fs.stat(first.filePath)), 0o600);
     assert.ok((await fs.stat(first.filePath)).size <= 4096);
     assert.match(await fs.readFile(first.filePath, 'utf8'), /TRUNCATED/);
