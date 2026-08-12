@@ -739,11 +739,10 @@ npm run test:mcp
 GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js').then(() => console.log('node app ok'))"
 ```
 
-O gate Auto corrente não está verde: `auto-agent.test.js` referencia
-`pipelineState` inexistente, e `auth-principal-restart.test.js` precisa ser
-adaptado ao harness de subprocessos do Node 22. `npm test` também inclui
-`pipeline-smoke.test.js`, que pode consultar `example.com`; esse smoke deve ser
-separado em job opt-in/autorizado antes de existir um gate hermético oficial.
+O gate padrão `npm test` é hermético e exclui smokes de rede. Use
+`npm run test:network` somente em ambiente autorizado e controlado. O estado
+corrente do gate deve ser confirmado pela execução dos comandos acima; falhas
+temporárias não são documentadas aqui como contrato permanente.
 
 Mocks e fixtures não substituem o E2E controlado de navegador, DAST,
 cancelamento, restart, contenção de escopo, redação e cleanup.

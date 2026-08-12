@@ -140,7 +140,11 @@ function isAbsoluteLocalPath(value) {
 }
 
 function boundedText(value, max = MAX_TEXT) {
-  const clean = redactAutoText(String(value ?? '')).replace(/\0/g, '');
+  // Findings already crossed the structural redaction boundary above. Keep
+  // cryptographic evidence/plan fingerprints useful for provenance while the
+  // non-cloud policy continues to remove credentials, headers and known token
+  // formats. Cloud-bound callers apply their stricter hash policy separately.
+  const clean = redactAutoText(String(value ?? ''), process.env, { cloud: false }).replace(/\0/g, '');
   if (clean.length <= max) return clean;
   return `${clean.slice(0, max)}…[TRUNCATED:${clean.length - max}]`;
 }

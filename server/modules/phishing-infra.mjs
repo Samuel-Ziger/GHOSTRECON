@@ -22,26 +22,26 @@ import https from 'node:https';
 // DNS / Email auth (SPF, DKIM selectors, DMARC)
 // ============================================================================
 
-async function safeResolve(host, type) {
+async function safeResolve(host, type, resolver = dns) {
   try {
-    if (type === 'TXT') return await dns.resolveTxt(host);
-    if (type === 'MX') return await dns.resolveMx(host);
-    if (type === 'NS') return await dns.resolveNs(host);
-    if (type === 'A') return await dns.resolve4(host);
-    if (type === 'AAAA') return await dns.resolve6(host);
-    if (type === 'CNAME') return await dns.resolveCname(host);
+    if (type === 'TXT') return await resolver.resolveTxt(host);
+    if (type === 'MX') return await resolver.resolveMx(host);
+    if (type === 'NS') return await resolver.resolveNs(host);
+    if (type === 'A') return await resolver.resolve4(host);
+    if (type === 'AAAA') return await resolver.resolve6(host);
+    if (type === 'CNAME') return await resolver.resolveCname(host);
   } catch {
     return null;
   }
   return null;
 }
 
-export async function auditCampaignDomain(domain) {
+export async function auditCampaignDomain(domain, { resolver = dns } = {}) {
   const findings = [];
   const summary = { domain, dns: {} };
 
   // MX
-  const mx = await safeResolve(domain, 'MX');
+  const mx = await safeResolve(domain, 'MX', resolver);
   summary.dns.mx = mx;
   if (!mx || !mx.length) {
     findings.push({
@@ -53,7 +53,7 @@ export async function auditCampaignDomain(domain) {
   }
 
   // SPF
-  const txts = (await safeResolve(domain, 'TXT')) || [];
+  const txts = (await safeResolve(domain, 'TXT', resolver)) || [];
   const flat = txts.map((t) => t.join('').trim());
   summary.dns.txt = flat;
   const spf = flat.find((t) => /^v=spf1\b/i.test(t));
@@ -88,7 +88,7 @@ export async function auditCampaignDomain(domain) {
   }
 
   // DMARC
-  const dmarcTxt = (await safeResolve(`_dmarc.${domain}`, 'TXT')) || [];
+  const dmarcTxt = (await safeResolve(`_dmarc.${domain}`, 'TXT', resolver)) || [];
   const dmarcFlat = dmarcTxt.map((t) => t.join('').trim());
   const dmarc = dmarcFlat.find((t) => /^v=DMARC1\b/i.test(t));
   summary.dns.dmarc = dmarc || null;
@@ -117,7 +117,7 @@ export async function auditCampaignDomain(domain) {
   const dkimFound = [];
   for (const sel of selectors) {
     const host = `${sel}._domainkey.${domain}`;
-    const d = await safeResolve(host, 'TXT');
+    const d = await safeResolve(host, 'TXT', resolver);
     if (d && d.length) dkimFound.push({ selector: sel, value: d.map((t) => t.join('')).join(' ') });
   }
   summary.dns.dkim = dkimFound;
@@ -131,7 +131,7 @@ export async function auditCampaignDomain(domain) {
   }
 
   // NS / A — sanity check (domínio existe mesmo?)
-  const ns = await safeResolve(domain, 'NS');
+  const ns = await safeResolve(domain, 'NS', resolver);
   summary.dns.ns = ns;
   if (!ns || !ns.length) {
     findings.push({

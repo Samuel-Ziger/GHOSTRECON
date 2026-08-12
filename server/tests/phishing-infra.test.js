@@ -1,12 +1,20 @@
 /**
- * Phishing infra — parseSpf determinístico + auditCampaignDomain contra TLD
- * inexistente (tolerante a falhas DNS).
+ * Phishing infra — parseSpf e auditCampaignDomain determinísticos, sem rede.
  *
  * compareFingerprints depende de rede — coberto por smoke manual, pulado aqui.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSpf, auditCampaignDomain } from '../modules/phishing-infra.mjs';
+
+const unavailableDns = Object.freeze({
+  resolveTxt: async () => { throw new Error('fixture: ENOTFOUND'); },
+  resolveMx: async () => { throw new Error('fixture: ENOTFOUND'); },
+  resolveNs: async () => { throw new Error('fixture: ENOTFOUND'); },
+  resolve4: async () => { throw new Error('fixture: ENOTFOUND'); },
+  resolve6: async () => { throw new Error('fixture: ENOTFOUND'); },
+  resolveCname: async () => { throw new Error('fixture: ENOTFOUND'); },
+});
 
 // ============================================================================
 // parseSpf — pure, determinístico
@@ -63,7 +71,7 @@ test('parseSpf: raw preservado', () => {
 
 test('auditCampaignDomain: domínio inexistente produz findings sem throw', async () => {
   // TLD .invalid é reservado (RFC 2606) — resolvers devem falhar
-  const r = await auditCampaignDomain('ghostrecon-canary-nope.invalid');
+  const r = await auditCampaignDomain('ghostrecon-canary-nope.invalid', { resolver: unavailableDns });
   assert.equal(r.domain, 'ghostrecon-canary-nope.invalid');
   assert.ok(Array.isArray(r.findings));
   assert.ok(r.findings.length > 0, 'domínio inválido deveria produzir pelo menos um finding');
@@ -72,7 +80,7 @@ test('auditCampaignDomain: domínio inexistente produz findings sem throw', asyn
 });
 
 test('auditCampaignDomain: summary tem shape esperado', async () => {
-  const r = await auditCampaignDomain('ghostrecon-nope2.invalid');
+  const r = await auditCampaignDomain('ghostrecon-nope2.invalid', { resolver: unavailableDns });
   assert.ok(r.summary);
   assert.equal(r.summary.domain, 'ghostrecon-nope2.invalid');
   assert.ok('dns' in r.summary);
@@ -81,7 +89,7 @@ test('auditCampaignDomain: summary tem shape esperado', async () => {
 
 test('auditCampaignDomain: domínio vazio falha cedo de forma controlada', async () => {
   // não deveria throw — apenas findings com DNS vazio
-  const r = await auditCampaignDomain('');
+  const r = await auditCampaignDomain('', { resolver: unavailableDns });
   assert.ok(r);
   assert.ok(Array.isArray(r.findings));
 });
