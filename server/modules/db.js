@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { fingerprintFinding, norm, isSha256FingerprintHex } from './db-common.js';
 import { serializeFindingsForRunSnapshot } from './finding-serialize.js';
 import { redactRunPayloadForPersistence } from './finding-redaction.mjs';
+import { throwIfAborted } from './http-utils.js';
 export { fingerprintFinding, norm, isSha256FingerprintHex } from './db-common.js';
 export { resolveLocalProjectDbDir, sanitizePathSegment } from './db-sqlite.js';
 
@@ -49,11 +50,10 @@ function useSupabaseApi() {
   if (!supabaseAutoEnabled()) return false;
   if (useDatabaseUrl()) return false;
   const url = process.env.SUPABASE_URL?.trim();
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    process.env.SUPABASE_ANON_KEY?.trim() ||
-    process.env.SUPABASE_KEY?.trim() ||
-    process.env.SUPABASE_PUBLISHABLE_KEY?.trim();
+  // A API REST é um backend de escrita. Chaves anon/publishable podem ser
+  // usadas por consumidores estritamente de leitura, mas nunca selecionam a
+  // persistência primária do scanner.
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
   return Boolean(url && key);
 }
 
@@ -98,6 +98,10 @@ async function postgresReachable() {
 
 function remoteFallbackEnabled() {
   return String(process.env.GHOSTRECON_REMOTE_FALLBACK_SQLITE ?? '1').trim() !== '0';
+}
+
+function remoteBackendAvailable() {
+  return usePostgresPrimary() && (useDatabaseUrl() || useSupabaseApi());
 }
 
 function ensureValidateDir() {
@@ -189,26 +193,36 @@ function listValidationArchivesForTarget(targetRaw) {
  * @param {string} [payload.localProjectName] nome da pasta projeto; cria `escopo/{nome}/{domínio}/ghostrecon.db`
  * @returns {Promise<{ runId: number, intelMerge: object, localMirrorPath?: string } | null>}
  */
-export async function saveRun(payload) {
+export async function saveRun(
+  payload,
+  {
+    signal = null,
+    pgAdapter = pg,
+    supabaseAdapter = supabase,
+    sqliteAdapter = sqlite,
+  } = {},
+) {
+  throwIfAborted(signal);
   const sanitizedPayload = sanitizeRunPayloadForPersistence(payload);
   const { localProjectName, ...rest } = sanitizedPayload;
   const projectDir = sqlite.resolveLocalProjectDbDir(localProjectName, rest.target);
-  const useRemote = usePostgresPrimary();
+  const useRemote = remoteBackendAvailable();
 
   let result = null;
   if (useRemote && useDatabaseUrl()) {
-    result = await pg.saveRun(rest);
+    result = await pgAdapter.saveRun(rest, { signal });
   } else if (useRemote && useSupabaseApi()) {
-    result = await supabase.saveRun(rest);
+    result = await supabaseAdapter.saveRun(rest, { signal });
   } else if (projectDir) {
-    result = sqlite.saveRunToProjectDir(projectDir, rest);
+    result = sqliteAdapter.saveRunToProjectDir(projectDir, rest);
   } else {
-    result = sqlite.saveRun(rest);
+    result = sqliteAdapter.saveRun(rest);
   }
 
   if (projectDir && useRemote) {
+    throwIfAborted(signal);
     try {
-      const mirror = sqlite.saveRunToProjectDir(projectDir, rest);
+      const mirror = sqliteAdapter.saveRunToProjectDir(projectDir, rest);
       if (mirror?.dbPath) {
         if (result) {
           result = { ...result, localMirrorPath: mirror.dbPath };
@@ -227,8 +241,9 @@ export async function saveRun(payload) {
   }
 
   if (!result && useRemote && !projectDir && remoteFallbackEnabled()) {
+    throwIfAborted(signal);
     try {
-      const fallback = sqlite.saveRun(rest);
+      const fallback = sqliteAdapter.saveRun(rest);
       if (fallback?.dbPath) {
         result = {
           ...fallback,
@@ -242,6 +257,7 @@ export async function saveRun(payload) {
   }
 
   if (result?.runId != null && String(localProjectName || '').trim() && Array.isArray(rest.findings)) {
+    throwIfAborted(signal);
     try {
       const d = sqlite.getDb();
       const m = sqlite.mergeProjectSecretPeersDb(d, localProjectName, rest.target, result.runId, rest.findings);
@@ -261,11 +277,19 @@ export async function saveRun(payload) {
  */
 export function sanitizeRunPayloadForPersistence(payload = {}) {
   const safe = redactRunPayloadForPersistence(payload);
+  const requiresStructuredSnapshot = Array.isArray(safe.findings)
+    && safe.findings.some((finding) => finding?.type === 'api_contract_snapshot');
+  const findingsJson = payload.findingsJson == null && !requiresStructuredSnapshot
+    ? null
+    : serializeFindingsForRunSnapshot(safe.findings);
+  if (requiresStructuredSnapshot && !findingsJson) {
+    const error = new Error('api_contract_snapshot não pôde ser serializado com integridade');
+    error.code = 'SNAPSHOT_SERIALIZATION_FAILED';
+    throw error;
+  }
   return {
     ...safe,
-    findingsJson: payload.findingsJson == null
-      ? null
-      : serializeFindingsForRunSnapshot(safe.findings),
+    findingsJson,
   };
 }
 
@@ -294,6 +318,122 @@ export async function listRuns(limit) {
     if (useSupabaseApi()) return supabase.listRuns(limit);
   }
   return sqlite.listRuns(limit);
+}
+
+/**
+ * Candidatos de baseline por alvo. Em modo remoto, inclui o SQLite local para
+ * que um fallback de persistência continue legível no run seguinte.
+ */
+export async function listRunsForTarget(
+  target,
+  limit = 80,
+  {
+    signal = null,
+    localProjectName = '',
+    pgAdapter = pg,
+    supabaseAdapter = supabase,
+    sqliteAdapter = sqlite,
+  } = {},
+) {
+  throwIfAborted(signal);
+  const t = norm(target);
+  const lim = Math.min(500, Math.max(1, Number(limit) || 80));
+  const remoteRows = [];
+  const localRows = [];
+  const useRemote = remoteBackendAvailable();
+  const projectDir = sqlite.resolveLocalProjectDbDir(localProjectName, t);
+  let remoteError = null;
+  let localError = null;
+
+  try {
+    if (useRemote && useDatabaseUrl()) {
+      const remote = await pgAdapter.listRunsForTarget(t, lim, { signal });
+      remoteRows.push(...remote.map((row) => ({ ...row, _storageSource: 'postgres' })));
+    } else if (useRemote && useSupabaseApi()) {
+      const remote = await supabaseAdapter.listRunsForTarget(t, lim, { signal });
+      remoteRows.push(...remote.map((row) => ({ ...row, _storageSource: 'supabase' })));
+    }
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
+    remoteError = error;
+  }
+  throwIfAborted(signal);
+
+  try {
+    if (projectDir) {
+      const local = sqliteAdapter.listRunsForTargetInProjectDir(projectDir, t, lim);
+      const projectName = sqlite.sanitizePathSegment(String(localProjectName || '').trim());
+      localRows.push(...local.map((row) => ({
+        ...row,
+        _storageSource: 'sqlite-project',
+        _storageProjectName: projectName,
+      })));
+    } else if (!useRemote || remoteFallbackEnabled()) {
+      const local = sqliteAdapter.listRunsForTarget(t, lim, { strict: true });
+      localRows.push(...local.map((row) => ({ ...row, _storageSource: 'sqlite' })));
+    }
+  } catch (error) {
+    localError = error;
+  }
+  throwIfAborted(signal);
+
+  // Um erro remoto não apaga um mirror/fallback comprovadamente legível. Se
+  // não há candidato local, mantemos o fail-closed para não confundir falha
+  // de storage com inexistência de baseline.
+  if (remoteError && localRows.length === 0) throw remoteError;
+  if (localError && remoteRows.length === 0) throw localError;
+  const degradedErrors = [remoteError, localError].filter(Boolean);
+  const rows = [...remoteRows, ...localRows].map((row) => degradedErrors.length
+    ? {
+        ...row,
+        _storageDegraded: true,
+        _storageWarning: degradedErrors
+          .map((error) => String(error?.message || error).slice(0, 300))
+          .join(' | '),
+      }
+    : row);
+
+  return rows.sort((left, right) => {
+    const leftCreated = Date.parse(
+      left.created_at instanceof Date ? left.created_at.toISOString() : String(left.created_at || ''),
+    );
+    const rightCreated = Date.parse(
+      right.created_at instanceof Date ? right.created_at.toISOString() : String(right.created_at || ''),
+    );
+    const byCreated = (Number.isFinite(rightCreated) ? rightCreated : Number.NEGATIVE_INFINITY)
+      - (Number.isFinite(leftCreated) ? leftCreated : Number.NEGATIVE_INFINITY);
+    if (byCreated) return byCreated;
+    return Number(right.id || 0) - Number(left.id || 0);
+  });
+}
+
+export async function getRunByStorageRef(
+  id,
+  {
+    row = null,
+    signal = null,
+    localProjectName = '',
+    pgAdapter = pg,
+    supabaseAdapter = supabase,
+    sqliteAdapter = sqlite,
+  } = {},
+) {
+  throwIfAborted(signal);
+  const source = row?._storageSource;
+  if (source === 'sqlite') return sqliteAdapter.getRunById(id, { strict: true });
+  if (source === 'sqlite-project') {
+    const projectName = String(localProjectName || row?._storageProjectName || '').trim();
+    const projectDir = sqlite.resolveLocalProjectDbDir(projectName, row?.target);
+    if (!projectDir) {
+      const error = new Error('referência SQLite de projeto sem identidade do projeto');
+      error.code = 'PROJECT_STORAGE_REFERENCE_INVALID';
+      throw error;
+    }
+    return sqliteAdapter.getRunByIdFromProjectDir(projectDir, id);
+  }
+  if (source === 'postgres') return pgAdapter.getRunById(id, { signal, strict: true });
+  if (source === 'supabase') return supabaseAdapter.getRunById(id, { signal, strict: true });
+  return getRunById(id);
 }
 
 export async function getRunById(id) {

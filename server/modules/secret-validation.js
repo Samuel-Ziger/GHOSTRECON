@@ -38,7 +38,7 @@ export async function validateSecretFindings(
     const raw = rawSecretFromFinding(f);
     const safeRef = safeSecretReference(raw || f.value);
     if (!raw) {
-      out.push({ ref: '', status: 'dead', reason: 'no_value', tokenStatus: 'unknown' });
+      out.push({ ref: '', status: 'unknown', reason: 'no_value', tokenStatus: 'unknown' });
       continue;
     }
 
@@ -54,11 +54,12 @@ export async function validateSecretFindings(
       // Mapeia para o formato legado esperado pelo caller
       const legacyStatus =
         safeResult.status === 'valid'    ? 'live'     :
-        safeResult.status === 'probable' ? 'probable' :
+        safeResult.status === 'probable' && network === true ? 'probable' :
         safeResult.status === 'expired'  ? 'dead'     :
         safeResult.status === 'invalid'  ? 'dead'     :
         safeResult.status === 'revoked'  ? 'dead'     :
-        /* unknown */                  'dead';
+        safeResult.status === 'public_configuration' ? 'unknown' :
+        /* unknown */                  'unknown';
 
       out.push({
         ref:            safeRef.ref,
@@ -74,13 +75,16 @@ export async function validateSecretFindings(
         noExpiration:   safeResult.noExpiration ?? false,
         jwtClaims:      safeResult.jwtClaims ?? null,
         probes:         safeResult.probes ?? [],
+        evidenceStatus: network === true && safeResult.probes?.length ? 'provider_response' : 'offline_structure_only',
+        signatureVerified: false,
+        impactVerified: false,
       });
     } catch (e) {
       if (signal?.aborted || e?.name === 'AbortError' || e?.code === 'ABORT_ERR') throw e;
       out.push({
         ref:         safeRef.ref,
         fingerprint: safeRef.fingerprint,
-        status:      'dead',
+        status:      'unknown',
         reason:      redactSecretText(e.message, raw),
         tokenStatus: 'unknown',
       });

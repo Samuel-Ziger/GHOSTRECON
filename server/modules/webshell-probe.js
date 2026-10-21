@@ -1,5 +1,8 @@
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
 import { limits } from '../config.js';
+import { readResponseSnippet } from './module-runner.mjs';
+import { fetchScoped, urlAllowedOrSameOrigin } from './scoped-fetch.mjs';
+import { combineAbortSignals, isAbortError, throwIfAborted } from './http-utils.js';
 
 /** Rotas típicas de webshell PHP (módulo conservador). */
 export const WEBSHELL_HEURISTIC_PATHS = ['shell.php', 'c99.php', 'cmd.php'];
@@ -35,12 +38,17 @@ function buildHeaders(auth, modules) {
 }
 
 /**
- * GET opcional `?cmd=id` em rotas conhecidas de webshell — muito conservador.
+ * GET sem parâmetros em rotas legadas; apenas observa conteúdo já exposto.
+ * Não envia comandos nem confirma existência/execução de webshell.
  * @param {{ origins: string[], auth?: object, modules?: string[], log?: function, maxOrigins?: number }} ctx
  * @returns {Promise<object[]>} achados `intel` (nunca "confirmed" automático)
  */
 export async function runWebshellHeuristicProbe(ctx) {
-  const { origins = [], auth = null, modules = [], log } = ctx || {};
+  const {
+    origins = [], auth = null, modules = [], log,
+    fetchImpl = globalThis.fetch, signal = null, urlAllowed = null,
+  } = ctx || {};
+  throwIfAborted(signal);
   const maxO = Math.max(1, Math.min(14, Number(ctx?.maxOrigins) || 10));
   const timeoutMs = Math.max(5000, Number(limits.probeTimeoutMs) || 12000);
   const out = [];
@@ -55,31 +63,33 @@ export async function runWebshellHeuristicProbe(ctx) {
       continue;
     }
     for (const path of WEBSHELL_HEURISTIC_PATHS) {
-      const probeUrl = `${base}${path}?cmd=id`;
+      const probeUrl = `${base}${path}`;
       await stealthPause(modules);
+      throwIfAborted(signal);
       try {
-        const res = await fetch(probeUrl, {
+        const res = await fetchScoped(probeUrl, {
+          fetchImpl,
           method: 'GET',
-          redirect: 'manual',
-          signal: AbortSignal.timeout(timeoutMs),
+          maxRedirects: 0,
+          urlAllowed: urlAllowedOrSameOrigin(probeUrl, urlAllowed),
+          signal: combineAbortSignals(signal, timeoutMs),
           headers: buildHeaders(auth, modules),
         });
-        const raw = await res.text().catch(() => '');
-        const text = raw.slice(0, 12000);
+        const text = await readResponseSnippet(res, 12_000);
         const ct = res.headers.get('content-type') || '';
         if (res.status !== 200) continue;
         if (!looksLikeLinuxIdOutput(text, ct)) continue;
-        const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 160);
         out.push({
           type: 'intel',
-          prio: 'high',
-          score: 78,
-          value: `Possível webshell (saída tipo \`id\`) — ${path} @ ${new URL(base).host}`,
-          meta: `webshell_heuristic • url=${probeUrl} • revisar falso positivo (CMS, proxy, página de ajuda)`,
+          prio: 'low',
+          score: 35,
+          value: `Conteúdo público semelhante a identidade Unix — ${path} @ ${new URL(base).host}`,
+          meta: `webshell_heuristic • evidence_status=candidate • command_sent=false • execution_verified=false • revisar conteúdo estático, CMS e páginas de ajuda`,
           url: probeUrl,
         });
-        if (typeof log === 'function') log(`Webshell heurístico: sinal forte em ${probeUrl}`, 'warn');
-      } catch {
+        if (typeof log === 'function') log(`Webshell: indicador de conteúdo em ${probeUrl}; execução não testada`, 'info');
+      } catch (error) {
+        if (isAbortError(error, signal)) throw error;
         /* ignore */
       }
     }

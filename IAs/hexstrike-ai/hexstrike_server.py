@@ -9020,6 +9020,23 @@ file_manager = FileOperationsManager()
 
 # API Routes
 
+@app.route("/", methods=["GET"])
+def root_index():
+    """Root landing endpoint so browsers hitting :8888/ do not get a bare 404."""
+    return jsonify({
+        "ok": True,
+        "service": "hexstrike-ai",
+        "version": "6.0.0",
+        "message": "HexStrike AI Tools API Server",
+        "endpoints": {
+            "health": "/health",
+            "telemetry": "/api/telemetry",
+            "cache_stats": "/api/cache/stats",
+            "processes": "/api/processes/list",
+            "intelligence": "/api/intelligence/analyze-target",
+        },
+    })
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint with comprehensive tool detection"""

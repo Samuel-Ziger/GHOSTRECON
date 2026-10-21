@@ -15,14 +15,17 @@
       "disabled": false
     },
     "hexstrike-ai": {
-      "command": "IAs/hexstrike-ai/hexstrike-env/bin/python3",
+      "command": "node",
       "args": [
-        "IAs/hexstrike-ai/hexstrike_mcp.py",
-        "--server",
-        "http://127.0.0.1:8888"
+        "mcp/hexstrike-mcp-launcher.mjs"
       ],
-      "description": "HexStrike AI local MCP for authorized offensive tooling",
-      "timeout": 300,
+      "env": {
+        "GHOSTRECON_HEXSTRIKE_URL": "http://127.0.0.1:8888",
+        "GHOSTRECON_HEXSTRIKE_PORT": "8888",
+        "PYTHONUNBUFFERED": "1"
+      },
+      "description": "HexStrike AI local MCP (autostarts API on :8888). Authorized offensive tooling only.",
+      "timeout": 600,
       "disabled": false
     }
   }

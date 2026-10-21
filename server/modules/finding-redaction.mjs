@@ -7,6 +7,13 @@ import {
 const MAX_FINDING_DEPTH = 12;
 const MAX_TEXT = 24_000;
 const MAX_EVIDENCE_TEXT = 4_000;
+const MAX_API_CONTRACT_SNAPSHOT_ARRAY_ITEMS = 5_000;
+// O snapshot já foi redigido na coleta e carrega a política na sua
+// compatibilidade. Reaplicar extras mutáveis na persistência alteraria o hash.
+const BUILTIN_REDACTION_ENV = Object.freeze({
+  GHOSTRECON_AUTO_REDACT_EXTRA: '',
+  GHOSTRECON_AUTO_CLOUD_REDACTION: '0',
+});
 
 const RAW_EVIDENCE_KEYS = new Set([
   'raw',
@@ -139,44 +146,53 @@ function isAbsoluteLocalPath(value) {
   );
 }
 
-function boundedText(value, max = MAX_TEXT) {
+function boundedText(value, max = MAX_TEXT, env = process.env) {
   // Findings already crossed the structural redaction boundary above. Keep
   // cryptographic evidence/plan fingerprints useful for provenance while the
   // non-cloud policy continues to remove credentials, headers and known token
   // formats. Cloud-bound callers apply their stricter hash policy separately.
-  const clean = redactAutoText(String(value ?? ''), process.env, { cloud: false }).replace(/\0/g, '');
+  const clean = redactAutoText(String(value ?? ''), env, { cloud: false }).replace(/\0/g, '');
   if (clean.length <= max) return clean;
   return `${clean.slice(0, max)}…[TRUNCATED:${clean.length - max}]`;
 }
 
-function redactInlineRawAssignments(value) {
-  return boundedText(value)
+function redactInlineRawAssignments(value, env = process.env) {
+  return boundedText(value, MAX_TEXT, env)
     .replace(RAW_ASSIGNMENT_PATTERN, `$1${AUTO_REDACTED_VALUE}`)
     .replace(LOCAL_PATH_ASSIGNMENT_PATTERN, '$1[LOCAL_PATH]');
 }
 
-function summarizeHttpExchange(value, kind) {
+function summarizeHttpExchange(value, kind, env = process.env) {
   if (value == null) return value;
   if (value && typeof value === 'object') {
-    return sanitizeFindingNode(value, { depth: 1 });
+    return sanitizeFindingNode(value, { depth: 1, env });
   }
 
-  const text = boundedText(value, MAX_EVIDENCE_TEXT);
+  const text = boundedText(value, MAX_EVIDENCE_TEXT, env);
   const firstLine = text.split(/\r?\n/, 1)[0]?.trim() || '';
   const marker = kind === 'request' ? '[REDACTED_HTTP_REQUEST]' : '[REDACTED_HTTP_RESPONSE]';
   if (!firstLine) return marker;
 
   if (kind === 'request') {
     const match = firstLine.match(/^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE|CONNECT)\s+(\S+)(?:\s+HTTP\/\d(?:\.\d)?)?/i);
-    if (match) return `${marker} ${match[1].toUpperCase()} ${boundedText(match[2], 1_500)}`;
+    if (match) return `${marker} ${match[1].toUpperCase()} ${boundedText(match[2], 1_500, env)}`;
   } else {
     const match = firstLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})(?:\s+([^\r\n]{0,100}))?/i);
-    if (match) return `${marker} status=${match[1]}${match[2] ? ` ${boundedText(match[2], 100)}` : ''}`;
+    if (match) return `${marker} status=${match[1]}${match[2] ? ` ${boundedText(match[2], 100, env)}` : ''}`;
   }
   return marker;
 }
 
-function sanitizeFindingNode(value, { key = '', depth = 0 } = {}) {
+function sanitizeFindingNode(
+  value,
+  {
+    key = '',
+    depth = 0,
+    maxArrayItems = 500,
+    maxObjectKeys = 500,
+    env = process.env,
+  } = {},
+) {
   if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
   const normalizedKey = canonicalKey(key);
 
@@ -184,30 +200,38 @@ function sanitizeFindingNode(value, { key = '', depth = 0 } = {}) {
     return `[REDACTED_${normalizedKey.toUpperCase()}]`;
   }
   if (HTTP_EXCHANGE_KEYS.has(normalizedKey)) {
-    return summarizeHttpExchange(value, normalizedKey);
+    return summarizeHttpExchange(value, normalizedKey, env);
   }
   if (typeof value === 'string') {
     if (LOCAL_PATH_KEYS.has(normalizedKey)) {
       if (ALWAYS_PRIVATE_PATH_KEYS.has(normalizedKey) && value.trim()) return '[LOCAL_PATH]';
       if (isAbsoluteLocalPath(value)) return '[LOCAL_PATH]';
-      return boundedText(redactLocalPathsForPublic(value));
+      return boundedText(redactLocalPathsForPublic(value), MAX_TEXT, env);
     }
     return normalizedKey === 'meta'
-      ? redactInlineRawAssignments(value)
-      : boundedText(value, normalizedKey.includes('snippet') ? MAX_EVIDENCE_TEXT : MAX_TEXT);
+      ? redactInlineRawAssignments(value, env)
+      : boundedText(value, normalizedKey.includes('snippet') ? MAX_EVIDENCE_TEXT : MAX_TEXT, env);
   }
   if (typeof value === 'bigint') return String(value);
   if (depth >= MAX_FINDING_DEPTH) return '[TRUNCATED_DEPTH]';
   if (Array.isArray(value)) {
-    return value.slice(0, 500).map((item) => sanitizeFindingNode(item, { depth: depth + 1 }));
+    return value.slice(0, maxArrayItems).map((item) => sanitizeFindingNode(item, {
+      depth: depth + 1,
+      maxArrayItems,
+      maxObjectKeys,
+      env,
+    }));
   }
-  if (typeof value !== 'object') return boundedText(value);
+  if (typeof value !== 'object') return boundedText(value, MAX_TEXT, env);
 
   const out = {};
-  for (const [childKey, child] of Object.entries(value).slice(0, 500)) {
-    out[boundedText(childKey, 300)] = sanitizeFindingNode(child, {
+  for (const [childKey, child] of Object.entries(value).slice(0, maxObjectKeys)) {
+    out[boundedText(childKey, 300, env)] = sanitizeFindingNode(child, {
       key: childKey,
       depth: depth + 1,
+      maxArrayItems,
+      maxObjectKeys,
+      env,
     });
   }
   return out;
@@ -223,13 +247,25 @@ function sanitizeFindingNode(value, { key = '', depth = 0 } = {}) {
  */
 export function redactFindingForPublic(finding) {
   if (!finding || typeof finding !== 'object') return null;
+  const isApiContractSnapshot = finding.type === 'api_contract_snapshot'
+    && finding.verification?.evidence?.apiContractSnapshot?.format
+      === 'ghostrecon.api-contract-snapshot';
+  const maxArrayItems = isApiContractSnapshot
+    ? MAX_API_CONTRACT_SNAPSHOT_ARRAY_ITEMS
+    : 500;
+  const redactionEnv = isApiContractSnapshot ? BUILTIN_REDACTION_ENV : process.env;
   const structurallyRedacted = redactAutoValue(finding, {
     maxDepth: MAX_FINDING_DEPTH,
-    maxArrayItems: 500,
+    maxArrayItems,
     maxObjectKeys: 500,
     preserveSensitiveKeys: STRUCTURAL_KEYS_TO_PRESERVE,
+    env: redactionEnv,
   });
-  return sanitizeFindingNode(structurallyRedacted);
+  return sanitizeFindingNode(structurallyRedacted, {
+    maxArrayItems,
+    maxObjectKeys: 500,
+    env: redactionEnv,
+  });
 }
 
 export function redactFindingsForPublic(findings = []) {

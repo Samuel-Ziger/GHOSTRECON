@@ -618,9 +618,6 @@ export function requireRole(role) {
 // ─────────────────────────────────────────────────────────────────────────────
 export function reconBodyIsIntrusive(body = {}) {
   if (!body || typeof body !== 'object') return false;
-  if (body.kaliMode === true) return true;
-  const profile = String(body.opsecProfile || '').toLowerCase();
-  if (profile === 'aggressive') return true;
   const effectiveModules = expandIntrusiveRunModules({
     modules: Array.isArray(body.modules) ? body.modules : [],
     engine: body.engine,

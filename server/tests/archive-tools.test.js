@@ -83,8 +83,23 @@ test('fetchArchiveToolUrls não consulta nem executa ferramenta não selecionada
   ]);
   assert.deepEqual(urls, [
     'https://example.com/from-gau',
-    'https://sub.example.com/also-in-scope',
   ]);
+});
+
+test('fetchArchiveToolUrls só aceita subdomínio quando a política de escopo o permite', async () => {
+  const executor = {
+    async commandExists() { return true; },
+    async run() {
+      return { code: 0, stdout: 'https://sub.example.com/from-policy\n' };
+    },
+  };
+  const urls = await fetchArchiveToolUrls('example.com', null, {
+    runGau: true,
+    runWaybackurls: false,
+    executor,
+    urlAllowed: (url) => new URL(url).hostname === 'sub.example.com',
+  });
+  assert.deepEqual(urls, ['https://sub.example.com/from-policy']);
 });
 
 test('fetchArchiveToolUrls propaga cancelamento e não inicia a próxima ferramenta', async () => {

@@ -164,6 +164,92 @@ test('validation Auto não executa verify nem arjun/x8 sem capacidades explícit
   ));
 });
 
+test('checkboxes manuais de SQLi deep e XSS seguro executam as implementações corrigidas', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async (url) => {
+    fetchCalls += 1;
+    const parsed = new URL(url);
+    const id = parsed.searchParams.get('id') || '';
+    const q = parsed.searchParams.get('q') || '';
+    if (id.endsWith("'")) {
+      return new Response('You have an error in your SQL syntax near quote', { status: 200 });
+    }
+    if (q.includes('GRXSS_')) {
+      return new Response(`<html>${q}</html>`, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+    return new Response('stable product page', { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = [];
+  const state = createPipelineState({
+    domain: 'example.invalid',
+    exactMatch: true,
+    modules: ['verify_sqli_deep', 'kali_xss_vibes'],
+    manualEffectiveCapabilities: ['verify_sqli_deep', 'kali_xss_vibes'],
+    emit: (event) => events.push(event),
+    profile: 'quick',
+  });
+  const endpoint = 'https://example.invalid/search?id=1&q=hello';
+  state.findings.push({ type: 'endpoint', prio: 'med', value: endpoint, url: endpoint });
+  state.paramUrlsForKali = [endpoint];
+
+  await runValidationPhase(state);
+
+  assert.ok(fetchCalls >= 6);
+  assert.ok(state.findings.some((finding) => (
+    finding.type === 'sqli' && finding.verification?.classification === 'probable'
+  )));
+  assert.ok(state.findings.some((finding) => (
+    finding.type === 'xss_reflection_candidate'
+      && finding.verification?.classification === 'candidate'
+  )));
+  assert.ok(events.some((event) => event.type === 'pipe' && event.name === 'xss_vibes' && event.state === 'done'));
+});
+
+test('validation entrega o AbortSignal do pipeline ao runner sqlmap selecionado', async () => {
+  const { events, state } = autoState(['sqlmap']);
+  const controller = new AbortController();
+  state.signal = controller.signal;
+  let receivedSignal = null;
+  state.runSqlmapModuleImpl = async (options) => {
+    receivedSignal = options.signal;
+    return [];
+  };
+
+  await runValidationPhase(state);
+
+  assert.equal(receivedSignal, controller.signal);
+  assert.ok(events.some(
+    (event) => event.type === 'pipe' && event.name === 'sqlmap' && event.state === 'active',
+  ));
+  assert.ok(events.some(
+    (event) => event.type === 'pipe' && event.name === 'sqlmap' && event.state === 'done',
+  ));
+});
+
+test('falha do runner sqlmap é contida e não vira done nem derruba o pipeline', async () => {
+  const { events, state } = autoState(['sqlmap']);
+  state.runSqlmapModuleImpl = async () => {
+    throw new Error('sqlmap_fixture_failure');
+  };
+
+  await runValidationPhase(state);
+
+  assert.ok(events.some(
+    (event) => event.type === 'pipe' && event.name === 'sqlmap' && event.state === 'failed',
+  ));
+  assert.equal(events.some(
+    (event) => event.type === 'pipe' && event.name === 'sqlmap' && event.state === 'done',
+  ), false);
+});
+
 test('asset discovery/takeover implícito é omitido no Auto sem capacidade', async (t) => {
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;

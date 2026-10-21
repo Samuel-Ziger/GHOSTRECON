@@ -25,7 +25,7 @@ import {
   writeAutoSessionSnapshot,
 } from '../auto-agent/session-store.mjs';
 
-const PROMPT_VERSION = 'auto-council-v3';
+const PROMPT_VERSION = 'auto-council-v4';
 function requestBody(overrides = {}) {
   return {
     domain: 'example.com',

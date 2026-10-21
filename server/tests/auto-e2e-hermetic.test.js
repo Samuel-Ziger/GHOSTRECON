@@ -106,7 +106,17 @@ test('E2E hermético: assisted approve corre pipeline e grava relatório', async
       getEngagementImpl: async () => eng,
       runPipeline: async ({ emit }) => {
         emit({ type: 'pipe', name: 'rdap', state: 'done' });
-        emit({ type: 'module_outcome', moduleId: 'rdap', status: 'done', source: 'pipe' });
+        emit({
+          type: 'module_outcome',
+          moduleId: 'rdap',
+          status: 'done',
+          source: 'legacy',
+          partial: true,
+          reason: 'fixture_partial',
+          attempted: 2,
+          resultCount: 1,
+          reasonDetails: ['Authorization: Bearer auto-e2e-secret-token'],
+        });
       },
       emit: (event) => {
         emitted.push(event);
@@ -125,8 +135,20 @@ test('E2E hermético: assisted approve corre pipeline e grava relatório', async
     });
     assert.ok(result.requestRunId);
     assert.ok(emitted.some((e) => e.type === 'auto_report_ready'));
+    assert.equal(result.evaluation.status, 'partial');
+    const outcome = result.evaluation?.moduleOutcomes?.find((row) => row.moduleId === 'rdap');
+    assert.equal(outcome.source, 'legacy');
+    assert.equal(outcome.partial, true);
+    assert.equal(outcome.reason, 'fixture_partial');
+    assert.equal(outcome.attempted, 2);
+    assert.equal(outcome.resultCount, 1);
+    assert.doesNotMatch(JSON.stringify(outcome), /auto-e2e-secret-token/);
+    assert.match(JSON.stringify(outcome.reasonDetails), /REDACTED/i);
     const reportPath = path.join(root, 'reports', 'auto', result.requestRunId, 'summary.json');
     await fs.access(reportPath);
+    const persistedReport = await fs.readFile(reportPath, 'utf8');
+    assert.doesNotMatch(persistedReport, /auto-e2e-secret-token/);
+    assert.match(persistedReport, /REDACTED/i);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

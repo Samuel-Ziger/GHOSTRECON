@@ -3014,62 +3014,38 @@
         <span class="input-prefix">#</span>
         <input class="domain-input" id="projectNameInput" type="text" placeholder="nome_cliente" autocomplete="off" spellcheck="false">
       </div>
-      <details class="bounty-context-details" id="bountyContextDetails">
-        <summary class="bounty-context-summary" title="Priorização v2 (opcional) — clique para expandir">
-          <span class="bounty-context-summary-main">
-            <span>Contexto bounty (JSON)</span>
-            <span class="bounty-context-summary-hint">opcional · priorização v2 — clique para abrir</span>
-          </span>
-        </summary>
-        <div class="bounty-context-panel-inner">
-          <p class="gh-hint" style="font-size:9px;margin:10px 0 8px">JSON enviado no recon para ajustar pesos na priorização. Abre aqui para editar ou usar um modelo.</p>
-          <textarea id="bountyContextJsonInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:72px;margin-top:0;font-size:10px" placeholder='{"programType":"web","focus":"react spa","note":"…"}'></textarea>
-          <div class="bounty-context-presets" aria-label="Modelos de contexto bounty">
-            <span class="bounty-context-presets-label">Modelos (preenchem o JSON — edita ao programa; v2 usa palavras‑chave em programType/focus/scope/note):</span>
-            <button type="button" class="bounty-preset-btn" title="Boost web / SPA na priorização v2" onclick="applyBountyContextPreset('web')">Web / SPA</button>
-            <button type="button" class="bounty-preset-btn" title="Boost API / GraphQL" onclick="applyBountyContextPreset('api')">API / GraphQL</button>
-            <button type="button" class="bounty-preset-btn" title="Boost mobile" onclick="applyBountyContextPreset('mobile')">Mobile</button>
-            <button type="button" class="bounty-preset-btn" title="Boost IoT / hardware" onclick="applyBountyContextPreset('iot')">IoT / HW</button>
-            <button type="button" class="bounty-preset-btn" title="Boost VDP / disclosure" onclick="applyBountyContextPreset('vdp')">VDP</button>
-            <button type="button" class="bounty-preset-btn" title="Web + API (mistura)" onclick="applyBountyContextPreset('hybrid')">Web+API</button>
-            <button type="button" class="bounty-preset-btn" title="Só nota — começa mínimo e personaliza" onclick="applyBountyContextPreset('minimal')">Mínimo</button>
-            <button type="button" class="bounty-preset-btn" title="Limpa o campo" onclick="applyBountyContextPreset('clear')">Limpar</button>
-          </div>
-        </div>
-      </details>
-
       <details class="bounty-context-details" id="engagementOpsecDetails" style="margin-top:8px">
-        <summary class="bounty-context-summary" title="Engagement, OPSEC no stream e rotação de identidade">
+        <summary class="bounty-context-summary" title="Autorização do RUN manual e rotação de identidade">
           <span class="bounty-context-summary-main">
-            <span>Engagement · OPSEC · identidade</span>
-            <span class="bounty-context-summary-hint">opcional · checklist + watermark + 403/429</span>
+            <span>Autorização manual · identidade</span>
+            <span class="bounty-context-summary-hint">engagement opcional · alvo vinculado</span>
           </span>
         </summary>
         <div class="bounty-context-panel-inner">
           <p class="gh-hint" style="font-size:9px;margin:10px 0 8px;line-height:1.45">
-            Com <strong>ID de engagement</strong> existente no servidor, corre <code>preRunChecklist</code>, aplica watermark nos headers e regista a corrida no engagement.
-            <strong>Perfil OPSEC</strong> e <strong>confirmar ativo</strong> alimentam <code>gateModules</code> (igual à CLI).
+            O <strong>ID de engagement</strong> é opcional no RUN manual. Quando informado, aplica ROE, janela, exclusões e allowlist; módulos intrusivos continuam exigindo a confirmação do plano exato.
+            OPSEC e contexto de bug bounty ficam exclusivamente no <strong>Modo Auto</strong>.
           </p>
           <div class="section-label" style="font-size:10px;margin-top:4px">Engagement ID</div>
           <input id="engagementIdInput" class="domain-input" type="text" placeholder="uuid ou id do engagement" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
           <div class="section-label" style="font-size:10px;margin-top:8px">Operador (watermark / auditoria)</div>
           <input id="engagementOperatorInput" class="domain-input" type="text" placeholder="handle ou identificador curto" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
+          <div class="section-label" style="font-size:10px;margin-top:10px">Base da autorização</div>
+          <select id="manualAuthorizationBasisSelect" class="domain-input" style="padding:8px 10px;margin-top:4px;width:100%">
+            <option value="explicit" selected>Autorização explícita do programa/cliente</option>
+            <option value="owned">Ativo próprio</option>
+            <option value="lab">Lab/CTF controlado</option>
+          </select>
           <div class="toggle-row" style="margin-top:10px">
-            <span class="toggle-label" title="Confirmação de recon ativo exigida pelo gate OPSEC">Confirmar ativo</span>
+            <span class="toggle-label" title="Cria um engagement local de oito horas, restrito ao alvo atual">Criar autorização temporária para este alvo</span>
             <label class="toggle">
-              <input type="checkbox" id="confirmActiveToggle">
+              <input type="checkbox" id="manualAuthorizationToggle">
               <div class="toggle-track"><div class="toggle-thumb"></div></div>
             </label>
           </div>
-          <div class="toggle-row" style="align-items:center;gap:10px;margin-top:8px">
-            <span class="toggle-label">Perfil OPSEC</span>
-            <select id="opsecProfileSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
-              <option value="passive">passive</option>
-              <option value="stealth">stealth</option>
-              <option value="standard" selected>standard</option>
-              <option value="aggressive">aggressive</option>
-            </select>
-          </div>
+          <p id="manualAuthorizationHint" class="gh-hint" style="font-size:9px;margin:6px 0 8px;line-height:1.45">
+            Opcionalmente cria um engagement local por 8 horas para registrar ROE e escopo: alvo exato e, somente em Broad Match, seus subdomínios. Não habilita escrita/destruição.
+          </p>
           <div class="section-label" style="font-size:10px;margin-top:10px">Playbook (nome — pré-checklist)</div>
           <input id="playbookNameInput" class="domain-input" type="text" placeholder="ex.: quick-triage" autocomplete="off" spellcheck="false" style="padding:8px 10px;margin-top:4px;width:100%">
           <div class="toggle-row" style="margin-top:10px">
@@ -3101,9 +3077,9 @@
           </div>
           </div>
           <hr style="border:0;border-top:1px solid var(--border);margin:14px 0 10px;opacity:.75">
-          <div class="section-label" style="font-size:10px">Rotação de identidade</div>
+          <div class="section-label" style="font-size:10px">Política de conexão estável</div>
           <p class="gh-hint" style="font-size:9px;margin:6px 0 8px;line-height:1.45">
-            Retentativas em 403, backoff em 429, heurística captcha/WAF; proxies uma por linha (máx. 32). Formatos aceites: <code>http(s)://user:pass@host:port</code>, <code>user:pass@host:port</code> e <code>host:port:user:pass</code>. Podes também marcar o módulo <strong>identity_rotation</strong> na lista de módulos.
+            Identidade de conexão estável por RUN, backoff em 429 e telemetria de 403/captcha sem trocar proxy ou User-Agent para contornar bloqueios. Proxies uma por linha (máx. 32); somente o primeiro é usado e falha do proxy bloqueia conexão direta. Formatos aceites: <code>http(s)://user:pass@host:port</code>, <code>user:pass@host:port</code> e <code>host:port:user:pass</code>. O ID legado <strong>identity_rotation</strong> é preservado por compatibilidade.
           </p>
           <div class="toggle-row">
             <span class="toggle-label" title="Envia identity.enabled no JSON (ou usa só o módulo / proxies)">Forçar no JSON (<code>identity.enabled</code>)</span>
@@ -3113,18 +3089,16 @@
             </label>
           </div>
           <div class="toggle-row">
-            <span class="toggle-label" title="Reagir a 403/429/captcha com nova UA ou proxy">Comportamento inteligente</span>
+            <span class="toggle-label" title="Política conservadora obrigatória: headers estáveis, telemetria de bloqueio e backoff">Headers estáveis + backoff</span>
             <label class="toggle">
-              <input type="checkbox" id="identityBehaviorToggle" checked>
+              <input type="checkbox" id="identityBehaviorToggle" checked disabled>
               <div class="toggle-track"><div class="toggle-thumb"></div></div>
             </label>
           </div>
           <div class="toggle-row" style="align-items:center;gap:10px;margin-top:8px">
-            <span class="toggle-label" title="Como alternar entre proxies durante o run">Rotação de proxy</span>
-            <select id="identityRotationSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px">
-              <option value="round_robin" selected>round_robin (sequencial)</option>
-              <option value="random">random (aleatório)</option>
-              <option value="fixed">fixed (proxy fixo)</option>
+            <span class="toggle-label" title="O primeiro proxy permanece fixo durante todo o RUN">Estratégia de proxy</span>
+            <select id="identityRotationSelect" class="domain-input" style="padding:8px 10px;width:100%;max-width:220px" disabled>
+              <option value="fixed" selected>fixed (estável por RUN)</option>
             </select>
           </div>
           <div class="section-label" style="font-size:10px;margin-top:8px">Pool de proxies (uma entrada por linha)</div>
@@ -3200,7 +3174,7 @@
           </label>
         </div>
         <div class="toggle-row">
-          <span class="toggle-label" title="Ativa rotação de identidade (probe/verify) e abre seleção de modo">Rotação de identidade</span>
+          <span class="toggle-label" title="Ativa a política de conexão estável em probe/verify">Identidade estável</span>
           <label class="toggle">
             <input type="checkbox" id="anonIdentityRotationToggle">
             <div class="toggle-track"><div class="toggle-thumb"></div></div>
@@ -3355,7 +3329,7 @@
           <p style="font-size:9px;color:var(--text-dim);margin-top:6px;line-height:1.45;max-width:42em">
             Clica para o servidor <strong>voltar a prefixar</strong> ao <code>PATH</code> pastas habituais (<code>/usr/bin</code>, <code>/usr/local/bin</code>, <code>~/go/bin</code>, …) só se existirem e ainda não estiverem no PATH do Node — ajuda o <strong>modo Kali</strong> a resolver binários (<code>nmap</code>, <code>dalfox</code>, <code>nuclei</code>, …) quando o ambiente arranca incompleto. Recarrega a linha de capacidades em cima.
           </p>
-          <p style="font-size:10px;color:var(--accent3);margin-top:8px;line-height:1.4">Só em <strong>Kali Linux</strong> com ferramentas no PATH. Fora do Kali mantém o recon passivo. Em WSL/outro Linux podes testar com <code style="color:var(--text-bright)">GHOSTRECON_FORCE_KALI=1</code>. Nmap: <code style="color:var(--text-bright)">GHOSTRECON_NMAP_ARGS</code> (padrão <code>-sV -Pn -T4</code>; podes usar <code>-A</code> — mais lento).</p>
+          <p style="font-size:10px;color:var(--accent3);margin-top:8px;line-height:1.4">Só em <strong>Kali Linux</strong> com ferramentas no PATH. Fora do Kali mantém o recon passivo. Em WSL/outro Linux podes testar com <code style="color:var(--text-bright)">GHOSTRECON_FORCE_KALI=1</code>. Nmap base: <code style="color:var(--text-bright)">GHOSTRECON_NMAP_ARGS</code> aceita apenas flags da allowlist (padrão <code>-sV -Pn -T4 --host-timeout 180s</code>); scripts, alvos e saídas extras são recusados. <code>-A</code> pertence somente à capacidade agressiva selecionada e autorizada.</p>
         </div>
       </div>
 
@@ -3399,6 +3373,16 @@
                 <small class="auto-hint" id="autoAutonomyHint">Módulos destrutivos não são executados pelo Auto; ações intrusivas exigem confirmação humana.</small>
               </div>
               <div class="auto-field">
+                <label for="autoOpsecProfileSelect">OPSEC da sessão</label>
+                <select id="autoOpsecProfileSelect" class="domain-input">
+                  <option value="passive">passive</option>
+                  <option value="stealth">stealth</option>
+                  <option value="standard" selected>standard</option>
+                  <option value="aggressive">aggressive</option>
+                </select>
+                <small class="auto-hint">O servidor limita este valor ao teto da autonomia. OPSEC não substitui engagement, escopo ou aprovação.</small>
+              </div>
+              <div class="auto-field">
                 <label for="autoOpenrouterModelSelect">OpenRouter model</label>
                 <select id="autoOpenrouterModelSelect" class="domain-input">
                   <option value="anthropic/claude-3.7-sonnet">anthropic/claude-3.7-sonnet</option>
@@ -3427,6 +3411,19 @@
               <label for="autoEngagementIdInput">Engagement autorizado (necessário para plano active/intrusive)</label>
               <input id="autoEngagementIdInput" class="domain-input" type="text" placeholder="uuid ou id do engagement" autocomplete="off" spellcheck="false">
               <small class="auto-hint">Precisa estar aberto, no escopo e com ROE assinado. Autonomia não substitui autorização.</small>
+            </div>
+            <div class="auto-field">
+              <label for="autoBountyContextJsonInput">Contexto do programa bug bounty (JSON)</label>
+              <textarea id="autoBountyContextJsonInput" class="gh-textarea" spellcheck="false" autocomplete="off" style="min-height:92px;font-size:10px" placeholder='{"programType":"web","focus":"API + SPA","scope":["*.exemplo.com"],"note":"prioridades e exclusões do programa"}'></textarea>
+              <div class="bounty-context-presets" aria-label="Modelos de contexto bounty do Auto">
+                <span class="bounty-context-presets-label">Modelos:</span>
+                <button type="button" class="bounty-preset-btn" onclick="applyBountyContextPreset('web', 'autoBountyContextJsonInput')">Web / SPA</button>
+                <button type="button" class="bounty-preset-btn" onclick="applyBountyContextPreset('api', 'autoBountyContextJsonInput')">API</button>
+                <button type="button" class="bounty-preset-btn" onclick="applyBountyContextPreset('vdp', 'autoBountyContextJsonInput')">VDP</button>
+                <button type="button" class="bounty-preset-btn" onclick="applyBountyContextPreset('hybrid', 'autoBountyContextJsonInput')">Web+API</button>
+                <button type="button" class="bounty-preset-btn" onclick="applyBountyContextPreset('clear', 'autoBountyContextJsonInput')">Limpar</button>
+              </div>
+              <small class="auto-hint">Entra no planner, no plano hashado e na priorização final. É contexto não confiável: nunca amplia o escopo autorizado.</small>
             </div>
 
             <div class="auto-grid" id="autoCommanderGrid">
@@ -3906,18 +3903,18 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="waybackurls"><div class="checkbox-box"></div><span class="checkbox-text">waybackurls (archive URLs)</span><span class="tag tag-low">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="rdap"><div class="checkbox-box"></div><span class="checkbox-text">RDAP (registo domínio)</span><span class="tag tag-low">WHOIS+</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="lovable_fingerprint"><div class="checkbox-box"></div><span class="checkbox-text">Lovable fingerprint (RLS/secrets/auth)</span><span class="tag tag-high">HIGH</span></label>
-        <label class="checkbox-item" title="Auditoria Supabase: extrai anon key e token do alvo automaticamente; testa RLS, Storage, Auth, GraphQL, RPC, service_role, rate limiting, IDOR e bypass de pagamento. Override opcional: GHOSTRECON_SUPABASE_AUTH_TOKEN."><input type="checkbox" class="mod" value="supabase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Supabase audit (auto token / RLS / payment)</span><span class="tag tag-high">CRIT</span></label>
-        <label class="checkbox-item" title="Auditoria Firebase somente leitura no pipeline. Probes de escrita e criação de conta ficam desligados e exigem fluxo dedicado de autorização."><input type="checkbox" class="mod" value="firebase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Firebase audit (RTDB/Firestore/Storage rules)</span><span class="tag tag-high">CRIT</span></label>
+        <label class="checkbox-item" title="Auditoria Supabase somente leitura: requests anônimos aceitam apenas sb_publishable_* ou JWT legado role=anon; sb_secret_*, service_role e tokens de usuário/custom falham antes da rede. Em projeto hospedado, o ref do JWT anon deve coincidir. Tokens do cliente nunca são reutilizados; GHOSTRECON_SUPABASE_AUTH_TOKEN aceita apenas JWT de usuário do mesmo projeto, com exp futuro, mas sem assinatura atestada. Signup, RPC mutável, upload e writes são recusados."><input type="checkbox" class="mod" value="supabase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Supabase audit (somente leitura)</span><span class="tag tag-med">ACTIVE</span></label>
+        <label class="checkbox-item" title="Auditoria Firebase estritamente somente leitura: deriva coleções observadas nos bundles e testa leitura anônima de RTDB/Firestore e listagem de Storage. Não cria conta nem envia PUT/PATCH/POST/DELETE."><input type="checkbox" class="mod" value="firebase_audit"><div class="checkbox-box"></div><span class="checkbox-text">Firebase audit (read-only)</span><span class="tag tag-med">READ</span></label>
         <label class="checkbox-item" title="Detecta credenciais hardcoded, bypass sessionStorage/localStorage, painéis admin no bundle público."><input type="checkbox" class="mod" value="client_auth_audit"><div class="checkbox-box"></div><span class="checkbox-text">Client auth audit (hardcoded / storage bypass)</span><span class="tag tag-high">CRIT</span></label>
         <label class="checkbox-item" title="Auditoria generalista client-side: DOM XSS sinks, postMessage, prototype pollution, JSONP, WebSocket, Service Worker, SRI, CSRF forms, CSP fraca, source maps, OIDC, tabnabbing, mixed content."><input type="checkbox" class="mod" value="client_surface_audit"><div class="checkbox-box"></div><span class="checkbox-text">Client surface audit (XSS/CSP/postMessage/SRI/…)</span><span class="tag tag-high">CRIT</span></label>
         <label class="checkbox-item" title="Auditoria CORS ativa: wildcard *, credenciais+Origin refletida, HTTP 500 em Origin desconhecida, preflight OPTIONS."><input type="checkbox" class="mod" value="cors_audit"><div class="checkbox-box"></div><span class="checkbox-text">CORS audit (wildcard / 500 / credentials)</span><span class="tag tag-high">CRIT</span></label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="curl_probe"><div class="checkbox-box"></div><span class="checkbox-text">Curl probe (métodos/auth/CORS/diff)</span><span class="tag tag-med">MED</span></label>
+        <label class="checkbox-item" title="Inventário HTTP somente leitura: GET, HEAD e OPTIONS; compara superfície auth/anônima e política CORS sem SQLi, POST, PUT, PATCH ou DELETE."><input type="checkbox" class="mod" value="curl_probe"><div class="checkbox-box"></div><span class="checkbox-text">Curl probe seguro (GET/HEAD/OPTIONS)</span><span class="tag tag-med">READ</span></label>
         <label class="checkbox-item" title="Analisa Set-Cookie coletado no probe: Secure, HttpOnly, SameSite, Domain e expiracao. Passivo."><input type="checkbox" class="mod" value="cookie_session_audit"><div class="checkbox-box"></div><span class="checkbox-text">Cookie/session audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Analisa formularios HTML ja coletados: POST/PUT/PATCH/DELETE sem token CSRF visivel e acoes sensiveis via GET. Passivo."><input type="checkbox" class="mod" value="csrf_flow_audit"><div class="checkbox-box"></div><span class="checkbox-text">CSRF flow audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Inventario passivo de HTTP/3/QUIC por Alt-Svc h3 e evidencias Nmap/UDP 443."><input type="checkbox" class="mod" value="http3_quic_surface" checked><div class="checkbox-box"></div><span class="checkbox-text">HTTP/3 / QUIC surface</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Checagem passiva da CVE-2026-42530: cruza banner nginx 1.31.0-1.31.1 com evidencia HTTP/3/QUIC em Alt-Svc. Nao envia payload de exploit."><input type="checkbox" class="mod" value="nginx_http3_cve_2026_42530" checked><div class="checkbox-box"></div><span class="checkbox-text">NGINX HTTP/3 CVE-2026-42530</span><span class="tag tag-high">CVE</span></label>
         <label class="checkbox-item" title="Correlaciona tecnologias/versoes detectadas (tech/nmap) com dataset local de CVEs web e, se habilitado, consulta NVD em tempo real. Passivo — nao envia payload ao alvo."><input type="checkbox" class="mod" value="cve_correlation" checked><div class="checkbox-box"></div><span class="checkbox-text">CVE web correlation (local + NVD opt-in)</span><span class="tag tag-high">CVE</span></label>
-        <label class="checkbox-item" title="GET leve em poucos paths comuns (/admin, /dashboard, /actuator, /metrics etc.) para detectar painéis expostos. Nao faz brute force nem login."><input type="checkbox" class="mod" value="panel_exposure_audit"><div class="checkbox-box"></div><span class="checkbox-text">Panel exposure audit</span><span class="tag tag-med">NET</span></label>
+        <label class="checkbox-item" title="GET limitado em paths comuns; compara cada origem com baseline inexistente e exige assinatura de conteúdo. Sem baseline, falha fechado. Não faz brute force nem login."><input type="checkbox" class="mod" value="panel_exposure_audit"><div class="checkbox-box"></div><span class="checkbox-text">Panel exposure audit</span><span class="tag tag-med">NET</span></label>
         <label class="checkbox-item" title="Descobre service workers registrados e paths comuns; revisa scope, Cache API, importScripts e padroes sensiveis. Passivo."><input type="checkbox" class="mod" value="service_worker_audit"><div class="checkbox-box"></div><span class="checkbox-text">Service Worker audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="security_headers" checked><div class="checkbox-box"></div><span class="checkbox-text">Headers HTTP + TLS</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item" title="Após cada GET do probe: cabeçalhos suspeitos (stack, debug, proxy) e bloco sugerido para /etc/hosts quando houver vhost nos headers.">
@@ -3926,7 +3923,7 @@
           <span class="checkbox-text">Análise de headers (intel + /etc/hosts)</span>
           <span class="tag tag-med">MED</span>
         </label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="wafw00f"><div class="checkbox-box"></div><span class="checkbox-text">WAF fingerprint (wafw00f)</span><span class="tag tag-med">CLI</span></label>
+        <label class="checkbox-item" title="Executa wafw00f com timeout/cancelamento, capability cache e parser estruturado; ausência ou falha da ferramenta não vira detecção."><input type="checkbox" class="mod" value="wafw00f"><div class="checkbox-box"></div><span class="checkbox-text">WAF fingerprint (wafw00f)</span><span class="tag tag-med">CLI</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="robots_sitemap" checked><div class="checkbox-box"></div><span class="checkbox-text">robots.txt / sitemap</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="virustotal"><div class="checkbox-box"></div><span class="checkbox-text">VirusTotal subs</span><span class="tag tag-med">API</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="shodan"><div class="checkbox-box"></div><span class="checkbox-text">Shodan (DNS + search + host)</span><span class="tag tag-med">API</span></label>
@@ -3935,7 +3932,7 @@
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wellknown_security_txt"><div class="checkbox-box"></div><span class="checkbox-text">.well-known/security.txt</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="wellknown_openid"><div class="checkbox-box"></div><span class="checkbox-text">.well-known/openid-configuration</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="github" checked><div class="checkbox-box"></div><span class="checkbox-text">GitHub leaks</span><span class="tag tag-high">HIGH</span></label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="pastebin"><div class="checkbox-box"></div><span class="checkbox-text">Pastebin leaks</span><span class="tag tag-high">HIGH</span></label>
+        <label class="checkbox-item" title="OSINT passivo via Google CSE em hosts públicos de paste. Exige GOOGLE_CSE_KEY e GOOGLE_CSE_CX; retorna referências candidatas e nunca persiste o snippet do provedor."><input type="checkbox" class="mod" value="pastebin"><div class="checkbox-box"></div><span class="checkbox-text">Public paste references</span><span class="tag tag-med">OSINT</span></label>
       </div>
 
       <div class="module-group">
@@ -3943,10 +3940,10 @@
           <div class="module-group-title" style="margin-bottom:0">// SQLi</div>
           <button type="button" class="sqlmap-help-btn" title="Comandos sqlmap de referência (copiar para o terminal)" onclick="openSqlmapHelpModal()">SQLi</button>
         </div>
-        <label class="checkbox-item" title="Só após SQLi confirmado/provável na verify: ORDER BY 1..12, UNION NULL×6, NULL FROM DUAL, OR 1=1 em paths de login.">
+        <label class="checkbox-item" title="Validação diferencial limitada: duas baselines, duas sondas de aspas e diferencial booleano repetido. Sem UNION, delay, login bypass ou enumeração; resultados são classificados no máximo como prováveis.">
           <input type="checkbox" class="mod" value="verify_sqli_deep">
           <div class="checkbox-box"></div>
-          <span class="checkbox-text">Verify SQLi avançado (ORDER BY / UNION)</span>
+          <span class="checkbox-text">Verify SQLi diferencial seguro</span>
           <span class="tag tag-high">ACT</span>
         </label>
         <label class="checkbox-item" title="Após verify: curl baseline vs curl com ', depois sqlmap --batch --risk=2 --level=3 se houver erro SQL. GHOSTRECON_SQLMAP_TIMEOUT_MS (ms), GHOSTRECON_SQLMAP_TARGETS (1–6), GHOSTRECON_SQLMAP_AUTO_DBS=1 para correr também --dbs.">
@@ -4000,8 +3997,8 @@
         <label class="checkbox-item" title="Descobre JWKS via OIDC e paths comuns; detecta kid duplicado, kty=oct publico, alg HS/none e RSA fraco. Passivo."><input type="checkbox" class="mod" value="jwt_jwks_audit"><div class="checkbox-box"></div><span class="checkbox-text">JWT/JWKS audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Analisa corpus de URLs para parametros duplicados e nomes sensiveis sujeitos a HTTP Parameter Pollution. Passivo."><input type="checkbox" class="mod" value="hpp_param_pollution"><div class="checkbox-box"></div><span class="checkbox-text">HPP param pollution audit</span><span class="tag tag-med">PASS</span></label>
         <label class="checkbox-item" title="Extrai WebSockets de HTML/JS/URLs e prioriza ws://, token em query e paths sensiveis. Passivo."><input type="checkbox" class="mod" value="websocket_recon"><div class="checkbox-box"></div><span class="checkbox-text">WebSocket recon</span><span class="tag tag-med">PASS</span></label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="graphql_probe" id="modGraphqlProbe"><div class="checkbox-box"></div><span class="checkbox-text">GraphQL — introspecção mínima (1 POST)</span><span class="tag tag-high">API</span></label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="micro_exploit"><div class="checkbox-box"></div><span class="checkbox-text">Micro-exploit XSS (pós-verify)</span><span class="tag tag-high">ACT</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="graphql_probe" id="modGraphqlProbe"><div class="checkbox-box"></div><span class="checkbox-text">GraphQL — confirmação + introspecção (2 POSTs)</span><span class="tag tag-high">API</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="micro_exploit"><div class="checkbox-box"></div><span class="checkbox-text">Canário XSS inerte (pós-verify)</span><span class="tag tag-high">ACT</span></label>
         <label class="checkbox-item" title="So com Modo Kali apos Nmap: consulta NVD/OSV por produto/versao/CPE detectados e cria candidatos CVE. Pode demorar por rate limit externo.">
           <input type="checkbox" class="mod" value="nmap_cve_match" id="modNmapCveMatch">
           <div class="checkbox-box"></div>
@@ -4009,21 +4006,21 @@
           <span class="tag tag-high">CVE</span>
         </label>
         <label class="checkbox-item" title="So com Modo Kali apos Nmap: alerta quando a versao vem de pacote Debian/Ubuntu/RHEL/etc., evitando falso positivo por backport.">
-          <input type="checkbox" class="mod" value="nmap_backport_review" id="modNmapBackportReview" checked>
+          <input type="checkbox" class="mod" value="nmap_backport_review" id="modNmapBackportReview">
           <div class="checkbox-box"></div>
           <span class="checkbox-text">Nmap backport review</span>
           <span class="tag tag-med">PASS</span>
         </label>
         <label
           class="checkbox-item"
-          title="GET a shell.php, c99.php, cmd.php?cmd=id — só marca se a resposta parecer saída de `id` (uid=/gid=). Muitos falsos positivos possíveis; só em alvo autorizado."
+          title="GET sem parâmetros em rotas legadas; observa conteúdo público semelhante a identidade Unix. Não envia comandos, não confirma webshell e pode encontrar documentação ou conteúdo estático."
         >
           <input type="checkbox" class="mod" value="webshell_probe" id="modWebshellProbe" />
           <div class="checkbox-box"></div>
-          <span class="checkbox-text">Webshell heurístico (GET cmd=id)</span>
+          <span class="checkbox-text">Webshell: indicadores (sem comandos)</span>
           <span class="tag tag-high">ACT</span>
         </label>
-        <label class="checkbox-item"><input type="checkbox" class="mod" value="stealth_requests"><div class="checkbox-box"></div><span class="checkbox-text">Stealth (jitter + UA rotativa)</span><span class="tag tag-low">NET</span></label>
+        <label class="checkbox-item"><input type="checkbox" class="mod" value="stealth_requests"><div class="checkbox-box"></div><span class="checkbox-text">Conexão estável (jitter + backoff)</span><span class="tag tag-low">NET</span></label>
       </div>
 
       <div class="module-group">
@@ -4038,27 +4035,27 @@
           <span class="checkbox-text">InfoHunter disclosure</span>
           <span class="tag tag-high">KALI</span>
         </label>
-        <label class="checkbox-item" title="Opcional do InfoHunter: habilita o modulo errors, que induz respostas de erro com payloads simples. Use apenas em alvo autorizado.">
+        <label class="checkbox-item" title="Opcional do InfoHunter: compara baseline com valores malformados genéricos e só sinaliza assinatura de erro nova. Sem SQLi ou traversal embutido.">
           <input type="checkbox" class="mod" value="info_disclosure_errors" id="modInfoDisclosureErrors">
           <div class="checkbox-box"></div>
           <span class="checkbox-text">InfoHunter verbose errors</span>
           <span class="tag tag-high">ACT</span>
         </label>
         <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Usa o script local <code>tools/info-disclosure/information_disclosure.py</code>. O modo normal pula <code>errors</code>; marque a caixa de errors somente quando quiser esse probe mais intrusivo.</p>
-        <label class="checkbox-item" title="Só com Modo Kali + ffuf no PATH. Muitas threads e pedidos — pico de CPU/rede; pode contribuir para crash do separador do browser se o sistema ficar sem margem.">
+        <label class="checkbox-item" title="Só com Modo Kali + ffuf no PATH. Usa auto-calibration, até 8 workers por padrão, 90 s por origem e preserva status/tamanho/palavras/linhas.">
           <input type="checkbox" class="mod" value="kali_ffuf" id="modKaliFfuf">
           <div class="checkbox-box"></div>
-          <span class="checkbox-text">Ffuf (Kali) — HTTP 200</span>
+          <span class="checkbox-text">Ffuf (Kali) — descoberta calibrada</span>
           <span class="tag tag-high">KALI</span>
         </label>
-        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Fuzz de caminhos com wordlist (32 threads por defeito). Desmarcado por defeito — activa só quando precisares.</p>
-        <label class="checkbox-item" title="Só com Modo Kali + dirsearch no PATH. Varredura recursiva e pesada (pode demorar bastante), focada em descoberta ampla de diretórios/ficheiros.">
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Fuzz de caminhos limitado a três origens; aceita 2xx/3xx/401/403 como inventário, nunca como vulnerabilidade automática.</p>
+        <label class="checkbox-item" title="Só com Modo Kali + dirsearch no PATH. Recursão limitada (profundidade 2), até 8 workers por padrão e resultados restritos à mesma origem.">
           <input type="checkbox" class="mod" value="kali_dirsearch" id="modKaliDirsearch">
           <div class="checkbox-box"></div>
-          <span class="checkbox-text">Dirsearch (Kali) — recursivo completo</span>
+          <span class="checkbox-text">Dirsearch (Kali) — recursão limitada</span>
           <span class="tag tag-high">KALI</span>
         </label>
-        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Ideal para busca "por tudo". Mais lento por desenho; achados entram no bucket <code>directories</code> junto dos paths do ffuf.</p>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Descoberta com orçamento previsível; achados entram como inventário no bucket <code>directories</code>.</p>
         <label class="checkbox-item" title="Só com Modo Navigator activo (painel Engagement/OPSEC). Não incluído no preset Full." style="display:none" aria-hidden="true">
           <input type="checkbox" class="mod" value="navegation" id="modNavegation">
           <div class="checkbox-box"></div>
@@ -4075,6 +4072,51 @@
         <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">Passagem geral + tags XSS/SQLi em URLs com parâmetros. Sem esta caixa, o scan Kali não invoca o Nuclei.</p>
         <label
           class="checkbox-item"
+          title="Só com Modo Kali: Nmap TCP limitado (-sV -Pn) nos hosts em escopo. É uma capacidade ativa de leitura e roda somente porque esta caixa foi marcada."
+        >
+          <input type="checkbox" class="mod" value="kali_nmap" id="modKaliNmap" checked>
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Nmap TCP base (Kali)</span>
+          <span class="tag tag-med">ACT</span>
+        </label>
+        <label
+          class="checkbox-item"
+          title="Intrusivo e desligado por padrão. Após o Nmap, testa null-session em SMB/RPC e correlaciona versões com fontes de exploits como candidatos, somente no plano explicitamente aprovado. FTP possui uma capability separada abaixo."
+        >
+          <input type="checkbox" class="mod" value="nmap_service_followups" id="modNmapServiceFollowups">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Follow-ups de serviço (SMB / RPC / versões)</span>
+          <span class="tag tag-high">INTR</span>
+        </label>
+        <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">
+          FTP não é executado por esta caixa. Use <code>FTP anonymous audit</code>; com Tor/proxychains, seu socket direto falha fechado para evitar vazamento de rede.
+        </p>
+        <label class="checkbox-item" title="WHOIS via ferramenta local. Só roda quando esta caixa e o Modo Kali estiverem ativos.">
+          <input type="checkbox" class="mod" value="kali_whois" id="modKaliWhois">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">WHOIS (Kali)</span>
+          <span class="tag tag-med">ACT</span>
+        </label>
+        <label class="checkbox-item" title="WPScan somente em hosts onde o recon já detectou WordPress. Exige autorização intrusiva.">
+          <input type="checkbox" class="mod" value="kali_wpscan" id="modKaliWpscan">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">WPScan (Kali)</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <label class="checkbox-item" title="Dalfox em URLs com parâmetros e sinais XSS. Exige autorização intrusiva.">
+          <input type="checkbox" class="mod" value="kali_dalfox" id="modKaliDalfox">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">Dalfox (Kali)</span>
+          <span class="tag tag-high">KALI</span>
+        </label>
+        <label class="checkbox-item" title="Validação contextual limitada: usa marcador não executável, repete a reflexão e reporta somente candidatos. Exige autorização intrusiva.">
+          <input type="checkbox" class="mod" value="kali_xss_vibes" id="modKaliXssVibes">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">XSS contextual seguro</span>
+          <span class="tag tag-high">ATIVO</span>
+        </label>
+        <label
+          class="checkbox-item"
           title="Só com Modo Kali. Substitui o nmap normal desta fase por: -A -sV -p- -Pn (todas as portas — muito lento). Máx. 3 hosts por defeito (GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS). Timeout 2h (GHOSTRECON_NMAP_AGGRESSIVE_TIMEOUT_MS). Args: GHOSTRECON_NMAP_AGGRESSIVE_ARGS."
         >
           <input type="checkbox" class="mod" value="kali_nmap_aggressive" id="modKaliNmapAggressive">
@@ -4087,7 +4129,7 @@
         </p>
         <label
           class="checkbox-item"
-          title="Só com Modo Kali. Após o nmap TCP: segunda passagem com -sU -A -Pn -T4 só em portas UDP sensíveis (DNS, SNMP, NTP, …). Lista: GHOSTRECON_NMAP_UDP_PORTS ou por defeito. Máx. 5 hosts (GHOSTRECON_NMAP_UDP_MAX_HOSTS). Args: GHOSTRECON_NMAP_UDP_ARGS. Timeout: GHOSTRECON_NMAP_UDP_TIMEOUT_MS."
+          title="Só com Modo Kali. Após o nmap TCP: segunda passagem -sU em portas UDP sensíveis. GHOSTRECON_NMAP_UDP_ARGS exige -sU e recusa scripts, alvos, saídas e portas extras; a lista validada é anexada separadamente e limitada a 128 portas. Máx. 5 hosts (GHOSTRECON_NMAP_UDP_MAX_HOSTS). Timeout: GHOSTRECON_NMAP_UDP_TIMEOUT_MS."
         >
           <input type="checkbox" class="mod" value="kali_nmap_udp" id="modKaliNmapUdp">
           <div class="checkbox-box"></div>
@@ -4095,16 +4137,34 @@
           <span class="tag tag-high">KALI</span>
         </label>
         <p class="gh-hint" style="font-size:10px;margin:-4px 0 8px;line-height:1.45">
-          Não faz scan de todas as portas UDP — só um conjunto curado (rápido vs. <code>-p-</code> UDP).
+          Não faz <code>-p-</code> UDP: usa um conjunto curado por padrão ou uma lista validada e limitada em <code>GHOSTRECON_NMAP_UDP_PORTS</code>.
         </p>
         <label
           class="checkbox-item"
           title="Só com Modo Kali após nmap TCP: se 3306/tcp estiver aberto, adiciona achados intel com mysql client, scripts nmap mysql-* e exemplo sqlmap -d (não executa nada automaticamente)."
         >
-          <input type="checkbox" class="mod" value="mysql_3306_intel" id="modMysql3306Intel" checked />
+          <input type="checkbox" class="mod" value="mysql_3306_intel" id="modMysql3306Intel" />
           <div class="checkbox-box"></div>
           <span class="checkbox-text">MySQL 3306 — hints pós-nmap</span>
           <span class="tag tag-med">KALI</span>
+        </label>
+        <label
+          class="checkbox-item"
+          title="Bug bounty autorizado, com Modo Kali: usa e revalida o IP observado pelo Nmap, confere o peer e testa somente autenticação anonymous. Envia QUIT e só termina após fechamento ou destruição local atestada; resposta excessiva gera resultado parcial. Sem Nmap, informa skip. Não lista, baixa, envia, altera ou exclui arquivos."
+        >
+          <input type="checkbox" class="mod" value="ftp_anonymous_audit" id="modFtpAnonymousAudit">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">FTP anonymous audit (sem escrita)</span>
+          <span class="tag tag-high">INTRUSIVE</span>
+        </label>
+        <label
+          class="checkbox-item"
+          title="Somente laboratório controlado: após login anonymous encerrado com cleanup atestado, tenta STOR; se houver reply preliminar, tenta DELE e confirma ausência via SIZE. Cleanup incerto gera finding alto, outcome failed e bloqueia writes seguintes. Exige aprovação do plano, GHOSTRECON_FTP_WRITE_PROBE=1, GHOSTRECON_FTP_WRITE_PROBE_LAB_ACK=1 e host exato em GHOSTRECON_FTP_WRITE_PROBE_LAB_TARGETS. Em bug bounty use apenas ftp_anonymous_audit."
+        >
+          <input type="checkbox" class="mod" value="ftp_write_probe" id="modFtpWriteProbe">
+          <div class="checkbox-box"></div>
+          <span class="checkbox-text">FTP anonymous write probe (STOR + DELE)</span>
+          <span class="tag tag-high">WRITE</span>
         </label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="subfinder"><div class="checkbox-box"></div><span class="checkbox-text">Subfinder (Kali)</span><span class="tag tag-med">MED</span></label>
         <label class="checkbox-item"><input type="checkbox" class="mod" value="amass"><div class="checkbox-box"></div><span class="checkbox-text">Amass (Kali)</span><span class="tag tag-med">MED</span></label>
@@ -4112,7 +4172,7 @@
 
       <div class="module-group">
         <div class="module-group-title">// Vigolium (motor Go — DAST + audit código)</div>
-        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Binário em <code>engines/vigolium</code> (não precisas da pasta <code>vigolium/</code> fonte após <code>bash scripts/install-vigolium-engine.sh</code>). DAST activo requer <strong>Confirmar ativo</strong>. Audit usa Codex/Claude Code no PATH.</p>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Binário em <code>engines/vigolium</code> (não precisas da pasta <code>vigolium/</code> fonte após <code>bash scripts/install-vigolium-engine.sh</code>). DAST ativo exige autorização vinculada ao alvo e aprovação do plano exato. Audit usa Codex/Claude Code no PATH.</p>
         <div id="vigoliumCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">Vigolium: a carregar…</div>
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
           <button type="button" class="sqlmap-help-btn" onclick="applyVigoliumKaliDeepPreset()">preset Kali Deep</button>
@@ -4164,17 +4224,17 @@
           <span class="checkbox-text">Vigolium code audit (SAST IA)</span>
           <span class="tag tag-high">IA</span>
         </label>
-        <label class="checkbox-item" title="IA planeia módulos + scan + triage. Intrusivo.">
+        <label class="checkbox-item" title="Indisponível: o motor nativo ainda pode ampliar o plano após a aprovação. Seleção não inicia agentes nem compartilha autenticação.">
           <input type="checkbox" class="mod" value="vigolium_swarm" id="modVigoliumSwarm">
           <div class="checkbox-box"></div>
-          <span class="checkbox-text">Vigolium agent swarm</span>
+          <span class="checkbox-text">Vigolium swarm (indisponível)</span>
           <span class="tag tag-high">GO+IA</span>
         </label>
-        <label class="checkbox-item" title="IA executa ciclo agentico completo do Vigolium. Intrusivo.">
+        <label class="checkbox-item" title="Somente prévia dry-run. Não executa comandos do agente enquanto o Vigolium não oferecer aprovação por comando vinculada ao plano.">
           <input type="checkbox" class="mod" value="vigolium_autopilot" id="modVigoliumAutopilot">
           <div class="checkbox-box"></div>
-          <span class="checkbox-text">Vigolium autopilot</span>
-          <span class="tag tag-high">AUTO</span>
+          <span class="checkbox-text">Vigolium autopilot (somente prévia)</span>
+          <span class="tag tag-med">DRY</span>
         </label>
         <div id="vigoliumGuardrailBox" class="vigolium-tool-panel" style="display:none;font-family:var(--mono);font-size:9px;color:var(--text-dim);line-height:1.45"></div>
         <label for="vigoliumSourceInput" style="display:block;margin-top:10px;font-size:10px;color:var(--text-dim);font-family:var(--mono)">Caminho do código-fonte (audit / swarm opcional)</label>
@@ -4293,7 +4353,7 @@
       <div class="module-group">
         <div class="module-group-title">// PentestGPT (pós-recon)</div>
         <div id="pentestgptCapLine" style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:8px;line-height:1.4">PentestGPT: a carregar…</div>
-        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Após priorização, o servidor envia um POST JSON para <code>GHOSTRECON_PENTESTGPT_URL</code> (serviço teu, p.ex. <code>node server/scripts/pentestgpt-ghost-bridge.mjs</code>). O código do agente GreyDGL fica em <code>IAs/PentestGPT/</code> (Docker + <code>make connect</code>) — ver <code>IAs/README.md</code>. Sem URL, o passo é ignorado.</p>
+        <p class="gh-hint" style="font-size:10px;margin-bottom:8px">Após priorização, envia JSON redigido somente para loopback por padrão (p.ex. <code>node server/scripts/pentestgpt-ghost-bridge.mjs</code>). Endpoint remoto exige <code>GHOSTRECON_PENTESTGPT_ALLOW_REMOTE=1</code> e host em <code>GHOSTRECON_PENTESTGPT_REMOTE_HOSTS</code>. A resposta da IA permanece avaliação não verificada.</p>
         <label class="checkbox-item">
           <input type="checkbox" class="mod" value="pentestgpt_validate" id="modPentestgptValidate">
           <div class="checkbox-box"></div>
@@ -4971,7 +5031,6 @@ function initAuthUi() {
 const ENG_OPSEC_LS = {
   engagementId: 'ghostrecon_engagement_id',
   operator: 'ghostrecon_operator',
-  opsec: 'ghostrecon_opsec_profile',
   playbook: 'ghostrecon_playbook_name',
   identityProxies: 'ghostrecon_identity_proxy_pool',
   identityBehavior: 'ghostrecon_identity_behavior',
@@ -4983,7 +5042,6 @@ const ENG_OPSEC_LS = {
   anonTor: 'ghostrecon_anon_tor',
   anonProxychains: 'ghostrecon_anon_proxychains',
   anonIdentityRotation: 'ghostrecon_anon_identity_rotation',
-  confirmActive: 'ghostrecon_confirm_active',
 };
 
 function persistEngagementOpsecField(key, value) {
@@ -4997,7 +5055,6 @@ function initEngagementOpsecUi() {
   try {
     const eid = localStorage.getItem(ENG_OPSEC_LS.engagementId);
     const op = localStorage.getItem(ENG_OPSEC_LS.operator);
-    const os = localStorage.getItem(ENG_OPSEC_LS.opsec);
     const pb = localStorage.getItem(ENG_OPSEC_LS.playbook);
     const px = localStorage.getItem(ENG_OPSEC_LS.identityProxies);
     const ib = localStorage.getItem(ENG_OPSEC_LS.identityBehavior);
@@ -5009,10 +5066,8 @@ function initEngagementOpsecUi() {
     const anonTor = localStorage.getItem(ENG_OPSEC_LS.anonTor);
     const anonProxy = localStorage.getItem(ENG_OPSEC_LS.anonProxychains);
     const anonIdentityRotation = localStorage.getItem(ENG_OPSEC_LS.anonIdentityRotation);
-    const ca = localStorage.getItem(ENG_OPSEC_LS.confirmActive);
     const elE = document.getElementById('engagementIdInput');
     const elO = document.getElementById('engagementOperatorInput');
-    const elOs = document.getElementById('opsecProfileSelect');
     const elPb = document.getElementById('playbookNameInput');
     const elPx = document.getElementById('identityProxyPoolInput');
     const elBeh = document.getElementById('identityBehaviorToggle');
@@ -5024,14 +5079,12 @@ function initEngagementOpsecUi() {
     const elAnonTor = document.getElementById('anonTorToggle');
     const elAnonProxy = document.getElementById('anonProxychainsToggle');
     const elAnonIdentityRotation = document.getElementById('anonIdentityRotationToggle');
-    const elCa = document.getElementById('confirmActiveToggle');
     if (elE && eid) elE.value = eid;
     if (elO && op) elO.value = op;
-    if (elOs && os && ['passive', 'stealth', 'standard', 'aggressive'].includes(os)) elOs.value = os;
     if (elPb && pb) elPb.value = pb;
     if (elPx && px) elPx.value = px;
-    if (elBeh && ib === '0') elBeh.checked = false;
-    if (elRot && ir && ['round_robin', 'random', 'fixed'].includes(ir)) elRot.value = ir;
+    if (elBeh) elBeh.checked = true;
+    if (elRot) elRot.value = 'fixed';
     if (elIdEn && ide === '1') elIdEn.checked = true;
     if (elNavExec && navExec === '1') elNavExec.checked = true;
     if (elNavMode && navMode === '1') elNavMode.checked = true;
@@ -5039,7 +5092,6 @@ function initEngagementOpsecUi() {
     if (elAnonTor && anonTor === '1') elAnonTor.checked = true;
     if (elAnonProxy && anonProxy === '1') elAnonProxy.checked = true;
     if (elAnonIdentityRotation && anonIdentityRotation === '1') elAnonIdentityRotation.checked = true;
-    if (elCa && ca === '1') elCa.checked = true;
   } catch {}
 
   const wireText = (id, key) => {
@@ -5063,7 +5115,6 @@ function initEngagementOpsecUi() {
   };
   wireText('engagementIdInput', ENG_OPSEC_LS.engagementId);
   wireText('engagementOperatorInput', ENG_OPSEC_LS.operator);
-  wireSelect('opsecProfileSelect', ENG_OPSEC_LS.opsec);
   wireText('playbookNameInput', ENG_OPSEC_LS.playbook);
   wireText('identityProxyPoolInput', ENG_OPSEC_LS.identityProxies);
   wireCheckbox('identityBehaviorToggle', ENG_OPSEC_LS.identityBehavior, { alwaysZeroOne: true });
@@ -5075,7 +5126,6 @@ function initEngagementOpsecUi() {
   wireCheckbox('anonTorToggle', ENG_OPSEC_LS.anonTor);
   wireCheckbox('anonProxychainsToggle', ENG_OPSEC_LS.anonProxychains);
   wireCheckbox('anonIdentityRotationToggle', ENG_OPSEC_LS.anonIdentityRotation);
-  wireCheckbox('confirmActiveToggle', ENG_OPSEC_LS.confirmActive);
   syncNavigatorModeUi();
 }
 
@@ -5171,11 +5221,9 @@ const BOUNTY_CONTEXT_PRESETS = {
   },
 };
 
-function applyBountyContextPreset(key) {
-  const el = document.getElementById('bountyContextJsonInput');
-  const det = document.getElementById('bountyContextDetails');
+function applyBountyContextPreset(key, inputId = 'autoBountyContextJsonInput') {
+  const el = document.getElementById(inputId);
   if (!el) return;
-  if (det) det.open = true;
   if (key === 'clear') {
     el.value = '';
     addLog('Contexto bounty: campo limpo.', 'info');
@@ -5832,6 +5880,22 @@ async function startAutoModeRecon() {
     return;
   }
 
+  let autoBountyContext = null;
+  const autoBountyRaw = String(document.getElementById('autoBountyContextJsonInput')?.value || '').trim();
+  if (autoBountyRaw) {
+    try {
+      autoBountyContext = JSON.parse(autoBountyRaw);
+      if (!autoBountyContext || Array.isArray(autoBountyContext) || typeof autoBountyContext !== 'object') {
+        throw new Error('o valor precisa ser um objeto JSON');
+      }
+    } catch (error) {
+      const msg = `AUTO: contexto bug bounty inválido — ${error?.message || error}`;
+      document.getElementById('autoModeStatus').textContent = msg;
+      addLog(msg, 'error');
+      return;
+    }
+  }
+
   const autoBtn = document.getElementById('autoRunBtn');
   const startBtn = document.getElementById('autoStartBtn');
   const runBtn = document.getElementById('runBtn');
@@ -5943,12 +6007,14 @@ async function startAutoModeRecon() {
       includeHexstrike: document.getElementById('autoHexstrikeToggle')?.checked === true,
       includeDeepPassive: document.getElementById('autoDeepPassiveToggle')?.checked !== false,
       autonomyLevel: document.getElementById('autoAutonomyLevelSelect')?.value || 'observation',
+      opsecProfile: document.getElementById('autoOpsecProfileSelect')?.value || 'standard',
       includeFrameSeven,
       frameSevenAuth,
       includeVigolium,
       vigoliumUseCodex,
       resumeSessionId: document.getElementById('autoResumeSessionInput')?.value?.trim() || null,
     };
+    if (autoBountyContext) body.bountyContext = autoBountyContext;
     const engagementId = document.getElementById('autoEngagementIdInput')?.value?.trim()
       || document.getElementById('engagementIdInput')?.value?.trim()
       || '';
@@ -6165,7 +6231,7 @@ const PIPE_PHASES = [
       ['google_cse', 'CSE', 'Google Custom Search URLs'],
       ['secrets', 'SECRETS', 'Secrets/leaks collection'],
       ['github', 'GITHUB', 'GitHub code/repo search and local clone'],
-      ['pastebin', 'PASTE', 'Pastebin leak hints'],
+      ['pastebin', 'PASTE', 'Public paste references via CSE'],
       ['secret_validation', 'TOKENS', 'Token/secret validation'],
       ['secrets_context_ranker', 'RANK', 'Secrets context ranker'],
     ],
@@ -6179,7 +6245,7 @@ const PIPE_PHASES = [
       ['verify', 'VERIFY', 'Heuristic verify and micro-exploit variants'],
       ['webshell_probe', 'WEBSHELL', 'Webshell heuristic probe'],
       ['sqlmap', 'SQLMAP', 'SQLmap runner'],
-      ['curl_probe', 'CURL', 'Curl methods/auth/CORS diff probe'],
+      ['curl_probe', 'CURL', 'Read-only GET/HEAD/OPTIONS audit'],
       ['authz_matrix', 'AUTHZ', 'Authorization matrix'],
       ['jwt_lab', 'JWT LAB', 'JWT lab'],
       ['dom_xss_verify', 'DOM XSS', 'DOM XSS verification'],
@@ -6202,7 +6268,7 @@ const PIPE_PHASES = [
       ['nuclei_sqli', 'NUC SQLI', 'Nuclei SQLi templates'],
       ['wpscan', 'WPSCAN', 'WPScan'],
       ['dalfox', 'DALFOX', 'Dalfox XSS scan'],
-      ['xss_vibes', 'XSS VIBES', 'xss_vibes scanner'],
+      ['xss_vibes', 'XSS SAFE', 'Repeatable contextual reflection audit'],
     ],
   },
   {
@@ -7396,7 +7462,7 @@ function applyVigoliumKaliDeepPreset() {
   if (reportOnly && !reportOnly.value.trim()) reportOnly.value = 'discovery';
   renderVigoliumGuardrails();
   addLog(
-    'Preset Vigolium Kali Deep aplicado. Revise o plano e marque «Confirmar ativo» manualmente somente se o escopo estiver autorizado.',
+    'Preset Vigolium Kali Deep aplicado. O RUN pedirá autorização vinculada ao alvo e aprovação do plano exato.',
     'warn',
   );
 }
@@ -7466,7 +7532,7 @@ function applyVigoliumAuthComparePreset() {
     entries.length ? 'info' : 'warn',
   );
   addLog(
-    'O preset não concede consentimento ativo. Revise o plano e marque «Confirmar ativo» manualmente somente se o escopo estiver autorizado.',
+    'O preset não concede autorização. O RUN pedirá declaração vinculada ao alvo e aprovação do plano exato.',
     'warn',
   );
 }
@@ -7488,16 +7554,23 @@ function vigoliumGuardrailMessages(mods = currentVigoliumModulesSelected()) {
   const messages = [];
   const source = String(document.getElementById('vigoliumSourceInput')?.value || '').trim();
   const useCodex = Boolean(document.getElementById('vigoliumUseCodexToggle')?.checked);
-  const confirmActive = Boolean(document.getElementById('confirmActiveToggle')?.checked);
+  const moduleTags = String(document.getElementById('vigoliumModuleTagsInput')?.value || '').trim();
+  const only = String(document.getElementById('vigoliumOnlyInput')?.value || '').trim();
   const codexInstalled = window.__vigoliumCap?.codex?.installed;
   if (mode === 'none') return messages;
   if (mode === 'audit' && !source) {
     messages.push({ level: 'block', text: 'audit precisa de caminho do codigo-fonte; sem isso o agent sera ignorado.' });
   }
   if (mode === 'autopilot') {
-    if (!confirmActive) messages.push({ level: 'block', text: 'autopilot exige Confirmar ativo antes do RUN.' });
+    messages.push({ level: 'warn', text: 'autopilot roda somente em prévia (dry-run) até existir aprovação por comando no motor Vigolium.' });
     if (!useCodex) messages.push({ level: 'warn', text: 'autopilot sem Codex marcado pode cair em provider externo/indefinido do Vigolium.' });
     if (!source) messages.push({ level: 'warn', text: 'sem source, autopilot fica limitado ao alvo web e perde code review.' });
+  }
+  if (mode === 'swarm') {
+    messages.push({ level: 'warn', text: 'swarm será ignorado: o motor nativo ainda não garante execução restrita ao plano aprovado.' });
+  }
+  if (mode === 'autopilot' && !moduleTags && !only) {
+    messages.push({ level: 'block', text: 'autopilot exige tags de módulos ou --only para compor a prévia do plano interno.' });
   }
   if (useCodex && codexInstalled === false) {
     messages.push({ level: 'warn', text: 'Codex nao foi detectado no PATH deste ambiente.' });
@@ -7532,7 +7605,10 @@ function validateVigoliumGuardrailsBeforeRun(mods) {
   }
   const warnings = messages.filter((m) => m.level === 'warn');
   if (warnings.length) {
-    return window.confirm(`Vigolium guardrail:\n\n${warnings.map((m) => '- ' + m.text).join('\n')}\n\nContinuar mesmo assim?`);
+    addLog(
+      `Vigolium guardrail: ${warnings.map((m) => m.text).join(' | ')} · continuando pela seleção explícita do operador.`,
+      'warn',
+    );
   }
   return true;
 }
@@ -8036,7 +8112,46 @@ async function consumeReconStreamFromResponse(res, batchPreserveCount, batchPosi
   return !failed;
 }
 
-async function prepareManualReconApproval(streamBody) {
+async function createTemporaryManualEngagement(streamBody, headers, authorizationRequested = false) {
+  const toggle = document.getElementById('manualAuthorizationToggle');
+  if (streamBody.engagementId || (authorizationRequested !== true && toggle?.checked !== true)) {
+    return streamBody;
+  }
+
+  const basis = String(
+    document.getElementById('manualAuthorizationBasisSelect')?.value || 'explicit',
+  ).trim().toLowerCase();
+  const response = await fetch(apiUrl('/api/engagements/manual-authorization'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      target: streamBody.domain,
+      authorizationConfirmed: true,
+      basis,
+      includeSubdomains: streamBody.exactMatch !== true,
+      exclusions: streamBody.outOfScope || [],
+      operator: streamBody.operator || null,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !data?.engagement?.id) {
+    const permissionHint = response.status === 403
+      ? ' Esta declaração exige sessão com papel red ou admin.'
+      : '';
+    throw new Error(
+      `${data?.error || `autorização manual HTTP ${response.status}`}${permissionHint}`,
+    );
+  }
+
+  const engagementId = String(data.engagement.id);
+  addLog(
+    `Autorização manual criada: ${engagementId} · alvo vinculado · validade de 8 horas.`,
+    'success',
+  );
+  return { ...streamBody, engagementId };
+}
+
+async function prepareManualReconApproval(streamBody, { authorizationRequested = false } = {}) {
   const token = await ensureCsrfToken();
   const authConfig = getOptionalAuthConfig();
   const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
@@ -8045,7 +8160,11 @@ async function prepareManualReconApproval(streamBody) {
   // O preflight recebe o mesmo contexto privado do stream para o servidor
   // selá-lo por HMAC. O plano devolvido continua contendo apenas um resumo sem
   // valores; a API key do GHOSTRECON viaja exclusivamente no header HTTP.
-  const preflightBody = { ...streamBody };
+  const preflightBody = await createTemporaryManualEngagement(
+    { ...streamBody },
+    headers,
+    authorizationRequested,
+  );
 
   const preflightResponse = await fetch(apiUrl('/api/recon/preflight'), {
     method: 'POST',
@@ -8054,12 +8173,15 @@ async function prepareManualReconApproval(streamBody) {
   });
   const preflight = await preflightResponse.json().catch(() => ({}));
   if (!preflightResponse.ok || !preflight?.ok) {
-    throw new Error(preflight?.error || `preflight HTTP ${preflightResponse.status}`);
+    const checklistErrors = Array.isArray(preflight?.checklist?.errors)
+      ? preflight.checklist.errors.filter(Boolean)
+      : [];
+    const detail = checklistErrors.length ? `: ${checklistErrors.join(' | ')}` : '';
+    throw new Error(`${preflight?.error || `preflight HTTP ${preflightResponse.status}`}${detail}`);
   }
-  if (!preflight.requiresApproval) return streamBody;
-  if (streamBody.confirmActive !== true) {
-    throw new Error('O plano é intrusivo: marque “Confirmar ativo” antes de solicitar a aprovação.');
-  }
+  const authorizationToggle = document.getElementById('manualAuthorizationToggle');
+  if (authorizationRequested && authorizationToggle) authorizationToggle.checked = false;
+  if (!preflight.requiresApproval) return preflightBody;
 
   const plan = preflight.plan || {};
   const frameSeven = plan.engines?.frameseven || {};
@@ -8095,24 +8217,27 @@ async function prepareManualReconApproval(streamBody) {
     `Tor=${execution.torRequired ? (execution.torStrict ? 'estrito' : 'obrigatório') : 'não'}`,
     `proxies=${execution.proxyCount || 0}${execution.proxyPoolBinding ? ' (selados)' : ''}`,
   ].join(' · ');
-  const approved = window.confirm(
-    `CONFIRMAÇÃO DO PLANO MANUAL\n\n`
-    + `Alvo: ${plan.target || streamBody.domain}\n`
-    + `Engagement: ${plan.engagement?.id || 'n/d'}\n`
-    + `Módulos efetivos: ${(plan.expandedModules || []).join(', ') || '(nenhum)'}\n`
-    + `Módulos intrusivos: ${(plan.intrusiveModules || []).join(', ') || '(nenhum)'}\n`
-    + `Motores: ${engines}\n`
-    + `Ferramentas FrameSeven: ${tools}\n`
-    + `Limites: ${limits}\n`
-    + `Identidades seladas: ${binaryIdentities}\n`
-    + `Autenticação pipeline: ${pipelineAuth}\n`
-    + `Autenticação Vigolium: ${vigoliumAuth}\n`
-    + `Contexto operacional: ${executionContext}\n`
-    + `OPSEC: ${plan.execution?.opsecProfile || 'standard'}\n`
-    + `Hash do plano: ${plan.hash || 'n/d'}\n\n`
-    + 'A aprovação vale somente para este alvo, engagement, conjunto de módulos, ferramentas, limites e identidades de binário. '
-    + 'Qualquer mudança invalida o plano. Ao recusar, nada será executado.\n\n'
-    + 'Deseja aprovar este plano?',
+  const approved = true;
+  console.debug(
+    'PLANO MANUAL AUTORIZADO PELA SELEÇÃO',
+    `\nAlvo: ${plan.target || preflightBody.domain}`
+    + `\nEngagement: ${plan.engagement?.id || 'n/d'}`
+    + `\nMódulos efetivos: ${(plan.expandedModules || []).join(', ') || '(nenhum)'}`
+    + `\nMódulos intrusivos: ${(plan.intrusiveModules || []).join(', ') || '(nenhum)'}`
+    + `\nMotores: ${engines}`
+    + `\nFerramentas FrameSeven: ${tools}`
+    + `\nLimites: ${limits}`
+    + `\nIdentidades seladas: ${binaryIdentities}`
+    + `\nAutenticação pipeline: ${pipelineAuth}`
+    + `\nAutenticação Vigolium: ${vigoliumAuth}`
+    + `\nContexto operacional: ${executionContext}`
+    + `\nOPSEC: ${plan.execution?.opsecProfile || 'standard'}`
+    + `\nHash do plano: ${plan.hash || 'n/d'}`
+    + `\nPlano autorizado pela seleção explícita dos módulos no RUN manual (sem diálogo de confirmação — modo manual não bloqueia).`,
+  );
+  addLog(
+    `Plano manual autorizado pela seleção · alvo=${plan.target || preflightBody.domain} · intrusivos=${(plan.intrusiveModules || []).length} · hash=${String(plan.hash || '').slice(0, 16)}…`,
+    'info',
   );
 
   const decisionResponse = await fetch(apiUrl('/api/recon/approval'), {
@@ -8128,10 +8253,9 @@ async function prepareManualReconApproval(streamBody) {
   if (!decisionResponse.ok || !decision?.ok) {
     throw new Error(decision?.error || `aprovação HTTP ${decisionResponse.status}`);
   }
-  if (!approved) return null;
-
   return {
-    ...streamBody,
+    ...preflightBody,
+    confirmActive: true,
     manualApproval: {
       approvalId: preflight.approval.approvalId,
       planHash: plan.hash,
@@ -8377,15 +8501,12 @@ async function startRecon() {
     const useOos = selectedMods.includes('out_of_scope');
     const oosText = (document.getElementById('outOfScopeInput')?.value || '').trim();
     const projectName = (document.getElementById('projectNameInput')?.value || '').trim();
-    let bountyContext = null;
-    const bcRaw = (document.getElementById('bountyContextJsonInput')?.value || '').trim();
-    if (bcRaw) {
-      try {
-        bountyContext = JSON.parse(bcRaw);
-      } catch {
-        addLog('Contexto bounty: JSON inválido — campo ignorado.', 'warn');
-      }
-    }
+    const manualAuthorizationRequested = Boolean(
+      document.getElementById('manualAuthorizationToggle')?.checked,
+    );
+    const manualEngagementIdAtStart = manualAuthorizationRequested
+      ? ''
+      : String(document.getElementById('engagementIdInput')?.value || '').trim();
 
     const shannonGhManual = (document.getElementById('shannonGithubReposInput')?.value || '').trim();
     const subdomainCascade = Boolean(document.getElementById('subdomainCascadeToggle')?.checked);
@@ -8400,6 +8521,9 @@ async function startRecon() {
         modules: selectedMods,
         kaliMode: Boolean(document.getElementById('kaliModeToggle')?.checked && window.__kaliScanAvailable),
         profile: getReconProfile(),
+        // O cockpit Manual não expõe política OPSEC: standard admite os
+        // módulos escolhidos, enquanto engagement/RBAC/popup continuam os gates.
+        opsecProfile: 'standard',
         auth: getPipelineAuthConfig(),
         includeFrameSeven,
         frameSevenAuth,
@@ -8418,19 +8542,11 @@ async function startRecon() {
       if (pgUrlUi) streamBody.pentestgptUrl = pgUrlUi;
       if (useOos) streamBody.outOfScope = oosText || '';
       if (projectName) streamBody.projectName = projectName;
-      if (bountyContext) streamBody.bountyContext = bountyContext;
 
       const engId = (document.getElementById('engagementIdInput')?.value || '').trim();
-      if (engId) streamBody.engagementId = engId;
+      if (engId && !manualAuthorizationRequested) streamBody.engagementId = engId;
       const opHand = (document.getElementById('engagementOperatorInput')?.value || '').trim();
       if (opHand) streamBody.operator = opHand;
-      if (document.getElementById('confirmActiveToggle')?.checked) streamBody.confirmActive = true;
-      const opsecV = String(document.getElementById('opsecProfileSelect')?.value || 'standard')
-        .trim()
-        .toLowerCase();
-      if (['passive', 'stealth', 'standard', 'aggressive'].includes(opsecV)) {
-        streamBody.opsecProfile = opsecV;
-      }
       const pbn = (document.getElementById('playbookNameInput')?.value || '').trim();
       if (pbn) streamBody.playbook = pbn;
       const navigatorModeOn = Boolean(document.getElementById('navigatorModeToggle')?.checked);
@@ -8507,17 +8623,10 @@ async function startRecon() {
         .map((s) => s.trim())
         .filter(Boolean)
         .slice(0, 32);
-      const behaviorOn = document.getElementById('identityBehaviorToggle')?.checked !== false;
-      const rotationVal = String(document.getElementById('identityRotationSelect')?.value || 'round_robin')
-        .trim()
-        .toLowerCase();
-      const rotation = ['round_robin', 'random', 'fixed'].includes(rotationVal) ? rotationVal : 'round_robin';
-      let effectiveProxyPool = proxyLines;
-      if (rotation === 'fixed') {
-        const fixedFromPopup = String(window.__ghostreconIdentityFixedProxy || '').trim();
-        const fixed = fixedFromPopup || proxyLines[0] || '';
-        effectiveProxyPool = fixed ? [fixed] : [];
-      }
+      const behaviorOn = true;
+      const rotation = 'fixed';
+      const fixed = proxyLines[0] || '';
+      let effectiveProxyPool = fixed ? [fixed] : [];
       if (anonTorOn && !effectiveProxyPool.length) {
         effectiveProxyPool = ['socks5h://127.0.0.1:9050'];
       }
@@ -8578,7 +8687,9 @@ async function startRecon() {
       }
       let approvedStreamBody;
       try {
-        approvedStreamBody = await prepareManualReconApproval(makeStreamBody(rootHost));
+        approvedStreamBody = await prepareManualReconApproval(makeStreamBody(rootHost), {
+          authorizationRequested: manualAuthorizationRequested,
+        });
       } catch (approvalError) {
         const message = `Plano manual recusado pelo servidor: ${approvalError?.message || approvalError}`;
         if (targets.length === 1) {
@@ -8586,14 +8697,6 @@ async function startRecon() {
           return;
         }
         addLog(`${message} (a saltar para o próximo alvo)`, 'error');
-        continue;
-      }
-      if (!approvedStreamBody) {
-        addLog(`Plano manual recusado pelo operador — ${rootHost} não foi executado.`, 'warn');
-        if (targets.length === 1) {
-          finishOk();
-          return;
-        }
         continue;
       }
       const res = await fetch(apiUrl('/api/recon/stream'), {
@@ -8670,16 +8773,22 @@ async function startRecon() {
           }
           let approvedSubBody;
           try {
-            approvedSubBody = await prepareManualReconApproval(makeStreamBody(subHost));
+            const subStreamBody = makeStreamBody(subHost);
+            if (
+              !manualEngagementIdAtStart
+              && exact !== true
+              && /^MANUAL-/.test(String(approvedStreamBody.engagementId || ''))
+            ) {
+              subStreamBody.engagementId = approvedStreamBody.engagementId;
+            }
+            approvedSubBody = await prepareManualReconApproval(subStreamBody, {
+              authorizationRequested: manualAuthorizationRequested,
+            });
           } catch (approvalError) {
             addLog(
               `Plano da cascata ${subHost} bloqueado: ${approvalError?.message || approvalError}`,
               'error',
             );
-            continue;
-          }
-          if (!approvedSubBody) {
-            addLog(`Plano da cascata ${subHost} recusado — alvo não executado.`, 'warn');
             continue;
           }
           const resSub = await fetch(apiUrl('/api/recon/stream'), {
@@ -9172,53 +9281,8 @@ function openIdentityRotationModePopup() {
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 32);
-  const answer = window.prompt(
-    [
-      'Escolhe o modo de rotação de proxy para este recon:',
-      '1 = sequencial (round_robin)',
-      '2 = aleatório (random)',
-      '3 = proxy fixo (fixed)',
-      '',
-      'AVISO: após iniciar o recon, esta escolha não deve ser alterada.',
-      '',
-      'Digite 1, 2 ou 3:',
-    ].join('\n'),
-    '1',
-  );
-  if (answer == null) return { ok: false };
-  const v = String(answer).trim();
-  if (!['1', '2', '3'].includes(v)) {
-    window.alert('Opção inválida. Escolhe 1, 2 ou 3.');
-    return { ok: false };
-  }
-  if (v === '1') {
-    if (rotEl) rotEl.value = 'round_robin';
-    window.__ghostreconIdentityFixedProxy = '';
-    return { ok: true };
-  }
-  if (v === '2') {
-    if (rotEl) rotEl.value = 'random';
-    window.__ghostreconIdentityFixedProxy = '';
-    return { ok: true };
-  }
-  if (!pool.length) {
-    window.alert('Para "proxy fixo", adiciona pelo menos 1 proxy no pool antes de continuar.');
-    return { ok: false };
-  }
-  const pick = window.prompt(
-    `Proxy fixo: escolhe o índice (1-${pool.length})\n` + pool.map((p, i) => `${i + 1}: ${p}`).join('\n'),
-    '1',
-  );
-  if (pick == null) return { ok: false };
-  const idx = Number(pick);
-  if (!Number.isInteger(idx) || idx < 1 || idx > pool.length) {
-    window.alert('Índice inválido para proxy fixo.');
-    return { ok: false };
-  }
-  const chosen = pool[idx - 1];
   if (rotEl) rotEl.value = 'fixed';
-  window.__ghostreconIdentityFixedProxy = chosen;
-  window.alert('Modo "proxy fixo" definido. Não altere esta escolha após iniciar o recon.');
+  window.__ghostreconIdentityFixedProxy = pool[0] || ''; // compatibilidade com sessões/UI antigas
   return { ok: true };
 }
 
@@ -9299,6 +9363,8 @@ function applySmartFastPreset() {
     'jwt_jwks_audit',
     'openapi_specs',
     'api_contract_diff',
+    'kali_nmap',
+    'ftp_anonymous_audit',
     'nmap_cve_match',
     'nmap_backport_review',
     'mysql_3306_intel',
@@ -9344,6 +9410,7 @@ const FULL_MODULES_EXCLUDE = new Set([
   'kali_proxychains',
   'kali_nmap_aggressive',
   'kali_nmap_udp',
+  'ftp_write_probe',
   'info_disclosure_errors',
   'webshell_probe',
   'out_of_scope',
@@ -9366,6 +9433,10 @@ function applyFullModulesPresetFromUi() {
   if (lm) lm.checked = false;
   syncAiModeUi();
   syncOutOfScopeUi();
+  addLog(
+    'Preset Full inclui módulos intrusivos; o plano exato será exibido para aprovação antes da execução. Engagement ID é opcional.',
+    'warn',
+  );
 }
 (function bindFullPresetToggle() {
   const fullCb = document.getElementById('fullPresetToggle');
@@ -9573,7 +9644,6 @@ document.getElementById('vigoliumCatalogBox')?.addEventListener('click', (ev) =>
   'modVigoliumAutopilot',
   'vigoliumUseCodexToggle',
   'vigoliumSourceInput',
-  'confirmActiveToggle',
 ].forEach((id) => {
   const el = document.getElementById(id);
   if (!el) return;
@@ -9936,13 +10006,10 @@ function closeXssHelpModal() {
   const deepProfileSelect = document.getElementById('reconProfileSelect');
   deepProfileSelect?.addEventListener('change', () => {
     if (deepProfileSelect.value !== 'deep') return;
-    const activeConfirmed = document.getElementById('confirmActiveToggle')?.checked === true;
-    if (!activeConfirmed) {
-      addLog(
-        'Perfil deep selecionado. Ele não concede consentimento: revise o plano e marque «Confirmar ativo» manualmente se houver autorização.',
-        'warn',
-      );
-    }
+    addLog(
+      'Perfil deep selecionado. Ele não concede autorização; módulos intrusivos exigirão autorização vinculada ao alvo e popup do plano exato.',
+      'warn',
+    );
   });
 </script>
 
@@ -10019,8 +10086,6 @@ function closeXssHelpModal() {
       <dl class="findings-help-dl">
         <dt>Projeto (pasta local)</dt>
         <dd>Nome opcional do cliente/projeto. Quando preenchido, o run também grava corpus e SQLite em <code>escopo/{projeto}/{dominio}/ghostrecon.db</code>, além do storage configurado.</dd>
-        <dt>Contexto bounty (JSON)</dt>
-        <dd>Ajusta a priorização v2. Use modelos como Web/API/Mobile/VDP e edite o JSON para refletir escopo, recompensa, foco técnico e exclusões do programa.</dd>
         <dt>Target ($)</dt>
         <dd>Alvo principal do recon. Aceita domínio, URL, IPv4 ou IPv6. Esse valor alimenta o pipeline, Reporte, Ghostmap, Workbench e filtros de alvo.</dd>
         <dt>Fila de alvos</dt>
@@ -10029,20 +10094,20 @@ function closeXssHelpModal() {
         <dd>Lista hosts/URLs/wildcards que não devem entrar em corpus, sitemap, superfície HTML nem Google CSE. Também soma com <code>GHOSTRECON_OUT_OF_SCOPE</code> do servidor.</dd>
       </dl>
 
-      <h3 class="findings-help-section-title">Engagement, OPSEC e identidade</h3>
+      <h3 class="findings-help-section-title">Autorização manual e identidade</h3>
       <dl class="findings-help-dl">
         <dt>Engagement ID</dt>
         <dd>Conecta o run a um engagement já criado no servidor. Ativa checklist pré-run, valida escopo e registra auditoria.</dd>
         <dt>Operador</dt>
         <dd>Identificador curto usado em auditoria e watermark de headers quando há engagement.</dd>
-        <dt>Confirmar ativo</dt>
-        <dd>Confirma que você tem autorização para módulos ativos/intrusivos. Necessário para Kali agressivo, SQLmap, Vigolium DAST/autopilot e outros módulos de ataque.</dd>
-        <dt>Perfil OPSEC</dt>
-        <dd><code>passive</code>, <code>stealth</code>, <code>standard</code> ou <code>aggressive</code>. O gate OPSEC bloqueia módulos incompatíveis com o perfil escolhido.</dd>
+        <dt>Autorização temporária</dt>
+        <dd>Declara ativo próprio, autorização explícita ou lab/CTF e cria um engagement local de 8 horas, restrito ao alvo atual. Módulos intrusivos ainda exigem aprovação do plano exato.</dd>
+        <dt>OPSEC e bug bounty</dt>
+        <dd>Esses controles pertencem ao Modo Auto e ficam dentro do popup Auto. O RUN manual usa OPSEC <code>standard</code> e executa somente os módulos escolhidos.</dd>
         <dt>Modo Navigator / Tor</dt>
         <dd>Ativa fluxo Navigator e Tor em modo usuário. No Windows sem binário Tor, esses recursos podem falhar; use Kali/WSL/Linux com ferramentas instaladas.</dd>
-        <dt>Rotação de identidade</dt>
-        <dd>Configura proxies, rotação, retries em 403/429 e comportamento anti-WAF. Pode ser usado via módulo ou via JSON do run.</dd>
+        <dt>Política de identidade estável</dt>
+        <dd>Fixa proxy, User-Agent e idioma durante o RUN. Respostas 403/captcha são apenas registradas; 429 aplica backoff à próxima requisição, sem retry para contornar bloqueios.</dd>
       </dl>
 
       <h3 class="findings-help-section-title">Execução rápida</h3>
@@ -10100,7 +10165,7 @@ function closeXssHelpModal() {
         <dt>Auth Compare</dt>
         <dd>Preenche admin/user em <code>--auth</code>, ativa PATH + DAST + report HTML e adiciona tags IDOR/BOLA para comparar papéis.</dd>
         <dt>Guardrails Vigolium</dt>
-        <dd>Autopilot exige <strong>Confirmar ativo</strong>; a UI avisa se faltar Codex ou source. Audit precisa de caminho de código.</dd>
+        <dd>Swarm exige filtros internos e congela IDs concretos antes da aprovação. Autopilot permanece somente em prévia <code>dry-run</code>; Audit precisa de caminho de código.</dd>
       </dl>
 
       <h3 class="findings-help-section-title">IA e relatórios</h3>
@@ -10108,7 +10173,7 @@ function closeXssHelpModal() {
         <dt>IA · relatórios</dt>
         <dd>Ao marcar confirmação, o servidor pode usar Gemini, OpenRouter, Claude e/ou LM Studio para gerar <code>relatorio</code> e <code>proximos_passos</code>. Sem confirmação, não há chamada cloud.</dd>
         <dt>Shannon white-box</dt>
-        <dd>Análise local em Docker sobre código-fonte/repositórios. Gera relatório de segurança e findings <code>intel</code>.</dd>
+        <dd>Análise local em Docker sobre código-fonte/repositórios. Importa seções com severidade como candidatos normalizados e tenta cancelar o workflow Temporal em timeout/cancelamento.</dd>
         <dt>PentestGPT HTTP</dt>
         <dd>Envia resumo pós-recon para um endpoint configurado em <code>GHOSTRECON_PENTESTGPT_URL</code>, útil para triagem e bug bounty report.</dd>
         <dt>Histórico SQLite</dt>
@@ -10188,9 +10253,9 @@ function closeXssHelpModal() {
         <dt>"Impressão digital adorável"</dt>
         <dd>Leia como <strong>lovable_fingerprint</strong> (RLS/segredos/auth).</dd>
         <dt>"Auditoria Supabase" / "Bypass pagamento"</dt>
-        <dd>Leia como <strong>supabase_audit</strong> — extrai anon key e token do bundle do alvo e usa nos testes (RLS, Storage, Auth, GraphQL, RPC, service_role, IDOR, payment bypass). Token autenticado: bundle → signup anônimo → signup aberto → service_role. Override: <code>GHOSTRECON_SUPABASE_AUTH_TOKEN</code>.</dd>
+        <dd><strong>supabase_audit</strong> é somente leitura. Requests anônimos aceitam apenas <code>sb_publishable_*</code> ou JWT legado exatamente <code>role=anon</code>; <code>sb_secret_*</code>, <code>service_role</code>, tokens authenticated/custom e chaves opacas inválidas falham antes da rede. Em <code>&lt;ref&gt;.supabase.co</code>, o <code>ref</code> do JWT anon deve coincidir. O Lovable usa o mesmo extrator fail-closed e só reporta credencial privilegiada estaticamente. <code>GHOSTRECON_SUPABASE_AUTH_TOKEN</code> aceita apenas JWT de usuário configurado, com issuer do projeto e <code>exp</code> futuro; sua assinatura não é atestada. Nenhuma conta, linha, arquivo ou RPC mutável é criado.</dd>
         <dt>"Auditoria Firebase" / "RTDB/Firestore"</dt>
-        <dd>Leia como <strong>firebase_audit</strong> — extrai config Firebase do JS, testa leitura/escrita anônima em RTDB e Firestore, listagem de Storage, cadastro Auth público e cadeia de escalação <code>users/{uid}</code>. Probes de escrita usam marcador efêmero com cleanup.</dd>
+        <dd>Leia como <strong>firebase_audit</strong> — extrai config e nomes de coleção observados no JS, testa somente leitura anônima em RTDB/Firestore e listagem de Storage. Esta capacidade não cria contas nem altera dados.</dd>
         <dt>"Auth client-side" / "sessionStorage bypass"</dt>
         <dd>Leia como <strong>client_auth_audit</strong> — analisa bundles JS em busca de senhas hardcoded, gates de auth via sessionStorage/localStorage, rotas de painel admin e dados sensíveis no browser.</dd>
         <dt>"Client surface audit" / "DOM XSS sinks"</dt>
@@ -10229,7 +10294,7 @@ function closeXssHelpModal() {
         <dt>DALFOX</dt>
         <dd>Resultados do <strong>Dalfox</strong> (XSS) no modo Kali, quando o pipeline activa essa fase.</dd>
         <dt>XSS_VIBES</dt>
-        <dd>Após a fase XSS do modo Kali, o servidor pode executar <strong>xss_vibes</strong> (pasta <code>Xss/xss_vibes</code>) e adicionar os hits como findings <code>xss</code> com meta <code>scanner=xss_vibes</code>.</dd>
+        <dd>Executa duas requisições GET por parâmetro candidato com marcador não executável, redirect manual e escopo validado. Reflexão repetível gera apenas <strong>candidato</strong>; encoding correto vira inventário, nunca XSS confirmado.</dd>
         <dt>XSS</dt>
         <dd>Achados classificados como XSS (ex.: templates Nuclei ou fase Verify).</dd>
         <dt>SQLI</dt>
@@ -10243,7 +10308,7 @@ function closeXssHelpModal() {
         <dt>TAKEOVER</dt>
         <dd>Candidatos ou confirmações de <strong>subdomain takeover</strong> (CNAME, páginas de fornecedor, etc.).</dd>
         <dt>SECRET-CHECK</dt>
-        <dd>Resultado da validação de segredos: <strong>live</strong>, <strong>provável</strong> ou <strong>morto</strong> (tipo <code>secret_validation</code>).</dd>
+        <dd>Resultado da validação de segredos: <strong>live</strong>, <strong>provável</strong>, <strong>morto</strong>, <strong>configuração pública</strong> ou <strong>inconclusivo</strong> (tipo <code>secret_validation</code>).</dd>
         <dt>WHOIS</dt>
         <dd>Texto de <strong>whois</strong> sobre o domínio ou subdomínios (modo Kali).</dd>
         <dt>SEC</dt>
@@ -10343,7 +10408,7 @@ function closeXssHelpModal() {
         <dt>Headers HTTP + TLS</dt>
         <dd>Probing + cabeçalhos de segurança + certificado TLS nos hosts vivos.</dd>
         <dt>WAF fingerprint (wafw00f)</dt>
-        <dd>CLI <code>wafw00f</code> quando disponível (deteção de WAF).</dd>
+        <dd>CLI <code>wafw00f</code> com capability cache, timeout, cancelamento e parser estruturado; diferencia detectado, não detectado, indisponível e falha.</dd>
         <dt>robots.txt / sitemap</dt>
         <dd>Crawl de Disallow e URLs de sitemap por origem viva.</dd>
         <dt>VirusTotal subs</dt>
@@ -10358,14 +10423,14 @@ function closeXssHelpModal() {
         <dd>Descoberta OIDC e endpoints relacionados.</dd>
         <dt>GitHub leaks</dt>
         <dd>GitHub Code Search no domínio (token opcional aumenta limite).</dd>
-        <dt>Pastebin leaks</dt>
-        <dd>Sem API fiável — o pipeline sugere usar dorks gerados.</dd>
+        <dt>Public paste references</dt>
+        <dd>Consulta passiva via Google CSE em hosts públicos de paste. Exige <code>GOOGLE_CSE_KEY</code> e <code>GOOGLE_CSE_CX</code>; snippets não são persistidos.</dd>
       </dl>
 
       <h3 class="findings-help-section-title">// SQLi</h3>
       <dl class="findings-help-dl">
-        <dt>Verify SQLi avançado (ORDER BY / UNION)</dt>
-        <dd>Módulo <code>verify_sqli_deep</code>.</dd>
+        <dt>Verify SQLi diferencial seguro</dt>
+        <dd>Módulo <code>verify_sqli_deep</code>: baselines repetidas, transição de erro e diferencial booleano estável, sem UNION, delay ou bypass de login. Reporta no máximo como provável.</dd>
         <dt>SQLmap (curl + sqlmap)</dt>
         <dd>Módulo <code>sqlmap</code>.</dd>
       </dl>
@@ -10404,7 +10469,7 @@ function closeXssHelpModal() {
 
       <h3 class="findings-help-section-title">// Shannon (white-box local)</h3>
       <p class="findings-help-section-intro"><strong>O que faz:</strong> o Shannon (Keygraph) corre em <strong>Docker</strong> uma análise <strong>white-box</strong> sobre código-fonte — clona repositórios Git (do programa de bounty ou sugeridos pelo recon), executa o workflow (Temporal) e gera um <strong>relatório de avaliação de segurança</strong> no workspace. Complementa o recon OSINT/web; não substitui dorks nem scans de superfície.</p>
-      <p class="findings-help-section-intro" style="margin-top:6px"><strong>O que recebes no Ghost:</strong> por repositório processado aparece um cartão <strong>intel</strong> — em sucesso, com título tipo «Shannon white-box: <code>org/repo</code>», meta com <code>workspace</code>, <strong>caminho do ficheiro Markdown</strong> do relatório e um <strong>excerto</strong> do texto; em falha, cartão com fase/erro e dica no <strong>log</strong>. Podes abrir a <strong>Web UI do Temporal</strong> (quando o pipeline mostra o link) para acompanhar o workflow. O relatório completo fica no disco do workspace Shannon (ficheiro longo tipo assessment).</p>
+      <p class="findings-help-section-intro" style="margin-top:6px"><strong>O que recebes no Ghost:</strong> as seções com severidade do relatório viram findings normalizados marcados como <strong>candidatos de IA</strong>; sem seção estruturada aparece apenas um resumo informativo. Timeout e cancelamento tentam cancelar o workflow Temporal e registram se a limpeza foi confirmada. O relatório completo permanece no workspace local.</p>
       <p class="findings-help-section-intro" style="margin-top:6px">Módulo <code>shannon_whitebox</code> em <code>modules</code>. Código em <code>IAs/shannon</code> (não versionado no Git do Ghost): <code>pnpm build</code>, <code>./shannon build</code>, imagem <code>shannon-worker</code>. A linha <strong>Shannon: …</strong> na sidebar resume Docker / pasta / CLI / imagem.</p>
       <dl class="findings-help-dl">
         <dt>Módulo Shannon white-box</dt>

@@ -3,8 +3,26 @@
  * Corta campos pesados para caber no limite de bytes.
  */
 import { redactFindingForPublic } from './finding-redaction.mjs';
+import { extractApiContractSnapshots } from './api-contract-diff.mjs';
 
-const DEFAULT_MAX_BYTES = 8_000_000;
+// Dez origens (configuração padrão) podem produzir vários contratos
+// estruturais válidos. O teto continua finito, mas não rejeita quatro specs
+// grandes que respeitem o limite individual do coletor.
+const DEFAULT_MAX_BYTES = 32_000_000;
+const ABSOLUTE_MAX_BYTES = 64_000_000;
+
+function normalizeMaxBytes(maxBytes) {
+  const requestedFallback = Number(maxBytes);
+  const fallback = Number.isFinite(requestedFallback) && requestedFallback > 0
+    ? requestedFallback
+    : DEFAULT_MAX_BYTES;
+  const configuredRaw = process.env.GHOSTRECON_FINDINGS_SNAPSHOT_MAX_BYTES;
+  const configured = configuredRaw == null || !String(configuredRaw).trim()
+    ? fallback
+    : Number(configuredRaw);
+  const finite = Number.isFinite(configured) && configured > 0 ? configured : fallback;
+  return Math.max(1, Math.min(ABSOLUTE_MAX_BYTES, Math.floor(finite)));
+}
 
 function truncateStr(s, max) {
   const t = String(s ?? '');
@@ -66,8 +84,16 @@ function cloneFindingForSnapshot(f) {
  * @returns {string|null} JSON string ou null se vazio
  */
 export function serializeFindingsForRunSnapshot(findings, maxBytes = DEFAULT_MAX_BYTES) {
-  const lim = Number(process.env.GHOSTRECON_FINDINGS_SNAPSHOT_MAX_BYTES || maxBytes);
-  const list = (findings || []).map(cloneFindingForSnapshot).filter(Boolean);
+  const lim = normalizeMaxBytes(maxBytes);
+  const sourceFindings = Array.isArray(findings) ? findings : [];
+  const requiredApiSnapshots = sourceFindings.filter(
+    (finding) => finding?.type === 'api_contract_snapshot',
+  ).length;
+  const list = sourceFindings.map(cloneFindingForSnapshot).filter(Boolean);
+  if (requiredApiSnapshots > 0) {
+    const validSnapshots = extractApiContractSnapshots({ id: 0, findings: list }).length;
+    if (validSnapshots !== requiredApiSnapshots) return null;
+  }
   let payload = {
     schemaVersion: 1,
     savedAt: new Date().toISOString(),
@@ -81,13 +107,20 @@ export function serializeFindingsForRunSnapshot(findings, maxBytes = DEFAULT_MAX
   while (Buffer.byteLength(json, 'utf8') > lim && payload.findings.length > 20 && guard < 40) {
     guard += 1;
     const drop = Math.max(1, Math.floor(payload.findings.length * 0.08));
-    payload.findings = payload.findings.slice(0, payload.findings.length - drop);
+    let remaining = drop;
+    for (let index = payload.findings.length - 1; index >= 0 && remaining > 0; index -= 1) {
+      if (payload.findings[index]?.type === 'api_contract_snapshot') continue;
+      payload.findings.splice(index, 1);
+      remaining -= 1;
+    }
+    if (remaining === drop) break;
     payload.count = payload.findings.length;
     payload.truncated = true;
-    payload.droppedTail += drop;
+    payload.droppedTail += drop - remaining;
     json = JSON.stringify(payload);
   }
   if (Buffer.byteLength(json, 'utf8') > lim) {
+    if (requiredApiSnapshots > 0) return null;
     payload = {
       schemaVersion: 1,
       savedAt: payload.savedAt,

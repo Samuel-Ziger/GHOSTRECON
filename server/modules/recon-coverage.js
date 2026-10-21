@@ -29,7 +29,7 @@ export function buildReconCoverageSnapshot({ domain, modules, kaliMode, findings
   if (!mods.includes('kali_proxychains')) notes.push('Proxychains (Kali): módulo UI desligado');
   if (!mods.includes('webshell_probe')) notes.push('Webshell heurístico (GET cmd=id): módulo UI desligado');
   if (!kaliMode) {
-    notes.push('Modo Kali: desligado (nmap/ffuf/dirsearch/nuclei/dalfox/xss_vibes/wpscan não executam no servidor)');
+    notes.push('Modo Kali: desligado (nmap/ffuf/dirsearch/nuclei/dalfox/wpscan não executam no servidor)');
   } else if (kaliCap && !kaliCap.ok) {
     notes.push(`Kali: ambiente sem suporte (${kaliCap.message || 'cap desconhecido'})`);
   }

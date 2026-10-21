@@ -82,6 +82,95 @@ function makeFinding({ issue, score, url, name = '', meta = [] }) {
   };
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function namedAccessPattern(escapedName) {
+  return `(?:window|document)\\s*(?:\\.\\s*${escapedName}\\b|\\[\\s*["']${escapedName}["']\\s*\\])`;
+}
+
+function namedAccessReachesSink(sourceWindow, escapedName) {
+  const access = namedAccessPattern(escapedName);
+  const directSink = new RegExp(
+    `(?:\\.src|\\.href|\\.action|\\.innerHTML|\\blocation(?:\\.href)?)\\s*=\\s*${access}(?:\\b|\\.)|(?:eval|Function|fetch)\\s*\\(\\s*${access}(?:\\b|\\.)`,
+    'i',
+  );
+  if (directSink.test(sourceWindow)) return true;
+
+  const assignment = new RegExp(
+    `(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${access}`,
+    'i',
+  ).exec(sourceWindow);
+  if (!assignment?.[1]) return false;
+  const variable = escapeRegExp(assignment[1]);
+  const assignedSink = new RegExp(
+    `(?:\\.src|\\.href|\\.action|\\.innerHTML|\\blocation(?:\\.href)?)\\s*=\\s*${variable}(?:\\b|\\.)|(?:eval|Function|fetch)\\s*\\(\\s*${variable}(?:\\b|\\.)`,
+    'i',
+  );
+  return assignedSink.test(sourceWindow.slice(assignment.index));
+}
+
+export function correlateDomClobberingChains(html, js, { htmlUrl = '', jsUrl = '' } = {}) {
+  if (!documentReferencesScript(html, js, htmlUrl, jsUrl)) return [];
+  const names = extractDomNamedProperties(html)
+    .filter((item) => RESERVED_NAMES.has(item.name) || /^[a-z_$][\w$-]{1,80}$/i.test(item.name));
+  const src = String(js || '').slice(0, 700_000);
+  const findings = [];
+  const seen = new Set();
+  for (const item of names) {
+    const escaped = escapeRegExp(item.name);
+    const accessRe = new RegExp(namedAccessPattern(escaped), 'gi');
+    let match;
+    while ((match = accessRe.exec(src)) !== null) {
+      const start = Math.max(0, match.index - 180);
+      const end = Math.min(src.length, match.index + 700);
+      const windowText = src.slice(start, end);
+      if (!namedAccessReachesSink(windowText, escaped)) continue;
+      const key = `${item.name}:${jsUrl}:${match.index}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push(makeFinding({
+        issue: 'Candidato estático: acesso DOM nomeado próximo de sink',
+        score: 40,
+        name: item.raw,
+        url: jsUrl || htmlUrl,
+        meta: [
+          'evidence_status=candidate',
+          'controllability=unverified',
+          'dataflow=lexical_not_runtime',
+          `html_source=${htmlUrl || 'inline'}`,
+          `js_source=${jsUrl || 'inline'}`,
+          `snippet=${windowText.replace(/\s+/g, ' ').trim().slice(0, 220)}`,
+        ],
+      }));
+      break;
+    }
+  }
+  return findings;
+}
+
+function documentReferencesScript(html, js, htmlUrl, jsUrl) {
+  if (!htmlUrl || !jsUrl) return false;
+  try {
+    const documentUrl = new URL(htmlUrl);
+    const scriptUrl = new URL(jsUrl, documentUrl);
+    documentUrl.hash = '';
+    scriptUrl.hash = '';
+    for (const match of String(html || '').slice(0, 500_000).matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+      const src = /\bsrc\s*=\s*(["'])(.*?)\1/i.exec(match[1]);
+      if (src) {
+        const referenced = new URL(src[2], documentUrl);
+        referenced.hash = '';
+        if (referenced.href === scriptUrl.href) return true;
+      } else if (documentUrl.href === scriptUrl.href && match[2].trim() === String(js || '').trim()) {
+        return true;
+      }
+    }
+  } catch { /* Invalid/missing provenance cannot establish a chain. */ }
+  return false;
+}
+
 export function extractDomNamedProperties(html) {
   const src = String(html || '').slice(0, 500_000);
   const out = [];
@@ -113,11 +202,11 @@ export function auditDomClobberingHtml(html, { url = '' } = {}) {
     counts.set(item.name, (counts.get(item.name) || 0) + 1);
     if (RESERVED_NAMES.has(item.name)) {
       push(`reserved:${item.name}`, makeFinding({
-        issue: 'id/name colide com propriedade global sensivel',
-        score: /^(?:__proto__|constructor|prototype|location|document|window)$/.test(item.name) ? 68 : 52,
+        issue: 'Inventario: id/name colide com propriedade global sensivel',
+        score: /^(?:__proto__|constructor|prototype|location|document|window)$/.test(item.name) ? 28 : 20,
         name: item.raw,
         url,
-        meta: ['surface=html_named_property'],
+        meta: ['evidence_status=inventory', 'surface=html_named_property'],
       }));
     }
   }
@@ -126,8 +215,8 @@ export function auditDomClobberingHtml(html, { url = '' } = {}) {
     if (count < 2) continue;
     if (!RESERVED_NAMES.has(name) && count < 3) continue;
     push(`duplicate:${name}`, makeFinding({
-      issue: 'id/name duplicado pode alterar resolucao DOM',
-      score: RESERVED_NAMES.has(name) ? 60 : 42,
+      issue: 'Inventario: id/name duplicado pode alterar resolucao DOM',
+      score: RESERVED_NAMES.has(name) ? 26 : 18,
       name,
       url,
       meta: [`duplicates=${count}`, 'surface=html_named_property'],
@@ -152,10 +241,10 @@ export function auditDomClobberingJs(js, { url = '' } = {}) {
       if (!seen.has(key)) {
         seen.add(key);
         findings.push(makeFinding({
-          issue: p.issue,
-          score: p.score,
+          issue: `Inventario: ${p.issue}`,
+          score: Math.min(28, p.score),
           url,
-          meta: [`pattern=${p.key}`, `snippet=${snippet.slice(0, 180)}`],
+          meta: ['evidence_status=inventory', `pattern=${p.key}`, `snippet=${snippet.slice(0, 180)}`],
         }));
       }
       count += 1;
@@ -182,6 +271,15 @@ export function runDomClobberingAudit({ htmlBodies = [], jsBodies = [] } = {}) {
   }
   for (const row of jsBodies || []) {
     pushAll(auditDomClobberingJs(row?.body || '', { url: row?.url || '' }));
+  }
+  for (const htmlRow of htmlBodies || []) {
+    for (const jsRow of jsBodies || []) {
+      pushAll(correlateDomClobberingChains(
+        htmlRow?.body || htmlRow?.html || '',
+        jsRow?.body || '',
+        { htmlUrl: htmlRow?.url || '', jsUrl: jsRow?.url || '' },
+      ));
+    }
   }
 
   return { findings: findings.sort((a, b) => b.score - a.score) };

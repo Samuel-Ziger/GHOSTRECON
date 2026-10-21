@@ -260,7 +260,9 @@ class CodexAppServerClient {
         error.code = 'CODEX_APP_SERVER_UNTERMINATED';
         reject(error);
       }, APP_SERVER_KILL_GRACE_MS + 2_000);
-      hardDeadline.unref?.();
+      // Este timer é a garantia de assentamento de close(). Se for unref e o
+      // provider zumbi for o último handle, o processo pode encerrar com a
+      // Promise pendente sem registrar CODEX_APP_SERVER_UNTERMINATED.
       // Registrar waiter antes do kill: exit síncrono do mock não pode perder o resolve.
       this.exitWaiters.push({ resolve, reject, hardDeadline });
       this.signalProcess('SIGTERM');

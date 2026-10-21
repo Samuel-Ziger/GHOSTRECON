@@ -22,9 +22,11 @@ import { fetchWaybackUrls, filterInterestingUrls, extractJsUrls } from '../../mo
 import { extractParamsFromUrls } from '../../modules/params.js';
 import { analyzeJsUrl } from '../../modules/js-analyzer.js';
 import { scanSecrets } from '../../modules/secrets.js';
-import { githubCodeSearch, githubRepoSearch } from '../../modules/github.js';
+import { githubCodeSearch, githubRepoSearch, validateGithubCodeHit } from '../../modules/github.js';
 import { cloneGithubReposForTarget, githubCloneConfig, githubRepoHtmlUrl } from '../../modules/github-clone.js';
 import { parseGithubManualRepoList } from '../../modules/github-manual-repos.js';
+import { runTrufflehogLocal } from '../../modules/trufflehog-local.mjs';
+import { createFetchRequestAdapter } from '../../modules/fetch-request-adapter.mjs';
 import { buildDorks } from '../../modules/dorks.js';
 import { scoreEndpointPath, scoreParamName } from '../../modules/scoring.js';
 import { fetchDnsEnrichment } from '../../modules/dns-enrichment.js';
@@ -47,7 +49,8 @@ import {
 import { limits } from '../../config.js';
 import { listRuns } from '../../modules/db.js';
 import { collectUniqueIpv4, shodanHostSummary } from '../../modules/ip-intel.js';
-import { googleCseSearch } from '../../modules/google-cse.js';
+import { runDorkIntel } from '../../modules/dork-intel.mjs';
+import { runPastebinIntel } from '../../modules/pastebin-intel.mjs';
 import { getKaliCapabilities, runKaliAggressiveScan } from '../../modules/kali-scan.js';
 import {
   augmentProcessPathFromCommonDirs,
@@ -57,7 +60,6 @@ import {
 import { enumerateSubdomainsWithSubfinder, enumerateSubdomainsWithAmass } from '../../modules/kali-subdomain-tools.js';
 import { withProvenance } from '../../modules/finding-provenance.js';
 import { hostLiteralForUrl, targetIsIp } from '../../modules/recon-target.js';
-import { secretMaterialFingerprint } from '../../modules/db-common.js';
 import { syncValidatedCortexFindingToGhostKb } from '../../modules/ghost-kb-sync.js';
 import { gateModules, applyWatermarkHeaders } from '../../modules/opsec.mjs';
 import { buildAuthzPlan, runAuthzMatrix, fingerprintBody } from '../../modules/authz-matrix.mjs';
@@ -116,7 +118,7 @@ import {
 import { newnym as torNewnym } from '../../modules/tor-control.js';
 
 import path from 'path';
-import { ROOT, firstIpv4FromDnsRecords, sleep } from '../pipeline-shared.mjs';
+import { ROOT, firstIpv4FromDnsRecords } from '../pipeline-shared.mjs';
 import { dispatchRegistryModule } from '../dispatcher.mjs';
 
 const TARGET_JS_FETCH_MODULES = new Set([
@@ -215,6 +217,7 @@ export async function runContentDiscoveryPhase(s) {
           archiveCliUrls = await fetchArchiveToolUrls(domain, log, {
             ...archiveToolSelection,
             signal: s.signal,
+            urlAllowed: (url) => s.urlInScope(url),
           });
         } catch (e) {
           if (s.signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
@@ -265,6 +268,11 @@ export async function runContentDiscoveryPhase(s) {
             modules,
             log,
             s.scopePolicy,
+            {
+              fetchImpl: s.fetchImpl,
+              signal: s.signal,
+              urlAllowed: (url) => s.urlInScope(url),
+            },
           );
           for (const gf of gqlFindings) addFinding(gf, null);
         } catch (e) {
@@ -497,7 +505,11 @@ export async function runContentDiscoveryPhase(s) {
           }));
           const mapUrl = extractSourceMapUrl(a.body || '', jsUrl);
           if (mapUrl) {
-            const smFinding = await probeSourceMapDisclosure(mapUrl);
+            const smFinding = await probeSourceMapDisclosure(mapUrl, {
+              fetchImpl: s.fetchImpl,
+              signal: s.signal,
+              urlAllowed: (url) => s.urlInScope(url),
+            });
             if (smFinding) clientSurfaceResults.push({ findings: [smFinding], summary: {} });
           }
         } catch (e) {
@@ -616,13 +628,21 @@ export async function runContentDiscoveryPhase(s) {
           targetUrl,
           log,
           writeProbes,
+          signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
+          requestImpl: createFetchRequestAdapter({
+            fetchImpl: s.fetchImpl || globalThis.fetch,
+            urlAllowed: (url) => s.urlInScope(url),
+          }),
         });
         for (const f of fbFindings) addFinding(withProvenance(f, 'firebase_audit'));
         if (fbFindings.length) {
           log(`Firebase audit (pós-JS): ${fbFindings.length} achado(s)`, 'warn');
         }
+        if (summary?.status === 'partial') log('Firebase audit (pós-JS): cobertura parcial; consulte outcomes, não equivale a regras seguras', 'warn');
         delete firebaseContext._auditPending;
       } catch (e) {
+        if (s.signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
         log(`Firebase audit (pós-JS): ${e.message}`, 'warn');
       }
     }
@@ -650,21 +670,11 @@ export async function runContentDiscoveryPhase(s) {
         mod: d.mod,
         prio: d.prio,
       });
-      addFinding(
-        {
-          type: 'dork',
-          prio: d.prio,
-          score: d.prio === 'high' ? 68 : 55,
-          value: d.query,
-          meta: `Categoria: ${d.mod}`,
-          url: d.googleUrl,
-        },
-        'dorks',
-      );
     }
-    log(`${dorks.length} dorks gerados (abertura no browser com fila configurável)`, 'success');
+    log(`${dorks.length} consultas sugeridas; consultas não são registradas como achados.`, 'info');
 
-    if (modules.includes('google_cse')) {
+    const dorkIntelSelected = dorks.some((dork) => modules.includes(dork.mod));
+    if (modules.includes('google_cse') || dorkIntelSelected) {
       pipe('google_cse', 'active');
       const gKey = process.env.GOOGLE_CSE_KEY;
       const gCx = process.env.GOOGLE_CSE_CX;
@@ -676,46 +686,22 @@ export async function runContentDiscoveryPhase(s) {
       } else if (dorks.length === 0) {
         log('Google CSE: nenhum dork gerado — ative categorias de dork na sidebar.', 'warn');
       } else {
+        const intel = await runDorkIntel({
+          target: domain,
+          dorks,
+          apiKey: gKey,
+          cx: gCx,
+          fetchImpl: s.fetchImpl || globalThis.fetch,
+          signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
+          maxQueries: limits.googleCseMaxQueries,
+          log,
+        });
+        for (const finding of intel.findings) addFinding(finding, 'intel');
         log(
-          `Google Custom Search: até ${limits.googleCseMaxQueries} queries neste run (quota diária típica 100 grátis).`,
-          'info',
+          `Dork intel: ${intel.metrics.validated} resultado(s) validado(s) de ${intel.metrics.candidates} candidato(s).`,
+          intel.findings.length ? 'success' : 'info',
         );
-        const seenG = new Set();
-        const slice = dorks.slice(0, limits.googleCseMaxQueries);
-        for (let i = 0; i < slice.length; i++) {
-          const d = slice[i];
-          if (i > 0) await sleep(limits.googleCseDelayMs);
-          try {
-            const items = await googleCseSearch(d.query, gKey, gCx);
-            for (const it of items) {
-              if (!s.urlInScope(it.link)) continue;
-              if (seenG.has(it.link)) continue;
-              seenG.add(it.link);
-              let pathname = '/';
-              try {
-                pathname = new URL(it.link).pathname;
-              } catch {
-                continue;
-              }
-              const { score, prio } = scoreEndpointPath(pathname);
-              addFinding(
-                {
-                  type: 'endpoint',
-                  prio,
-                  score: Math.max(score, 62),
-                  value: it.link,
-                  meta: `Google CSE • ${d.mod} • ${it.title ? it.title.slice(0, 60) : d.query.slice(0, 60)}`,
-                  url: it.link,
-                },
-                'endpoints',
-              );
-              log(`CSE → ${it.link}`, 'find');
-            }
-          } catch (e) {
-            log(`CSE [${d.mod}]: ${e.message}`, 'warn');
-          }
-        }
-        log(`${seenG.size} URL(s) no alvo descoberta(s) via Google CSE`, seenG.size ? 'success' : 'info');
       }
       pipe('google_cse', 'done');
     } else {
@@ -741,7 +727,7 @@ export async function runContentDiscoveryPhase(s) {
           prio: 'low',
           score: 38,
           value: `GitHub clone local: ${item.full_name}`,
-          meta: `path=${item.local_path} • size=${Math.round((item.size_bytes || 0) / (1024 * 1024))}MB`,
+          meta: `size=${Math.round((item.size_bytes || 0) / (1024 * 1024))}MB • retention=ephemeral`,
           url: `https://github.com/${item.full_name}`,
         });
       }
@@ -750,30 +736,48 @@ export async function runContentDiscoveryPhase(s) {
     if (modules.includes('github')) {
       pipe('github', 'active');
       log('GitHub Code Search (API pública, rate limit)...', 'info');
-      const gh = await githubCodeSearch(domain, process.env.GITHUB_TOKEN);
+      const gh = await githubCodeSearch(domain, process.env.GITHUB_TOKEN, {
+        fetchImpl: s.fetchImpl || globalThis.fetch,
+        signal: s.signal,
+      });
+      const validatedCodeRepos = new Set();
       if (gh.ok && gh.items?.length) {
         for (const it of gh.items) {
-          const ghMat = `${it.repo || ''}|${it.path || ''}`;
-          const ghf = secretMaterialFingerprint('github_code_hit', ghMat);
-          addFinding(
-            {
-              type: 'secret',
-              prio: 'high',
-              score: 78,
-              value: `${it.repo || ''}/${it.path || ''}`,
-              meta: `Resultado GitHub Code Search — revisar manualmente • value_fp=${ghf}`,
-              url: it.html_url,
-            },
-            'secrets',
-          );
+          addFinding({
+            type: 'github_code_candidate',
+            prio: 'info',
+            score: 28,
+            value: `GitHub Code Search: ${it.repo || 'repo'}/${it.path || 'arquivo'}`,
+            meta: 'Resultado de busca; não classificado como segredo sem análise do conteúdo.',
+            url: it.html_url,
+          }, 'intel');
+          try {
+            const validation = await validateGithubCodeHit(it, {
+              target: domain,
+              token: process.env.GITHUB_TOKEN,
+              fetchImpl: s.fetchImpl || globalThis.fetch,
+              signal: s.signal,
+            });
+            if (validation.status !== 'target_relation_not_confirmed' && it.repo) {
+              validatedCodeRepos.add(it.repo);
+            }
+            for (const finding of validation.findings) addFinding(finding, 'secrets');
+          } catch (error) {
+            if (s.signal?.aborted || error?.name === 'AbortError') throw error;
+            log(`GitHub conteúdo (${it.repo || '?'}): ${error.message}`, 'warn');
+          }
         }
-        log(`${gh.items.length} resultados GitHub (total estimado ${gh.total})`, 'warn');
+        log(`${gh.items.length} resultado(s) GitHub analisado(s); busca isolada permanece inventário.`, 'info');
       } else {
         log(gh.note || 'Sem resultados GitHub ou limite atingido', 'info');
       }
 
       log('GitHub Repo Search (candidatos para clone local)...', 'info');
-      const ghRepos = await githubRepoSearch(domain, process.env.GITHUB_TOKEN, { perPage: 8 });
+      const ghRepos = await githubRepoSearch(domain, process.env.GITHUB_TOKEN, {
+        perPage: 8,
+        fetchImpl: s.fetchImpl || globalThis.fetch,
+        signal: s.signal,
+      });
       const codeRepos = (gh.items || []).map((x) => String(x.repo || '').trim()).filter(Boolean);
       const repoMap = new Map();
 
@@ -781,6 +785,14 @@ export async function runContentDiscoveryPhase(s) {
         for (const r of ghRepos.items || []) {
           if (!r?.full_name) continue;
           repoMap.set(r.full_name, r);
+          addFinding({
+            type: 'github_repository_candidate',
+            prio: 'info',
+            score: 24,
+            value: `Repositório possivelmente relacionado: ${r.full_name}`,
+            meta: 'Relação baseada em nome/descrição/README; requer confirmação humana.',
+            url: githubRepoHtmlUrl(r),
+          }, 'intel');
         }
       }
 
@@ -798,6 +810,9 @@ export async function runContentDiscoveryPhase(s) {
       }
 
       const repoCandidates = [...repoMap.values()];
+      const manualNames = new Set(manualGithubRepos.map((repo) => repo.full_name));
+      const cloneCandidates = repoCandidates.filter((repo) =>
+        manualNames.has(repo.full_name) || validatedCodeRepos.has(repo.full_name));
       if (repoCandidates.length) {
         log(`GitHub repos candidatos: ${repoCandidates.length}`, 'success');
         for (const r of repoCandidates.slice(0, 12)) {
@@ -821,7 +836,7 @@ export async function runContentDiscoveryPhase(s) {
         try {
           const cloned = await cloneGithubReposForTarget({
             targetDomain: domain,
-            repos: repoCandidates,
+            repos: cloneCandidates,
             log,
             signal: s.signal,
           });
@@ -831,7 +846,27 @@ export async function runContentDiscoveryPhase(s) {
             if (cloned.cloned?.length) {
               githubClonedItems = cloned.cloned;
               recordClonedFindings(cloned.cloned);
-              log(`Clone local concluído: ${cloned.cloned.length} repo(s) em ${cloned.base_dir}`, 'success');
+              log(`Clone local concluído: ${cloned.cloned.length} repo(s), diretório efêmero restrito.`, 'success');
+              for (const item of cloned.cloned) {
+                try {
+                  const scan = await runTrufflehogLocal({
+                    directory: item.local_path,
+                    repoUrl: item.html_url,
+                    signal: s.signal,
+                  });
+                  for (const finding of scan.findings || []) addFinding(finding, 'secrets');
+                  if (scan.findings?.length) {
+                    log(`TruffleHog local: ${scan.findings.length} segredo(s) classificado(s), sem verificação online.`, 'warn');
+                  } else if (scan.error && !/not found|enoent/i.test(scan.error)) {
+                    log(`TruffleHog local: ${scan.error}`, 'warn');
+                  }
+                } catch (error) {
+                  if (s.signal?.aborted || error?.name === 'AbortError') throw error;
+                  if (!/enoent|not found/i.test(String(error.message))) {
+                    log(`TruffleHog local: ${error.message}`, 'warn');
+                  }
+                }
+              }
             } else {
               log('Clone local: nenhum repositório clonado nesta execução.', 'info');
             }
@@ -876,7 +911,7 @@ export async function runContentDiscoveryPhase(s) {
           if (!cloned.skipped && cloned.cloned?.length) {
             githubClonedItems = cloned.cloned;
             recordClonedFindings(cloned.cloned);
-            log(`Clone local concluído: ${cloned.cloned.length} repo(s) em ${cloned.base_dir}`, 'success');
+            log(`Clone local concluído: ${cloned.cloned.length} repo(s), diretório efêmero restrito.`, 'success');
           } else if (!cloned.skipped && cloned.failed?.length) {
             for (const item of cloned.failed.slice(0, 4)) {
               const url = githubRepoHtmlUrl(item);
@@ -904,8 +939,19 @@ export async function runContentDiscoveryPhase(s) {
     if (!modules.includes('pastebin')) pipe('pastebin', 'skip');
     if (modules.includes('pastebin')) {
       pipe('pastebin', 'active');
-      pipe('pastebin', 'done');
-      log('Pastebin: sem API pública confiável — use os dorks gerados', 'info');
+      try {
+        const paste = await runPastebinIntel({
+          target: domain,
+          signal: s.signal,
+          log,
+        });
+        for (const finding of paste.findings) addFinding(finding, 'intel');
+        pipe('pastebin', paste.metrics?.status === 'provider_not_configured' ? 'skip' : 'done');
+      } catch (e) {
+        if (s.signal?.aborted || e?.name === 'AbortError') throw e;
+        log(`Paste intelligence: ${e?.message || e}`, 'warn');
+        pipe('pastebin', 'failed');
+      }
     }
     // Validação ativa de tokens/secrets: nunca implícita. Em Auto e RUN
     // manual, o módulo precisa constar no plano efetivamente autorizado.
@@ -914,10 +960,20 @@ export async function runContentDiscoveryPhase(s) {
     } else {
       pipe('secret_validation', 'active');
       try {
+        const secretRequest = createFetchRequestAdapter({
+          fetchImpl: s.fetchImpl || globalThis.fetch,
+          urlAllowed: (url) => s.urlInScope(url),
+          maxBytes: 16 * 1024,
+        });
         const sv = await validateSecretFindings(findings, log, {
           network: true,
           signal: s.signal,
           urlAllowed: (url) => s.urlInScope(url),
+          probeImpl: (url, headers, method, { signal }) => secretRequest(url, {
+            headers,
+            method,
+            signal,
+          }),
         });
       for (const row of sv) {
         const isLive     = row.status === 'live';
@@ -929,24 +985,27 @@ export async function runContentDiscoveryPhase(s) {
           row.tokenStatus === 'expired'  ? 'EXPIRED'  :
           row.tokenStatus === 'invalid'  ? 'INVALID'  :
           row.tokenStatus === 'revoked'  ? 'REVOKED'  :
+          row.tokenStatus === 'public_configuration' ? 'PUBLIC-CONFIG' :
           row.tokenStatus === 'probable' ? 'PROBABLE' :
           row.status.toUpperCase();
         addFinding({
           type:  'secret_validation',
-          prio:  isLive ? 'high' : isProbable ? 'med' : 'low',
-          score: isLive ? 86     : isProbable ? 62    : 24,
+          prio:  isLive ? 'high' : isProbable ? 'low' : 'info',
+          score: isLive ? 86     : isProbable ? 42    : 12,
           value: `Token ${statusLabel}${tokenLabel} • ${row.ref}`,
-          meta:  [
-            `tokenStatus=${row.tokenStatus ?? row.status}`,
-            `tokenType=${row.tokenType ?? 'unknown'}`,
-            row.offlineExpired            ? `offlineExpired=true`           : null,
-            row.expiredAt                 ? `expiredAt=${row.expiredAt}`    : null,
-            row.expiresAt                 ? `expiresAt=${row.expiresAt}`    : null,
-            row.noExpiration              ? `noExpiration=true`             : null,
-            row.jwtClaims?.iss            ? `iss=${row.jwtClaims.iss}`      : null,
-            row.jwtClaims?.role           ? `role=${row.jwtClaims.role}`    : null,
-            `reason=${row.reason}`,
-          ].filter(Boolean).join('|'),
+          meta: {
+            engine: 'secret_validation',
+            evidenceStatus: isLive ? 'provider_endpoint_confirmed' : 'offline_or_inconclusive',
+            tokenStatus: row.tokenStatus ?? row.status,
+            tokenType: row.tokenType ?? 'unknown',
+            offlineExpired: Boolean(row.offlineExpired),
+            expiredAt: row.expiredAt ?? null,
+            expiresAt: row.expiresAt ?? null,
+            noExpiration: Boolean(row.noExpiration),
+            issuer: row.jwtClaims?.iss ?? null,
+            role: row.jwtClaims?.role ?? null,
+            reason: row.reason,
+          },
           tokenValidation: {
             status:         row.tokenStatus ?? row.status,
             tokenType:      row.tokenType,

@@ -22,13 +22,15 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isIntrusive } from './opsec.mjs';
 import {
   hostnameMatchesOutOfScope,
   hostnameMatchesDomainScopeRule,
   ipMatchesScopeRule,
+  parseOutOfScopeClientInput,
 } from './scope.js';
+import { parseReconTarget, targetIsIp } from './recon-target.js';
 
 function storeDir() {
   return path.resolve(process.cwd(), process.env.GHOSTRECON_ENGAGEMENT_DIR || '.ghostrecon-engagements');
@@ -111,6 +113,78 @@ export function computeEngagementAuthorizationBinding(
   return createHash('sha256')
     .update(JSON.stringify(stableAuthorizationValue(authorization)))
     .digest('hex');
+}
+
+const MANUAL_AUTHORIZATION_BASES = new Set(['owned', 'explicit', 'lab']);
+
+/**
+ * Constrói uma autorização local, curta e vinculada ao alvo informado.
+ * A declaração não amplia escopo: domínio exato e, somente quando solicitado
+ * explicitamente, seus subdomínios; IP permanece sempre exato.
+ */
+export function buildManualAuthorizationEngagement({
+  target,
+  authorizationConfirmed = false,
+  basis,
+  includeSubdomains = false,
+  exclusions = [],
+  operator = null,
+  durationMs = 8 * 60 * 60_000,
+  now = new Date(),
+  id = null,
+} = {}) {
+  if (authorizationConfirmed !== true) {
+    throw new Error('confirmação explícita de autorização manual é obrigatória');
+  }
+  const normalizedBasis = String(basis || '').trim().toLowerCase();
+  if (!MANUAL_AUTHORIZATION_BASES.has(normalizedBasis)) {
+    throw new Error('base de autorização inválida: use owned, explicit ou lab');
+  }
+  const parsed = parseReconTarget(target);
+  if (!parsed.ok) throw new Error(parsed.message || 'alvo inválido');
+  const normalizedTarget = parsed.target;
+  const nowDate = now instanceof Date ? new Date(now.getTime()) : new Date(now);
+  if (!Number.isFinite(nowDate.getTime())) throw new Error('relógio inválido para autorização manual');
+  const boundedDurationMs = Math.min(
+    24 * 60 * 60_000,
+    Math.max(15 * 60_000, Number(durationMs) || 8 * 60 * 60_000),
+  );
+  const startsAt = new Date(nowDate.getTime() - 60_000).toISOString();
+  const endsAt = new Date(nowDate.getTime() + boundedDurationMs).toISOString();
+  const engagementId = id == null
+    ? `MANUAL-${nowDate.toISOString().replace(/[^0-9]/g, '').slice(0, 14)}-${randomUUID().slice(0, 8)}`
+    : normId(id);
+  const scopeDomains = [];
+  const scopeIps = [];
+  if (targetIsIp(normalizedTarget)) {
+    scopeIps.push(normalizedTarget);
+  } else {
+    scopeDomains.push(normalizedTarget);
+    if (includeSubdomains === true) scopeDomains.push(`*.${normalizedTarget}`);
+  }
+  const safeOperator = String(operator || '').trim().slice(0, 120) || null;
+  return {
+    id: engagementId,
+    client: `manual:${normalizedTarget}`,
+    scopeDomains,
+    scopeIps,
+    exclusions: parseOutOfScopeClientInput(exclusions),
+    window: { startsAt, endsAt, tz: 'UTC' },
+    sourceIps: [],
+    escalationContact: null,
+    roeUrl: null,
+    roeSigned: true,
+    status: 'active',
+    notes: [{
+      at: nowDate.toISOString(),
+      by: safeOperator,
+      text: `[MANUAL AUTHORIZATION] basis=${normalizedBasis}; target=${normalizedTarget}; subdomains=${includeSubdomains === true ? 'included' : 'excluded'}; expires=${endsAt}`,
+    }],
+  };
+}
+
+export async function createManualAuthorizationEngagement(input = {}) {
+  return upsertEngagement(buildManualAuthorizationEngagement(input));
 }
 
 export async function listEngagements() {
@@ -198,6 +272,7 @@ export function preRunChecklist({
   playbook = null,
   requireFormalAuthorization = false,
   intrusiveModules = null,
+  now = new Date(),
 }) {
   const errors = [];
   const warnings = [];
@@ -221,11 +296,11 @@ export function preRunChecklist({
 
   // Janela de teste
   if (engagement.window) {
-    const now = new Date();
-    if (engagement.window.startsAt && new Date(engagement.window.startsAt) > now) {
+    const nowDate = now instanceof Date ? now : new Date(now);
+    if (engagement.window.startsAt && new Date(engagement.window.startsAt) > nowDate) {
       errors.push(`ainda fora da janela (start=${engagement.window.startsAt}).`);
     }
-    if (engagement.window.endsAt && new Date(engagement.window.endsAt) < now) {
+    if (engagement.window.endsAt && new Date(engagement.window.endsAt) < nowDate) {
       errors.push(`fora da janela (end=${engagement.window.endsAt}).`);
     }
   }

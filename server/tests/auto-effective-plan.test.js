@@ -95,20 +95,26 @@ test('catálogo escolhe a classificação mais conservadora entre manifest e leg
   assert.equal(classifyAutoModule('ftp_write_probe', { class: 'passive' }), 'destructive');
 });
 
-test('ferramentas Kali implícitas viram capacidades explícitas e FTP write não entra no Auto', async () => {
+test('ferramentas Kali viram capacidades explícitas e FTP write não entra no Auto', async () => {
   const catalog = await buildAutoToolCatalog({ includeIntrusive: true });
   const byId = new Map(catalog.modules.map((item) => [item.id, item]));
 
   assert.equal(byId.get('kali_whois')?.class, 'active');
   for (const id of [
-    'kali_wpscan',
-    'kali_dalfox',
-    'kali_xss_vibes',
-    'nmap_service_followups',
+    'kali_nmap',
   ]) {
-    assert.equal(byId.get(id)?.class, 'intrusive', id);
+    assert.equal(byId.get(id)?.class, 'active', id);
     assert.equal(byId.get(id)?.manifest?.requiresKali, true, id);
     assert.equal(autoCapabilityPhase(id), 'aggressive', id);
+  }
+  assert.equal(byId.get('nmap_service_followups')?.class, 'intrusive');
+  assert.equal(byId.get('nmap_service_followups')?.manifest?.requiresKali, true);
+  assert.equal(autoCapabilityPhase('nmap_service_followups'), 'aggressive');
+  assert.equal(byId.get('ftp_anonymous_audit')?.class, 'intrusive');
+  assert.equal(byId.get('ftp_anonymous_audit')?.manifest?.requiresKali, true);
+  assert.equal(autoCapabilityPhase('ftp_anonymous_audit'), 'aggressive');
+  for (const id of ['kali_wpscan', 'kali_dalfox', 'kali_xss_vibes']) {
+    assert.equal(byId.get(id)?.class, 'intrusive', id);
   }
   assert.equal(byId.get('kali_whois')?.manifest?.requiresKali, true);
   assert.equal(autoCapabilityPhase('kali_whois'), 'aggressive');
@@ -437,6 +443,7 @@ test('assisted congela e hashia exatamente o plano ativo aprovado', () => {
       opsecProfile: 'aggressive',
       engagementId: 'ENG-PLAN',
       engagementAuthorizationBinding: 'a'.repeat(64),
+      bountyContext: { programType: 'web', focus: 'API + SPA' },
     },
     autonomyLevel: 'assisted',
   };
@@ -450,6 +457,7 @@ test('assisted congela e hashia exatamente o plano ativo aprovado', () => {
   assert.equal(first.requiresHumanApproval, true);
   assert.equal(first.execution.confirmActive, true);
   assert.equal(first.execution.engagementAuthorizationBinding, 'a'.repeat(64));
+  assert.deepEqual(first.execution.bountyContext, { programType: 'web', focus: 'API + SPA' });
   assert.deepEqual(first.moduleLimits, [
     {
       id: 'cors_audit',
@@ -478,6 +486,13 @@ test('assisted congela e hashia exatamente o plano ativo aprovado', () => {
         ...input.body,
         engagementAuthorizationBinding: 'b'.repeat(64),
       },
+    }).hash,
+  );
+  assert.notEqual(
+    first.hash,
+    buildEffectiveAutoPlan({
+      ...input,
+      body: { ...input.body, bountyContext: { programType: 'api' } },
     }).hash,
   );
   assert.equal(Object.isFrozen(first), true);

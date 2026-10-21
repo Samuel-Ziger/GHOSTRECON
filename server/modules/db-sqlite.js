@@ -4,7 +4,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { findingsForRunsTable, fingerprintFinding, norm } from './db-common.js';
 import { buildSecretPeerRows } from './secret-project-peers.js';
-import { parseFindingsSnapshotJson } from './finding-serialize.js';
+import {
+  parseFindingsSnapshotJson,
+  serializeFindingsForRunSnapshot,
+} from './finding-serialize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..', '..');
@@ -27,6 +30,7 @@ const SCHEMA_SQL = `
       correlation_json TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_runs_target_id ON runs(target, id);
     CREATE TABLE IF NOT EXISTS findings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id INTEGER NOT NULL,
@@ -183,7 +187,7 @@ export function resolveLocalProjectDbDir(projectName, domain) {
   const p = String(projectName || '').trim();
   if (!p) return null;
   const safeProject = sanitizePathSegment(p);
-  const safeScope = sanitizePathSegment(domain, 'scope');
+  const safeScope = sanitizePathSegment(norm(domain), 'scope');
   return path.join(SCOPE_DIR, safeProject, safeScope);
 }
 
@@ -195,6 +199,18 @@ export function getDb() {
   dbInstance.pragma('journal_mode = WAL');
   applySqliteSchema(dbInstance);
   return dbInstance;
+}
+
+/**
+ * Fecha o handle SQLite compartilhado e permite reabertura limpa no próximo
+ * acesso. Útil tanto no shutdown ordenado quanto em testes de restart real.
+ */
+export function closeDb() {
+  const active = dbInstance;
+  dbInstance = null;
+  if (!active) return false;
+  if (active.open) active.close();
+  return true;
 }
 
 export function mergeIntelForTargetDb(d, target, runId, findings) {
@@ -335,6 +351,17 @@ export function listProjectSecretDuplicatesSqlite(d, projectNameSanitized) {
 }
 
 function saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correlation, findingsJson = null }) {
+  const normalizedTarget = norm(target);
+  const requiresStructuredSnapshot = Array.isArray(findings)
+    && findings.some((finding) => finding?.type === 'api_contract_snapshot');
+  const effectiveFindingsJson = requiresStructuredSnapshot
+    ? serializeFindingsForRunSnapshot(findings)
+    : findingsJson;
+  if (requiresStructuredSnapshot && !effectiveFindingsJson) {
+    const error = new Error('api_contract_snapshot não pôde ser serializado com integridade');
+    error.code = 'SNAPSHOT_SERIALIZATION_FAILED';
+    throw error;
+  }
   const now = new Date().toISOString();
   const insRun = d.prepare(
     `INSERT INTO runs (target, exact_match, modules_json, stats_json, correlation_json, findings_json, created_at)
@@ -345,18 +372,17 @@ function saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correl
      VALUES (@run_id, @type, @prio, @score, @value, @meta, @url)`,
   );
 
-  const runResult = insRun.run({
-    target,
-    exact: exactMatch ? 1 : 0,
-    modules: JSON.stringify(modules),
-    stats: JSON.stringify(stats),
-    corr: correlation ? JSON.stringify(correlation) : null,
-    findings_json: findingsJson,
-    created: now,
-  });
-  const runId = Number(runResult.lastInsertRowid);
-
-  const insertAll = d.transaction((rows) => {
+  const insertRunAndFindings = d.transaction((rows) => {
+    const runResult = insRun.run({
+      target: normalizedTarget,
+      exact: exactMatch ? 1 : 0,
+      modules: JSON.stringify(modules),
+      stats: JSON.stringify(stats),
+      corr: correlation ? JSON.stringify(correlation) : null,
+      findings_json: effectiveFindingsJson,
+      created: now,
+    });
+    const runId = Number(runResult.lastInsertRowid);
     for (const f of rows) {
       insFinding.run({
         run_id: runId,
@@ -368,10 +394,11 @@ function saveRunWithDb(d, { target, exactMatch, modules, stats, findings, correl
         url: f.url ?? null,
       });
     }
+    return runId;
   });
-  insertAll(findingsForRunsTable(target, findings));
+  const runId = insertRunAndFindings(findingsForRunsTable(normalizedTarget, findings));
 
-  const intelMerge = mergeIntelForTargetDb(d, target, runId, findings);
+  const intelMerge = mergeIntelForTargetDb(d, normalizedTarget, runId, findings);
   return { runId, intelMerge };
 }
 
@@ -409,49 +436,119 @@ export function saveRun({ target, exactMatch, modules, stats, findings, correlat
   }
 }
 
+function parseStoredJson(value, fallback) {
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return fallback;
+  }
+}
+
+function mapRunSummary(row) {
+  return {
+    id: row.id,
+    target: row.target,
+    created_at: row.created_at,
+    // Estatísticas antigas/corrompidas não podem esconder um baseline válido.
+    stats: parseStoredJson(row.stats_json, {}),
+  };
+}
+
+function listRunsForTargetWithDb(d, target, limit = 80) {
+  const t = norm(target);
+  const lim = Math.min(500, Math.max(1, Number(limit) || 80));
+  return d
+    .prepare(`SELECT id, target, created_at, stats_json FROM runs WHERE target = ? ORDER BY id DESC LIMIT ?`)
+    .all(t, lim)
+    .map(mapRunSummary);
+}
+
+function getRunByIdWithDb(d, id) {
+  const run = d.prepare(`SELECT * FROM runs WHERE id = ?`).get(id);
+  if (!run) return null;
+  const tableFindings = d
+    .prepare(`SELECT type, prio, score, value, meta, url FROM findings WHERE run_id = ? ORDER BY id`)
+    .all(id);
+  const snap = run.findings_json ? parseFindingsSnapshotJson(run.findings_json) : null;
+  const findings = snap?.length ? snap : tableFindings;
+  return {
+    id: run.id,
+    target: run.target,
+    exact_match: Boolean(run.exact_match),
+    modules: parseStoredJson(run.modules_json, []),
+    stats: parseStoredJson(run.stats_json, {}),
+    correlation: parseStoredJson(run.correlation_json, null),
+    created_at: run.created_at,
+    findings,
+    findingsScopeRows: snap?.length ? tableFindings : undefined,
+  };
+}
+
+function projectDbPath(projectRootDir) {
+  const raw = String(projectRootDir || '').trim();
+  if (!raw) throw new TypeError('projectRootDir inválido');
+  const root = path.resolve(raw);
+  return path.join(root, 'ghostrecon.db');
+}
+
+function withExistingProjectDb(projectRootDir, fallback, operation) {
+  const dbPath = projectDbPath(projectRootDir);
+  if (!fs.existsSync(dbPath)) return fallback;
+  const d = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    return operation(d);
+  } finally {
+    d.close();
+  }
+}
+
 export function listRuns(limit = 50) {
   try {
     const d = getDb();
     const rows = d
       .prepare(`SELECT id, target, created_at, stats_json FROM runs ORDER BY id DESC LIMIT ?`)
       .all(Math.min(200, Math.max(1, limit)));
-    return rows.map((r) => ({
-      id: r.id,
-      target: r.target,
-      created_at: r.created_at,
-      stats: JSON.parse(r.stats_json),
-    }));
+    return rows.map(mapRunSummary);
   } catch (e) {
     console.error('[GHOSTRECON DB]', e.message);
     return [];
   }
 }
 
-export function getRunById(id) {
+export function listRunsForTarget(target, limit = 80, { strict = false } = {}) {
   try {
-    const d = getDb();
-    const run = d.prepare(`SELECT * FROM runs WHERE id = ?`).get(id);
-    if (!run) return null;
-    const tableFindings = d
-      .prepare(`SELECT type, prio, score, value, meta, url FROM findings WHERE run_id = ? ORDER BY id`)
-      .all(id);
-    const snap = run.findings_json ? parseFindingsSnapshotJson(run.findings_json) : null;
-    const findings = snap?.length ? snap : tableFindings;
-    return {
-      id: run.id,
-      target: run.target,
-      exact_match: Boolean(run.exact_match),
-      modules: JSON.parse(run.modules_json),
-      stats: JSON.parse(run.stats_json),
-      correlation: run.correlation_json ? JSON.parse(run.correlation_json) : null,
-      created_at: run.created_at,
-      findings,
-      findingsScopeRows: snap?.length ? tableFindings : undefined,
-    };
+    return listRunsForTargetWithDb(getDb(), target, limit);
   } catch (e) {
+    if (strict) throw e;
+    console.error('[GHOSTRECON DB]', e.message);
+    return [];
+  }
+}
+
+export function getRunById(id, { strict = false } = {}) {
+  try {
+    return getRunByIdWithDb(getDb(), id);
+  } catch (e) {
+    if (strict) throw e;
     console.error('[GHOSTRECON DB]', e.message);
     return null;
   }
+}
+
+/** Lê somente a base do projeto/escopo indicado; nunca percorre outros projetos. */
+export function listRunsForTargetInProjectDir(projectRootDir, target, limit = 80) {
+  return withExistingProjectDb(
+    projectRootDir,
+    [],
+    (d) => listRunsForTargetWithDb(d, target, limit),
+  );
+}
+
+/** Resolve um run dentro da mesma base de projeto que originou a referência. */
+export function getRunByIdFromProjectDir(projectRootDir, id) {
+  return withExistingProjectDb(projectRootDir, null, (d) => getRunByIdWithDb(d, id));
 }
 
 export function listIntelForTarget(target, limit = 500) {

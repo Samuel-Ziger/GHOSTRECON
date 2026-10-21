@@ -220,10 +220,10 @@ const MODULE_FATAL_STATUSES = new Set([
 
 export function classifyModuleOutcomeStatus(status) {
   const normalized = String(status || '').trim().toLowerCase();
-  if (!normalized || MODULE_OK_STATUSES.has(normalized)) return 'ok';
+  if (MODULE_OK_STATUSES.has(normalized)) return 'ok';
   if (MODULE_FATAL_STATUSES.has(normalized)) return 'fatal';
   if (MODULE_PARTIAL_STATUSES.has(normalized)) return 'partial';
-  // Status desconhecido: fail-closed como partial (não inventa completed).
+  // Status ausente/desconhecido: fail-closed como partial (não inventa completed).
   return 'partial';
 }
 
@@ -238,10 +238,26 @@ export function evaluateAutoRun({ events = [], plan = null, moduleOutcomes = nul
     ? moduleOutcomes
     : events
       .filter((e) => e?.type === 'auto_module_outcome' || (e?.type === 'module_outcome' && e.source !== 'pipeline_phase'))
-      .map((e) => ({ moduleId: e.moduleId, status: e.status, source: e.source }));
-  const moduleFailures = outcomes.filter((row) => classifyModuleOutcomeStatus(row?.status) !== 'ok');
+      .map((e) => ({
+        moduleId: e.moduleId,
+        status: e.status,
+        source: e.source,
+        partial: e.partial === true,
+        reason: e.reason || null,
+      }));
+  // Um módulo pode terminar seu lifecycle (`done`) e ainda declarar cobertura
+  // parcial. Ignorar essa flag promove indevidamente amostras truncadas,
+  // timeouts mistos ou cleanup incerto a uma sessão `completed`.
+  const classifyOutcome = (row) => {
+    const statusClass = classifyModuleOutcomeStatus(row?.status);
+    // Falha de encerramento/fatal sempre prevalece sobre uma flag `partial`.
+    // A flag só degrada outcomes que, pelo status, seriam concluídos.
+    if (statusClass === 'fatal') return 'fatal';
+    return row?.partial === true ? 'partial' : statusClass;
+  };
+  const moduleFailures = outcomes.filter((row) => classifyOutcome(row) !== 'ok');
   const fatalModuleFailures = moduleFailures.filter(
-    (row) => classifyModuleOutcomeStatus(row?.status) === 'fatal',
+    (row) => classifyOutcome(row) === 'fatal',
   );
   const warnings = events.filter((e) => e?.type === 'log' && e.level === 'warn');
   const highSignals = events.filter((e) => e?.type === 'finding' && ['high', 'critical'].includes(String(e.finding?.prio || e.prio || '').toLowerCase())).length;
@@ -275,7 +291,9 @@ export function evaluateAutoRun({ events = [], plan = null, moduleOutcomes = nul
       moduleId: row.moduleId || null,
       status: row.status || 'failed',
       source: row.source || null,
-      class: classifyModuleOutcomeStatus(row?.status),
+      class: classifyOutcome(row),
+      partial: row.partial === true,
+      reason: row.reason || null,
     })),
     next: hasFatal
       ? 'review_errors_before_next_iteration'

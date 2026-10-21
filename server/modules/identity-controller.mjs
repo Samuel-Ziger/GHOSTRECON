@@ -1,10 +1,10 @@
 /**
- * Rotação de identidade com decisões por comportamento (403 / 429 / captcha).
+ * Política de identidade de conexão para recon autorizado.
  *
- * - Sem proxies: roda UA + Accept-Language + sec-ch-ua coerentes por "sessão" e retries em 403.
- * - Com proxies (URLs http/https): usa undici.ProxyAgent quando disponível.
- *
- * Opt-in: identity.enabled no POST /api/recon/stream ou módulo `identity_rotation` na UI.
+ * O ID histórico `identity_rotation` é preservado por compatibilidade, mas o
+ * runtime usa uma identidade estável por run: não troca proxy/UA nem repete a
+ * requisição para contornar 403, captcha ou WAF. Respostas 429 apenas armam
+ * backoff para a próxima requisição.
  */
 
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
@@ -15,7 +15,6 @@ import {
   injectIsolationCredentials,
 } from './socks5-dispatcher.js';
 import { isStrict, sanitizeOutboundHeaders, telemetryFor } from './tor-strict.js';
-import { readResponseSnippet } from './module-runner.mjs';
 
 const ACCEPT_LANGS = [
   'pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -117,19 +116,25 @@ function envFlag(env, key) {
   return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
-function normalizeRotation(value, fallback = 'round_robin') {
+function abortError(signal) {
+  const error = signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted', 'AbortError');
+  if (!error.name || error.name === 'Error') error.name = 'AbortError';
+  return error;
+}
+
+function normalizeRotation(value, fallback = 'fixed') {
   const normalized = String(value || '').trim().toLowerCase();
-  return IDENTITY_ROTATIONS.has(normalized) ? normalized : fallback;
+  // random/round_robin permanecem aceitos no contrato legado, porém são
+  // deliberadamente reduzidos a `fixed`: rotação reativa seria evasão.
+  return IDENTITY_ROTATIONS.has(normalized) ? 'fixed' : fallback;
 }
 
 function proxiesFromEnv(env = process.env) {
   const raw = String(env?.GHOSTRECON_PROXY_POOL || '').trim();
   if (!raw) return [];
   return raw.split(/[,;\n]/).map((s) => s.trim()).filter(Boolean).slice(0, 32);
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 /** @param {Headers|Record<string,string>|undefined|null} h */
@@ -250,15 +255,30 @@ export function createIdentityController(opts = {}) {
   );
   const isolate = opts.isolate === true
     || (!resolved && envFlag(env, 'GHOSTRECON_TOR_ISOLATE'));
+  const fetchImpl = typeof opts.fetchImpl === 'function' ? opts.fetchImpl : fetch;
+  const sleepImpl = typeof opts.sleepImpl === 'function' ? opts.sleepImpl : null;
+  const now = typeof opts.now === 'function' ? opts.now : () => Date.now();
   let proxyIdx = 0;
   /** @type {Map<string, { score: number, burnedUntil: number }>} */
   const health = new Map();
   let backoffMul = 1;
-  let uaSlot = Math.floor(Math.random() * 512);
+  const stableSeed = String(opts.runId || opts.target || 'ghostrecon');
+  const uaSlot = [...stableSeed].reduce((acc, ch) => (acc * 33 + ch.charCodeAt(0)) % 512, 17);
+  const stableUserAgent = pickStealthUserAgent(modules);
+  let nextAllowedAt = 0;
+  let blockedResponses = 0;
+  let captchaResponses = 0;
+  let rateLimitedResponses = 0;
+  let disposed = false;
 
   function proxyKey() {
     if (!proxies.length) return '_direct';
-    return proxies[proxyIdx % proxies.length] || '_direct';
+    try {
+      const parsed = new URL(proxies[proxyIdx % proxies.length]);
+      return `${parsed.protocol}//${parsed.hostname}:${parsed.port || 'default'}`;
+    } catch {
+      return '_configured_proxy';
+    }
   }
 
   function bumpHealth(url, delta) {
@@ -268,44 +288,12 @@ export function createIdentityController(opts = {}) {
     health.set(k, cur);
   }
 
-  function markBurned(url) {
+  function markBlocked(url) {
     const k = url || '_direct';
     const cur = health.get(k) || { score: 0, burnedUntil: 0 };
     cur.score += 80;
-    cur.burnedUntil = Date.now() + 30 * 60_000;
+    cur.burnedUntil = now() + 30 * 60_000;
     health.set(k, cur);
-  }
-
-  function rotateIdentity() {
-    uaSlot += 1;
-    if (proxies.length) {
-      if (rotationStrategy === 'fixed') {
-        // Mantém o mesmo proxy durante todo o run.
-      } else if (rotationStrategy === 'random' && proxies.length > 1) {
-        let next = proxyIdx;
-        for (let i = 0; i < 4; i++) {
-          const cand = Math.floor(Math.random() * proxies.length);
-          if (cand !== proxyIdx) {
-            next = cand;
-            break;
-          }
-        }
-        proxyIdx = next;
-      } else {
-        proxyIdx += 1;
-      }
-      let tries = 0;
-      while (tries < proxies.length) {
-        const p = proxies[proxyIdx % proxies.length];
-        const h = health.get(p) || { score: 0, burnedUntil: 0 };
-        if (h.burnedUntil > Date.now() || h.score > 100) {
-          proxyIdx++;
-          tries++;
-          continue;
-        }
-        break;
-      }
-    }
   }
 
   function pickAcceptLanguage() {
@@ -313,10 +301,9 @@ export function createIdentityController(opts = {}) {
   }
 
   function buildChromeLikeHeaders(base = {}) {
-    const ua = pickStealthUserAgent(modules);
     const out = {
       ...base,
-      'User-Agent': base['User-Agent'] || ua,
+      'User-Agent': base['User-Agent'] || stableUserAgent,
       'Accept-Language': base['Accept-Language'] || pickAcceptLanguage(),
       Accept: base.Accept || 'text/html,application/xhtml+xml,application/json,*/*;q=0.8',
     };
@@ -332,13 +319,23 @@ export function createIdentityController(opts = {}) {
   // serve para não rotear cada request por circuit novo (a não ser que o caller
   // queira isolation explícita).
   /** @type {Map<string, import('undici').Dispatcher>} */
-  const socksDispatchers = new Map();
-  function rememberSocksDispatcher(key, dispatcher) {
-    if (socksDispatchers.size >= 16) {
-      const oldest = socksDispatchers.keys().next().value;
-      if (oldest) socksDispatchers.delete(oldest);
+  const proxyDispatchers = new Map();
+  async function closeDispatcher(dispatcher) {
+    try {
+      if (typeof dispatcher?.close === 'function') await dispatcher.close();
+      else if (typeof dispatcher?.destroy === 'function') await dispatcher.destroy();
+    } catch {
+      // Cleanup é best-effort; a política já bloqueia novas requisições.
     }
-    socksDispatchers.set(key, dispatcher);
+  }
+  function rememberDispatcher(key, dispatcher) {
+    if (proxyDispatchers.size >= 16) {
+      const oldest = proxyDispatchers.keys().next().value;
+      const evicted = oldest ? proxyDispatchers.get(oldest) : null;
+      if (oldest) proxyDispatchers.delete(oldest);
+      void closeDispatcher(evicted);
+    }
+    proxyDispatchers.set(key, dispatcher);
   }
 
   async function currentDispatcher() {
@@ -361,32 +358,79 @@ export function createIdentityController(opts = {}) {
         }
       }
       const cacheKey = useHref;
-      let dispatcher = socksDispatchers.get(cacheKey);
+      let dispatcher = proxyDispatchers.get(cacheKey);
       if (!dispatcher) {
         try {
           dispatcher = await createSocksDispatcher(useHref);
-          rememberSocksDispatcher(cacheKey, dispatcher);
+          rememberDispatcher(cacheKey, dispatcher);
         } catch (e) {
           // Não fazer fallback silencioso para directo — devolver undefined sinaliza erro upstream.
-          console.error('[identity] SOCKS dispatcher falhou:', e?.message || e);
+          void e;
           return undefined;
         }
       }
       return dispatcher;
     }
-    const undici = await loadUndici();
-    if (!undici || !undici.ProxyAgent) return undefined;
+    let dispatcher = proxyDispatchers.get(href);
+    if (dispatcher) return dispatcher;
     try {
-      return new undici.ProxyAgent(href);
+      if (typeof opts.httpProxyDispatcherFactory === 'function') {
+        dispatcher = await opts.httpProxyDispatcherFactory(href);
+      } else {
+        const undici = await loadUndici();
+        if (!undici || !undici.ProxyAgent) return undefined;
+        dispatcher = new undici.ProxyAgent(href);
+      }
+      rememberDispatcher(href, dispatcher);
+      return dispatcher;
     } catch {
       return undefined;
     }
   }
 
-  async function beforeRequest() {
+  async function pause(ms, signal) {
+    if (!(ms > 0)) return;
+    if (signal?.aborted) throw abortError(signal);
+    if (sleepImpl) {
+      let onAbort;
+      const aborted = new Promise((_, reject) => {
+        onAbort = () => reject(abortError(signal));
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+      try {
+        await (signal ? Promise.race([sleepImpl(ms), aborted]) : sleepImpl(ms));
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+      }
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      let timer = null;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const finish = () => {
+        cleanup();
+        resolve();
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(abortError(signal));
+      };
+      timer = setTimeout(finish, ms);
+      timer.unref?.();
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
+  }
+
+  async function beforeRequest(signal) {
+    const cooldownMs = Math.max(0, nextAllowedAt - now());
+    if (cooldownMs > 0) await pause(Math.min(cooldownMs, 120_000), signal);
     const extra = Math.max(0, backoffMul - 1) * 400;
-    if (extra) await sleep(extra);
-    await stealthPause(modules);
+    if (extra) await pause(extra, signal);
+    await stealthPause(modules, signal);
   }
 
   function evaluateResponse(status, retryAfterHeader, textPrefix) {
@@ -397,17 +441,22 @@ export function createIdentityController(opts = {}) {
     return { captcha, rotate403, rate429, retryAfterHeader };
   }
 
-  async function wait429(headers) {
+  function register429(headers) {
     const ra = headers?.get?.('retry-after');
     if (ra) {
       const n = Number(ra);
       if (Number.isFinite(n) && n > 0) {
-        await sleep(Math.min(120_000, n * 1000));
+        nextAllowedAt = Math.max(nextAllowedAt, now() + Math.min(120_000, n * 1000));
+        return;
+      }
+      const retryDate = Date.parse(ra);
+      if (Number.isFinite(retryDate)) {
+        nextAllowedAt = Math.max(nextAllowedAt, Math.min(retryDate, now() + 120_000));
         return;
       }
     }
     backoffMul = Math.min(8, backoffMul + 1);
-    await sleep(Math.min(30_000, 800 * backoffMul));
+    nextAllowedAt = Math.max(nextAllowedAt, now() + Math.min(30_000, 800 * backoffMul));
   }
 
   function afterSuccess() {
@@ -418,92 +467,69 @@ export function createIdentityController(opts = {}) {
    * GET/POST genérico com política de identidade.
    * @returns {Promise<Response>}
    */
-  async function fetchWithPolicy(url, init, { maxAttempts = 3 } = {}) {
+  async function fetchWithPolicy(url, init = {}) {
+    if (disposed) throw new Error('identity-policy: controller encerrado');
     if (!enabled && !isStrict()) {
-      return fetch(url, init);
+      return fetchImpl(url, init);
     }
-    const attempts = behavior ? maxAttempts : 1;
-    let lastRes = null;
-    const baseHdr = headersToObject(init.headers);
+    const baseHdr = headersToObject(init?.headers);
     // Em strict, queremos hostname para o sanitizer aplicar regras de cookie scope.
     let targetHost = '';
     try { targetHost = new URL(url).hostname; } catch { /* ignore */ }
-    for (let a = 0; a < attempts; a++) {
-      await beforeRequest();
-      const dispatcher = await currentDispatcher();
-      let headers;
-      if (a === 0) {
-        headers = buildChromeLikeHeaders(baseHdr);
-      } else {
-        headers = {
-          ...baseHdr,
-          'User-Agent': pickStealthUserAgent(modules),
-          'Accept-Language': pickAcceptLanguage(),
-          Accept:
-            baseHdr.Accept ||
-            'text/html,application/xhtml+xml,application/json,*/*;q=0.8',
-        };
-        if (/Chrome\//.test(headers['User-Agent']) && !headers['sec-ch-ua']) {
-          headers['sec-ch-ua'] = '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"';
-          headers['sec-ch-ua-mobile'] = '?0';
-          headers['sec-ch-ua-platform'] = '"Windows"';
-        }
-      }
-      // Em strict, sobrepomos com headers Tor Browser-like e fazemos strip.
-      if (isStrict()) {
-        headers = sanitizeOutboundHeaders(headers, { targetHost });
-      }
-      const nextInit = { ...init, headers };
-      if (dispatcher) nextInit.dispatcher = dispatcher;
-      else delete nextInit.dispatcher;
-      // STRICT: bloqueia se não conseguimos um dispatcher SOCKS (não cair em directo).
-      if (isStrict() && !dispatcher) {
-        throw new Error('tor-strict: dispatcher SOCKS não disponível — fetch directo bloqueado');
-      }
-      // Telemetria
-      if (opts.runId) {
-        const t = telemetryFor(String(opts.runId));
-        t.requests += 1;
-        const kind = (() => {
-          if (!proxies.length) return 'direct';
-          const cur = proxies[proxyIdx % proxies.length] || '';
-          if (/^socks/i.test(cur)) return 'socks';
-          if (/^https?:/i.test(cur)) return 'http';
-          return 'direct';
-        })();
-        t.proxyKindCounts[kind] = (t.proxyKindCounts[kind] || 0) + 1;
-        if (kind === 'socks') t.requestsViaTor += 1;
-      }
-      const res = await fetch(url, nextInit);
-      lastRes = res;
-      const peek = await readResponseSnippet(res.clone(), 24_000);
-      const ev = evaluateResponse(res.status, res.headers, peek);
-      if (ev.captcha) {
-        markBurned(proxyKey());
-        rotateIdentity();
-        if (a < attempts - 1) continue;
-      }
-      if (ev.rate429) {
-        bumpHealth(proxyKey(), 5);
-        await wait429(res.headers);
-        if (a < attempts - 1) continue;
-      }
-      if (ev.rotate403) {
-        bumpHealth(proxyKey(), 10);
-        rotateIdentity();
-        if (a < attempts - 1) continue;
-      }
-      if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 403 && res.status !== 429)) {
-        afterSuccess();
-      }
-      return res;
+    await beforeRequest(init?.signal);
+    const dispatcher = await currentDispatcher();
+    let headers = buildChromeLikeHeaders(baseHdr);
+    if (isStrict()) headers = sanitizeOutboundHeaders(headers, { targetHost });
+    const nextInit = { ...init, headers };
+    if (dispatcher) nextInit.dispatcher = dispatcher;
+    else delete nextInit.dispatcher;
+    // Proxy configurado ou Tor estrito nunca pode cair silenciosamente em rede direta.
+    if ((isStrict() || proxies.length > 0) && !dispatcher) {
+      throw new Error('identity-policy: dispatcher de proxy indisponível — fetch direto bloqueado');
     }
-    return lastRes;
+    if (opts.runId) {
+      const t = telemetryFor(String(opts.runId));
+      t.requests += 1;
+      const kind = (() => {
+        if (!proxies.length) return 'direct';
+        const cur = proxies[proxyIdx % proxies.length] || '';
+        if (/^socks/i.test(cur)) return 'socks';
+        if (/^https?:/i.test(cur)) return 'http';
+        return 'direct';
+      })();
+      t.proxyKindCounts[kind] = (t.proxyKindCounts[kind] || 0) + 1;
+      if (kind === 'socks') t.requestsViaTor += 1;
+    }
+    const res = await fetchImpl(url, nextInit);
+    // Não clonar/ler antecipadamente o corpo: streams lentos poderiam atrasar
+    // o caller e o tee poderia reter bytes. A telemetria aqui usa só status e
+    // headers; análise de HTML pertence ao consumidor da resposta.
+    const ev = evaluateResponse(res.status, res.headers, '');
+    if (ev.captcha) {
+      captchaResponses += 1;
+      blockedResponses += 1;
+      markBlocked(proxyKey());
+    }
+    if (ev.rate429) {
+      rateLimitedResponses += 1;
+      bumpHealth(proxyKey(), 5);
+      register429(res.headers);
+    }
+    if (ev.rotate403) {
+      blockedResponses += 1;
+      bumpHealth(proxyKey(), 10);
+    }
+    if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 403 && res.status !== 429)) {
+      afterSuccess();
+    }
+    // Nunca repetir com outra identidade para atravessar um bloqueio.
+    return res;
   }
 
   return {
     enabled,
     behavior,
+    fetchWithPolicy,
     getStats: () => ({
       backoffMul,
       proxyIdx,
@@ -511,6 +537,10 @@ export function createIdentityController(opts = {}) {
       resolved,
       isolate,
       uaSlot,
+      nextAllowedAt,
+      blockedResponses,
+      captchaResponses,
+      rateLimitedResponses,
       proxies: proxies.length,
       health: Object.fromEntries([...health.entries()].slice(0, 16)),
     }),
@@ -534,20 +564,27 @@ export function createIdentityController(opts = {}) {
       } catch { return false; }
     },
     getProxyPool: () => [...proxies],
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      const pending = [...proxyDispatchers.values()].map((dispatcher) => closeDispatcher(dispatcher));
+      proxyDispatchers.clear();
+      await Promise.allSettled(pending);
+    },
     /** Para probeHttp (redirect follow). */
     async fetchHtmlProbe(url, init) {
-      if (!enabled) return fetch(url, init);
-      return fetchWithPolicy(url, init, { maxAttempts: behavior ? 3 : 1 });
+      if (!enabled && !isStrict()) return fetchImpl(url, init);
+      return fetchWithPolicy(url, init);
     },
     /** Para verify (redirect manual, GET). */
     async fetchVerifyGet(url, init) {
-      if (!enabled) return fetch(url, init);
-      return fetchWithPolicy(url, init, { maxAttempts: behavior ? 2 : 1 });
+      if (!enabled && !isStrict()) return fetchImpl(url, init);
+      return fetchWithPolicy(url, init);
     },
     /** POST verify. */
     async fetchVerifyPost(url, init) {
-      if (!enabled) return fetch(url, init);
-      return fetchWithPolicy(url, init, { maxAttempts: behavior ? 2 : 1 });
+      if (!enabled && !isStrict()) return fetchImpl(url, init);
+      return fetchWithPolicy(url, init);
     },
   };
 }

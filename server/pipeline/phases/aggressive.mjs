@@ -157,6 +157,20 @@ export async function runAggressivePhase(s) {
     autoModeExecution,
   } = s;
 
+    const emitFtpAnonymousSkip = (reason) => {
+      if (!modules.includes('ftp_anonymous_audit') || typeof emit !== 'function') return;
+      emit({
+        type: 'module_outcome',
+        moduleId: 'ftp_anonymous_audit',
+        source: 'legacy',
+        status: 'skipped',
+        partial: false,
+        reason,
+        attempted: 0,
+        resultCount: 0,
+      });
+    };
+
     // ── KALI: nmap / searchsploit / ffuf / nuclei ──
     if (kaliMode) {
       pipe('kali', 'active');
@@ -205,7 +219,7 @@ export async function runAggressivePhase(s) {
         }
         if (!xssSignals && !sqliSignals) {
           log(
-            'Scan agressivo XSS/SQLi: sem sinais (URLs com parâmetros típicos nem candidatos intel) — nuclei tags xss/sqli, dalfox e xss_vibes em skip',
+            'Scan agressivo XSS/SQLi: sem sinais (URLs com parâmetros típicos nem candidatos intel) — nuclei tags xss/sqli e dalfox em skip',
             'info',
           );
         } else {
@@ -228,45 +242,64 @@ export async function runAggressivePhase(s) {
         const runInfoDisclosureHunter = Boolean(modules.includes('info_disclosure_hunter') || runInfoDisclosureErrors);
         const kaliPolicy = resolveKaliExecutionPolicy({ autoModeExecution, modules });
 
-        await runKaliAggressiveScan({
-          domain,
-          subdomainsAlive,
-          cap,
-          log,
-          addFinding,
-          wordpressTargets,
-          paramUrls: scopedParamUrls,
-          xssSignals,
-          sqliSignals,
-          runNuclei: runKaliNuclei,
-          runFfuf: runKaliFfuf,
-          runDirsearch: runKaliDirsearch,
-          runNmapAggressive: runKaliNmapAggressive,
-          runNmapBase: kaliPolicy.runNmapBase,
-          runWhois: kaliPolicy.runWhois,
-          runWpscan: kaliPolicy.runWpscan,
-          runDalfox: kaliPolicy.runDalfox,
-          runXssVibes: kaliPolicy.runXssVibes,
-          allowNmapServiceFollowups: kaliPolicy.allowNmapServiceFollowups,
-          allowFtpWriteProbe: kaliPolicy.allowFtpWriteProbe,
-          runNmapUdp: runKaliNmapUdp,
-          runNmapCveMatch,
-          runNmapBackportReview,
-          runMysql3306Intel: runMysql3306Intel,
-          runInfoDisclosureHunter,
-          runInfoDisclosureErrors,
-          useProxychains: runKaliProxychains,
-          auth,
-          emit,
-          signal,
-        });
+        try {
+          await runKaliAggressiveScan({
+            domain,
+            subdomainsAlive,
+            cap,
+            log,
+            addFinding,
+            wordpressTargets,
+            paramUrls: scopedParamUrls,
+            xssSignals,
+            sqliSignals,
+            runNuclei: runKaliNuclei,
+            runFfuf: runKaliFfuf,
+            runDirsearch: runKaliDirsearch,
+            runNmapAggressive: runKaliNmapAggressive,
+            runNmapBase: kaliPolicy.runNmapBase,
+            runWhois: kaliPolicy.runWhois,
+            runWpscan: kaliPolicy.runWpscan,
+            runDalfox: kaliPolicy.runDalfox,
+            allowNmapServiceFollowups: kaliPolicy.allowNmapServiceFollowups,
+            allowFtpAnonymousAudit: kaliPolicy.allowFtpAnonymousAudit,
+            allowFtpWriteProbe: kaliPolicy.allowFtpWriteProbe,
+            runNmapUdp: runKaliNmapUdp,
+            runNmapCveMatch,
+            runNmapBackportReview,
+            runMysql3306Intel: runMysql3306Intel,
+            runInfoDisclosureHunter,
+            runInfoDisclosureErrors,
+            useProxychains: runKaliProxychains,
+            auth,
+            emit,
+            hostAllowed: (host) => s.hostInScope(host),
+            ftpAddressAllowed: (host, address) => (
+              typeof s.resolvedAddressInScope === 'function'
+                ? s.resolvedAddressInScope(host, address)
+                : false
+            ),
+            signal,
+          });
+        } catch (error) {
+          const code = String(error?.code || signal?.reason?.code || '');
+          const state = /TIMEOUT/.test(code)
+            ? 'timeout'
+            : (signal?.aborted || error?.name === 'AbortError')
+              ? 'cancelled'
+              : 'failed';
+          pipe('kali', state);
+          throw error;
+        }
       } else {
         log(`Modo Kali pedido mas ambiente não suporta: ${cap.message}`, 'warn');
+        emitFtpAnonymousSkip('kali_dependency_unavailable');
         skipKaliSubPipe();
       }
       pipe('kali', 'done');
     } else {
       pipe('kali', 'skip');
+      emitFtpAnonymousSkip('kali_mode_disabled');
       skipKaliSubPipe();
     }
 

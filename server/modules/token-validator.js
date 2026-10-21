@@ -145,15 +145,14 @@ async function probe(url, headers = {}, method = 'GET', { signal = null } = {}) 
  * Interpreta o status HTTP no contexto de validação de token.
  *
  * 401 = token rejeitado (não autenticado)
- * 403 = autenticado mas sem permissão → token VÁLIDO
- * 429 = rate-limited → token aceite, é válido
+ * 403/429 = inconclusivos sem baseline sem credencial
  * 200-299 = ok
  */
 function statusMeaning(status) {
   if (!status)           return 'network_error';
   if (status === 401)    return 'rejected';
-  if (status === 403)    return 'authenticated'; // forbidden mas autenticado = válido
-  if (status === 429)    return 'authenticated'; // rate-limited = aceite
+  if (status === 403)    return 'forbidden';
+  if (status === 429)    return 'rate_limited';
   if (status >= 200 && status < 300) return 'ok';
   if (status >= 400 && status < 500) return 'rejected';
   return 'unknown';
@@ -207,7 +206,6 @@ export async function validateToken(
   if (parsed?.payload) {
     result.jwtClaims = {
       iss:  parsed.payload.iss,
-      sub:  parsed.payload.sub,
       aud:  parsed.payload.aud,
       role: parsed.payload.role,
       exp:  parsed.payload.exp,
@@ -258,8 +256,32 @@ export async function validateToken(
   };
   const origin = originOf(sourceUrl);
 
+  if (result.tokenType === 'jwt') {
+    result.status = result.offlineExpired ? 'expired' : 'probable';
+    result.evidence = result.offlineExpired
+      ? `JWT expirado offline (${result.expiredAt || 'exp inválido'})`
+      : 'JWT parseado offline; nenhum endpoint seguro específico do emissor foi identificado';
+    return result;
+  }
+  if (result.tokenType === 'api_key') {
+    result.status = 'unknown';
+    result.evidence = 'API key não enviada: provedor e endpoint de validação não determinados';
+    return result;
+  }
+
   // ── SUPABASE JWT ───────────────────────────────────────────────────
   if (result.tokenType === 'supabase_jwt') {
+    const role = String(parsed?.payload?.role || '');
+    if (role === 'anon') {
+      result.status = 'public_configuration';
+      result.evidence = 'Supabase anon/publishable key é pública por design; revisar RLS, não tratar como segredo vivo';
+      return result;
+    }
+    if (role === 'service_role') {
+      result.status = 'probable';
+      result.evidence = 'claim service_role observada; rede omitida para não exercer privilégio elevado';
+      return result;
+    }
     const base = supabaseOrigin(sourceUrl, parsed) || origin;
     if (!base) {
       result.evidence = 'sem URL Supabase para validar';
@@ -273,132 +295,26 @@ export async function validateToken(
       return result;
     }
 
-    // Probe 1: /rest/v1/ — responde 200 para anon key válida
-    const r1 = await executeProbe(`${base}/rest/v1/`, {
+    const userUrl = `${base}/auth/v1/user`;
+    const r2 = await executeProbe(userUrl, {
       apikey:        raw,
       Authorization: `Bearer ${raw}`,
     });
-    result.probes.push({ url: `${base}/rest/v1/`, status: r1.status, error: r1.error || null });
-
-    const m1 = statusMeaning(r1.status);
-    if (m1 === 'ok' || m1 === 'authenticated') {
-      result.status   = 'valid';
-      result.evidence = `Supabase /rest/v1/ → HTTP ${r1.status} — anon key aceite`;
-    } else if (m1 === 'rejected') {
-      result.status   = result.offlineExpired ? 'expired' : 'invalid';
-      result.evidence = `Supabase /rest/v1/ → HTTP ${r1.status} — token rejeitado`;
-    }
-
-    // Probe 2: /auth/v1/user — para tokens de utilizador (não anon)
-    const r2 = await executeProbe(`${base}/auth/v1/user`, {
-      apikey:        raw,
-      Authorization: `Bearer ${raw}`,
-    });
-    result.probes.push({ url: `${base}/auth/v1/user`, status: r2.status, error: r2.error || null });
+    result.probes.push({ url: userUrl, status: r2.status, error: r2.error || null });
 
     const m2 = statusMeaning(r2.status);
-    if ((m2 === 'ok' || m2 === 'authenticated') && result.status !== 'valid') {
+    if (m2 === 'ok') {
       result.status   = 'valid';
       result.evidence = `Supabase /auth/v1/user → HTTP ${r2.status}`;
+    } else if (m2 === 'rejected') {
+      result.status = result.offlineExpired ? 'expired' : 'invalid';
+      result.evidence = `Supabase /auth/v1/user → HTTP ${r2.status} — token rejeitado`;
+    } else {
+      result.status = result.offlineExpired ? 'expired' : 'probable';
+      result.evidence = `Supabase /auth/v1/user inconclusivo (${r2.status || r2.error || 'sem resposta'})`;
     }
 
     return result;
-  }
-
-  // ── JWT GENÉRICO ───────────────────────────────────────────────────
-  if (result.tokenType === 'jwt') {
-    const urls = [];
-    if (sourceUrl) urls.push(sourceUrl);
-    if (origin) {
-      urls.push(`${origin}/api/me`);
-      urls.push(`${origin}/api/user`);
-      urls.push(`${origin}/api/v1/me`);
-      if (!urls.includes(`${origin}/`)) urls.push(`${origin}/`);
-    }
-
-    for (const url of urls.slice(0, 5)) {
-      if (!mayProbe(url)) {
-        result.probes.push({ url, status: null, error: 'out_of_scope', skipped: true });
-        continue;
-      }
-      const r = await executeProbe(url, { Authorization: `Bearer ${raw}` });
-      const m = statusMeaning(r.status);
-      result.probes.push({ url, status: r.status, error: r.error || null });
-
-      if (m === 'authenticated') {
-        result.status   = 'valid';
-        result.evidence = `Bearer → ${url} HTTP ${r.status} (auth confirmado)`;
-        break;
-      }
-      if (m === 'ok') {
-        // 200 num path de API é sinal positivo; no root pode ser página pública
-        if (/\/api\//.test(url)) {
-          result.status   = 'valid';
-          result.evidence = `Bearer → ${url} HTTP ${r.status}`;
-          break;
-        }
-        if (result.status === 'unknown') {
-          result.status   = 'probable';
-          result.evidence = `Bearer → ${url} HTTP ${r.status} (não confirmado como auth-required)`;
-        }
-      }
-      if (m === 'rejected' && result.status !== 'valid') {
-        result.status   = result.offlineExpired ? 'expired' : 'invalid';
-        result.evidence = `Bearer → ${url} HTTP ${r.status}`;
-        break;
-      }
-    }
-
-    // Fallback offline se rede não foi conclusiva
-    if (result.status === 'unknown' && result.offlineExpired) {
-      result.status   = 'expired';
-      result.evidence = `JWT expirado offline (exp=${parsed?.payload?.exp}, ${result.expiredAgo})`;
-    }
-    return result;
-  }
-
-  // ── API KEY GENÉRICA ────────────────────────────────────────────────
-  const urlsToTry = [];
-  if (sourceUrl) urlsToTry.push(sourceUrl);
-  if (origin && origin !== sourceUrl) urlsToTry.push(`${origin}/`);
-
-  for (const url of urlsToTry.slice(0, 2)) {
-    const strategies = [
-      { header: { Authorization: `Bearer ${raw}` },  label: 'Bearer'   },
-      { header: { 'X-Api-Key': raw },                label: 'X-Api-Key' },
-      { header: { Authorization: `token ${raw}` },   label: 'token'     },
-    ];
-
-    for (const { header, label } of strategies) {
-      if (!mayProbe(url)) {
-        result.probes.push({
-          url,
-          method: label,
-          status: null,
-          error: 'out_of_scope',
-          skipped: true,
-        });
-        continue;
-      }
-      const r = await executeProbe(url, header);
-      const m = statusMeaning(r.status);
-      result.probes.push({ url, method: label, status: r.status, error: r.error || null });
-
-      if (m === 'authenticated') {
-        result.status   = 'valid';
-        result.evidence = `${label}: ${url} HTTP ${r.status} (auth confirmado)`;
-        break;
-      }
-      if (m === 'ok' && /api|graphql/.test(url) && result.status !== 'valid') {
-        result.status   = 'probable';
-        result.evidence = `${label}: ${url} HTTP ${r.status}`;
-      }
-      if (m === 'rejected' && result.status !== 'valid' && result.status !== 'probable') {
-        result.status   = 'invalid';
-        result.evidence = `${label}: ${url} HTTP ${r.status}`;
-      }
-    }
-    if (result.status === 'valid') break;
   }
 
   return result;

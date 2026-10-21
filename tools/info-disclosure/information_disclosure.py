@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlparse, urlsplit
 
 try:
     import requests
-    from requests.packages.urllib3.exceptions import InsecureRequestWarning
+    from requests.packages.urllib3.exceptions import InsecureRequestWarning, HTTPError as Urllib3HTTPError
     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 except ImportError:
     print("[!] Falta a lib 'requests'. Instale com:  pip install requests")
@@ -58,6 +58,7 @@ class C:
 SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 SEV_COLOR = lambda s: {"CRITICAL": C.R, "HIGH": C.R, "MEDIUM": C.Y,
                        "LOW": C.B, "INFO": C.D}.get(s, C.W)
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 # ======================================================================
@@ -268,15 +269,24 @@ class InfoHunter:
 
     def _req(self, path="", method="GET", **kw):
         url = path if re.match(r"^https?://", path) else urljoin(self.base + "/", path)
+        r = None
         try:
             if self.args.delay:
                 time.sleep(self.args.delay)
+            kw.pop("stream", None)
             r = self.session.request(method, url, timeout=self.timeout,
                                      allow_redirects=False, verify=self.verify,
-                                     proxies=self.proxies, **kw)
+                                     proxies=self.proxies, stream=True, **kw)
+            raw = r.raw.read(MAX_RESPONSE_BYTES + 1, decode_content=True)
+            r._content = raw[:MAX_RESPONSE_BYTES]
+            r._content_consumed = True
+            r.ghostrecon_truncated = len(raw) > MAX_RESPONSE_BYTES
             return r
-        except requests.RequestException:
+        except (requests.RequestException, Urllib3HTTPError, OSError):
             return None
+        finally:
+            if r is not None:
+                r.close()
 
     def add(self, module, severity, title, url, evidence=""):
         ev = (evidence or "").strip().replace("\n", " ")[:240]
@@ -459,29 +469,32 @@ class InfoHunter:
         return list(eps)[:12]
 
     def _probe_errors(self, url):
-        payloads = ["'", "%27", "\"'><", "[]", "%00",
-                    "../../../../etc/passwd", "1%20AND%201=2"]
+        # Somente valores malformados genéricos. Traversal/SQLi pertencem a
+        # capacidades separadas e não são necessários para observar erro verboso.
+        payloads = ["'", "%27", "\"'><", "[]", "%00"]
         sig = [(re.compile(rx, re.IGNORECASE), lbl, sv) for rx, lbl, sv in ERROR_SIGNATURES]
         sep = "&" if "?" in url else "?"
-        targets = [url] + [f"{url}{sep}infohunter={p}" for p in payloads]
-        for t in targets:
+        baseline = self._req(url)
+        if baseline is None:
+            return
+        baseline_labels = {label for rx, label, _ in sig if rx.search(baseline.text)}
+        for t in [f"{url}{sep}infohunter={p}" for p in payloads]:
             r = self._req(t)
             if r is None:
                 continue
             body = r.text
             for rx, label, sev in sig:
                 m = rx.search(body)
-                if m:
+                if m and label not in baseline_labels:
                     versoes = {f"{a} {b}" for a, b in VERSION_REGEX.findall(body)}
                     extra = (" · " + ", ".join(list(versoes)[:3])) if versoes else ""
                     self.add("errors", sev, f"Erro verboso: {label}", t,
-                             m.group(0)[:120] + extra)
+                             "induced_new_signature=true · " + m.group(0)[:120] + extra)
                     return  # 1 achado por endpoint já basta
 
     def scan_errors(self):
         self._bar("MÓDULO 4 · Indução de Erros Verbosos")
         urls = [self.base + "/"] + self._harvest_endpoints()
-        urls += [self.base + "/" + "%ff", self.base + "/index.php?id='"]
         print(f"  {C.D}Sondando {len(urls)} alvos com payloads de erro...{C.X}")
         before = len(self.findings)
         for u in urls:

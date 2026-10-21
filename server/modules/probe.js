@@ -12,10 +12,44 @@ function extractTitle(html) {
 
 /** Cabeçalhos relevantes para análise de superfície (sem armazenar corpo). */
 export function snapshotSecurityHeaders(headers) {
-  const get = (n) => headers.get(n) || '';
+  const get = (name) => {
+    try { return headers?.get?.(name) || ''; } catch { return ''; }
+  };
+  let rawHeaders = null;
+  try {
+    const raw = typeof headers?.raw === 'function' ? headers.raw() : null;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      rawHeaders = new Map(Object.entries(raw).map(([key, value]) => [key.toLowerCase(), value]));
+    }
+  } catch {
+    rawHeaders = null;
+  }
+  const getValues = (name) => {
+    try {
+      if (typeof headers?.getAll === 'function') {
+        const values = headers.getAll(name);
+        if (Array.isArray(values) && values.length) return values.slice(0, 17);
+      }
+    } catch {
+      // Alguns adapters expõem getAll(), mas recusam headers não-lista.
+    }
+    const raw = rawHeaders?.get(name.toLowerCase());
+    if (Array.isArray(raw) && raw.length) return raw.slice(0, 17);
+    const value = get(name);
+    return value ? [value] : [];
+  };
+
+  const strictTransportSecurityValues = getValues('strict-transport-security');
+  const contentSecurityPolicies = getValues('content-security-policy');
+  const contentSecurityPolicyReportOnlyPolicies = getValues('content-security-policy-report-only');
+  const xFrameOptionsValues = getValues('x-frame-options');
+  const xContentTypeOptionsValues = getValues('x-content-type-options');
+  const permissionsPolicyValues = getValues('permissions-policy');
+  const referrerPolicyValues = getValues('referrer-policy');
   const snap = {
     strictTransportSecurity: get('strict-transport-security'),
     contentSecurityPolicy: get('content-security-policy'),
+    contentSecurityPolicyReportOnly: get('content-security-policy-report-only'),
     xFrameOptions: get('x-frame-options'),
     xContentTypeOptions: get('x-content-type-options'),
     permissionsPolicy: get('permissions-policy'),
@@ -24,10 +58,24 @@ export function snapshotSecurityHeaders(headers) {
     crossOriginEmbedderPolicy: get('cross-origin-embedder-policy'),
     server: get('server'),
     altSvc: get('alt-svc'),
+    // Campos plurais preservam ocorrências quando o adapter as oferece. Os
+    // campos escalares acima permanecem por retrocompatibilidade.
+    strictTransportSecurityValues,
+    contentSecurityPolicies,
+    contentSecurityPolicyReportOnlyPolicies,
+    xFrameOptionsValues,
+    xContentTypeOptionsValues,
+    permissionsPolicyValues,
+    referrerPolicyValues,
     setCookieSample: [],
   };
-  if (typeof headers.getSetCookie === 'function') {
-    snap.setCookieSample = headers.getSetCookie().slice(0, 6);
+  if (typeof headers?.getSetCookie === 'function') {
+    try {
+      const cookies = headers.getSetCookie();
+      snap.setCookieSample = Array.isArray(cookies) ? cookies.slice(0, 6) : [];
+    } catch {
+      snap.setCookieSample = [];
+    }
   } else {
     const sc = get('set-cookie');
     if (sc) snap.setCookieSample = [sc];

@@ -95,6 +95,7 @@ import { runDomClobberingAudit } from '../../modules/dom-clobbering-audit.mjs';
 import { runEmailSecurityDeep } from '../../modules/email-security-deep.mjs';
 import { rankSecretFindings } from '../../modules/secrets-context-ranker.mjs';
 import { isAbortError, throwIfAborted } from '../../modules/http-utils.js';
+import { createFetchRequestAdapter } from '../../modules/fetch-request-adapter.mjs';
 import {
   findPreviousApiContractSnapshots,
   runApiContractDiff,
@@ -163,6 +164,7 @@ export async function runFingerprintPhase(s) {
         const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
         log(`Lovable fingerprint: analisando ${targetUrl}`, 'info');
         const lov = await fingerprintLovable(targetUrl, {
+          fetch: s.fetchImpl,
           pocDir: path.join(ROOT, 'pocs', 'supabase'),
           storeRawSecrets: false,
           signal,
@@ -200,6 +202,7 @@ export async function runFingerprintPhase(s) {
         if (!auditCtx?.supabaseUrl || !auditCtx?.anonKey) {
           log('Supabase audit: extraindo URL/key dos bundles JS do alvo', 'info');
           const discovered = await discoverSupabaseFromTarget(targetUrl, {
+            fetchImpl: s.fetchImpl,
             log,
             signal,
             urlAllowed,
@@ -210,7 +213,7 @@ export async function runFingerprintPhase(s) {
         }
 
         if (auditCtx?.supabaseUrl && auditCtx?.anonKey) {
-          log(`Supabase audit: anon key encontrada — testes usarão credenciais extraídas do alvo`, 'info');
+          log('Supabase audit: publishable/anon key observada — auditoria somente leitura; tokens do bundle não serão reutilizados', 'info');
           const envAuth = String(process.env.GHOSTRECON_SUPABASE_AUTH_TOKEN || '').trim() || null;
           const { findings: auditFindings, summary } = await runSupabaseAudit(auditCtx, {
             authToken: envAuth,
@@ -221,19 +224,25 @@ export async function runFingerprintPhase(s) {
             writeProbes: false,
             signal,
             urlAllowed,
+            requestImpl: createFetchRequestAdapter({
+              fetchImpl: s.fetchImpl,
+              urlAllowed,
+            }),
           });
           for (const f of auditFindings) addFinding(withProvenance(f, 'supabase_audit'));
           const crit = summary?.critical || 0;
           const high = summary?.high || 0;
           if (auditFindings.length) {
-            log(`Supabase audit: ${auditFindings.length} achado(s) — ${crit} crítico(s) / ${high} alto(s)`, crit > 0 ? 'warn' : 'success');
+            log(`Supabase audit: ${auditFindings.length} observação(ões)/candidato(s) — ${crit} crítico(s) / ${high} alto(s)`, crit > 0 || high > 0 ? 'warn' : 'info');
           } else {
-            log('Supabase audit: nenhuma vulnerabilidade detectada', 'info');
+            log(`Supabase audit: nenhuma evidência observada; cobertura ${summary?.status || 'partial'} e resultado inconclusivo`, 'info');
           }
           if (summary?.authTokenSource) {
-            log(`Supabase audit: token autenticado obtido automaticamente (fonte: ${summary.authTokenSource})`, 'success');
+            log(`Supabase audit: token de usuário explicitamente configurado aceito para leitura (fonte: ${summary.authTokenSource}; assinatura não verificada)`, 'info');
+          } else if (summary?.authTokenRejectedReason) {
+            log(`Supabase audit: token explícito recusado (${summary.authTokenRejectedReason}); passe autenticado não executado`, 'warn');
           } else if (!envAuth) {
-            log('Supabase audit: probes autenticados limitados — signup/auth anônimo desabilitados no projeto', 'info');
+            log('Supabase audit: passe autenticado não executado — nenhum token de usuário foi configurado explicitamente', 'info');
           }
         } else {
           log('Supabase audit: Supabase URL/key não encontrados — alvo pode não usar Supabase', 'info');
@@ -270,7 +279,7 @@ export async function runFingerprintPhase(s) {
           if (fbFindings.length) {
             log(`Firebase audit: ${fbFindings.length} achado(s) — ${crit} crítico(s) / ${high} alto(s)`, crit > 0 ? 'warn' : 'success');
           } else {
-            log('Firebase audit: nenhuma vulnerabilidade detectada nas rules/APIs', 'info');
+            log(`Firebase audit: nenhuma evidência observada; cobertura ${summary?.status || 'partial'} e resultado inconclusivo`, 'info');
           }
           if (!writeProbes) {
             log('Firebase audit: probes de escrita desabilitados; requerem autorização dedicada', 'info');

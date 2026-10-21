@@ -1,4 +1,5 @@
 import { UA } from '../config.js';
+import { readResponseSnippet } from './module-runner.mjs';
 
 /**
  * Google Programmable Search (Custom Search JSON API) — forma suportada pelo Google
@@ -7,19 +8,27 @@ import { UA } from '../config.js';
  * Requer GOOGLE_CSE_KEY + GOOGLE_CSE_CX e motor de pesquisa configurado em
  * https://programmablesearchengine.google.com/ (podes usar "Search the entire web").
  */
-export async function googleCseSearch(query, apiKey, cx) {
+export async function googleCseSearch(query, apiKey, cx, {
+  fetchImpl = fetch,
+  signal = null,
+  timeoutMs = 45_000,
+} = {}) {
   const u = new URL('https://www.googleapis.com/customsearch/v1');
   u.searchParams.set('key', apiKey);
   u.searchParams.set('cx', cx);
   u.searchParams.set('q', query);
   u.searchParams.set('num', '10');
 
-  const res = await fetch(u.toString(), {
+  const timeoutSignal = AbortSignal.timeout(Math.max(1_000, Number(timeoutMs) || 45_000));
+  const requestSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+  const res = await fetchImpl(u.toString(), {
     headers: { 'User-Agent': UA },
-    signal: AbortSignal.timeout(45000),
+    signal: requestSignal,
   });
 
-  const text = await res.text();
+  const text = await readResponseSnippet(res, 2 * 1024 * 1024);
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try {

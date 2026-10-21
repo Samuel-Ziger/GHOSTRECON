@@ -147,7 +147,7 @@ export async function runCommand(argv) {
       engine: opts.engine,
       vigoliumAgent: opts['vigolium-agent'],
       includeManualImplicit: true,
-      includeManualIntrusive: Boolean(opts['confirm-active']),
+      includeManualIntrusive: false,
       kaliMode: Boolean(opts.kali),
     });
     gate = gateModules({

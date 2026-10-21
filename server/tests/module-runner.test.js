@@ -189,3 +189,40 @@ test('readResponseSnippet le apenas prefixo do body', async () => {
   const res = new Response('abcdefghi');
   assert.equal(await readResponseSnippet(res, 4), 'abcd');
 });
+
+test('readResponseSnippet não espera cancelamento de reader que nunca assenta', async () => {
+  let cancelCalls = 0;
+  const never = new Promise(() => {});
+  const reader = {
+    async read() { return { done: false, value: Buffer.from('abcdef') }; },
+    cancel() { cancelCalls += 1; return never; },
+    releaseLock() {},
+  };
+  const result = await Promise.race([
+    readResponseSnippet({ body: { getReader: () => reader } }, 4),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('snippet_cleanup_timeout')), 100)),
+  ]);
+  assert.equal(result, 'abcd');
+  assert.equal(cancelCalls, 1);
+});
+
+test('abort de body pendente assenta mesmo quando reader.cancel fica pendente', async () => {
+  const controller = new AbortController();
+  let cancelCalls = 0;
+  const reader = {
+    read() { return new Promise(() => {}); },
+    cancel() { cancelCalls += 1; return new Promise(() => {}); },
+    releaseLock() {},
+  };
+  const pending = readResponseSnippet(
+    { body: { getReader: () => reader } },
+    10,
+    { signal: controller.signal },
+  );
+  queueMicrotask(() => controller.abort(new Error('operator_cancelled')));
+  await Promise.race([
+    assert.rejects(pending, /operator_cancelled/),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('abort_cleanup_timeout')), 100)),
+  ]);
+  assert.ok(cancelCalls >= 1);
+});

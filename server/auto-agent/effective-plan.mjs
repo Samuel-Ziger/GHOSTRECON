@@ -380,6 +380,11 @@ export function buildEffectiveAutoPlan({
           ? body.engagementAuthorizationBinding
           : null,
       outOfScope,
+      // Contexto de priorização faz parte do plano hashado, mas nunca amplia
+      // o scope selado nem substitui engagement/ROE.
+      bountyContext: body.bountyContext && typeof body.bountyContext === 'object'
+        ? body.bountyContext
+        : null,
       autoAiReports: body.autoAiReports === true,
       phaseTimeoutsMs,
       phaseSettleGraceMs: boundedPositiveInteger(

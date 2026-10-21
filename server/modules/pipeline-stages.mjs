@@ -14,6 +14,7 @@ export const PIPELINE_STAGE_ORDER = [
 export const KALI_SUB_PIPE_STEPS = [
   'nmap',
   'nmap_udp',
+  'ftp_anonymous_audit',
   'whois',
   'ffuf',
   'dirsearch',
@@ -22,7 +23,6 @@ export const KALI_SUB_PIPE_STEPS = [
   'nuclei_sqli',
   'wpscan',
   'dalfox',
-  'xss_vibes',
 ];
 
 export function createPipelineStageTracker(emit = () => {}) {

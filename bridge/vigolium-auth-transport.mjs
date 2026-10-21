@@ -595,13 +595,17 @@ export async function createVigoliumAuthTransport(ctx = {}, opts = {}) {
       ].filter(Boolean),
     });
     const privateDbPath = dirPath ? path.join(dirPath, 'runtime.sqlite') : null;
+    if (privateDbPath) {
+      await fs.writeFile(privateDbPath, '', { mode: 0o600, flag: 'wx' });
+      await fs.chmod(privateDbPath, 0o600);
+    }
 
     let cleaned = false;
     return {
       authFiles: transportFiles,
       ephemeralFile,
-      // Agentes sem suporte a `--stateless` recebem este banco temporário por
-      // `--db`; ele vive no mesmo diretório 0700 e é removido no cleanup.
+      // Banco privado opcional para consumidores sem --stateless;
+      // vive no diretório 0700 e é removido no cleanup.
       privateDbPath,
       inlineCount,
       sessionCount: sessions.length,

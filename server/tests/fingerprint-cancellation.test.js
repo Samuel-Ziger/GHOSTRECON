@@ -13,6 +13,8 @@ import {
 import { runSupabaseAudit } from '../modules/supabase-audit.mjs';
 import { runFingerprintPhase } from '../pipeline/phases/fingerprint.mjs';
 
+const PUBLIC_SUPABASE_KEY = 'sb_publishable_fixture_public_key_1234567890';
+
 function pendingRequest(onStart) {
   return async (_url, { signal } = {}) =>
     new Promise((_resolve, reject) => {
@@ -51,7 +53,7 @@ test('módulos de fingerprint não iniciam I/O quando o sinal pai já foi cancel
       fetchImpl,
     }),
     () => runSupabaseAudit(
-      { supabaseUrl: 'https://project.example.test', anonKey: 'anon-key' },
+      { supabaseUrl: 'https://project.example.test', anonKey: PUBLIC_SUPABASE_KEY },
       { signal: controller.signal, requestImpl },
     ),
     () => runFirebaseAudit(
@@ -104,7 +106,7 @@ test('auditorias Supabase e Firebase não engolem cancelamento de request injeta
     (signal, requestImpl) => runSupabaseRlsAudit(
       {
         supabaseUrl: 'https://project.example.test',
-        anonKey: 'anon-key',
+        anonKey: PUBLIC_SUPABASE_KEY,
         bundleText: 'fixture',
       },
       {
@@ -136,8 +138,8 @@ test('auditorias Supabase e Firebase não engolem cancelamento de request injeta
     controller.abort(reason);
 
     await assert.rejects(running, (error) => error === reason);
-    assert.equal(receivedSignal, controller.signal);
     assert.equal(receivedSignal.aborted, true);
+    assert.equal(receivedSignal.reason, reason);
   }
 });
 
@@ -152,7 +154,7 @@ test('auditorias descobertas fora do escopo não chegam ao executor de rede', as
   await runSupabaseRlsAudit(
     {
       supabaseUrl: 'https://project.supabase.co',
-      anonKey: 'anon-key',
+      anonKey: PUBLIC_SUPABASE_KEY,
       bundleText: 'fixture',
     },
     {

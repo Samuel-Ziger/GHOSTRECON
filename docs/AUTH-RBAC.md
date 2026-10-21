@@ -73,7 +73,7 @@ admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujei
 | `recon.read` (Auto) | `/api/recon/auto/sessions`, `/api/auto-rag/status`, `/api/auto-rag/search`, `/api/frameseven/reports/:reportId/:file` | GET |
 | `recon.run`         | `/api/recon/preflight`, `/api/recon/stream`                                                 | POST   |
 | `recon.run` (Auto)  | `/api/recon/auto/stream`, cancelamento/aprovação da própria sessão Auto, aprovação FrameSeven e verdict Forge quando combinado com `forge.review` | POST |
-| `recon.intrusive`   | _Escala_ aplicada a `/api/recon/preflight` e `/api/recon/stream` sobre o plano expandido; `/api/recon/approval` sempre exige este scope. Inclui Kali, módulos intrusivos, Vigolium/DAST e FrameSeven `offensive_v1`; exige também engagement/ROE/escopo/janela, `confirmActive` e aprovação vinculada | POST |
+| `recon.intrusive`   | _Escala_ aplicada a `/api/recon/preflight` e `/api/recon/stream` sobre o plano expandido; `/api/recon/approval` sempre exige este scope. Inclui Kali, módulos intrusivos, Vigolium/DAST e FrameSeven `offensive_v1`; no RUN manual exige `confirmActive` e aprovação vinculada. Engagement é opcional e validado quando informado | POST |
 | `recon.intrusive` (Auto) | _Escala_ aplicada ao stream Auto nos níveis 3/4, Vigolium, FrameSeven autenticado ou plano intrusivo; também é exigida ao resolver aprovação Auto/FrameSeven marcada como intrusiva | POST |
 | `forge.review`      | Ler/comparar pacotes Forge; decidir aprovação/rejeição exige cumulativamente `recon.run`, CSRF e engagement formal válido para o canário | GET/POST |
 | `forge.manage`      | Promover, habilitar, desabilitar, definir canary e fazer rollback de pacote Forge global | POST |
@@ -93,9 +93,10 @@ admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujei
 > middleware `requireScope` — se um operator (sem `recon.intrusive`) chamar o
 > stream apenas com módulos passivos (DNS, probe, wayback…), passa. Se incluir
 > qualquer módulo intrusivo, recebe 403. Depois da expansão do plano, qualquer
-> módulo intrusivo também exige engagement formal ativo, ROE assinado, alvo
-> dentro do escopo/janela, `confirmActive` e aprovação server-issued vinculada
-> ao hash; `aggressive` não substitui esses controles.
+> módulo intrusivo também exige `confirmActive` e aprovação server-issued
+> vinculada ao hash. No RUN manual, Engagement ID é opcional; quando informado,
+> deve estar ativo, com ROE assinado, alvo dentro do escopo/janela e fora das
+> exclusões. `aggressive` não substitui esses controles.
 
 ## Aprovação vinculada do RUN manual
 
@@ -106,12 +107,16 @@ O RUN manual intrusivo usa três requisições autenticadas e protegidas por CSR
 3. `POST /api/recon/stream` recompõe o plano e consome a aprovação antes da
    execução.
 
+No cockpit, marcar os módulos no RUN manual representa a decisão positiva: a
+UI envia o passo 2 automaticamente após o preflight, sem abrir um segundo
+diálogo. Clientes CLI/MCP continuam usando o mesmo contrato explícito da API.
+
 O preflight passivo exige `recon.run`. Quando a entrada já solicita capacidade
 intrusiva, o `intrusiveCheck` exige também `recon.intrusive`; decidir a aprovação
 sempre exige `recon.intrusive`. O registro é efêmero, vinculado ao `sub` do
-principal, possui TTL e é de uso único. Ele vincula alvo, autorização do
-engagement, módulos, opções de execução, ferramentas/limites e fingerprints dos
-binários. Mudança, expiração, replay ou outro proprietário falham fechado.
+principal, possui TTL e é de uso único. Ele vincula alvo, engagement opcional,
+módulos, opções de execução, ferramentas/limites e fingerprints dos binários.
+Mudança, expiração, replay ou outro proprietário falham fechado.
 
 O preflight recebe em memória o mesmo contexto privado necessário para calcular
 o binding que será recomposto no stream. Ele não devolve nem persiste os

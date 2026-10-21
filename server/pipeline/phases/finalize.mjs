@@ -306,6 +306,7 @@ export async function runFinalizePhase(ctx) {
         pipe('shannon', 'active');
         const max = shannonMaxClonesPerRun();
         const slice = githubClonedItems.slice(0, max);
+        let shannonState = 'done';
         log(`Shannon: a correr até ${slice.length} scan(s) (máx. por run = ${max})…`, 'info');
         for (const item of slice) {
           try {
@@ -319,42 +320,50 @@ export async function runFinalizePhase(ctx) {
               signal: ctx.signal,
             });
             if (out.ok && out.report?.ok) {
-              const excerpt = String(out.report.content || '')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 480);
-              addFinding(
-                {
-                  type: 'intel',
-                  prio: 'high',
-                  score: 72,
-                  value: `Shannon white-box: ${item.full_name}`,
-                  meta: `workspace=${out.workspaceId} • report=${out.report.path} • excerpt=${excerpt}`,
+              for (const finding of out.findings || []) addFinding(finding, null);
+              if (!(out.findings || []).length) {
+                addFinding({
+                  type: 'shannon_whitebox_summary',
+                  prio: 'info',
+                  score: 18,
+                  value: `Shannon white-box concluído sem achados estruturados: ${item.full_name}`,
+                  meta: {
+                    source: 'shannon_whitebox',
+                    evidenceStatus: 'report_only',
+                    workspaceId: out.workspaceId,
+                    reportPath: out.report.path,
+                  },
                   url: `https://github.com/${item.full_name}`,
-                },
-                null,
-              );
+                }, null);
+              }
             } else {
+              shannonState = out.outcome === 'timeout' || out.exitCode === -2 ? 'timeout' : 'failed';
               const hint = out.detail || out.logTail || out.note || JSON.stringify({ phase: out.phase, exitCode: out.exitCode });
               log(`Shannon falhou (${item.full_name}): ${String(hint).slice(0, 600)}`, 'warn');
               addFinding(
                 {
-                  type: 'intel',
-                  prio: 'med',
-                  score: 48,
+                  type: 'module_status',
+                  prio: 'info',
+                  score: 0,
                   value: `Shannon falhou: ${item.full_name}`,
                   meta: `workspace=${out.workspaceId || '—'} • phase=${out.phase || '—'} • ${String(hint).slice(0, 400)}`,
                   url: `https://github.com/${item.full_name}`,
                 },
                 null,
               );
+              if (out.cleanup && !out.cleanup.confirmed) {
+                log('Shannon: término remoto não confirmado; nenhum outro clone será iniciado neste run', 'warn');
+                break;
+              }
             }
           } catch (e) {
-            if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
+            if (ctx.signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED' || e?.code === 'PROCESS_UNTERMINATED' || e?.fatal) throw e;
+            shannonState = 'failed';
             log(`Shannon: excepção (${item.full_name}): ${e.message}`, 'error');
+            break;
           }
         }
-        pipe('shannon', 'done');
+        pipe('shannon', shannonState);
         applyPrioritizationV2(findings, bountyCtx);
       }
     }
@@ -381,7 +390,11 @@ export async function runFinalizePhase(ctx) {
           bountyContext: bountyCtx,
           auth,
         });
-        const pg = await runPentestGptValidation(pgPayload, { log, urlOverride: pentestgptUrlOverride });
+        const pg = await runPentestGptValidation(pgPayload, {
+          log,
+          urlOverride: pentestgptUrlOverride,
+          signal: ctx.signal,
+        });
         pentestgptSummary = pg.summary || null;
         if (pg.findings?.length) {
           for (const f of pg.findings) addFinding(f, null);
@@ -437,7 +450,7 @@ export async function runFinalizePhase(ctx) {
       correlation: corr,
       localProjectName: String(projectNameRaw || '').trim(),
       findingsJson: findingsSnapshotJson,
-    });
+    }, { signal: ctx.signal });
     let runId = null;
     let intelMerge = null;
     if (saved != null) {
@@ -474,7 +487,12 @@ export async function runFinalizePhase(ctx) {
       if (saved.remoteSaveFailed) {
         log('Aviso: gravação remota falhou — este run ficou no SQLite local acima.', 'warn');
       }
-      if (intelMerge?.newArtifacts > 0) {
+      if (intelMerge?.error) {
+        log(
+          `Corpus do alvo: índice derivado não foi atualizado — ${String(intelMerge.error).slice(0, 400)}`,
+          'warn',
+        );
+      } else if (intelMerge?.newArtifacts > 0) {
         log(
           `Corpus do alvo: +${intelMerge.newArtifacts} artefacto(s) novo(s) na base; ${intelMerge.alreadyKnown} já existiam; total único para ${domain}: ${intelMerge.totalKnownForTarget}`,
           'success',
@@ -687,6 +705,10 @@ export async function runFinalizePhase(ctx) {
         kaliMode: Boolean(kaliMode),
         modules: modulesForDb,
         highCount: findings.filter((f) => f.prio === 'high').length,
+        highFindings: findings
+          .filter((finding) => ['high', 'critical'].includes(String(finding?.prio || '').toLowerCase()))
+          .sort((left, right) => Number(right?.score || 0) - Number(left?.score || 0))
+          .slice(0, 8),
         findingsByType,
         runDiffSummary,
         shannonSummary,

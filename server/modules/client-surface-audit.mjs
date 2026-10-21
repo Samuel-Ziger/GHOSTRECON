@@ -16,6 +16,7 @@
 import { auditClientSideAuth } from './client-auth-audit.mjs';
 import { analyzeCspWeaknesses, analyzePermissionsPolicyGaps } from './security-headers.js';
 import { parseSourceMap } from './js-intel.mjs';
+import { readResponseSnippet } from './module-runner.mjs';
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36';
 
@@ -265,12 +266,24 @@ export function auditJsSurface(text, { url = null, target = null, includeAuth = 
     const key = `${hit.type}::${hit.value}`;
     if (seenTypes.has(key)) continue;
     seenTypes.add(key);
+    const nearby = text.slice(Math.max(0, hit.index - 320), Math.min(text.length, hit.index + 420));
+    const hasInputCorrelation = /(?:location\.(?:search|hash|href)|URLSearchParams|document\.(?:URL|referrer)|event\.data|e\.data|userInput|params|query|JSON\.parse\s*\()/i.test(nearby);
+    const inventoryOnly = /(?:framework_exposed|service_worker|websocket_in_bundle|internal_endpoint|insecure_api_consumption|fragment_abuse)/.test(hit.type);
+    const score = inventoryOnly ? Math.min(hit.score, 24) : Math.min(hit.score, hasInputCorrelation ? 48 : 32);
     findings.push(makeFinding({
       type: hit.type,
-      value: hit.value,
-      score: hit.score,
+      value: inventoryOnly ? hit.value : `${hit.value} (candidato estático)`,
+      score,
       url,
-      meta: { snippet: snippet(text, hit.index), target, pattern: hit.match?.slice(0, 80) },
+      meta: {
+        snippet: snippet(text, hit.index),
+        target,
+        pattern: hit.match?.slice(0, 80),
+        evidenceStatus: inventoryOnly ? 'inventory' : 'static_candidate',
+        confidence: hasInputCorrelation ? 'medium' : 'low',
+        sourceSinkCorrelated: hasInputCorrelation,
+        requiresRuntimeValidation: !inventoryOnly,
+      },
       owasp: hit.owasp,
     }));
   }
@@ -306,7 +319,7 @@ export function auditHtmlSurface(html, { url = null, target = null, isHttps = tr
       findings.push(makeFinding({
         type: 'client_mixed_content',
         value: 'Script HTTP carregado em página HTTPS (mixed content)',
-        score: 64,
+        score: 48,
         url,
         meta: { src: src.slice(0, 120), target },
         owasp: 'A02:2021',
@@ -317,7 +330,7 @@ export function auditHtmlSurface(html, { url = null, target = null, isHttps = tr
     findings.push(makeFinding({
       type: 'client_sri_missing',
       value: `${missingSri} script(s) externo(s) sem atributo integrity (SRI)`,
-      score: missingSri >= 2 ? 68 : 58,
+      score: 34,
       url,
       meta: { externalScripts, missingSri, target },
       owasp: 'A08:2021',
@@ -331,7 +344,7 @@ export function auditHtmlSurface(html, { url = null, target = null, isHttps = tr
       findings.push(makeFinding({
         type: 'client_mixed_content',
         value: 'Recurso HTTP em link/stylesheet em página HTTPS',
-        score: 58,
+        score: 42,
         url,
         meta: { href: lm[1].slice(0, 100) },
       }));
@@ -347,7 +360,7 @@ export function auditHtmlSurface(html, { url = null, target = null, isHttps = tr
       findings.push(makeFinding({
         type: 'client_csrf_form_no_token',
         value: 'Form HTML mutável sem token CSRF visível',
-        score: 62,
+        score: 38,
         url,
         meta: { snippet: tag.slice(0, 120), target },
         owasp: 'A01:2021',
@@ -363,7 +376,7 @@ export function auditHtmlSurface(html, { url = null, target = null, isHttps = tr
       findings.push(makeFinding({
         type: 'client_tabnabbing',
         value: 'Link target=_blank sem rel=noopener (tabnabbing / reverse tabnabbing)',
-        score: 52,
+        score: 34,
         url,
         meta: { snippet: tm[0].slice(0, 100), target },
         owasp: 'A02:2021',
@@ -456,26 +469,42 @@ export function extractSourceMapUrl(jsText, jsUrl) {
   }
 }
 
-export async function probeSourceMapDisclosure(mapUrl, { fetchImpl = null } = {}) {
+export async function probeSourceMapDisclosure(mapUrl, {
+  fetchImpl = null,
+  signal = null,
+  urlAllowed = null,
+  maxBytes = 512 * 1024,
+} = {}) {
   const fetchFn = fetchImpl || globalThis.fetch;
   if (!fetchFn || !mapUrl) return null;
   try {
+    if (urlAllowed && !urlAllowed(mapUrl)) return null;
+    const timeoutSignal = AbortSignal.timeout(10_000);
+    const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     const res = await fetchFn(mapUrl, {
+      method: 'GET',
+      redirect: 'manual',
       headers: { 'User-Agent': UA, Accept: 'application/json,*/*' },
-      signal: AbortSignal.timeout(10_000),
+      signal: requestSignal,
     });
     if (!res.ok) return null;
-    const text = await res.text();
+    const finalUrl = res.url || mapUrl;
+    if (urlAllowed && !urlAllowed(finalUrl)) return null;
+    const contentLength = Number(res.headers?.get?.('content-length') || 0);
+    if (contentLength > maxBytes) return null;
+    const text = await readResponseSnippet(res, maxBytes);
     const parsed = parseSourceMap(text);
     if (!parsed.sources?.length) return null;
     return makeFinding({
       type: 'client_source_map_disclosure',
       value: `Source map público expõe ${parsed.sources.length} ficheiro(s) fonte`,
-      score: parsed.internal?.length ? 62 : 52,
-      url: mapUrl,
+      score: parsed.internal?.length ? 48 : 38,
+      url: finalUrl,
       meta: {
         sourcesSample: parsed.sources.slice(0, 8),
         internalSample: parsed.internal.slice(0, 5),
+        evidenceStatus: 'observed',
+        confidence: 'high',
       },
       owasp: 'A02:2021',
       categories: ['Source Map Disclosure', 'Stack Trace Disclosure', 'Hidden Functionality Disclosure'],

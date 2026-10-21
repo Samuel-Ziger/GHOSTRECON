@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import dns from 'node:dns/promises';
 import net from 'node:net';
@@ -68,7 +68,9 @@ export async function ensureUserTorStack(rootDir, opts = {}) {
   const dataDir = join(torDir, 'data');
   const torrcPath = join(torDir, 'torrc');
   const pidFile = join(torDir, 'tor.pid');
-  await mkdir(dataDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  await chmod(torDir, 0o700);
+  await chmod(dataDir, 0o700);
 
   const torrc = [
     `DataDirectory ${dataDir}`,
@@ -76,7 +78,8 @@ export async function ensureUserTorStack(rootDir, opts = {}) {
     ...USER_TORRC_LINES,
     '',
   ].join('\n');
-  await writeFile(torrcPath, torrc, 'utf8');
+  await writeFile(torrcPath, torrc, { encoding: 'utf8', mode: 0o600 });
+  await chmod(torrcPath, 0o600);
 
   const socksHost = String(opts.socksHost || '127.0.0.1');
   const socksPort = Number(opts.socksPort || 9050);
@@ -196,6 +199,7 @@ export async function executeNavegationPlaybook(rootDir, opts = {}) {
   if (dryRun) args.push('--dry-run');
   const res = await runProcess(cmd, args, {
     timeoutMs,
+    signal: opts.signal || null,
     rejectOnError: false,
     rejectOnTimeout: false,
     label: cmd,
@@ -315,8 +319,8 @@ async function torIpProbe(signal = null) {
 export async function validateNavegationTorPath(rootDir, opts = {}) {
   const dnsLeakHost = String(opts.dnsLeakHost || 'check.torproject.org');
   const status = await getNavegationTunnelStatus(rootDir);
-  const direct = await runSimple('curl', ['-sS', '--max-time', '12', 'https://api.ipify.org?format=json']);
-  const torIp = await torIpProbe();
+  const direct = await runSimple('curl', ['-sS', '--max-time', '12', 'https://api.ipify.org?format=json'], 20_000, opts.signal || null);
+  const torIp = await torIpProbe(opts.signal || null);
 
   const directJson = safeJsonParse(direct.stdout) || {};
   const directIp = String(directJson.ip || '').trim() || null;
@@ -326,9 +330,7 @@ export async function validateNavegationTorPath(rootDir, opts = {}) {
   // distinguir aqui sem root) — fazemos algo mais simples: comparamos o IP directo
   // do recon com o IP que aparece na visita Tor (se o exit IP == IP local, leak).
   const directHostIp = await resolveDirect(dnsLeakHost);
-  const dnsLeak = Boolean(
-    directIp && torIp.ip && directIp === torIp.ip
-  );
+  const proxyBypass = Boolean(directIp && torIp.ip && directIp === torIp.ip);
   // Sinal complementar: a resolução A direita pelo SO devolveu algo? Se sim, o
   // pipeline pode estar a fazer DNS direto antes do SOCKS, vazando intenção.
   const systemDnsActive = Boolean(directHostIp);
@@ -340,11 +342,11 @@ export async function validateNavegationTorPath(rootDir, opts = {}) {
   const validated = Boolean(
     status.active &&
       torIp.ok &&
-      torIp.ip &&
-      directIp &&
+      net.isIP(torIp.ip || '') > 0 &&
+      net.isIP(directIp || '') > 0 &&
       torIp.ip !== directIp &&
-      torIp.isTor !== false &&
-      !dnsLeak &&
+      torIp.isTor === true &&
+      !proxyBypass &&
       control?.bootstrap?.tag === 'done'
   );
 
@@ -352,8 +354,9 @@ export async function validateNavegationTorPath(rootDir, opts = {}) {
   if (!status.active) reasons.push('serviço Tor não está active no systemd');
   if (!torIp.ok) reasons.push('IP-check via SOCKS5 falhou (tor proxy não responde)');
   if (torIp.ok && !torIp.ip) reasons.push('SOCKS5 respondeu mas sem IP no JSON');
+  if (torIp.ok && torIp.isTor !== true) reasons.push('provedor não confirmou IsTor=true');
   if (torIp.isTor === false) reasons.push('check.torproject.org reportou IsTor=false');
-  if (directIp && torIp.ip && directIp === torIp.ip) reasons.push('IP directo == IP via Tor (DNS leak / proxy bypass)');
+  if (proxyBypass) reasons.push('IP directo == IP via Tor (possível proxy bypass)');
   if (control?.bootstrap && control.bootstrap.tag !== 'done') {
     reasons.push(`Tor bootstrap em curso (tag=${control.bootstrap.tag}, progress=${control.bootstrap.progress}%)`);
   }
@@ -369,7 +372,10 @@ export async function validateNavegationTorPath(rootDir, opts = {}) {
       stderr: direct.stderr ? String(direct.stderr).slice(0, 240) : '',
     },
     tor: torIp,
-    dnsLeak: { leaked: dnsLeak, systemDnsActive, dnsLeakHost, directHostIp },
+    // A comparação de IP externo não mede vazamento DNS. Mantemos o campo por
+    // compatibilidade, mas sem produzir uma conclusão que o teste não sustenta.
+    dnsLeak: { leaked: null, tested: false, systemDnsActive, dnsLeakHost, directHostIp },
+    proxyBypass,
     control,
     validated,
     reasons,
@@ -381,16 +387,22 @@ export async function validateNavegationTorPath(rootDir, opts = {}) {
  * Não corre o systemctl status (que precisa de spawn) — usa apenas tor-control.js
  * + um único IP-check via SOCKS. Falha rápida.
  */
-export async function quickValidateTor({ timeoutMs = 8_000, signal = null } = {}) {
+export async function quickValidateTor({
+  timeoutMs = 8_000,
+  signal = null,
+  torIpProbeImpl = torIpProbe,
+  torHealthImpl = torHealth,
+  runSimpleImpl = runSimple,
+} = {}) {
   const t0 = Date.now();
-  const torIp = await torIpProbe(signal);
+  const torIp = await torIpProbeImpl(signal);
   if (signal?.aborted) throw signal.reason || new Error('Validação Tor cancelada');
   let control;
-  try { control = await torHealth({ signal }); } catch (e) {
+  try { control = await torHealthImpl({ signal }); } catch (e) {
     if (signal?.aborted) throw signal.reason || e;
     control = { error: e?.message || String(e) };
   }
-  const directRes = await runSimple(
+  const directRes = await runSimpleImpl(
     'curl',
     ['-sS', '--max-time', '6', 'https://api.ipify.org?format=json'],
     Math.min(7_000, Math.max(1_000, Number(timeoutMs) || 8_000)),
@@ -399,7 +411,12 @@ export async function quickValidateTor({ timeoutMs = 8_000, signal = null } = {}
   const directJson = safeJsonParse(directRes.stdout) || {};
   const directIp = String(directJson.ip || '').trim() || null;
   const validated = Boolean(
-    torIp.ok && torIp.ip && directIp && torIp.ip !== directIp && torIp.isTor !== false &&
+    torIp.ok
+    && net.isIP(torIp.ip || '') > 0
+    && net.isIP(directIp || '') > 0
+    && torIp.ip !== directIp
+    && torIp.isTor === true
+    &&
     control?.bootstrap?.tag === 'done'
   );
   return {

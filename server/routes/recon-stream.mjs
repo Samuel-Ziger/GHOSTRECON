@@ -24,7 +24,11 @@ import {
   resolveEffectiveIdentityConfig,
 } from '../modules/identity-controller.mjs';
 import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
-import { quickValidateTor, isNavigatorModeActive } from '../modules/navegation.js';
+import {
+  executeNavegationPlaybook,
+  quickValidateTor,
+  isNavigatorModeActive,
+} from '../modules/navegation.js';
 import {
   requireScope,
   reconBodyIsIntrusive,
@@ -52,6 +56,10 @@ import {
   resolveVigoliumBinary,
   resolveVigoliumEffectiveConfig,
 } from '../../bridge/vigolium-config.mjs';
+import {
+  applyVigoliumExpansionToRuntime,
+  expandVigoliumEffectiveModules,
+} from '../../bridge/vigolium-plan-expand.mjs';
 import {
   inspectVigoliumAuthFileIdentities,
 } from '../../bridge/vigolium-auth-transport.mjs';
@@ -99,6 +107,7 @@ export function registerReconStreamRoutes(app, deps) {
     getEngagementImpl = getEngagement,
     getShannonCapabilitiesImpl = getShannonCapabilities,
     quickValidateTorImpl = quickValidateTor,
+    executeNavegationPlaybookImpl = executeNavegationPlaybook,
     torNewnymImpl = torNewnym,
     runIntegratedFrameSevenImpl = runIntegratedFrameSeven,
     inspectFrameSevenBinaryIdentityImpl = inspectFrameSevenBinaryIdentity,
@@ -108,6 +117,7 @@ export function registerReconStreamRoutes(app, deps) {
     inspectVigoliumSourceIdentityImpl = inspectVigoliumSourceIdentity,
     resolveVigoliumSourceAllowedRootsImpl = resolveVigoliumSourceAllowedRoots,
     resolveVigoliumBinaryImpl = resolveVigoliumBinary,
+    expandVigoliumEffectiveModulesImpl = expandVigoliumEffectiveModules,
     auditAuthImpl = auditAuth,
     env = process.env,
     manualPlanBindingKey = randomBytes(32),
@@ -169,9 +179,12 @@ export function registerReconStreamRoutes(app, deps) {
       ...buildVigoliumChildEnv(vigolium, env),
     });
     const torBody = body.tor && typeof body.tor === 'object' ? body.tor : {};
-    const torStrict = torBody.strict === true
+    const navigatorSelected = modules.includes('navegation');
+    const torStrict = navigatorSelected
+      || torBody.strict === true
       || String(env.GHOSTRECON_TOR_STRICT || '').trim() === '1';
-    const torRequired = torBody.required === true
+    const torRequired = navigatorSelected
+      || torBody.required === true
       || torStrict
       || String(env.GHOSTRECON_TOR_REQUIRED || '').trim() === '1';
     const tor = Object.freeze({
@@ -375,7 +388,7 @@ export function registerReconStreamRoutes(app, deps) {
       );
     }
     const modules = normalizeManualModules(body);
-    const runtimeConfig = resolveManualRuntimeConfig(body, modules);
+    let runtimeConfig = resolveManualRuntimeConfig(body, modules);
     const engine = runtimeConfig.vigolium.engineMode;
     const vigoliumAgent = runtimeConfig.vigolium.vigoliumAgentMode;
     const expandedModules = expandIntrusiveRunModules({
@@ -383,7 +396,8 @@ export function registerReconStreamRoutes(app, deps) {
       engine,
       vigoliumAgent,
       includeManualImplicit: true,
-      includeManualIntrusive: body.confirmActive === true,
+      // Confirmar um plano nunca injeta módulos que o operador não marcou.
+      includeManualIntrusive: false,
       kaliMode: body.kaliMode === true,
     });
     const intrusiveModules = expandedModules.filter((moduleId) => isIntrusive(moduleId));
@@ -401,6 +415,30 @@ export function registerReconStreamRoutes(app, deps) {
         'VIGOLIUM_INPUT_SCOPE_UNSEALED',
         'Vigolium -T está desativado no RUN até todos os alvos do arquivo serem validados e selados',
       );
+    }
+    if (vigoliumRequested && vigoliumAgent === 'autopilot') {
+      try {
+        const expansion = await expandVigoliumEffectiveModulesImpl({
+          modules: runtimeConfig.vigolium.vigoliumModules,
+          moduleTags: runtimeConfig.vigolium.vigoliumModuleTags,
+          only: runtimeConfig.vigolium.vigoliumOnly,
+          root: ROOT,
+          // Prévia não inclui capacidades destrutivas/credenciais. Swarm
+          // permanece indisponível no runner; não há expansão executável.
+          forAuto: true,
+        });
+        const vigolium = applyVigoliumExpansionToRuntime(runtimeConfig.vigolium, expansion);
+        runtimeConfig = Object.freeze({
+          ...runtimeConfig,
+          vigolium,
+          vigoliumChildEnv: Object.freeze({ ...buildVigoliumChildEnv(vigolium, env) }),
+        });
+      } catch (error) {
+        throw fail(
+          error?.code || 'VIGOLIUM_AGENT_PLAN_UNRESOLVED',
+          `Plano interno Vigolium não pôde ser congelado: ${error?.message || error}`,
+        );
+      }
     }
 
     const engagementId = String(body.engagementId || '').trim();
@@ -421,7 +459,10 @@ export function registerReconStreamRoutes(app, deps) {
       target,
       modules: expandedModules,
       playbook: String(body.playbook || '').trim() || null,
-      requireFormalAuthorization: intrusiveModules.length > 0,
+      // No RUN manual, a seleção explícita e a aprovação do plano exato são
+      // a autorização operacional. Engagement permanece opcional e, quando
+      // informado, continua sendo integralmente validado.
+      requireFormalAuthorization: false,
       intrusiveModules,
     });
     if (!checklist.ok) {
@@ -556,7 +597,7 @@ export function registerReconStreamRoutes(app, deps) {
       engine: runtimeConfig.vigolium.engineMode,
       vigoliumAgent: runtimeConfig.vigolium.vigoliumAgentMode,
       includeManualImplicit: true,
-      includeManualIntrusive: body.confirmActive === true,
+      includeManualIntrusive: false,
       kaliMode: body.kaliMode === true,
     });
     return expanded.some((moduleId) => isIntrusive(moduleId));
@@ -778,19 +819,44 @@ export function registerReconStreamRoutes(app, deps) {
   if (!navigatorActive || isFullPresetRun) {
     modules = modules.filter((m) => m !== 'navegation');
   }
-  const runtimeConfig = resolveManualRuntimeConfig(req.body, modules);
+  let runtimeConfig = resolveManualRuntimeConfig(req.body, modules);
+  if (runtimeConfig.vigolium.vigoliumAgentMode === 'autopilot') {
+    try {
+      const expansion = await expandVigoliumEffectiveModulesImpl({
+        modules: runtimeConfig.vigolium.vigoliumModules,
+        moduleTags: runtimeConfig.vigolium.vigoliumModuleTags,
+        only: runtimeConfig.vigolium.vigoliumOnly,
+        root: ROOT,
+        forAuto: true,
+      });
+      const vigolium = applyVigoliumExpansionToRuntime(runtimeConfig.vigolium, expansion);
+      runtimeConfig = Object.freeze({
+        ...runtimeConfig,
+        vigolium,
+        vigoliumChildEnv: Object.freeze({ ...buildVigoliumChildEnv(vigolium, env) }),
+      });
+    } catch (error) {
+      send({
+        type: 'error',
+        code: error?.code || 'VIGOLIUM_AGENT_PLAN_UNRESOLVED',
+        message: `Plano interno Vigolium não pôde ser congelado: ${error?.message || error}`,
+      });
+      endResponse();
+      return;
+    }
+  }
   const profile = runtimeConfig.executionProfile;
   const modulesForOpsecGate = expandIntrusiveRunModules({
     modules: includeFrameSeven ? [...modules, 'frameseven_active'] : modules,
     engine: runtimeConfig.vigolium.engineMode,
     vigoliumAgent: runtimeConfig.vigolium.vigoliumAgentMode,
     includeManualImplicit: true,
-    includeManualIntrusive: confirmActive,
+    includeManualIntrusive: false,
     kaliMode,
   });
   const intrusiveModulesForRun = modulesForOpsecGate.filter((moduleId) => isIntrusive(moduleId));
-  const requiresFormalAuthorization = intrusiveModulesForRun.length > 0;
-  let manualApprovalGranted = !requiresFormalAuthorization;
+  const requiresManualApproval = intrusiveModulesForRun.length > 0;
+  let manualApprovalGranted = !requiresManualApproval;
   let manualReconPlan = null;
   const vigoliumRequested = modulesForOpsecGate.some((moduleId) => (
     String(moduleId || '').replace(/-/g, '_').startsWith('vigolium_')
@@ -842,7 +908,7 @@ export function registerReconStreamRoutes(app, deps) {
     target: domain,
     modules: modulesForOpsecGate,
     playbook: playbookNameForCheck || null,
-    requireFormalAuthorization: requiresFormalAuthorization,
+    requireFormalAuthorization: false,
     intrusiveModules: intrusiveModulesForRun,
   });
   if (!checklist.ok) {
@@ -929,7 +995,7 @@ export function registerReconStreamRoutes(app, deps) {
       target: domain,
       modules: modulesForOpsecGate,
       playbook: playbookNameForCheck || null,
-      requireFormalAuthorization: requiresFormalAuthorization,
+      requireFormalAuthorization: false,
       intrusiveModules: intrusiveModulesForRun,
     });
     if (!currentChecklist.ok) {
@@ -1075,12 +1141,15 @@ export function registerReconStreamRoutes(app, deps) {
     type: 'manual_effective_plan',
     plan: manualReconPlan,
   });
-  if (requiresFormalAuthorization) {
-    const providedApproval = req.body?.manualApproval
-      && typeof req.body.manualApproval === 'object'
-      ? req.body.manualApproval
-      : null;
-    if (!confirmActive || !providedApproval?.approvalId) {
+  const providedApproval = req.body?.manualApproval
+    && typeof req.body.manualApproval === 'object'
+    ? req.body.manualApproval
+    : null;
+  // Uma aprovação fornecida nunca pode ser ignorada só porque o plano
+  // recomputado sofreu downgrade para não intrusivo. Isso esconderia drift de
+  // ambiente/configuração entre o popup e o stream.
+  if (requiresManualApproval || providedApproval?.approvalId) {
+    if (requiresManualApproval && (!confirmActive || !providedApproval?.approvalId)) {
       auditAuthImpl(req, req.principal, 'deny', {
         action: 'recon.manual_plan.consume',
         target: domain,
@@ -1189,6 +1258,31 @@ export function registerReconStreamRoutes(app, deps) {
   const torRequired = torOpts.required;
   let cleanupTorStrictScope = null;
 
+  if (modules.includes('navegation') && navegationBody?.exec === true) {
+    send({ type: 'log', msg: '[tor] Navegation: inicializando tunnel antes de qualquer fase de rede', level: 'info' });
+    try {
+      const started = await executeNavegationPlaybookImpl(ROOT, {
+        action: 'up',
+        userMode: navegationBody?.userMode !== false,
+        timeoutMs: 60_000,
+        signal: controller.signal,
+      });
+      throwIfCancelled();
+      if (!started?.ok) {
+        throw new Error(String(started?.stderr || started?.stdout || 'tunnel não iniciou').slice(0, 240));
+      }
+    } catch (error) {
+      auditAuthImpl(req, req.principal, 'deny', {
+        action: 'recon.stream.navegation_start',
+        target: domain,
+        reason: 'tunnel_start_failed',
+      });
+      send({ type: 'error', message: `Navegation: falha ao iniciar tunnel — ${error?.message || error}` });
+      endResponse();
+      return;
+    }
+  }
+
   // STRICT prereq check — se faltar algo (proxychains, DNS lockdown, SOCKS,
   // ControlPort, conf), abortamos antes do pipeline para evitar leaks parciais.
   if (torStrictWanted) {
@@ -1261,6 +1355,15 @@ export function registerReconStreamRoutes(app, deps) {
     proxyPool: [...runtimeConfig.identity.proxyPool],
     modules: [...runtimeConfig.identity.modules],
   };
+  if (torRequired) {
+    identityOpts.enabled = true;
+    identityOpts.behavior = true;
+    if (!identityOpts.proxyPool.length) {
+      const socksHost = String(env.GHOSTRECON_TOR_SOCKS_HOST || '127.0.0.1');
+      const socksPort = Number(env.GHOSTRECON_TOR_SOCKS_PORT || 9050);
+      identityOpts.proxyPool.push(`socks5h://${socksHost}:${socksPort}`);
+    }
+  }
   // ID temporário para telemetria do tor-strict (correlacionável com runId
   // depois que saveRun emitir um). Emitimos no stream para o cliente saber.
   const requestRunId = `req-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
@@ -1299,7 +1402,7 @@ export function registerReconStreamRoutes(app, deps) {
     kaliMode,
     opsecProfile,
     profile,
-    intrusive: requiresFormalAuthorization || reconBodyIsIntrusive(req.body),
+    intrusive: requiresManualApproval || reconBodyIsIntrusive(req.body),
     engagementId: engagementIdRaw || null,
     tor: torRequired
       ? {
@@ -1421,6 +1524,7 @@ export function registerReconStreamRoutes(app, deps) {
   } catch (e) {
     send({ type: 'error', message: e?.message || String(e) });
   } finally {
+    await identityCtrl.dispose?.();
     if (cleanupTorStrictScope) cleanupTorStrictScope();
     cleanupAbortListeners();
   }

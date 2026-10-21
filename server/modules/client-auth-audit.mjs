@@ -14,17 +14,17 @@ const HARDCODED_CRED_RE = [
   {
     id: 'password_literal_compare',
     re: /(?:password|senha|passwd|pass)\s*(?:===|==|!==|!=)\s*["']([^"']{4,120})["']/gi,
-    score: 95,
+    score: 44,
   },
   {
     id: 'password_var_compare',
     re: /(?:if\s*\(\s*(?:input|value|pwd|pass)\s*(?:===|==)\s*(?:password|senha|ADMIN_PASS|adminPass|SECRET))/gi,
-    score: 88,
+    score: 38,
   },
   {
     id: 'admin_credential_const',
     re: /(?:ADMIN_(?:PASS|PASSWORD|KEY|SENHA)|adminPassword|defaultPassword)\s*[:=]\s*["']([^"']{4,80})["']/gi,
-    score: 94,
+    score: 44,
   },
 ];
 
@@ -43,6 +43,15 @@ function snippet(text, idx, span = 50) {
   const start = Math.max(0, idx - span);
   const end = Math.min(text.length, idx + span);
   return text.slice(start, end).replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+function candidateMeta(meta = {}) {
+  return {
+    ...meta,
+    evidenceStatus: 'static_candidate',
+    confidence: 'low',
+    requiresRuntimeValidation: true,
+  };
 }
 
 function isLikelyFalsePositivePassword(val) {
@@ -80,15 +89,15 @@ export function auditClientSideAuth(text, { url = null, target = null } = {}) {
       summary.hardcodedCreds++;
       findings.push(makeFinding({
         type: 'client_hardcoded_credential',
-        value: 'Credencial ou senha de admin aparentemente hardcoded no JavaScript público',
+        value: 'Possível credencial hardcoded no JavaScript público (candidato estático)',
         score,
         url,
-        meta: {
+        meta: candidateMeta({
           pattern: id,
-          snippet: snippet(cap, m.index),
           redacted: captured ? `${String(captured).slice(0, 2)}…${String(captured).slice(-2)}` : null,
           target,
-        },
+          validation: 'Confirmar em revisão autorizada do backend; não tentar autenticar automaticamente.',
+        }),
         owasp: 'A07:2021',
         mitre: 'T1552',
         cvss: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N',
@@ -101,21 +110,20 @@ export function auditClientSideAuth(text, { url = null, target = null } = {}) {
   STORAGE_AUTH_GATE_RE.lastIndex = 0;
   let sg;
   while ((sg = STORAGE_AUTH_GATE_RE.exec(cap)) !== null && storageGates.length < 5) {
-    storageGates.push({ key: sg[1], expected: sg[2], snippet: snippet(cap, sg.index) });
+    storageGates.push({ key: sg[1], expected: sg[2] });
   }
   if (storageGates.length) {
     summary.storageBypass = storageGates.length;
     findings.push(makeFinding({
       type: 'client_storage_auth_bypass',
-      value: `Autenticação baseada em ${storageGates[0].key.includes('local') ? 'localStorage' : 'sessionStorage'} — bypassável via DevTools`,
-      score: 94,
+      value: 'Possível gate de autorização baseado apenas em browser storage',
+      score: 45,
       url,
-      meta: {
-        gates: storageGates.map((g) => ({ key: g.key, expected: g.expected })),
-        snippet: storageGates[0].snippet,
+      meta: candidateMeta({
+        gates: storageGates.map((g) => ({ key: g.key, comparison: 'literal' })),
         target,
-        bypass: `sessionStorage.setItem("${storageGates[0].key}", "${storageGates[0].expected}")`,
-      },
+        validation: 'Verificar controles server-side com conta e fluxo autorizados.',
+      }),
       owasp: 'A07:2021',
       mitre: 'T1552',
       cvss: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N',
@@ -140,10 +148,10 @@ export function auditClientSideAuth(text, { url = null, target = null } = {}) {
     summary.sensitiveStorage = sensitiveKeys.size;
     findings.push(makeFinding({
       type: 'client_sensitive_browser_storage',
-      value: 'Dados sensíveis persistidos em sessionStorage/localStorage no navegador',
-      score: 62,
+      value: 'Chaves potencialmente sensíveis referenciadas em browser storage',
+      score: 32,
       url,
-      meta: { keys: [...sensitiveKeys].slice(0, 10), target },
+      meta: candidateMeta({ keys: [...sensitiveKeys].slice(0, 10), target }),
       owasp: 'A02:2021',
       mitre: 'T1530',
     }));
@@ -152,13 +160,15 @@ export function auditClientSideAuth(text, { url = null, target = null } = {}) {
   if (ADMIN_PANEL_IN_BUNDLE_RE.test(cap) && adminRoutes.size >= 1) {
     findings.push(makeFinding({
       type: 'client_admin_panel_in_public_bundle',
-      value: 'Painel administrativo embutido no bundle JavaScript público da landing',
-      score: 55,
+      value: 'Referências a painel administrativo no bundle JavaScript público',
+      score: 24,
       url,
       meta: {
         routes: [...adminRoutes].slice(0, 15),
         target,
-        note: 'Facilita descoberta de rotas e lógica de auth para atacantes',
+        evidenceStatus: 'inventory',
+        confidence: 'medium',
+        note: 'Inventário de superfície; a rota não prova falha de autorização.',
       },
       owasp: 'A02:2021',
       mitre: 'T1592',
@@ -167,9 +177,9 @@ export function auditClientSideAuth(text, { url = null, target = null } = {}) {
     findings.push(makeFinding({
       type: 'client_admin_routes_exposed',
       value: `${adminRoutes.size} rota(s) administrativa(s) exposta(s) no bundle JS`,
-      score: 48,
+      score: 20,
       url,
-      meta: { routes: [...adminRoutes].slice(0, 15), target },
+      meta: { routes: [...adminRoutes].slice(0, 15), target, evidenceStatus: 'inventory', confidence: 'medium' },
       owasp: 'A02:2021',
     }));
   }

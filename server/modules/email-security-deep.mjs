@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import { limits } from '../config.js';
+import { combineAbortSignals, throwIfAborted } from './http-utils.js';
 
 export const moduleManifest = {
   id: 'email_security_deep',
@@ -14,42 +15,80 @@ export const moduleManifest = {
 };
 
 const COMMON_DKIM_SELECTORS = ['default', 'google', 'selector1', 'selector2', 'mail', 'smtp', 'mandrill', 'sendgrid', 'k1'];
+const MAX_DNS_RECORDS = 100;
+const MAX_TXT_RECORD_CHARS = 4_096;
 
 function joinTxtRecord(txtParts) {
   if (!Array.isArray(txtParts)) return '';
-  return txtParts.join('');
+  return txtParts.map((part) => String(part)).join('').slice(0, MAX_TXT_RECORD_CHARS);
 }
 
-async function withTimeout(promiseFactory, timeoutMs) {
-  return await Promise.race([
-    promiseFactory(),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), Math.max(1, timeoutMs || 5000))),
-  ]);
-}
+const DNS_ABSENCE_CODES = new Set(['ENODATA', 'ENOTFOUND']);
+const DNS_ERROR_CODES = new Set(['ETIMEOUT', 'ESERVFAIL', 'EREFUSED', 'ECONNREFUSED', 'ECANCELLED', 'EFORMERR']);
 
-async function resolveTxtSafe(hostname, timeoutMs) {
+/** Cada consulta tem seu próprio Resolver; cancel() não afeta outros módulos. */
+export async function resolveEmailDns(hostname, kind, {
+  timeoutMs = 5000,
+  signal = null,
+  resolverFactory = () => new dns.Resolver(),
+} = {}) {
+  throwIfAborted(signal);
+  const method = kind === 'MX' ? 'resolveMx' : 'resolveTxt';
+  let resolver;
   try {
-    const txt = await withTimeout(() => dns.resolveTxt(hostname), timeoutMs);
-    return Array.isArray(txt) ? txt.map(joinTxtRecord).filter(Boolean) : [];
+    resolver = resolverFactory();
   } catch {
-    return [];
+    return { state: 'error', records: [], code: 'DNS_RESOLVER_UNAVAILABLE' };
   }
-}
-
-async function resolveMxSafe(hostname, timeoutMs) {
-  try {
-    const mx = await withTimeout(() => dns.resolveMx(hostname), timeoutMs);
-    return Array.isArray(mx) ? mx.filter((x) => x?.exchange).map((x) => ({
-      exchange: String(x.exchange).toLowerCase(),
-      priority: x.priority,
-    })) : [];
-  } catch {
-    return [];
+  if (typeof resolver?.[method] !== 'function' || typeof resolver?.cancel !== 'function') {
+    return { state: 'error', records: [], code: 'DNS_RESOLVER_UNAVAILABLE' };
   }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = (callback, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      callback(result);
+    };
+    const cancel = () => { try { resolver.cancel(); } catch { /* reason is retained below */ } };
+    const onAbort = () => {
+      cancel();
+      finish(reject, signal.reason || new DOMException('DNS cancelado', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      cancel();
+      finish(resolve, { state: 'timeout', records: [], code: 'ETIMEOUT' });
+    }, Math.max(1, Number(timeoutMs) || 5000));
+    if (signal?.aborted) { onAbort(); return; }
+    Promise.resolve().then(() => settled ? null : resolver[method](hostname)).then((rows) => {
+      if (settled) return;
+      if (!Array.isArray(rows)) {
+        finish(resolve, { state: 'error', records: [], code: 'INVALID_DNS_RESPONSE' });
+        return;
+      }
+      const records = kind === 'MX'
+        ? rows.slice(0, MAX_DNS_RECORDS).filter((row) => row && typeof row.exchange === 'string').map((row) => ({
+          exchange: row.exchange.toLowerCase().slice(0, 253), priority: row.priority,
+        }))
+        : rows.slice(0, MAX_DNS_RECORDS).map(joinTxtRecord).filter(Boolean);
+      finish(resolve, { state: records.length ? 'ok' : 'absent', records });
+    }, (error) => {
+      const code = String(error?.code || '');
+      finish(resolve, {
+        state: DNS_ABSENCE_CODES.has(code) ? 'absent' : code === 'ETIMEOUT' ? 'timeout' : 'error',
+        records: [],
+        code: DNS_ABSENCE_CODES.has(code) || DNS_ERROR_CODES.has(code) ? code : 'DNS_QUERY_FAILED',
+      });
+    });
+  });
 }
 
 function parseTagRecord(record) {
-  const tags = {};
+  const tags = Object.create(null);
   for (const part of String(record || '').split(';')) {
     const idx = part.indexOf('=');
     if (idx < 0) continue;
@@ -127,11 +166,12 @@ export function analyzeEmailSecurityRecords({
   checks = {},
 } = {}) {
   const findings = [];
-  const hasMx = Array.isArray(mx) && mx.length > 0;
+  const hasMx = Array.isArray(mx) && mx.some((row) => row?.exchange && row.exchange !== '.');
   const spfPolicy = parseSpfPolicy(spf);
   const dmarcPolicy = parseDmarcPolicy(dmarc);
   const checked = {
     root: checks.root !== false,
+    mx: checks.mx !== false,
     dmarc: checks.dmarc !== false,
     dkim: checks.dkim !== false,
     bimi: checks.bimi !== false,
@@ -139,7 +179,7 @@ export function analyzeEmailSecurityRecords({
     tlsRpt: checks.tlsRpt !== false,
   };
 
-  if (checked.root && hasMx) {
+  if (checked.mx && hasMx) {
     findings.push(finding({
       issue: 'MX publicado',
       score: 18,
@@ -263,9 +303,9 @@ export function analyzeEmailSecurityRecords({
       score: 32,
       domain,
       host: `selector._domainkey.${domain}`,
-      meta: ['note=heuristic_common_selectors_only'],
+      meta: ['note=heuristic_common_selectors_only', 'dkim_absence_proven=false'],
     }));
-  } else if (checked.dkim && dkimSelectors.length) {
+  } else if (dkimSelectors.length) {
     findings.push(finding({
       issue: 'DKIM encontrado em seletor comum',
       score: 20,
@@ -276,7 +316,7 @@ export function analyzeEmailSecurityRecords({
   }
 
   const dmarcStrong = dmarcPolicy && ['reject', 'quarantine'].includes(dmarcPolicy.policy);
-  if (checked.bimi && bimi && !dmarcStrong) {
+  if (checked.bimi && checked.dmarc && bimi && !dmarcStrong) {
     findings.push(finding({
       issue: 'BIMI publicado sem DMARC forte',
       score: 38,
@@ -324,9 +364,17 @@ export async function runEmailSecurityDeep(domain, {
   timeoutMs = limits.dnsEnrichTimeoutMs || 8000,
   log = () => {},
   hostAllowed = () => true,
+  signal = null,
+  moduleTimeoutMs = moduleManifest.timeoutMs,
+  resolverFactory = () => new dns.Resolver(),
 } = {}) {
+  const moduleSignal = combineAbortSignals(signal, Math.max(1, Number(moduleTimeoutMs) || moduleManifest.timeoutMs));
+  throwIfAborted(moduleSignal);
   const root = String(domain || '').trim().replace(/^\.+|\.+$/g, '').toLowerCase();
-  if (!root) return { findings: [], records: {} };
+  if (!root) return { findings: [], records: {}, outcomes: {}, status: 'skipped', reason: 'invalid_domain' };
+  if (root.length > 253 || !root.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) {
+    return { findings: [], records: {}, outcomes: {}, status: 'skipped', reason: 'invalid_domain' };
+  }
   const hosts = {
     root,
     dmarc: `_dmarc.${root}`,
@@ -334,40 +382,40 @@ export async function runEmailSecurityDeep(domain, {
     mtaSts: `_mta-sts.${root}`,
     tlsRpt: `_smtp._tls.${root}`,
   };
-  const checked = {
-    root: hostAllowed(hosts.root),
-    dmarc: hostAllowed(hosts.dmarc),
-    bimi: hostAllowed(hosts.bimi),
-    mtaSts: hostAllowed(hosts.mtaSts),
-    tlsRpt: hostAllowed(hosts.tlsRpt),
+  const lookup = async (hostname, kind = 'TXT', localTimeout = timeoutMs) => {
+    throwIfAborted(moduleSignal);
+    if (hostAllowed(hostname) !== true) return { state: 'skipped', records: [], code: 'OUT_OF_SCOPE' };
+    return resolveEmailDns(hostname, kind, { timeoutMs: localTimeout, signal: moduleSignal, resolverFactory });
   };
-  const txtIfAllowed = (hostname, allowed, localTimeout = timeoutMs) => (
-    allowed ? resolveTxtSafe(hostname, localTimeout) : Promise.resolve([])
-  );
-
-  const [mx, txtRoot, txtDmarc, txtBimi, txtMtaSts, txtTlsRpt] = await Promise.all([
-    checked.root ? resolveMxSafe(root, timeoutMs) : Promise.resolve([]),
-    txtIfAllowed(root, checked.root),
-    txtIfAllowed(hosts.dmarc, checked.dmarc),
-    txtIfAllowed(hosts.bimi, checked.bimi),
-    txtIfAllowed(hosts.mtaSts, checked.mtaSts),
-    txtIfAllowed(hosts.tlsRpt, checked.tlsRpt),
+  const rows = await Promise.all([
+    lookup(root, 'MX'),
+    lookup(root),
+    lookup(hosts.dmarc),
+    lookup(hosts.bimi),
+    lookup(hosts.mtaSts),
+    lookup(hosts.tlsRpt),
   ]);
+  const [mx, txtRoot, txtDmarc, txtBimi, txtMtaSts, txtTlsRpt] = rows.map((row) => row.records);
+  const outcomes = Object.fromEntries(['mx', 'root', 'dmarc', 'bimi', 'mtaSts', 'tlsRpt']
+    .map((name, index) => [name, { state: rows[index].state, ...(rows[index].code ? { code: rows[index].code } : {}) }]));
+  const checked = Object.fromEntries(Object.entries(outcomes).map(([key, row]) => [key, ['ok', 'absent'].includes(row.state)]));
 
   const dkimRows = await Promise.all(COMMON_DKIM_SELECTORS.map(async (selector) => {
     const hostname = `${selector}._domainkey.${root}`;
-    const allowed = hostAllowed(hostname);
     return {
       selector,
-      allowed,
-      rows: allowed
-        ? await resolveTxtSafe(hostname, Math.min(timeoutMs, 3500))
-        : [],
+      outcome: await lookup(hostname, 'TXT', Math.min(timeoutMs, 3500)),
     };
   }));
-  checked.dkim = dkimRows.some(({ allowed }) => allowed);
+  // Se um seletor falhou, o conjunto amostrado é incompleto. Mesmo consultas
+  // completas a seletores comuns nunca provam ausência de DKIM no domínio.
+  checked.dkim = dkimRows.length > 0
+    && dkimRows.every(({ outcome }) => ['ok', 'absent'].includes(outcome.state));
+  for (const { selector, outcome } of dkimRows) {
+    outcomes[`dkim:${selector}`] = { state: outcome.state, ...(outcome.code ? { code: outcome.code } : {}) };
+  }
   const dkimSelectors = dkimRows
-    .filter(({ rows }) => rows.some((r) => /^v=DKIM1\b/i.test(r)))
+    .filter(({ outcome }) => outcome.records.some((r) => /^v=DKIM1\b/i.test(r)))
     .map(({ selector }) => selector)
     .slice(0, 5);
 
@@ -385,6 +433,19 @@ export async function runEmailSecurityDeep(domain, {
     ...records,
     checks: checked,
   });
+  for (const [check, outcome] of Object.entries(outcomes)) {
+    if (!['error', 'timeout'].includes(outcome.state)) continue;
+    findings.push({
+      type: 'email_security_check', prio: 'info', score: 0,
+      value: `Consulta DNS inconclusiva: ${check} @ ${root}`,
+      url: null,
+      meta: `source=email_security_deep - evidence_status=unavailable - check=${check} - state=${outcome.state} - code=${outcome.code || 'DNS_QUERY_FAILED'}`,
+    });
+  }
+  throwIfAborted(moduleSignal);
+  const states = Object.values(outcomes).map((row) => row.state);
+  const status = states.every((state) => state === 'skipped') ? 'skipped'
+    : states.some((state) => ['error', 'timeout', 'skipped'].includes(state)) ? 'partial' : 'done';
   log(`Email security deep: MX=${mx.length} DKIM=${dkimSelectors.length} achado(s)=${findings.length}`, findings.some((f) => f.score >= 55) ? 'warn' : 'info');
-  return { findings, records };
+  return { findings, records, outcomes, status };
 }

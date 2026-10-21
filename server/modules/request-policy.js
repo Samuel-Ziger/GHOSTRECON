@@ -1,6 +1,6 @@
 import { UA, limits } from '../config.js';
 
-const ROTATING_UAS = [
+const STABLE_UAS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
   'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
@@ -47,5 +47,54 @@ export async function stealthPause(modules, signal = null) {
 
 export function pickStealthUserAgent(modules) {
   if (!stealthEnabled(modules)) return UA;
-  return ROTATING_UAS[Math.floor(Math.random() * ROTATING_UAS.length)];
+  const seed = (Array.isArray(modules) ? modules : [])
+    .map((value) => String(value || '').trim().toLowerCase())
+    .sort()
+    .join('|') || 'stealth_requests';
+  let hash = 2166136261;
+  for (const char of seed) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return STABLE_UAS[hash % STABLE_UAS.length];
+}
+
+/**
+ * Política estável por execução para consumidores novos. Ela não troca
+ * identidade em 403/captcha e nunca repete uma requisição automaticamente.
+ */
+export function createStableRequestPolicy({
+  modules = [],
+  signal = null,
+  fetchImpl = globalThis.fetch,
+  sleepImpl = null,
+} = {}) {
+  const enabled = stealthEnabled(modules);
+  const userAgent = pickStealthUserAgent(modules);
+  let requests = 0;
+  const beforeRequest = async (requestSignal = null) => {
+    if (!enabled) return;
+    if (sleepImpl) {
+      const lo = Math.max(20, Number(limits.stealthJitterMinMs ?? 60));
+      await sleepImpl(lo, requestSignal || signal);
+      return;
+    }
+    await stealthPause(modules, requestSignal || signal);
+  };
+  return Object.freeze({
+    enabled,
+    userAgent,
+    beforeRequest,
+    async fetch(url, init = {}) {
+      const requestSignal = init.signal || signal || null;
+      await beforeRequest(requestSignal);
+      requests += 1;
+      const headers = new Headers(init.headers || {});
+      if (!headers.has('user-agent')) headers.set('user-agent', userAgent);
+      return fetchImpl(url, { ...init, headers, signal: requestSignal || undefined });
+    },
+    stats() {
+      return { enabled, userAgent, requests, retries: 0, identityRotations: 0 };
+    },
+  });
 }

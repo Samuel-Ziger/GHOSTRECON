@@ -46,3 +46,17 @@ test('redação cloud não destrói catalogHash em redactAutoValue', async () =>
   assert.match(cloud, /\[REDACTED\]/);
   assert.equal(cloud.includes(hash), false);
 });
+
+test('Swarm permanece unavailable mesmo quando o binário Vigolium está presente', async () => {
+  const catalog = await buildAutoToolCatalog({
+    includeVigolium: true,
+    includeIntrusive: true,
+    vigoliumCapabilities: { installed: true, ok: true, binary: '/fixture/vigolium' },
+    env: {},
+  });
+  const swarm = catalog.modules.find((module) => module.id === 'vigolium_swarm');
+  assert.ok(swarm);
+  assert.equal(swarm.available, false);
+  assert.equal(swarm.readiness.ok, false);
+  assert.equal(swarm.readiness.checks[0].id, 'native_plan_sealed');
+});

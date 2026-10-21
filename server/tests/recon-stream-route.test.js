@@ -218,7 +218,7 @@ function passiveLookingBody(overrides = {}) {
   };
 }
 
-test('RBAC classifica o plano implícito e kaliMode antes de entrar no handler do RUN', () => {
+test('RBAC considera somente capacidades intrusivas explícitas, não o toggle Kali', () => {
   const routes = registerRouteHandlers({}, { includeMiddleware: true });
   const [scopeMiddleware] = routes.get('/api/recon/stream');
 
@@ -226,24 +226,13 @@ test('RBAC classifica o plano implícito e kaliMode antes de entrar no handler d
     passiveLookingBody(),
     passiveLookingBody({ kaliMode: true }),
   ]) {
-    const deniedReq = makeRequest(body);
-    deniedReq.principal = {
+    const allowedReq = makeRequest(body);
+    allowedReq.principal = {
       sub: 'operator-without-intrusive',
       role: 'operator',
       scopes: ['recon.run'],
       _scopeSet: new Set(['recon.run']),
     };
-    const deniedRes = makeJsonResponse();
-    let deniedNext = false;
-    scopeMiddleware(deniedReq, deniedRes, () => {
-      deniedNext = true;
-    });
-    assert.equal(deniedNext, false);
-    assert.equal(deniedRes.statusCode, 403);
-    assert.match(deniedRes.body.error, /recon\.intrusive/);
-
-    const allowedReq = makeRequest(body);
-    allowedReq.principal._scopeSet = new Set(['recon.run', 'recon.intrusive']);
     const allowedRes = makeJsonResponse();
     let allowedNext = false;
     scopeMiddleware(allowedReq, allowedRes, () => {
@@ -252,6 +241,23 @@ test('RBAC classifica o plano implícito e kaliMode antes de entrar no handler d
     assert.equal(allowedNext, true);
     assert.equal(allowedRes.statusCode, 200);
   }
+
+  const intrusiveReq = makeRequest(passiveLookingBody({
+    modules: ['security_headers', 'kali_nmap_aggressive'],
+    kaliMode: true,
+  }));
+  intrusiveReq.principal = {
+    sub: 'operator-without-intrusive',
+    role: 'operator',
+    scopes: ['recon.run'],
+    _scopeSet: new Set(['recon.run']),
+  };
+  const intrusiveRes = makeJsonResponse();
+  let intrusiveNext = false;
+  scopeMiddleware(intrusiveReq, intrusiveRes, () => { intrusiveNext = true; });
+  assert.equal(intrusiveNext, false);
+  assert.equal(intrusiveRes.statusCode, 403);
+  assert.match(intrusiveRes.body.error, /recon\.intrusive/);
 });
 
 test('RUN conservador mantém implícitas intrusivas desligadas sem confirmação ativa', async () => {
@@ -298,7 +304,7 @@ test('RUN conservador mantém implícitas intrusivas desligadas sem confirmaçã
   assert.equal(plan.requiresHumanApproval, false);
 });
 
-test('RUN aparentemente passivo não executa capacidades intrusivas sem aprovação do plano expandido', async () => {
+test('Confirmar ativo não injeta capacidades intrusivas ocultas no RUN', async () => {
   let pipelineCalls = 0;
   const handler = registerHandler({
     getEngagementImpl: async () => activeEngagement(),
@@ -312,29 +318,18 @@ test('RUN aparentemente passivo não executa capacidades intrusivas sem aprovaç
 
   const events = eventsFrom(res);
   const effectivePlan = events.find((event) => event.type === 'manual_effective_plan')?.plan;
-  assert.equal(pipelineCalls, 0);
+  assert.equal(pipelineCalls, 1);
   assert.ok(effectivePlan);
-  for (const id of [
-    'http_probe',
-    'evidence_verification',
-    'active_param_discovery',
-    'asset_discovery',
-    'high_recheck',
-    'browser_xss_verify',
-  ]) {
+  for (const id of ['http_probe', 'asset_discovery', 'high_recheck']) {
     assert.ok(effectivePlan.expandedModules.includes(id), id);
   }
-  assert.deepEqual(
-    effectivePlan.intrusiveModules,
-    ['evidence_verification', 'active_param_discovery', 'browser_xss_verify'],
-  );
-  assert.ok(events.some((event) => (
-    event.type === 'error'
-    && event.code === 'MANUAL_RECON_APPROVAL_REQUIRED'
-  )));
+  for (const id of ['evidence_verification', 'active_param_discovery', 'browser_xss_verify']) {
+    assert.equal(effectivePlan.expandedModules.includes(id), false, id);
+  }
+  assert.deepEqual(effectivePlan.intrusiveModules, []);
 });
 
-test('RUN aparentemente passivo só inicia depois de engagement e aprovação vinculada ao plano', async () => {
+test('RUN com módulo intrusivo explícito aceita engagement ausente e só inicia após aprovação', async () => {
   let pipelineCalls = 0;
   const routes = registerRouteHandlers({
     getEngagementImpl: async () => activeEngagement(),
@@ -342,13 +337,17 @@ test('RUN aparentemente passivo só inicia depois de engagement e aprovação vi
       pipelineCalls += 1;
     },
   });
-  const body = passiveLookingBody();
+  const body = passiveLookingBody({
+    modules: ['security_headers', 'sqlmap'],
+    engagementId: '',
+  });
 
   const preflightRes = makeJsonResponse();
   await routes.get('/api/recon/preflight')(makeRequest(body), preflightRes);
   assert.equal(preflightRes.statusCode, 200);
   assert.equal(preflightRes.body.requiresApproval, true);
-  assert.ok(preflightRes.body.plan.intrusiveModules.includes('evidence_verification'));
+  assert.ok(preflightRes.body.plan.intrusiveModules.includes('sqlmap'));
+  assert.equal(preflightRes.body.plan.engagement.id, null);
 
   const approvalRes = makeJsonResponse();
   await routes.get('/api/recon/approval')(makeRequest({
@@ -371,62 +370,38 @@ test('RUN aparentemente passivo só inicia depois de engagement e aprovação vi
   assert.ok(eventsFrom(streamRes).some((event) => event.type === 'manual_approval_consumed'));
 });
 
-test('kaliMode exige engagement e aprovação, e o plano aprovado preserva o sentinel intrusivo', async () => {
+test('Modo Kali executa Nmap base sem injetar follow-ups ou sentinel oculto', async () => {
   let pipelineCalls = 0;
-  const noEngagementHandler = registerHandler({
-    runPipeline: async () => {
-      pipelineCalls += 1;
-    },
-  });
-  const noEngagementRes = makeResponse();
-  await noEngagementHandler(makeRequest(passiveLookingBody({
-    kaliMode: true,
-    engagementId: '',
-  })), noEngagementRes);
-  assert.equal(pipelineCalls, 0);
-  assert.ok(eventsFrom(noEngagementRes).some((event) => (
-    event.type === 'error'
-    && /engagement formal obrigatório/i.test(JSON.stringify(event.checklist))
-  )));
-
+  let pipelineArgs = null;
   const routes = registerRouteHandlers({
-    getEngagementImpl: async () => activeEngagement(),
     runPipeline: async (args) => {
       pipelineCalls += 1;
-      assert.equal(args.kaliMode, true);
+      pipelineArgs = args;
     },
   });
-  const body = passiveLookingBody({ kaliMode: true });
+  const body = passiveLookingBody({
+    modules: ['security_headers', 'kali_nmap'],
+    kaliMode: true,
+    engagementId: '',
+    confirmActive: false,
+  });
   const preflightRes = makeJsonResponse();
   await routes.get('/api/recon/preflight')(makeRequest(body), preflightRes);
   assert.equal(preflightRes.statusCode, 200);
-  assert.ok(preflightRes.body.plan.expandedModules.includes('kali_active'));
-  assert.ok(preflightRes.body.plan.intrusiveModules.includes('kali_active'));
+  assert.equal(preflightRes.body.ok, true);
+  assert.equal(preflightRes.body.requiresApproval, false);
+  assert.deepEqual(preflightRes.body.plan.intrusiveModules, []);
 
-  const withoutApprovalRes = makeResponse();
-  await routes.get('/api/recon/stream')(makeRequest(body), withoutApprovalRes);
-  assert.equal(pipelineCalls, 0);
-  assert.ok(eventsFrom(withoutApprovalRes).some((event) => (
-    event.type === 'error'
-    && event.code === 'MANUAL_RECON_APPROVAL_REQUIRED'
-  )));
-
-  const approvalRes = makeJsonResponse();
-  await routes.get('/api/recon/approval')(makeRequest({
-    approvalId: preflightRes.body.approval.approvalId,
-    planHash: preflightRes.body.plan.hash,
-    approved: true,
-  }), approvalRes);
-
-  const approvedRes = makeResponse();
-  await routes.get('/api/recon/stream')(makeRequest({
-    ...body,
-    manualApproval: {
-      approvalId: preflightRes.body.approval.approvalId,
-      planHash: preflightRes.body.plan.hash,
-    },
-  }), approvedRes);
+  const res = makeResponse();
+  await routes.get('/api/recon/stream')(makeRequest(body), res);
   assert.equal(pipelineCalls, 1);
+  assert.equal(pipelineArgs.kaliMode, true);
+  assert.ok(pipelineArgs.manualEffectiveCapabilities.includes('kali_nmap'));
+  assert.equal(pipelineArgs.manualEffectiveCapabilities.includes('nmap_service_followups'), false);
+  assert.equal(pipelineArgs.manualEffectiveCapabilities.includes('kali_active'), false);
+  const plan = eventsFrom(res).find((event) => event.type === 'manual_effective_plan')?.plan;
+  assert.deepEqual(plan.intrusiveModules, []);
+  assert.equal(plan.requiresHumanApproval, false);
 });
 
 test('preflight manual apresenta o plano exato e a aprovação é consumida antes do FrameSeven', async () => {
@@ -531,7 +506,7 @@ test('preflight sela autenticação e opções privadas sem expor segredos no pl
     },
   });
   const body = passiveLookingBody({
-    modules: ['security_headers', 'navegation'],
+    modules: ['security_headers', 'navegation', 'sqlmap'],
     navigatorMode: true,
     navegation: { exec: true, userMode: true },
     tor: {
@@ -618,7 +593,7 @@ test('preflight sela autenticação e opções privadas sem expor segredos no pl
   )));
 });
 
-test('RUN manual recusa FrameSeven sem engagement formal mesmo com confirmação ativa', async () => {
+test('RUN manual permite FrameSeven sem engagement após confirmação do plano', async () => {
   let pipelineCalls = 0;
   let frameSevenCalls = 0;
   let identityCalls = 0;
@@ -629,7 +604,10 @@ test('RUN manual recusa FrameSeven sem engagement formal mesmo com confirmação
       identityCalls += 1;
       return VALID_BINARY_IDENTITY;
     },
-    runIntegratedFrameSevenImpl: async () => { frameSevenCalls += 1; },
+    runIntegratedFrameSevenImpl: async (args) => {
+      frameSevenCalls += 1;
+      await args.pipeline(null, args.emit);
+    },
   });
   const req = makeRequest(frameSevenBody({ engagementId: '' }));
   const res = makeResponse();
@@ -637,11 +615,11 @@ test('RUN manual recusa FrameSeven sem engagement formal mesmo com confirmação
   await handler(req, res);
 
   const events = eventsFrom(res);
-  assert.equal(pipelineCalls, 0);
-  assert.equal(frameSevenCalls, 0);
-  assert.equal(identityCalls, 0);
-  assert.ok(events.some((event) => event.type === 'error'
-    && /engagement formal obrigatório/i.test(JSON.stringify(event.checklist))));
+  assert.equal(pipelineCalls, 1);
+  assert.equal(frameSevenCalls, 1);
+  assert.equal(identityCalls, 1);
+  assert.ok(events.some((event) => event.type === 'manual_approval_consumed'));
+  assert.equal(events.some((event) => event.type === 'error'), false);
   assert.equal(req.listenerCount('aborted'), 0);
   assert.equal(res.listenerCount('close'), 0);
 });
@@ -664,9 +642,9 @@ test('perfil aggressive e confirmActive não substituem ROE assinado do FrameSev
 
   const events = eventsFrom(res);
   assert.equal(frameSevenCalls, 0);
-  assert.equal(identityCalls, 0);
+  assert.equal(identityCalls, 1);
   assert.ok(events.some((event) => event.type === 'error'
-    && /ROE assinado obrigatório/i.test(JSON.stringify(event.checklist))));
+    && /ROE não assinado/i.test(event.message || '')));
 });
 
 test('GHOSTRECON_CONFIRM_ACTIVE não substitui a confirmação explícita do RUN HTTP', async (t) => {
@@ -706,7 +684,7 @@ test('GHOSTRECON_CONFIRM_ACTIVE não substitui a confirmação explícita do RUN
   )));
 });
 
-test('RUN manual permite FrameSeven somente com engagement ativo, janela, escopo e ROE válidos', async () => {
+test('RUN manual valida janela, escopo e ROE quando um engagement é informado', async () => {
   let pipelineCalls = 0;
   let integratedArgs = null;
   const preflightSignals = [];
@@ -802,25 +780,43 @@ test('RUN manual revalida engagement após o pipeline e antes de iniciar o scan 
   )));
 });
 
-test('RUN manual exige engagement formal para qualquer módulo intrusivo expandido', async () => {
+test('RUN manual aprova módulo intrusivo expandido sem exigir engagement formal', async () => {
   let pipelineCalls = 0;
-  const handler = registerHandler({
+  const routes = registerRouteHandlers({
     runPipeline: async () => { pipelineCalls += 1; },
   });
-  const req = makeRequest({
+  const body = {
     domain: 'https://lab.acme.test/',
-    modules: ['nmap-aggressive'],
+    modules: ['nmap_service_followups'],
     confirmActive: true,
     opsecProfile: 'aggressive',
-  });
+  };
+
+  const preflightRes = makeJsonResponse();
+  await routes.get('/api/recon/preflight')(makeRequest(body), preflightRes);
+  assert.equal(preflightRes.statusCode, 200);
+  assert.equal(preflightRes.body.requiresApproval, true);
+  assert.equal(preflightRes.body.plan.engagement.id, null);
+
+  const approvalRes = makeJsonResponse();
+  await routes.get('/api/recon/approval')(makeRequest({
+    approvalId: preflightRes.body.approval.approvalId,
+    planHash: preflightRes.body.plan.hash,
+    approved: true,
+  }), approvalRes);
+  assert.equal(approvalRes.statusCode, 200);
+
   const res = makeResponse();
+  await routes.get('/api/recon/stream')(makeRequest({
+    ...body,
+    manualApproval: {
+      approvalId: preflightRes.body.approval.approvalId,
+      planHash: preflightRes.body.plan.hash,
+    },
+  }), res);
 
-  await handler(req, res);
-
-  const events = eventsFrom(res);
-  assert.equal(pipelineCalls, 0);
-  assert.ok(events.some((event) => event.type === 'error'
-    && /engagement formal obrigatório/i.test(JSON.stringify(event.checklist))));
+  assert.equal(pipelineCalls, 1);
+  assert.ok(eventsFrom(res).some((event) => event.type === 'manual_approval_consumed'));
 });
 
 test('RUN manual bloqueia vigoliumInputFile antes de engagement, fingerprint ou pipeline', async () => {
@@ -1139,6 +1135,66 @@ test('alias vigolium-dast é canónico e snapshot aprovado chega congelado ao pi
     SKIP_EXTERNAL_HARVEST: '1',
     VIGOLIUM_STRATEGY: 'balanced',
   });
+});
+
+test('autopilot manual congela os módulos da prévia antes da aprovação', async () => {
+  let expansionCalls = 0;
+  let pipelineArgs = null;
+  const routes = registerRouteHandlers({
+    env: { PATH: '/safe/bin' },
+    getEngagementImpl: async () => activeEngagement(),
+    expandVigoliumEffectiveModulesImpl: async (input) => {
+      expansionCalls += 1;
+      assert.deepEqual(input.modules, ['headers']);
+      assert.deepEqual(input.moduleTags, ['recon']);
+      assert.equal(input.forAuto, true);
+      return Object.freeze({
+        schemaVersion: 1,
+        moduleIds: Object.freeze(['headers']),
+        modules: Object.freeze([Object.freeze({
+          id: 'headers', kind: 'passive', risk: 'passive', tags: Object.freeze(['recon']), blockedInAuto: false,
+        })]),
+        catalogCount: 1,
+        catalogHash: 'b'.repeat(64),
+      });
+    },
+    resolveVigoliumBinaryImpl: async () => ({
+      binary: '/tmp/ghostrecon-route-test/vigolium',
+      source: 'fixture',
+    }),
+    inspectVigoliumBinaryIdentityImpl: async () => VALID_BINARY_IDENTITY,
+    runPipeline: async (args) => { pipelineArgs = args; },
+  });
+  const body = passiveLookingBody({
+    modules: ['vigolium_autopilot'],
+    vigoliumAgent: 'autopilot',
+    vigoliumModules: ['headers'],
+    vigoliumModuleTags: ['recon'],
+  });
+  const preflightRes = makeJsonResponse();
+  await routes.get('/api/recon/preflight')(makeRequest(body), preflightRes);
+  assert.equal(preflightRes.statusCode, 200);
+  assert.deepEqual(preflightRes.body.plan.engines.vigolium.modules, ['headers']);
+
+  const approvalRes = makeJsonResponse();
+  await routes.get('/api/recon/approval')(makeRequest({
+    approvalId: preflightRes.body.approval.approvalId,
+    planHash: preflightRes.body.plan.hash,
+    approved: true,
+  }), approvalRes);
+  const streamRes = makeResponse();
+  await routes.get('/api/recon/stream')(makeRequest({
+    ...body,
+    manualApproval: {
+      approvalId: preflightRes.body.approval.approvalId,
+      planHash: preflightRes.body.plan.hash,
+    },
+  }), streamRes);
+
+  assert.equal(expansionCalls, 2);
+  assert.ok(pipelineArgs);
+  assert.deepEqual(pipelineArgs.vigoliumRuntimeConfig.vigoliumModules, ['headers']);
+  assert.equal(pipelineArgs.vigoliumRuntimeConfig.vigoliumCatalogHash, 'b'.repeat(64));
 });
 
 test('mutação da identidade de auth-file após popup invalida a aprovação', async () => {

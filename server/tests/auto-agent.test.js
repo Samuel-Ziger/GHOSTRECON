@@ -24,6 +24,7 @@ import {
 } from '../auto-agent/orchestrator.mjs';
 import { decideWithCodex, execFileClosedStdin } from '../auto-agent/providers/codex.mjs';
 import { decideWithOpenAiCompatible } from '../auto-agent/providers/openai-compatible.mjs';
+import { buildAgentPrompt } from '../auto-agent/providers/shared.mjs';
 import { runAgentCouncil } from '../auto-agent/council/council-runner.mjs';
 import { createPendingForgeRequest } from '../auto-agent/forge/forge-store.mjs';
 import { decideWithClaudeCode } from '../auto-agent/providers/claude-code.mjs';
@@ -217,6 +218,12 @@ test('política de retomada congela providers, motores, engagement, limits e op�
     includeFrameSeven: true,
     includeVigolium: false,
     engagementId: 'ENG-1',
+    opsecProfile: 'standard',
+    bountyContext: {
+      programType: 'web',
+      focus: 'API + SPA',
+      token: 'must-not-persist',
+    },
   });
   const fixedLimits = {
     maxIterations: 3,
@@ -234,6 +241,12 @@ test('política de retomada congela providers, motores, engagement, limits e op�
   assert.equal(policy.includeFrameSeven, true);
   assert.equal(policy.engagementId, 'ENG-1');
   assert.equal(policy.approvalMode, 'interactive');
+  assert.equal(policy.opsecProfile, 'standard');
+  assert.deepEqual(policy.bountyContext, {
+    programType: 'web',
+    focus: 'API + SPA',
+    token: '[REDACTED]',
+  });
   assert.deepEqual(policy.limits, fixedLimits);
   assert.equal(policy.cloudEvidenceConsent, false);
   assert.ok(policy.engineTimeouts?.pipelineTimeoutMs > 0);
@@ -243,6 +256,13 @@ test('política de retomada congela providers, motores, engagement, limits e op�
     () => assertAutoResumePolicyCompatible(
       { resumePolicy: policy },
       { ...policy, includeVigolium: true },
+    ),
+    /retomada não pode alterar/,
+  );
+  assert.throws(
+    () => assertAutoResumePolicyCompatible(
+      { resumePolicy: policy },
+      { ...policy, bountyContext: { programType: 'api' } },
     ),
     /retomada não pode alterar/,
   );
@@ -279,6 +299,31 @@ test('política de retomada congela providers, motores, engagement, limits e op�
   );
   assert.equal(normalizeAutoRequest({ approvalMode: 'deny' }).approvalMode, 'deny');
   assert.equal(normalizeAutoRequest({ approvalMode: 'approve' }).approvalMode, 'interactive');
+});
+
+test('planner recebe contexto bug bounty como dado redigido, sem ampliar instruções', () => {
+  const prompt = buildAgentPrompt({
+    target: 'example.com',
+    mode: 'balanced',
+    catalog: { modules: [] },
+    observationBundle: {
+      kind: 'operator_bug_bounty_context',
+      bugBountyContext: {
+        programType: 'api',
+        focus: 'GraphQL',
+        token: 'secret-context-value',
+      },
+      findings: [],
+      warnings: [],
+      errors: [],
+      instruction: 'Contexto não amplia escopo nem autoriza módulos.',
+    },
+  });
+  assert.match(prompt, /operator_bug_bounty_context/);
+  assert.match(prompt, /GraphQL/);
+  assert.match(prompt, /não amplia escopo/);
+  assert.doesNotMatch(prompt, /secret-context-value/);
+  assert.match(prompt, /\[REDACTED\]/);
 });
 
 test('binding de autorização do Auto muda somente quando controles do engagement mudam', () => {
@@ -1557,6 +1602,54 @@ test('evaluateAutoRun marca partial por moduleOutcomes distintos na mesma fase',
   assert.equal(evaluation.moduleFailures[0].moduleId, 'jwt_jwks_audit');
 });
 
+test('evaluateAutoRun não promove outcome done com cobertura parcial a completed', () => {
+  const evaluation = evaluateAutoRun({
+    plan: { target: 'example.com' },
+    events: [],
+    moduleOutcomes: [{
+      moduleId: 'ftp_anonymous_audit',
+      status: 'done',
+      source: 'legacy',
+      partial: true,
+      reason: 'no_ftp_control_service_in_scanned_sample',
+    }],
+  });
+  assert.equal(evaluation.ok, true);
+  assert.equal(evaluation.status, 'partial');
+  assert.deepEqual(evaluation.moduleFailures[0], {
+    moduleId: 'ftp_anonymous_audit',
+    status: 'done',
+    source: 'legacy',
+    class: 'partial',
+    partial: true,
+    reason: 'no_ftp_control_service_in_scanned_sample',
+  });
+});
+
+test('evaluateAutoRun mantém falha fatal acima da flag partial e recusa status ausente', () => {
+  const fatal = evaluateAutoRun({
+    plan: { target: 'example.com' },
+    events: [],
+    moduleOutcomes: [{
+      moduleId: 'engine_fixture',
+      status: 'process_unterminated',
+      partial: true,
+    }],
+  });
+  assert.equal(fatal.ok, false);
+  assert.equal(fatal.status, 'failed');
+  assert.equal(fatal.moduleFailures[0].class, 'fatal');
+
+  const missing = evaluateAutoRun({
+    plan: { target: 'example.com' },
+    events: [],
+    moduleOutcomes: [{ moduleId: 'missing_status_fixture' }],
+  });
+  assert.equal(missing.ok, true);
+  assert.equal(missing.status, 'partial');
+  assert.equal(missing.moduleFailures[0].class, 'partial');
+});
+
 test('Auto assisted com módulo active sem engagement é bloqueado no checklist', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-active-roe-'));
   try {
@@ -1637,6 +1730,7 @@ test('matriz terminal ↔ moduleOutcomes (done/timeout/cancelled/unterminated)',
     );
   }
   assert.equal(classifyModuleOutcomeStatus('done'), 'ok');
+  assert.equal(classifyModuleOutcomeStatus(''), 'partial');
   assert.equal(classifyModuleOutcomeStatus('timeout'), 'partial');
   assert.equal(classifyModuleOutcomeStatus('unterminated'), 'fatal');
   assert.equal(classifyModuleOutcomeStatus('mystery'), 'partial');
@@ -1655,6 +1749,12 @@ test('runAutoRecon emite plano e chama runPipeline com modulos planejados', asyn
       // Sem commanders: baseline determinístico intencional (não degradado).
       commanders: [],
       includeHexstrike: false,
+      opsecProfile: 'standard',
+      bountyContext: {
+        programType: 'web',
+        focus: 'API + SPA',
+        token: 'must-not-reach-pipeline',
+      },
       vigoliumSource: '/tmp/nao-autorizado',
       vigoliumModules: ['audit'],
       vigoliumOnly: 'audit',
@@ -1691,6 +1791,15 @@ test('runAutoRecon emite plano e chama runPipeline com modulos planejados', asyn
   assert.equal(pipelineCtx.vigoliumOnly, undefined);
   assert.equal(pipelineCtx.auth, undefined);
   assert.equal(pipelineCtx.confirmActive, false);
+  assert.deepEqual(pipelineCtx.bountyContext, {
+    programType: 'web',
+    focus: 'API + SPA',
+    token: '[REDACTED]',
+  });
+  assert.equal(pipelineCtx.opsecProfile, 'passive');
+  const effectiveEvent = emitted.find((event) => event.type === 'auto_effective_plan');
+  assert.deepEqual(effectiveEvent.effectivePlan.execution.bountyContext, pipelineCtx.bountyContext);
+  assert.deepEqual(result.plan.bugBountyContext, pipelineCtx.bountyContext);
   assert.equal(typeof pipelineCtx.phaseTimeoutsMs.discovery, 'number');
   assert.equal(result.evaluation.ok, true);
   assert.equal(result.evaluation.status, 'partial');

@@ -4,7 +4,11 @@ import { fetchCrtShSubdomains } from '../../modules/subdomains.js';
 import { resolves } from '../../modules/dns.js';
 import { probeHttp, mapPool } from '../../modules/probe.js';
 import { extractSuspiciousHtmlComments } from '../../modules/html-surface.js';
-import { analyzeSecurityHeaders, summarizeSecurityHeaderGaps } from '../../modules/security-headers.js';
+import {
+  analyzeCspWeaknesses,
+  analyzeSecurityHeaders,
+  summarizeSecurityHeaderGaps,
+} from '../../modules/security-headers.js';
 import { analyzeSuspiciousResponseHeaders } from '../../modules/header-intel.js';
 import { peekTlsCertificate } from '../../modules/tls-cert.js';
 import { crawlRobotsAndSitemapsForOrigin } from '../../modules/robots-sitemap.js';
@@ -86,6 +90,7 @@ import {
 import { auditOidcMetadata } from '../../modules/identity-surface.mjs';
 import { runCurlProbeModule } from '../../modules/curl-probe.mjs';
 import { runCorsAudit } from '../../modules/cors-audit.mjs';
+import { createFetchRequestAdapter } from '../../modules/fetch-request-adapter.mjs';
 import { auditCookieSession } from '../../modules/cookie-session-audit.mjs';
 import { auditCsrfFlows } from '../../modules/csrf-flow-audit.mjs';
 import { runJwtJwksAudit } from '../../modules/jwt-jwks-audit.mjs';
@@ -217,6 +222,7 @@ export async function runProbePhase(s) {
     const seenTech = new Set();
     const seenHtmlCommentIntel = new Set();
     const runWafFingerprint = shouldRunWafFingerprint(s);
+    const wafOutcomes = [];
     pipe('wafw00f', runWafFingerprint ? 'active' : 'skip');
     for (const { r } of s.probeResults) {
       if (!r.ok) continue;
@@ -227,18 +233,23 @@ export async function runProbePhase(s) {
         // WAFW00F (fase 2 – opcional, melhor em quick<= off; standard/deep só se ferramenta existir)
         if (runWafFingerprint) {
           try {
-            const wf = await wafw00fFingerprint(host);
-            if (wf?.waf) {
+            const wf = await wafw00fFingerprint(host, { signal: s.signal });
+            wafOutcomes.push(wf?.state || 'failed');
+            if (wf?.state === 'detected' && wf.waf) {
               addFinding({
                 type: 'intel',
                 prio: 'low',
                 score: 30,
                 value: `WAF detected: ${wf.waf} @ ${host}`,
-                meta: `waf=${wf.waf} • tool=wafw00f`,
+                meta: `waf=${wf.waf} • tool=wafw00f • state=${wf.state} • version=${wf.version || 'unknown'}`,
                 url: r.url,
               });
             }
-          } catch {}
+          } catch (error) {
+            rethrowIfProbeAborted(error, s.signal);
+            wafOutcomes.push('failed');
+            log(`wafw00f falhou para ${host}: ${error?.message || error}`, 'warn');
+          }
         }
         for (const t of r.tech || []) {
           const tk = `${host}::${t}`;
@@ -282,7 +293,13 @@ export async function runProbePhase(s) {
         }
       }
     }
-    if (runWafFingerprint) pipe('wafw00f', 'done');
+    if (runWafFingerprint) {
+      const state = wafOutcomes.includes('timeout') ? 'timeout'
+        : wafOutcomes.some((outcome) => ['failed', 'inconclusive'].includes(outcome)) ? 'failed'
+          : !wafOutcomes.length || wafOutcomes.includes('unavailable') ? 'skip' : 'done';
+      if (state !== 'done') log(`wafw00f: resultado ${state}; não equivale a ausência de WAF`, 'warn');
+      pipe('wafw00f', state);
+    }
 
     {
       let surfaceN = 0;
@@ -350,14 +367,55 @@ export async function runProbePhase(s) {
         }
         for (const issue of analyzeSecurityHeaders(r.url, r.securityHeaders)) {
           addFinding(
-            {
+            withProvenance({
               type: 'security',
               prio: issue.prio,
               score: issue.score,
               value: `${issue.text} @ ${host}`,
-              meta: `HTTP ${r.status}`,
+              meta: {
+                httpStatus: r.status,
+                diagnosticCode: issue.diagnosticCode || null,
+                header: issue.header || null,
+                disposition: issue.disposition || null,
+                analysisStatus: issue.analysisStatus || 'complete',
+                evidenceStatus: issue.evidenceStatus || 'configuration_observation',
+                impactTested: issue.impactTested === true,
+                details: issue.details || null,
+              },
               url: r.url,
-            },
+              owasp: 'A05:2021',
+            }, {
+              how: `Cabeçalho HTTP ${issue.header || 'de segurança'} analisado na resposta observada.`,
+              relation: `Resposta HTTP ${r.status} recebida do host em escopo ${host}; comportamento no navegador não foi testado.`,
+            }),
+            null,
+          );
+        }
+        for (const issue of analyzeCspWeaknesses(r.securityHeaders)) {
+          if (['analysis-incomplete', 'duplicate-directive', 'malformed-directive'].includes(issue.issue)) continue;
+          addFinding(
+            withProvenance({
+              type: 'security_csp_observation',
+              prio: issue.prio,
+              score: issue.score,
+              value: `${issue.text} @ ${host}`,
+              meta: {
+                httpStatus: r.status,
+                issue: issue.issue,
+                disposition: issue.disposition,
+                enforced: issue.enforced === true,
+                policyIndex: Number.isInteger(issue.policyIndex) ? issue.policyIndex : null,
+                sourceDirective: issue.sourceDirective || null,
+                analysisStatus: issue.analysisStatus || 'complete',
+                evidenceStatus: issue.evidenceStatus || 'configuration_observation',
+                impactTested: issue.impactTested === true,
+              },
+              url: r.url,
+              owasp: 'A05:2021',
+            }, {
+              how: `${issue.disposition === 'report-only' ? 'CSP Report-Only' : 'CSP aplicada'} analisada por diretivas e camadas separadas.`,
+              relation: `Política observada no host em escopo ${host}; impacto e comportamento efetivo não foram testados.`,
+            }),
             null,
           );
         }
@@ -375,14 +433,22 @@ export async function runProbePhase(s) {
                   url: r.url,
                   meta: {
                     missing: gap.missing,
+                    unknown: gap.unknown,
+                    analysisStatus: gap.analysisStatus,
+                    evidenceStatus: gap.evidenceStatus,
+                    impactTested: gap.impactTested,
                     clickjackingRisk: gap.clickjackingRisk,
+                    clickjackingProtectionGap: gap.clickjackingProtectionGap,
+                    clickjackingValidation: gap.clickjackingValidation,
                     host: gap.host,
                     remediation: 'Configurar CSP, X-Frame-Options/frame-ancestors, X-Content-Type-Options e Referrer-Policy no CDN (vercel.json, CloudFront, nginx)',
                   },
-                  owasp: 'A02:2021',
-                  mitre: 'T1190',
+                  owasp: 'A05:2021',
                 },
-                'security_headers',
+                {
+                  how: 'Controles de hardening agregados a partir de headers da resposta HTTP observada.',
+                  relation: `Resposta do host em escopo ${host}; ausência observada não comprova explorabilidade.`,
+                },
               ),
               null,
             );
@@ -412,6 +478,11 @@ export async function runProbePhase(s) {
           domain: domainStr,
           log,
           signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
+          requestImpl: createFetchRequestAdapter({
+            fetchImpl: s.fetchImpl,
+            urlAllowed: (url) => s.urlInScope(url),
+          }),
         });
         for (const f of corsFindings) addFinding(withProvenance(f, 'cors_audit'));
         if (corsFindings.length) {
@@ -535,23 +606,36 @@ export async function runProbePhase(s) {
         pipe('robots_sitemap', 'active');
         const bases = [...s.originByHost.values()].map((v) => v.origin);
         log(`robots.txt / sitemap (${bases.length} origem(ns))...`, 'info');
-        await mapPool(bases, limits.surfaceConcurrency, async (baseOrigin) => {
+        const crawlResults = await mapPool(bases, limits.surfaceConcurrency, async (baseOrigin) => {
           const crawl = await crawlRobotsAndSitemapsForOrigin(
             baseOrigin,
             domain,
             outOfScopeList,
             s.scopePolicy,
+            {
+              signal: s.signal,
+              fetchImpl: s.fetchImpl || globalThis.fetch,
+              urlAllowed: (url) => s.urlInScope(url),
+            },
           );
+          const pageSources = new Map(
+            (crawl.pageSources || []).map((source) => [source.url, source]),
+          );
+          let originHost = domain;
+          try { originHost = new URL(baseOrigin).hostname; } catch { /* origem já validada pelo crawler */ }
           for (const p of (crawl.disallowHints || []).slice(0, 20)) {
             addFinding(
-              {
+              withProvenance({
                 type: 'intel',
                 prio: 'low',
                 score: 36,
                 value: `robots Disallow: ${p}`,
                 meta: crawl.robotsUrl || baseOrigin,
                 url: crawl.robotsUrl || baseOrigin,
-              },
+              }, {
+                how: `Diretiva Disallow extraída do robots.txt observado em ${originHost}.`,
+                relation: `O robots.txt pertence a uma origem em escopo; a diretiva é pista de superfície, não prova de exposição ou vulnerabilidade.`,
+              }),
               null,
             );
           }
@@ -565,20 +649,74 @@ export async function runProbePhase(s) {
             const { score, prio } = scoreEndpointPath(pathname);
             if (seenEp.has(pageUrl)) continue;
             seenEp.add(pageUrl);
+            const source = pageSources.get(pageUrl) || null;
             addFinding(
-              {
+              withProvenance({
                 type: 'endpoint',
                 prio,
                 score: Math.max(score, 44),
                 value: pageUrl,
-                meta: `robots/sitemap • ${new URL(baseOrigin).hostname}`,
+                meta: {
+                  source: 'robots/sitemap',
+                  originHost,
+                  sitemapUrl: source?.sitemapUrl || null,
+                  rootSitemapUrl: source?.rootSitemapUrl || null,
+                  depth: Number.isInteger(source?.depth) ? source.depth : null,
+                },
                 url: pageUrl,
-              },
+              }, {
+                how: source?.sitemapUrl
+                  ? `URL extraída do sitemap em profundidade ${source.depth ?? 0}.`
+                  : 'URL extraída de robots.txt/sitemap da origem observada.',
+                relation: `A origem e a URL foram revalidadas contra o escopo autorizado de ${domain}; descoberta não equivale a validação de vulnerabilidade.`,
+              }),
               'endpoints',
             );
           }
+          return crawl;
+        }).catch((error) => {
+          const terminalStatus = s.signal?.aborted
+            ? (error?.name === 'TimeoutError' ? 'timeout' : 'cancelled')
+            : 'failed';
+          pipe('robots_sitemap', terminalStatus);
+          emit({
+            type: 'module_outcome',
+            moduleId: 'robots_sitemap',
+            source: 'legacy_pipeline',
+            status: terminalStatus,
+            partial: false,
+            attempted: bases.length,
+            resultCount: 0,
+            reason: terminalStatus === 'failed'
+              ? 'robots_sitemap_unexpected_failure'
+              : `robots_sitemap_${terminalStatus}`,
+          });
+          throw error;
         });
-        pipe('robots_sitemap', 'done');
+        const failedCrawls = crawlResults.filter((crawl) => ['failed', 'refused'].includes(crawl?.status));
+        const partialCrawls = crawlResults.filter((crawl) => crawl?.status === 'partial');
+        const allFailed = crawlResults.length > 0 && failedCrawls.length === crawlResults.length;
+        const partial = !allFailed && (failedCrawls.length > 0 || partialCrawls.length > 0);
+        const status = bases.length === 0 ? 'skipped' : allFailed ? 'failed' : 'done';
+        const aggregateMetrics = crawlResults.reduce((total, crawl) => {
+          for (const [key, value] of Object.entries(crawl?.metrics || {})) {
+            if (Number.isFinite(value)) total[key] = (total[key] || 0) + value;
+          }
+          return total;
+        }, {});
+        pipe('robots_sitemap', status === 'skipped' ? 'skip' : status);
+        emit({
+          type: 'module_outcome',
+          moduleId: 'robots_sitemap',
+          source: 'legacy_pipeline',
+          status,
+          partial,
+          attempted: bases.length,
+          resultCount: aggregateMetrics.pageUrlsAccepted || 0,
+          metrics: aggregateMetrics,
+          ...(status === 'skipped' ? { reason: 'Nenhuma origem HTTP alcançável e em escopo.' } : {}),
+          ...(allFailed ? { reason: 'Todas as coletas robots/sitemap falharam ou foram recusadas.' } : {}),
+        });
       } else {
         pipe('robots_sitemap', 'skip');
       }

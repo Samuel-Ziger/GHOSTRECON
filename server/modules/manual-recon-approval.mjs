@@ -223,7 +223,7 @@ function stablePrivateValue(value, {
     }
     const out = {};
     for (const childKey of Object.keys(value).sort()) {
-      if (depth === 0 && childKey === 'manualApproval') continue;
+      if (depth === 0 && (childKey === 'manualApproval' || childKey === 'confirmActive')) continue;
       if (key === 'auth' && childKey === 'ghostreconApiKey') continue;
       out[childKey] = stablePrivateValue(value[childKey], {
         depth: depth + 1,

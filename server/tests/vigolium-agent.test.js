@@ -114,7 +114,6 @@ describe('vigolium agent — config', () => {
       process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
 
       for (const fixture of cases) {
-        let ephemeralAuthFile = null;
         let calls = 0;
         await assert.rejects(
           runVigoliumAgent({
@@ -122,11 +121,10 @@ describe('vigolium agent — config', () => {
             domain: 'example.com',
             vigoliumAuthEntries: ['operator:Cookie:sid=fatal-agent-secret'],
             log: () => {},
-          }, 'swarm', {
+          }, 'query', {
             runProcessImpl: async (_file, args) => {
               calls += 1;
-              const authFileIndex = args.indexOf('--auth-file');
-              ephemeralAuthFile = authFileIndex >= 0 ? args[authFileIndex + 1] : null;
+              assert.equal(args.includes('--db'), false);
               throw fixture.createError();
             },
           }),
@@ -138,8 +136,6 @@ describe('vigolium agent — config', () => {
           },
         );
         assert.equal(calls, 1);
-        assert.ok(ephemeralAuthFile);
-        await assert.rejects(fs.access(ephemeralAuthFile));
       }
     } finally {
       if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
@@ -218,8 +214,8 @@ describe('vigolium agent — config', () => {
         runGoAgentPhase({
           ROOT: tmp,
           domain: 'example.com',
-          modules: ['vigolium_swarm'],
-          vigoliumAgentMode: 'swarm',
+          modules: ['vigolium_audit'],
+          vigoliumAgentMode: 'query',
           vigoliumExpectedIdentity: {
             algorithm: 'sha256',
             sha256: '0'.repeat(64),
@@ -235,7 +231,7 @@ describe('vigolium agent — config', () => {
 
       assert.equal(
         pipes.some((item) => (
-          ['vigolium_agent', 'vigolium_swarm'].includes(item.name)
+          item.name === 'vigolium_agent'
           && ['skip', 'done'].includes(item.state)
         )),
         false,
@@ -288,142 +284,77 @@ describe('vigolium agent — config', () => {
     assert.equal(built.args.includes('--format'), false);
   });
 
-  it('buildVigoliumAgentArgs passa apenas auth-file para swarm', () => {
-    const built = buildVigoliumAgentArgs({
-      domain: 'example.com',
-      vigoliumSource: 'C:/repo/app',
-      vigoliumAuthFiles: ['admin.json', 'user.json'],
-      vigoliumAuthEntries: ['admin:Cookie:sid=1'],
-      vigoliumModuleTags: ['access-control'],
-    }, 'swarm', {
-      privateDbPath: '/tmp/ghostrecon-agent-private.sqlite',
+  it('swarm falha fechado antes de resolver binário, ler autenticação ou iniciar agente', async () => {
+    const state = {
+      domain: 'example.test',
+      vigoliumAuthFiles: ['/nonexistent/private-auth.json'],
+      vigoliumAuthEntries: ['admin:Cookie:sid=fixture-private'],
+      vigoliumModules: ['headers'],
+      auth: { headers: { Authorization: 'Bearer fixture-private' } },
+      log: () => {},
+    };
+    const built = buildVigoliumAgentArgs(state, 'swarm');
+    assert.equal(built.skipped, true);
+    assert.deepEqual(built.args, []);
+    assert.deepEqual(built.authFiles, []);
+    let calls = 0;
+    const result = await runVigoliumAgent(state, 'swarm', {
+      runProcessImpl: async () => { calls += 1; throw new Error('não deve executar'); },
     });
-    assert.equal(built.skipped, false);
-    assert.ok(built.args.includes('-t'));
-    assert.ok(built.args.includes('https://example.com'));
-    assert.ok(built.args.includes('--auth-file'));
-    assert.ok(built.args.includes('admin.json'));
-    assert.ok(built.args.includes('user.json'));
-    assert.ok(built.args.includes('--db'));
-    assert.ok(built.args.includes('/tmp/ghostrecon-agent-private.sqlite'));
-    assert.equal(built.args.includes('--auth'), false);
-    assert.doesNotMatch(built.args.join(' '), /sid=1/);
-    assert.ok(built.args.includes('--module-tag'));
-    assert.ok(built.args.includes('access-control'));
+    assert.equal(calls, 0);
+    assert.equal(result.skipped, true);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.findings, []);
+    assert.doesNotMatch(JSON.stringify(result), /fixture-private|private-auth/);
+
+    const controller = new AbortController();
+    controller.abort(new Error('cancel fixture'));
+    await assert.rejects(runVigoliumAgent({ ...state, signal: controller.signal }, 'swarm'), /cancel fixture/);
   });
 
-  it('runVigoliumAgent materializa auth, remove o temporário e não loga segredo', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-fake-vig-agent-auth-'));
-    const fakeBin = path.join(tmp, process.platform === 'win32' ? 'vigolium-agent.exe' : 'vigolium-agent');
-    const capturePath = path.join(tmp, 'agent-capture.json');
-    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
-    const fakeScript = `const fs = require('fs');
-const args = process.argv.slice(2);
-const at = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : ''; };
-const authFile = at('--auth-file');
-const dbPath = at('--db');
-const auth = JSON.parse(fs.readFileSync(authFile, 'utf8'));
-fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args, authFile, dbPath, auth }), 'utf8');
-process.stdout.write(JSON.stringify({
-  type: 'finding',
-  data: {
-    title: 'opaque agent-shared-secret',
-    severity: 'medium',
-    description: 'cookie agent-inline-secret'
-  }
-}) + '\\n');
-process.stdout.write(JSON.stringify({
-  agentic_scan_uuid: 'agent-auth',
-  session_dir: '/tmp/agent-shared-secret',
-  total_findings: 1
-}) + '\\n');
-`;
-    const logs = [];
-    try {
-      if (process.platform === 'win32') {
-        await fs.copyFile(process.execPath, fakeBin);
-        await fs.writeFile(path.join(tmp, 'agent'), fakeScript, 'utf8');
-      } else {
-        await fs.writeFile(fakeBin, `#!/usr/bin/env node\n${fakeScript}`, 'utf8');
-        await fs.chmod(fakeBin, 0o755);
-      }
-      process.env.GHOSTRECON_VIGOLIUM_BIN = fakeBin;
-
-      const result = await runVigoliumAgent({
-        ROOT: tmp,
-        domain: 'example.com',
-        vigoliumAuthEntries: ['admin:Cookie:agent-inline-secret'],
-        auth: { headers: { Authorization: 'Bearer agent-shared-secret' } },
-        log: (message) => logs.push(String(message)),
-      }, 'swarm');
-
-      assert.equal(result.ok, true);
-      const captured = JSON.parse(await fs.readFile(capturePath, 'utf8'));
-      assert.equal(captured.args.includes('--auth'), false);
-      assert.doesNotMatch(captured.args.join(' '), /agent-inline-secret|agent-shared-secret/);
-      assert.equal(captured.auth.sessions[0].headers.Authorization, 'Bearer agent-shared-secret');
-      assert.equal(captured.auth.sessions[1].headers.Cookie, 'agent-inline-secret');
-      await assert.rejects(fs.access(captured.authFile));
-      assert.ok(captured.dbPath);
-      await assert.rejects(fs.access(captured.dbPath));
-      assert.doesNotMatch(logs.join('\n'), /agent-inline-secret|agent-shared-secret/);
-      assert.doesNotMatch(JSON.stringify(result.findings), /agent-inline-secret|agent-shared-secret/);
-      assert.doesNotMatch(JSON.stringify(result.summary), /agent-inline-secret|agent-shared-secret/);
-    } finally {
-      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
-      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it('runVigoliumAgent aplica redactor exato aos findings e ao resumo autenticado', async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-agent-output-redaction-'));
-    const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
-    const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
-    const opaqueSecret = 'agent-output-secret-fixture';
+  it('autopilot prévia não recebe auth nem transforma exemplos em findings', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-preview-'));
+    const binary = path.join(tmp, 'vigolium');
     try {
       await fs.writeFile(binary, 'fixture');
-      if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
-      process.env.GHOSTRECON_VIGOLIUM_BIN = binary;
-      const result = await runVigoliumAgent({
-        ROOT: tmp,
-        domain: 'example.com',
-        auth: { headers: { Authorization: `Bearer ${opaqueSecret}` } },
+      const state = {
+        ROOT: tmp, domain: 'example.test',
+        vigoliumRuntimeConfigFrozen: true,
+        vigoliumBinaryPath: binary, vigoliumAgentTimeoutMs: 1000,
+        vigoliumAuthFiles: ['/nonexistent/auth.json'],
+        auth: { headers: { Authorization: 'Bearer fixture-private' } },
         log: () => {},
-      }, 'swarm', {
-        runProcessImpl: async () => ({
-          code: 0,
-          stderr: '',
-          timedOut: false,
-          stdout: [
-            JSON.stringify({
-              type: 'finding',
-              data: {
-                title: `opaque ${opaqueSecret}`,
-                severity: 'medium',
-                description: `standalone ${opaqueSecret}`,
-              },
-            }),
-            JSON.stringify({
-              agentic_scan_uuid: 'auth-redaction',
-              session_dir: `/tmp/${opaqueSecret}`,
-              total_findings: 1,
-            }),
-          ].join('\n'),
-        }),
+      };
+      const result = await runVigoliumAgent(state, 'autopilot', {
+        runProcessImpl: async (_file, args) => {
+          assert.ok(args.includes('--dry-run'));
+          assert.ok(args.includes('--no-prescan'));
+          assert.ok(args.includes('--no-preflight-discovery'));
+          assert.equal(args.includes('--auth-file'), false);
+          assert.equal(args.includes('--auth-config'), false);
+          assert.equal(args.includes('--db'), false);
+          assert.doesNotMatch(args.join(' '), /fixture-private/);
+          return {
+            code: 0, timedOut: false,
+            stdout: JSON.stringify({ type: 'finding', data: { title: 'Exemplo', severity: 'high' } }),
+          };
+        },
       });
-      const serialized = JSON.stringify({
-        findings: result.findings,
-        summary: result.summary,
-      });
-      assert.equal(result.findings.length, 1);
-      assert.equal(serialized.includes(opaqueSecret), false);
-      assert.equal(serialized.includes('/tmp/'), false);
-      assert.match(serialized, /redacted/i);
-      assert.match(serialized, /LOCAL_PATH/);
+      assert.equal(result.ok, true);
+      assert.equal(result.planOnly, true);
+      assert.deepEqual(result.findings, []);
+
+      for (const outcome of [{ code: 2, timedOut: false }, { code: 0, timedOut: true }]) {
+        const failed = await runVigoliumAgent(state, 'query', {
+          runProcessImpl: async () => ({
+            ...outcome,
+            stdout: JSON.stringify({ type: 'finding', data: { title: 'Parcial', severity: 'low' } }),
+          }),
+        });
+        assert.equal(failed.ok, false);
+        assert.equal(failed.partial, true);
+      }
     } finally {
-      if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
-      else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });

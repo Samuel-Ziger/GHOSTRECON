@@ -3,6 +3,7 @@
  */
 
 import { generateCriticalSecurityAlertText } from './ai-dual-report.js';
+import { redactFindingsForPublic } from './finding-redaction.mjs';
 
 function isDiscordWebhookUrl(url) {
   try {
@@ -33,10 +34,16 @@ function logWebhookHttpError(res, detail) {
 /**
  * Resumo curto do recon — útil para Discord (JSON cru da API Discord não mostra mensagem).
  */
-export async function postDiscordReconSummary(webhookUrl, payload) {
-  const u = String(webhookUrl || '').trim();
-  if (!u || !isDiscordWebhookUrl(u)) return;
-  const { target, runId, stats, highCount, shannonSummary, pentestgptSummary } = payload;
+export function buildDiscordReconSummaryContent(payload = {}) {
+  const {
+    target,
+    runId,
+    stats,
+    highCount,
+    highFindings = [],
+    shannonSummary,
+    pentestgptSummary,
+  } = payload;
   const lines = [
     '**GHOSTRECON** — recon gravado',
     `**Alvo:** \`${String(target || '').slice(0, 200)}\` · **run** #${runId}`,
@@ -47,6 +54,22 @@ export async function postDiscordReconSummary(webhookUrl, payload) {
     );
   }
   if (highCount != null) lines.push(`Achados **high**: **${highCount}**`);
+  const topHigh = redactFindingsForPublic(highFindings)
+    .filter((finding) => ['high', 'critical'].includes(String(finding?.prio || '').toLowerCase()))
+    .slice(0, 5);
+  if (topHigh.length) {
+    lines.push('**Principais achados:**');
+    for (const finding of topHigh) {
+      const priority = String(finding.prio || 'high').toUpperCase();
+      const value = String(finding.value || finding.type || 'achado')
+        .replace(/[`\r\n]+/g, ' ')
+        .replace(/@/g, '@\u200b')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 220);
+      lines.push(`- **${priority}** ${value}`);
+    }
+  }
   if (shannonSummary) {
     lines.push(`**Shannon:** ${String(shannonSummary).slice(0, 500)}${String(shannonSummary).length > 500 ? '…' : ''}`);
   }
@@ -57,12 +80,19 @@ export async function postDiscordReconSummary(webhookUrl, payload) {
   }
   let content = lines.join('\n');
   if (content.length > 1900) content = `${content.slice(0, 1890)}…`;
+  return content;
+}
+
+export async function postDiscordReconSummary(webhookUrl, payload) {
+  const u = String(webhookUrl || '').trim();
+  if (!u || !isDiscordWebhookUrl(u)) return;
+  const content = buildDiscordReconSummaryContent(payload);
 
   try {
     const res = await fetch(u, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) logWebhookHttpError(res, await readWebhookFailureBody(res));
@@ -293,14 +323,19 @@ export async function postReconDeltaFullWebhook(webhookUrl, payload) {
 export async function postReconWebhook(webhookUrl, payload) {
   const u = String(webhookUrl || '').trim();
   if (!u) return;
+  const safePayload = {
+    ...payload,
+    highFindings: redactFindingsForPublic(payload?.highFindings || []).slice(0, 8),
+  };
   if (isDiscordWebhookUrl(u)) {
     await postDiscordReconSummary(u, {
-      target: payload.target,
-      runId: payload.runId,
-      stats: payload.stats,
-      highCount: payload.highCount,
-      shannonSummary: payload.shannonSummary,
-      pentestgptSummary: payload.pentestgptSummary,
+      target: safePayload.target,
+      runId: safePayload.runId,
+      stats: safePayload.stats,
+      highCount: safePayload.highCount,
+      highFindings: safePayload.highFindings,
+      shannonSummary: safePayload.shannonSummary,
+      pentestgptSummary: safePayload.pentestgptSummary,
     });
     return;
   }
@@ -310,7 +345,7 @@ export async function postReconWebhook(webhookUrl, payload) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         source: 'ghostrecon',
-        ...payload,
+        ...safePayload,
       }),
       signal: AbortSignal.timeout(15000),
     });
@@ -331,11 +366,13 @@ export async function postFtpAnonymousWritableCriticalWebhook(webhookUrl, payloa
   const ftpEndpoint = String(payload?.ftpEndpoint || '').slice(0, 120);
   const probeFile = payload?.probeFile ? String(payload.probeFile).slice(0, 160) : '';
   const probeDetail = payload?.probeDetail ? String(payload.probeDetail).slice(0, 200) : '';
+  const cleanupVerified = payload?.cleanupVerified === true;
 
   const factsMarkdown = [
     `- Serviço: **FTP** com login anónimo e **upload (STOR)** confirmado por teste controlado.`,
     `- Endpoint: \`${ftpEndpoint}\``,
-    probeFile ? `- Ficheiro de teste criado e apagado (DELE): \`${probeFile}\`` : null,
+    probeFile && cleanupVerified ? `- Ficheiro de teste criado e remoção DELE confirmada: \`${probeFile}\`` : null,
+    probeFile && !cleanupVerified ? `- **ALERTA DE LIMPEZA:** remoção DELE não confirmada para \`${probeFile}\`` : null,
     probeDetail ? `- Detalhe: ${probeDetail}` : null,
   ]
     .filter(Boolean)
@@ -386,6 +423,7 @@ export async function postFtpAnonymousWritableCriticalWebhook(webhookUrl, payloa
         ftpEndpoint,
         probeFile: probeFile || null,
         probeDetail: probeDetail || null,
+        cleanupVerified,
         description,
       }),
       signal: AbortSignal.timeout(25000),

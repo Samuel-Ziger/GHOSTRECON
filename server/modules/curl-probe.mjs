@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
 import { positiveIntEnv, runProcess } from './module-runner.mjs';
 
-const METHODS = ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'];
+export const CURL_PROBE_METHODS = Object.freeze(['GET', 'HEAD', 'OPTIONS']);
 const CORS_ORIGINS = ['https://attacker.tld', 'null', 'https://evil.example'];
 const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization']);
 const TOOL_STDOUT_MAX_BYTES = positiveIntEnv('GHOSTRECON_TOOL_STDOUT_MAX_BYTES', 16 * 1024 * 1024, {
@@ -37,10 +37,40 @@ function isAbortError(error) {
 
 function resolveCurlProfile(profile = 'standard') {
   const p = String(profile || 'standard').toLowerCase();
-  if (p === 'stealth') return { timeoutSec: 20, retry: 1, retryDelaySec: 2, useHttp2: false };
-  if (p === 'aggressive') return { timeoutSec: 28, retry: 3, retryDelaySec: 1, useHttp2: true };
-  if (p === 'quick') return { timeoutSec: 10, retry: 1, retryDelaySec: 1, useHttp2: true };
-  return { timeoutSec: 16, retry: 2, retryDelaySec: 1, useHttp2: true };
+  if (p === 'stealth') return { timeoutSec: 20, useHttp2: false };
+  if (p === 'aggressive') return { timeoutSec: 28, useHttp2: true };
+  if (p === 'quick') return { timeoutSec: 10, useHttp2: true };
+  return { timeoutSec: 16, useHttp2: true };
+}
+
+function safeEvidenceUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    for (const key of parsed.searchParams.keys()) parsed.searchParams.set(key, '<redacted>');
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    return '<invalid-url>';
+  }
+}
+
+function safeProxyLabel(value) {
+  if (!value) return null;
+  try {
+    const parsed = new URL(String(value));
+    return `${parsed.protocol}//${parsed.hostname}:${parsed.port || 'default'}`;
+  } catch {
+    return '<configured-proxy>';
+  }
+}
+
+function safeCurlMetrics(metrics = {}) {
+  return {
+    ...metrics,
+    redirect_url: metrics.redirect_url ? safeEvidenceUrl(metrics.redirect_url) : '',
+    url_effective: metrics.url_effective ? safeEvidenceUrl(metrics.url_effective) : '',
+  };
 }
 
 function resolveCurlProxy(identityCtrl = null) {
@@ -49,11 +79,7 @@ function resolveCurlProxy(identityCtrl = null) {
   if (isStrict()) return null;
   const fromCtrl = identityCtrl?.getCurrentProxy?.();
   if (fromCtrl) return fromCtrl;
-  const envPool = String(process.env.GHOSTRECON_PROXY_POOL || '')
-    .split(/[,;\n]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return envPool[0] || null;
+  return null;
 }
 
 function safeHeaderMap(headers = {}) {
@@ -61,7 +87,9 @@ function safeHeaderMap(headers = {}) {
   for (const [k, v] of Object.entries(headers || {})) {
     const key = String(k || '').toLowerCase();
     if (!key) continue;
-    out[key] = SENSITIVE_HEADERS.has(key) ? '<redacted>' : String(v || '').slice(0, 500);
+    if (SENSITIVE_HEADERS.has(key)) out[key] = '<redacted>';
+    else if (key === 'location' && /^https?:\/\//i.test(String(v || ''))) out[key] = safeEvidenceUrl(v);
+    else out[key] = String(v || '').slice(0, 500);
   }
   return out;
 }
@@ -89,6 +117,20 @@ function bodyHash(s) {
   return crypto.createHash('sha256').update(String(s || '')).digest('hex');
 }
 
+async function readUtf8FileSnippet(file, maxBytes) {
+  let handle = null;
+  try {
+    handle = await fs.open(file, 'r');
+    const buffer = Buffer.alloc(Math.max(1, Number(maxBytes) || 1));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
 function oneLineCurl({ method, url, auth, extraHeaders = {}, body = null }) {
   const parts = ['curl', '-sS', '-X', method];
   if (auth?.cookie) parts.push('-H', '"Cookie: <redacted>"');
@@ -102,7 +144,7 @@ function oneLineCurl({ method, url, auth, extraHeaders = {}, body = null }) {
     parts.push('-H', `"${String(k)}: ${String(v).replace(/"/g, '\\"')}"`);
   }
   if (body != null) parts.push('--data-raw', `"${String(body).replace(/"/g, '\\"')}"`);
-  parts.push(`"${url}"`);
+  parts.push(`"${safeEvidenceUrl(url)}"`);
   return parts.join(' ');
 }
 
@@ -113,8 +155,13 @@ function curlConfigQuote(value) {
     .replace(/"/g, '\\"');
 }
 
-function buildAuthCurlConfig(auth) {
-  const lines = [];
+function buildSensitiveCurlConfig(auth, proxy = null, url = '') {
+  const lines = [
+    `url = "${curlConfigQuote(url)}"`,
+    // Sobrescreve http_proxy/https_proxy do ambiente; um proxy só entra pelo
+    // snapshot de identidade aprovado.
+    `proxy = "${curlConfigQuote(proxy || '')}"`,
+  ];
   if (auth?.cookie) {
     lines.push(`header = "Cookie: ${curlConfigQuote(auth.cookie)}"`);
   }
@@ -138,6 +185,11 @@ async function execCurl({
   body = null,
   signal = null,
 }) {
+  const normalizedMethod = String(method || '').toUpperCase();
+  if (!CURL_PROBE_METHODS.includes(normalizedMethod)) {
+    throw new Error(`curl_probe: método recusado (${normalizedMethod || 'vazio'})`);
+  }
+  if (body != null) throw new Error('curl_probe: corpo de requisição recusado');
   const cfg = resolveCurlProfile(profile);
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-curl-probe-'));
   const headersFile = path.join(tmpDir, 'headers.txt');
@@ -145,23 +197,21 @@ async function execCurl({
   try {
     await fs.chmod(tmpDir, 0o700);
     const args = [
+      '-q',
       '-sS',
-      '--fail-with-body',
       '--tlsv1.2',
       '--compressed',
-      '-L',
+      '--proto',
+      '=http,https',
+      '--max-filesize',
+      '1048576',
       '--max-redirs',
-      '2',
-      '--retry',
-      String(cfg.retry),
-      '--retry-delay',
-      String(cfg.retryDelaySec),
-      '--retry-connrefused',
+      '0',
       '-m',
       String(cfg.timeoutSec),
       '-g',
       '-X',
-      method,
+      normalizedMethod,
       '-D',
       headersFile,
       '-o',
@@ -172,22 +222,16 @@ async function execCurl({
       'GhostRecon-curl-probe/1.0',
     ];
     if (cfg.useHttp2) args.push('--http2');
-    if (proxy) args.push('--proxy', String(proxy));
-    const authConfig = buildAuthCurlConfig(auth);
-    if (authConfig) {
-      const authConfigFile = path.join(tmpDir, 'auth.curlrc');
-      await fs.writeFile(authConfigFile, `${authConfig}\n`, {
-        encoding: 'utf8',
-        mode: 0o600,
-        flag: 'wx',
-      });
-      await fs.chmod(authConfigFile, 0o600);
-      args.push('--config', authConfigFile);
-    }
+    const sensitiveConfig = buildSensitiveCurlConfig(auth, proxy, url);
+    const requestConfigFile = path.join(tmpDir, 'request.curlrc');
+    await fs.writeFile(requestConfigFile, `${sensitiveConfig}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    await fs.chmod(requestConfigFile, 0o600);
+    args.push('--config', requestConfigFile);
     for (const [k, v] of Object.entries(extraHeaders || {})) args.push('-H', `${k}: ${v}`);
-    if (body != null) args.push('--data-raw', String(body));
-    else if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') args.push('--data', '{}');
-    args.push(url);
 
     const proc = await runProc(
       'curl',
@@ -195,27 +239,32 @@ async function execCurl({
       Math.max(20_000, cfg.timeoutSec * 1000 + 5000),
       { signal },
     );
-    const body = await fs.readFile(bodyFile, 'utf8').catch(() => '');
-    const headerRaw = await fs.readFile(headersFile, 'utf8').catch(() => '');
+    const responseBody = await readUtf8FileSnippet(bodyFile, 1024 * 1024);
+    const headerRaw = await readUtf8FileSnippet(headersFile, 512 * 1024);
     const parsed = parseHeaderBlocks(headerRaw);
     let metrics = {};
     try {
-      metrics = JSON.parse(String(proc.stdout || '{}').trim() || '{}');
+      metrics = safeCurlMetrics(JSON.parse(String(proc.stdout || '{}').trim() || '{}'));
     } catch {
       metrics = {};
     }
     const status = Number(metrics.http_code || 0);
+    const exitCode = Number(proc.code);
+    const complete = exitCode === 0 && Number.isInteger(status) && status >= 100 && status <= 599;
     return {
-      ok: true,
+      ok: complete,
+      exitCode,
+      outcome: complete ? 'done' : exitCode === 28 ? 'timeout' : exitCode === 63 ? 'response_too_large' : 'failed',
       status,
-      body,
-      bodyHash: bodyHash(body),
-      bodySize: Buffer.byteLength(body, 'utf8'),
+      body: responseBody,
+      bodyHash: bodyHash(responseBody),
+      bodySize: Buffer.byteLength(responseBody, 'utf8'),
       headers: parsed.headers,
       statusLine: parsed.statusLine,
       metrics,
-      stderr: proc.stderr,
-      curlTemplate: oneLineCurl({ method, url, auth, extraHeaders, body }),
+      stderr: '',
+      truncated: Number(proc.code) === 63,
+      curlTemplate: oneLineCurl({ method: normalizedMethod, url, auth, extraHeaders }),
     };
   } catch (e) {
     if (isAbortError(e)) throw e;
@@ -225,85 +274,46 @@ async function execCurl({
   }
 }
 
-function collectProbeUrls(target, findings = [], maxUrls = 12) {
+function collectProbeUrls(target, findings = [], maxUrls = 12, urlAllowed = () => true) {
   const out = [];
   const seen = new Set();
   for (const f of findings || []) {
     if (f?.type !== 'endpoint') continue;
     const u = String(f.value || '');
     if (!/^https?:\/\//i.test(u)) continue;
-    if (seen.has(u)) continue;
-    seen.add(u);
-    out.push(u);
+    let parsed;
+    try { parsed = new URL(u); } catch { continue; }
+    if (parsed.username || parsed.password) continue;
+    if (seen.has(parsed.href) || urlAllowed(parsed.href) !== true) continue;
+    seen.add(parsed.href);
+    out.push(parsed.href);
     if (out.length >= maxUrls) break;
   }
-  if (!out.length && target) out.push(`https://${target.replace(/\/+$/, '')}/`);
+  if (!out.length && target) {
+    const candidate = /^https?:\/\//i.test(String(target))
+      ? String(target)
+      : `https://${String(target).replace(/\/+$/, '')}/`;
+    try {
+      const parsed = new URL(candidate);
+      if (!parsed.username && !parsed.password && urlAllowed(parsed.href) === true) out.push(parsed.href);
+    } catch {
+      // Alvo inválido: nenhum probe.
+    }
+  }
   return out;
 }
 
-async function persistEvidence(rows) {
+async function persistEvidence(rows, { enabled = false } = {}) {
+  if (!enabled) return null;
   if (!rows.length) return null;
   const dir = path.resolve(process.cwd(), '.ghostrecon-curl-probe');
-  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.chmod(dir, 0o700);
   const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`);
   const lines = rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
-  await fs.writeFile(file, lines, 'utf8');
+  await fs.writeFile(file, lines, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  await fs.chmod(file, 0o600);
   return file;
-}
-
-function looksLikeLoginUrl(url) {
-  return /\/(login|signin|sign-in|auth|admin|panel|wp-login|account)(\/|$|\?)/i.test(String(url || ''));
-}
-
-function toFormUrlEncoded(obj = {}) {
-  return Object.entries(obj)
-    .map(([k, v]) => `${encodeURIComponent(String(k))}=${encodeURIComponent(String(v ?? ''))}`)
-    .join('&');
-}
-
-async function runLoginSqliProbe({ url, auth, profile, proxy, execCurlImpl = execCurl }) {
-  if (!looksLikeLoginUrl(url)) return null;
-  const payloads = [
-    { user: "admin' OR '1'='1' -- ", pass: 'x' },
-    { user: "' OR '1'='1' -- ", pass: "' OR '1'='1' -- " },
-  ];
-  const baselineBody = toFormUrlEncoded({ user: 'ghostrecon_invalid_user', password: 'ghostrecon_invalid_pass' });
-  const base = await execCurlImpl({
-    url,
-    method: 'POST',
-    auth,
-    profile,
-    proxy,
-    extraHeaders: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: baselineBody,
-  });
-  const candidates = [];
-  for (const p of payloads) {
-    const formA = toFormUrlEncoded({ user: p.user, password: p.pass });
-    const formB = toFormUrlEncoded({ username: p.user, password: p.pass });
-    const formC = toFormUrlEncoded({ email: p.user, password: p.pass });
-    for (const body of [formA, formB, formC]) {
-      const r = await execCurlImpl({
-        url,
-        method: 'POST',
-        auth,
-        profile,
-        proxy,
-        extraHeaders: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      });
-      const statusDiff = r.status !== base.status;
-      const locationDiff = String(r.headers?.location || '') !== String(base.headers?.location || '');
-      const cookieAppeared = !base.headers?.['set-cookie'] && Boolean(r.headers?.['set-cookie']);
-      const bodyChanged = r.bodyHash !== base.bodyHash;
-      const suspicious =
-        (r.status >= 200 && r.status < 400 && statusDiff) ||
-        (locationDiff && /dashboard|admin|panel|home|account/i.test(String(r.headers?.location || ''))) ||
-        (cookieAppeared && bodyChanged);
-      candidates.push({ baseline: base, probe: r, statusDiff, locationDiff, cookieAppeared, bodyChanged, suspicious });
-    }
-  }
-  return candidates.find((c) => c.suspicious) || null;
 }
 
 export async function runCurlProbeModule({
@@ -314,6 +324,8 @@ export async function runCurlProbeModule({
   identityCtrl = null,
   log = null,
   signal = null,
+  urlAllowed = () => true,
+  persist = String(process.env.GHOSTRECON_CURL_PROBE_PERSIST_EVIDENCE || '') === '1',
   execCurlImpl = execCurl,
 }) {
   const logFn = typeof log === 'function' ? log : () => {};
@@ -324,15 +336,19 @@ export async function runCurlProbeModule({
     throw error;
   }
   const exec = (options) => execCurlImpl({ ...options, signal });
-  const urls = collectProbeUrls(target, findings);
+  const urls = collectProbeUrls(target, findings, 12, urlAllowed);
   if (!urls.length) return [];
   const proxy = resolveCurlProxy(identityCtrl);
   const out = [];
   const evidenceRows = [];
+  let successfulExecutions = 0;
   for (const url of urls) {
-    logFn(`curl_probe: ${url}`, 'info');
+    const evidenceUrl = safeEvidenceUrl(url);
+    logFn(`curl_probe: ${evidenceUrl}`, 'info');
     const baseAuth = await exec({ url, method: 'GET', auth, profile, proxy });
-    const baseNoAuth = await exec({ url, method: 'GET', auth: null, profile, proxy });
+    const baseNoAuth = auth
+      ? await exec({ url, method: 'GET', auth: null, profile, proxy })
+      : baseAuth;
     const withOrigin = await exec({
       url,
       method: 'GET',
@@ -341,174 +357,127 @@ export async function runCurlProbeModule({
       proxy,
       extraHeaders: { Origin: CORS_ORIGINS[0] },
     });
-    const methodRows = [];
-    for (const m of METHODS) {
-      const r = await exec({ url, method: m, auth, profile, proxy });
-      methodRows.push({ method: m, status: r.status, size: r.bodySize });
-      if (['PUT', 'PATCH', 'DELETE'].includes(m) && r.status >= 200 && r.status < 300) {
+    const head = await exec({ url, method: 'HEAD', auth, profile, proxy });
+    const options = await exec({ url, method: 'OPTIONS', auth, profile, proxy });
+    successfulExecutions += [baseAuth, baseNoAuth, withOrigin, head, options]
+      .filter((row, index, all) => row?.ok === true && all.indexOf(row) === index)
+      .length;
+    const methodRows = [
+      { method: 'GET', status: baseAuth.status, size: baseAuth.bodySize },
+      { method: 'HEAD', status: head.status, size: head.bodySize },
+      { method: 'OPTIONS', status: options.status, size: options.bodySize },
+    ];
+    const advertisedMethods = [...new Set(
+      String(options.headers?.allow || '')
+        .split(',')
+        .map((method) => method.trim().toUpperCase())
+        .filter((method) => /^[A-Z]{3,12}$/.test(method)),
+    )];
+    const advertisedMutating = advertisedMethods.filter((method) => (
+      ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+    ));
+    if (options.ok === true && advertisedMutating.length) {
+      out.push({
+        type: 'http_method_advertised',
+        prio: 'low',
+        score: 45,
+        value: `OPTIONS anuncia métodos mutáveis: ${advertisedMutating.join(', ')}`,
+        url: evidenceUrl,
+        meta: 'source=curl_probe • classification=inventory • nenhum método mutável foi enviado',
+        verification: {
+          classification: 'inventory',
+          evidence: {
+            source: 'curl_probe',
+            url: evidenceUrl,
+            method: 'OPTIONS',
+            status: options.status,
+            allow: advertisedMethods,
+            requestSnippet: oneLineCurl({ method: 'OPTIONS', url, auth }),
+          },
+          verifiedAt: new Date().toISOString(),
+        },
+      });
+    }
+
+    if (auth) {
+      const sameStatus = baseAuth.status === baseNoAuth.status;
+      const sameBody = Boolean(baseAuth.bodyHash) && baseAuth.bodyHash === baseNoAuth.bodyHash;
+      const sameType = String(baseAuth.headers?.['content-type'] || '')
+        === String(baseNoAuth.headers?.['content-type'] || '');
+      if (baseAuth.ok === true && baseNoAuth.ok === true && !baseAuth.truncated && !baseNoAuth.truncated && sameStatus && sameBody && sameType && baseNoAuth.status >= 200 && baseNoAuth.status < 300) {
         out.push({
-          type: 'curl_method_exposed',
-          prio: 'high',
-          score: 88,
-          value: `${m} retornou ${r.status} em endpoint potencialmente mutável`,
-          url,
-          meta: `curl_probe • method=${m} • status=${r.status} • bytes=${r.bodySize}`,
+          type: 'auth_surface_equivalent',
+          prio: 'info',
+          score: 25,
+          value: 'Resposta autenticada e anônima equivalentes; endpoint pode ser público',
+          url: evidenceUrl,
+          meta: `source=curl_probe • classification=inventory • status=${baseNoAuth.status} • não é prova de auth bypass`,
           verification: {
-            classification: 'probable',
+            classification: 'inventory',
             evidence: {
               source: 'curl_probe',
-              url,
-              method: m,
-              status: r.status,
-              requestSnippet: r.curlTemplate,
-              responseSnippet: String(r.body || '').slice(0, 220).replace(/\s+/g, ' '),
-              curlMetrics: r.metrics,
-              curlHeaders: safeHeaderMap(r.headers),
+              url: evidenceUrl,
+              method: 'GET',
+              status: baseNoAuth.status,
+              authenticatedBodyHash: baseAuth.bodyHash,
+              anonymousBodyHash: baseNoAuth.bodyHash,
             },
             verifiedAt: new Date().toISOString(),
           },
         });
       }
     }
-    if (auth && baseNoAuth.status >= 200 && baseNoAuth.status < 300) {
-      out.push({
-        type: 'curl_auth_bypass',
-        prio: 'high',
-        score: 90,
-        value: `GET sem Authorization retornou ${baseNoAuth.status} (auth bypass provável)`,
-        url,
-        meta: `curl_probe • with_auth=${baseAuth.status} • without_auth=${baseNoAuth.status}`,
-        verification: {
-          classification: 'probable',
-          evidence: {
-            source: 'curl_probe',
-            url,
-            method: 'GET',
-            status: baseNoAuth.status,
-            requestSnippet: baseNoAuth.curlTemplate,
-            responseSnippet: String(baseNoAuth.body || '').slice(0, 220).replace(/\s+/g, ' '),
-            curlMetrics: baseNoAuth.metrics,
-            curlHeaders: safeHeaderMap(baseNoAuth.headers),
-          },
-          verifiedAt: new Date().toISOString(),
-        },
-      });
-    }
+
     const acao = String(withOrigin.headers?.['access-control-allow-origin'] || '');
     const acac = String(withOrigin.headers?.['access-control-allow-credentials'] || '');
-    if ((acao === CORS_ORIGINS[0] || acao === '*') && /true/i.test(acac)) {
+    const reflectedCredentialedOrigin = acao === CORS_ORIGINS[0] && acac.trim() === 'true';
+    const wildcardCredentialCombination = acao === '*' && acac.trim() === 'true';
+    if (withOrigin.ok === true && withOrigin.status >= 200 && withOrigin.status < 300 && (reflectedCredentialedOrigin || wildcardCredentialCombination)) {
       out.push({
-        type: 'curl_cors_permissive',
-        prio: 'med',
-        score: 70,
-        value: `CORS permissivo (acao=${acao} acac=${acac})`,
-        url,
-        meta: `curl_probe • active_origin_test`,
+        type: 'cors_policy_candidate',
+        prio: reflectedCredentialedOrigin ? 'med' : 'low',
+        score: reflectedCredentialedOrigin ? 56 : 28,
+        value: reflectedCredentialedOrigin
+          ? 'Origin externo refletido com credenciais permitidas'
+          : 'Combinação CORS wildcard + credentials observada (navegadores bloqueiam wildcard credenciado)',
+        url: evidenceUrl,
+        meta: `source=curl_probe • classification=candidate • acao=${acao} • acac=${acac} • browser_read=not_verified • impact=not_verified`,
         verification: {
-          classification: 'probable',
+          classification: 'candidate',
           evidence: {
             source: 'curl_probe',
-            url,
+            url: evidenceUrl,
             method: 'GET',
             status: withOrigin.status,
-            requestSnippet: withOrigin.curlTemplate,
+            requestSnippet: oneLineCurl({
+              method: 'GET',
+              url,
+              auth,
+              extraHeaders: { Origin: CORS_ORIGINS[0] },
+            }),
             responseSnippet: JSON.stringify({ acao, acac }),
-            curlMetrics: withOrigin.metrics,
+            curlMetrics: safeCurlMetrics(withOrigin.metrics),
             curlHeaders: safeHeaderMap(withOrigin.headers),
           },
           verifiedAt: new Date().toISOString(),
         },
       });
     }
-    let diffFinding = null;
-    try {
-      const u = new URL(url);
-      if (u.searchParams.size) {
-        const first = [...u.searchParams.keys()][0];
-        u.searchParams.set(first, `${u.searchParams.get(first) || '1'}'`);
-        const mut = await exec({ url: u.href, method: 'GET', auth, profile, proxy });
-        const hdrDiff = ['content-type', 'location', 'server']
-          .filter((k) => String(mut.headers?.[k] || '') !== String(baseAuth.headers?.[k] || ''));
-        const changed = mut.status !== baseAuth.status || mut.bodyHash !== baseAuth.bodyHash || hdrDiff.length;
-        if (changed) {
-          diffFinding = {
-            type: 'curl_response_diff',
-            prio: 'med',
-            score: 72,
-            value: `Diff de resposta entre baseline e payload mutado em ?${first}=`,
-            url: u.href,
-            meta: `curl_probe • status ${baseAuth.status}->${mut.status} • size ${baseAuth.bodySize}->${mut.bodySize} • headers_diff=${hdrDiff.join(',') || 'none'}`,
-            verification: {
-              classification: 'probable',
-              evidence: {
-                source: 'curl_probe',
-                url: u.href,
-                method: 'GET',
-                status: mut.status,
-                requestSnippet: mut.curlTemplate,
-                responseSnippet: `status:${baseAuth.status}->${mut.status} body_hash:${baseAuth.bodyHash.slice(0, 10)}->${mut.bodyHash.slice(0, 10)}`,
-                curlMetrics: { baseline: baseAuth.metrics, mutated: mut.metrics },
-                curlHeaders: { baseline: safeHeaderMap(baseAuth.headers), mutated: safeHeaderMap(mut.headers) },
-              },
-              verifiedAt: new Date().toISOString(),
-            },
-          };
-        }
-      }
-    } catch {}
-    if (diffFinding) out.push(diffFinding);
-
-    if (String(process.env.GHOSTRECON_CURL_PROBE_LOGIN_SQLI || '1') !== '0') {
-      const loginProbe = await runLoginSqliProbe({
-        url,
-        auth,
-        profile,
-        proxy,
-        execCurlImpl: exec,
-      });
-      if (loginProbe) {
-        const bp = loginProbe.baseline;
-        const rp = loginProbe.probe;
-        out.push({
-          type: 'curl_login_sqli_suspect',
-          prio: 'high',
-          score: 91,
-          value: `Possível SQLi/auth bypass em login (${bp.status} -> ${rp.status})`,
-          url,
-          meta: `curl_probe_login_sqli • status_diff=${loginProbe.statusDiff ? 'yes' : 'no'} • location_diff=${loginProbe.locationDiff ? 'yes' : 'no'} • cookie_new=${loginProbe.cookieAppeared ? 'yes' : 'no'}`,
-          verification: {
-            classification: 'probable',
-            evidence: {
-              source: 'curl_probe',
-              url,
-              method: 'POST',
-              status: rp.status,
-              requestSnippet: rp.curlTemplate,
-              responseSnippet: `baseline=${bp.status}/${bp.bodyHash.slice(0, 10)} probe=${rp.status}/${rp.bodyHash.slice(0, 10)} location=${String(rp.headers?.location || '').slice(0, 140)}`,
-              curlMetrics: { baseline: bp.metrics, probe: rp.metrics },
-              curlHeaders: { baseline: safeHeaderMap(bp.headers), probe: safeHeaderMap(rp.headers) },
-            },
-            verifiedAt: new Date().toISOString(),
-          },
-        });
-      }
-    }
-
     evidenceRows.push({
       ts: new Date().toISOString(),
       source: 'curl_probe',
-      url,
-      proxy: proxy || null,
+      url: evidenceUrl,
+      proxy: safeProxyLabel(proxy),
       baseAuth: {
         status: baseAuth.status,
-        metrics: baseAuth.metrics,
+        metrics: safeCurlMetrics(baseAuth.metrics),
         headers: safeHeaderMap(baseAuth.headers),
         bodyHash: baseAuth.bodyHash,
         bodySize: baseAuth.bodySize,
       },
       baseNoAuth: {
         status: baseNoAuth.status,
-        metrics: baseNoAuth.metrics,
+        metrics: safeCurlMetrics(baseNoAuth.metrics),
         headers: safeHeaderMap(baseNoAuth.headers),
         bodyHash: baseNoAuth.bodyHash,
         bodySize: baseNoAuth.bodySize,
@@ -522,7 +491,11 @@ export async function runCurlProbeModule({
     });
   }
 
-  const evidenceFile = await persistEvidence(evidenceRows).catch(() => null);
+  if (successfulExecutions === 0) {
+    throw new Error('curl_probe: nenhuma requisição produziu resposta utilizável');
+  }
+
+  const evidenceFile = await persistEvidence(evidenceRows, { enabled: persist }).catch(() => null);
   if (evidenceFile) logFn(`curl_probe: evidências em ${evidenceFile}`, 'info');
   return out;
 }

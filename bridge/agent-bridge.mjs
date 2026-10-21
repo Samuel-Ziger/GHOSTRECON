@@ -7,30 +7,33 @@ import {
   ghostreconRoot,
   buildVigoliumChildEnv,
   resolveVigoliumBinary,
-  resolveVigoliumAuthFiles,
   resolveVigoliumModuleTags,
   resolveVigoliumTarget,
   resolveVigoliumAuditMode,
   shouldPreferVigoliumPath,
   vigoliumAgentTimeoutMs,
 } from './vigolium-config.mjs';
-import { createVigoliumAuthTransport } from './vigolium-auth-transport.mjs';
 import { assertVigoliumBinaryIdentity } from './vigolium-binary-integrity.mjs';
 import { assertVigoliumSourceIdentity } from './vigolium-source-integrity.mjs';
 import { rethrowFatalVigoliumExecutionError } from './vigolium-errors.mjs';
 import { redactAutoText } from '../server/auto-agent/redaction.mjs';
 import { redactLocalPathsForPublic } from '../server/modules/finding-redaction.mjs';
 
-export function buildVigoliumAgentArgs(s, mode, {
-  authFiles: authFilesOverride,
-  privateDbPath = null,
-} = {}) {
+export function buildVigoliumAgentArgs(s, mode) {
+  if (mode === 'swarm') {
+    return {
+      skipped: true,
+      reason: 'Swarm indisponível: o motor nativo ainda pode ampliar o plano após a aprovação',
+      args: [],
+      authFiles: [],
+    };
+  }
   const target = resolveVigoliumTarget(s);
   const source = String(s.vigoliumSource || '').trim();
-  const authFiles = Array.isArray(authFilesOverride)
-    ? authFilesOverride.map(String).map((value) => value.trim()).filter(Boolean)
-    : resolveVigoliumAuthFiles(s);
+  const authFiles = [];
   const moduleTags = resolveVigoliumModuleTags(s);
+  const agentTimeoutMs = Number(s.vigoliumAgentTimeoutMs) || vigoliumAgentTimeoutMs();
+  const duration = `${Math.max(60, Math.floor(Math.max(60_000, agentTimeoutMs - 30_000) / 1000))}s`;
   const args = ['agent', mode, '-j', '-F', '--soft-fail'];
 
   if (mode === 'audit') {
@@ -40,34 +43,27 @@ export function buildVigoliumAgentArgs(s, mode, {
     args.push('--source', source);
     const auditMode = resolveVigoliumAuditMode(s);
     if (auditMode) args.push('--mode', auditMode);
-  } else if (mode === 'swarm') {
-    args.push('-t', target);
-    if (source) args.push('--source', source);
-    for (const tag of moduleTags) args.push('--module-tag', tag);
-    for (const authFile of authFiles) args.push('--auth-file', authFile);
   } else if (mode === 'autopilot') {
     args.push('-t', target);
     if (source) args.push('--source', source);
-    for (const tag of moduleTags) args.push('--module-tag', tag);
-    for (const authFile of authFiles) args.push('--auth-file', authFile);
+    // O autopilot nativo possui shell completo e não oferece callback de
+    // aprovação por comando. No GHOSTRECON ele permanece plan-only até o
+    // motor suportar execução exatamente igual ao plano aprovado.
+    args.push(
+      '--dry-run',
+      '--intensity', 'quick',
+      '--max-duration', duration,
+      '--no-prescan',
+      '--no-preflight-discovery',
+      '--no-post-halt-verify',
+      '--audit', 'off',
+      '--piolium', 'off',
+    );
   } else if (mode === 'query') {
     const prompt = String(s.vigoliumAgentPrompt || 'security-code-review').trim();
     args.length = 0;
     args.push('agent', 'query', '--prompt-template', prompt, '-j', '--soft-fail');
     if (source) args.push('--source', source);
-  }
-  if (authFiles.length) {
-    if (!privateDbPath || /[\r\n\0]/.test(String(privateDbPath))) {
-      return {
-        skipped: true,
-        reason: 'Vigolium autenticado exige banco temporário isolado',
-        args: [],
-        target,
-        source,
-        authFiles,
-      };
-    }
-    args.push('--db', String(privateDbPath));
   }
 
   return { args, target, source, authFiles, moduleTags, skipped: false };
@@ -83,6 +79,10 @@ export async function runVigoliumAgent(s, mode, {
 } = {}) {
   const log = s.log || (() => {});
   s.signal?.throwIfAborted?.();
+  if (mode === 'swarm') {
+    const { reason } = buildVigoliumAgentArgs(s, mode);
+    return { ok: false, skipped: true, reason, findings: [], mode };
+  }
   const root = s.ROOT || ghostreconRoot();
   const resolvedBinary = s.vigoliumRuntimeConfigFrozen && s.vigoliumBinaryPath
     ? { bin: s.vigoliumBinaryPath, source: s.vigoliumBinarySource || 'approved-plan' }
@@ -91,31 +91,25 @@ export async function runVigoliumAgent(s, mode, {
   if (!bin) {
     return { ok: false, skipped: true, reason: 'binário vigolium não encontrado', findings: [] };
   }
-  let authTransport = null;
   const redactExternalText = (value) => redactLocalPathsForPublic(
-    authTransport?.redact(value) || String(value ?? ''),
+    redactAutoText(String(value ?? '')),
     { paths: [root, bin, s.vigoliumSource].filter(Boolean) },
   );
   const publicError = (value) => redactAutoText(
     redactExternalText(value?.message || String(value ?? '')),
   );
   try {
-    if (mode === 'swarm' || mode === 'autopilot') {
-      authTransport = await createVigoliumAuthTransport(s);
-    }
-
-    const built = buildVigoliumAgentArgs(s, mode, {
-      authFiles: authTransport?.authFiles,
-      privateDbPath: authTransport?.privateDbPath,
-    });
+    const built = buildVigoliumAgentArgs(s, mode);
     if (built.skipped) {
       return { ok: false, skipped: true, reason: built.reason, findings: [] };
     }
     const { args, target, source } = built;
 
     log(
-      `Vigolium agent ${mode}: ${mode === 'audit' ? 'fonte local autorizada' : target}`,
-      'info',
+      mode === 'autopilot'
+        ? 'Vigolium autopilot: prévia somente; nenhuma ação do agente será executada'
+        : `Vigolium agent ${mode}: ${mode === 'audit' ? 'fonte local autorizada' : target}`,
+      mode === 'autopilot' ? 'warn' : 'info',
     );
 
     let result;
@@ -158,10 +152,12 @@ export async function runVigoliumAgent(s, mode, {
 
     const raw = result.stdout || '';
     const redact = redactExternalText;
-    const findings = parseVigoliumJsonl(raw, { redact });
+    // Uma prévia não é evidência de scan, mesmo que stdout contenha exemplos.
+    const findings = mode === 'autopilot' ? [] : parseVigoliumJsonl(raw, { redact });
     const summary = parseAgentSummary(raw, { redact });
     return {
-      ok: result.code === 0 || findings.length > 0,
+      ok: result.code === 0 && !result.timedOut,
+      partial: findings.length > 0 && (result.code !== 0 || Boolean(result.timedOut)),
       skipped: false,
       findings,
       summary,
@@ -170,11 +166,10 @@ export async function runVigoliumAgent(s, mode, {
       timedOut: result.timedOut,
       binary: bin,
       binarySource,
+      planOnly: mode === 'autopilot',
     };
   } catch (error) {
-    const redactedFailure = authTransport
-      ? publicError(error)
-      : 'falha ao preparar autenticação Vigolium';
+    const redactedFailure = publicError(error);
     rethrowFatalVigoliumExecutionError(error, s.signal, redactedFailure);
     return {
       ok: false,
@@ -182,8 +177,6 @@ export async function runVigoliumAgent(s, mode, {
       reason: redactedFailure,
       findings: [],
     };
-  } finally {
-    await authTransport?.cleanup?.();
   }
 }
 

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Buffer } from 'node:buffer';
 import { stealthPause, pickStealthUserAgent } from './request-policy.js';
 import { attachDecodedExtractions } from './encoding-sniff.js';
+import { readResponseSnippet } from './module-runner.mjs';
 
 const XSS_PARAM_RE = /^(q|query|search|s|keyword|term|message|comment|title|name)$/i;
 export const SQLI_PARAM_RE =
@@ -255,16 +256,28 @@ function buildHeaders(auth = {}, modules = []) {
   return h;
 }
 
-async function fetchText(url, { auth, timeoutMs = 12000, modules = [], identityCtrl = null } = {}) {
+async function fetchText(url, {
+  auth,
+  timeoutMs = 12000,
+  modules = [],
+  identityCtrl = null,
+  signal = null,
+  urlAllowed = null,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (urlAllowed && !urlAllowed(url)) throw new Error('out_of_scope');
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const init = {
     method: 'GET',
     redirect: 'manual',
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: requestSignal,
     headers: buildHeaders(auth, modules),
   };
   if (identityCtrl?.enabled) {
     const res = await identityCtrl.fetchVerifyGet(url, init);
-    const text = await res.text().catch(() => '');
+    if (urlAllowed && res.url && !urlAllowed(res.url)) throw new Error('out_of_scope_redirect');
+    const text = await readResponseSnippet(res, 160000).catch(() => '');
     return {
       status: res.status,
       headers: res.headers,
@@ -273,8 +286,9 @@ async function fetchText(url, { auth, timeoutMs = 12000, modules = [], identityC
     };
   }
   await stealthPause(modules);
-  const res = await fetch(url, init);
-  const text = await res.text().catch(() => '');
+  const res = await fetchImpl(url, init);
+  if (urlAllowed && res.url && !urlAllowed(res.url)) throw new Error('out_of_scope_redirect');
+  const text = await readResponseSnippet(res, 160000).catch(() => '');
   return { status: res.status, headers: res.headers, text: text.slice(0, 160000), location: res.headers.get('location') || '' };
 }
 
@@ -665,8 +679,14 @@ export async function runEvidenceVerification({
   maxEndpoints = 36,
   modules = [],
   identityCtrl = null,
+  checks = null,
 }) {
   const out = [];
+  const enabledChecks = new Set(
+    Array.isArray(checks) && checks.length
+      ? checks
+      : ['xss', 'sqli', 'open_redirect', 'idor', 'lfi'],
+  );
   const endpointUrls = collectEndpointUrlsForVerify(findings, maxEndpoints);
 
   if (!endpointUrls.length) return out;
@@ -687,7 +707,7 @@ export async function runEvidenceVerification({
     for (const p of params) {
       const param = String(p || '').toLowerCase();
 
-      if (XSS_PARAM_RE.test(param)) {
+      if (enabledChecks.has('xss') && XSS_PARAM_RE.test(param)) {
         const marker = `ghxss_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const payload = `"'><${marker}>`;
         const x = new URL(u.href);
@@ -722,7 +742,7 @@ export async function runEvidenceVerification({
         }
       }
 
-      if (SQLI_PARAM_RE.test(param)) {
+      if (enabledChecks.has('sqli') && SQLI_PARAM_RE.test(param)) {
         const b = new URL(u.href);
         const t = new URL(u.href);
         const rawVal = u.searchParams.get(p);
@@ -780,7 +800,7 @@ export async function runEvidenceVerification({
         }
       }
 
-      if (REDIRECT_PARAM_RE.test(param)) {
+      if (enabledChecks.has('open_redirect') && REDIRECT_PARAM_RE.test(param)) {
         const x = new URL(u.href);
         x.searchParams.set(p, 'https://example.org/');
         try {
@@ -813,7 +833,7 @@ export async function runEvidenceVerification({
         }
       }
 
-      if (IDOR_PARAM_RE.test(param)) {
+      if (enabledChecks.has('idor') && IDOR_PARAM_RE.test(param)) {
         const probes = buildIdorProbeValues(u.searchParams.get(p));
         const b = new URL(u.href);
         const t = new URL(u.href);
@@ -867,13 +887,13 @@ export async function runEvidenceVerification({
         }
       }
 
-      if (LFI_PARAM_RE.test(param)) {
+      if (enabledChecks.has('lfi') && LFI_PARAM_RE.test(param)) {
         const ok = await runLfiVerificationOnParam(u, p, out, auth, modules, { identityCtrl });
         if (ok) lfiConfirmedOnUrl = true;
       }
     }
 
-    if (phpLfi && !lfiConfirmedOnUrl) {
+    if (enabledChecks.has('lfi') && phpLfi && !lfiConfirmedOnUrl) {
       const pool = params.length === 0 ? LFI_SYNTHETIC_PARAMS_FULL : LFI_SYNTHETIC_PARAMS_LIGHT;
       const maxSynth = params.length === 0 ? 12 : 6;
       const extras = pool.filter((sp) => !triedKeys.has(String(sp).toLowerCase())).slice(0, maxSynth);
@@ -897,18 +917,23 @@ export async function runMicroExploitVariants({
   modules = [],
   maxTests = 14,
   identityCtrl = null,
+  signal = null,
+  urlAllowed = null,
+  fetchImpl = globalThis.fetch,
 }) {
   const out = [];
   const tried = new Set();
   let count = 0;
-  for (const f of findings) {
+  const attemptLimit = Math.min(14, Math.max(0, Math.floor(Number(maxTests) || 0)));
+  for (const f of findings || []) {
+    if (signal?.aborted) throw signal.reason || new DOMException('The operation was aborted', 'AbortError');
     if (f.type !== 'xss') continue;
     if (f.verification?.classification !== 'probable') continue;
     const urlStr = f.verification?.evidence?.url || f.url;
     if (!urlStr || typeof urlStr !== 'string') continue;
     if (tried.has(urlStr)) continue;
     tried.add(urlStr);
-    if (count >= maxTests) break;
+    if (count >= attemptLimit) break;
     let u;
     try {
       u = new URL(urlStr);
@@ -918,36 +943,53 @@ export async function runMicroExploitVariants({
     const params = [...u.searchParams.keys()];
     if (!params.length) continue;
     const p = params[0];
-    const payload = String.raw`"><svg/onload=alert(1)>`;
+    if (urlAllowed && !urlAllowed(u.href)) continue;
+    const canary = `grxss_${crypto.randomBytes(8).toString('hex')}`;
+    const payload = `"><svg data-ghostrecon-canary="${canary}">`;
     const x = new URL(u.href);
     x.searchParams.set(p, payload);
+    count++;
     try {
-      const r = await fetchText(x.href, { auth, modules, identityCtrl });
+      const r = await fetchText(x.href, {
+        auth,
+        modules,
+        identityCtrl,
+        signal,
+        urlAllowed,
+        fetchImpl,
+      });
+      if (signal?.aborted) throw signal.reason || new DOMException('The operation was aborted', 'AbortError');
+      if (r.status < 200 || r.status >= 300 || /application\/json|text\/plain/i.test(r.headers?.get?.('content-type') || '')) continue;
       const raw = r.text.includes(payload);
-      const loose = /onload\s*=\s*alert/i.test(r.text) && /<svg/i.test(r.text);
-      const classification = raw ? 'confirmed' : loose ? 'probable' : 'noisy';
-      const score = classification === 'confirmed' ? 97 : classification === 'probable' ? 82 : 32;
+      const elementContext = raw && new RegExp(`<svg\\b[^>]*data-ghostrecon-canary=["']${canary}["']`, 'i').test(r.text);
+      if (!elementContext) continue;
+      const classification = 'probable';
+      const score = 56;
       pushVerificationFinding(
         out,
         'xss',
         classification,
         score,
-        `Micro-exploit XSS ${classification.toUpperCase()} @ ${x.pathname} ?${p}= (variante svg)`,
-        `verify=micro_xss • param=${p} • variant=svg_onload • confidence=${classification}`,
+        `Reflexão HTML inerte candidata a XSS @ ${x.pathname} ?${p}=`,
+        `verify=micro_xss • param=${p} • variant=inert_svg_canary • execution=not_tested • confidence=${classification}`,
         {
           source: 'micro-exploit-xss',
-          url: x.href,
+          url: (() => {
+            const safe = new URL(x.href);
+            for (const key of [...safe.searchParams.keys()]) safe.searchParams.set(key, '<redacted>');
+            return safe.href;
+          })(),
           method: 'GET',
           status: r.status,
           requestSnippet: `${x.pathname}?${p}=…`,
-          responseSnippet: sampleSnippet(r.text, 'svg'),
+          responseSnippet: 'inert_canary_observed; response_content_omitted',
           timestamp: nowIso(),
         },
-        r.text,
+        null,
       );
-      count++;
-    } catch {
-      /* ignore */
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      /* ignore isolated probe failures */
     }
   }
   if (out.length && typeof log === 'function') {

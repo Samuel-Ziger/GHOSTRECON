@@ -11,7 +11,10 @@ import { analyzeCspWeaknesses } from '../modules/security-headers.js';
 
 test('client-surface: detecta sink innerHTML', () => {
   const { findings } = auditJsSurface('el.innerHTML = userInput + data;');
-  assert.ok(findings.find((f) => f.type === 'client_dom_xss_sink'));
+  const hit = findings.find((f) => f.type === 'client_dom_xss_sink');
+  assert.ok(hit);
+  assert.ok(hit.score < 50);
+  assert.equal(hit.meta.evidenceStatus, 'static_candidate');
 });
 
 test('client-surface: detecta postMessage sem origin check', () => {

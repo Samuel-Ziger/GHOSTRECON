@@ -2,15 +2,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
-test('perfil e presets nunca concedem consentimento ativo automaticamente', async () => {
+test('RUN manual mantém engagement opcional e aprovação do plano, sem toggles OPSEC/bounty', async () => {
   const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  const api = await fs.readFile(new URL('../modules/api-extensions.js', import.meta.url), 'utf8');
 
-  assert.doesNotMatch(html, /setInputChecked\(\s*['"]confirmActiveToggle['"]\s*,\s*true\s*\)/);
-  assert.doesNotMatch(html, /confirmActiveToggle[\s\S]{0,120}\.checked\s*=\s*true/);
-  assert.match(html, /marque «Confirmar ativo» manualmente/);
+  assert.doesNotMatch(html, /id="confirmActiveToggle"/);
+  assert.doesNotMatch(html, /id="opsecProfileSelect"/);
+  assert.doesNotMatch(html, /id="bountyContextJsonInput"/);
+  assert.match(html, /id="autoOpsecProfileSelect"/);
+  assert.match(html, /id="autoBountyContextJsonInput"/);
+  assert.match(html, /opsecProfile: 'standard'/);
+  assert.match(html, /id="manualAuthorizationToggle"/);
+  assert.match(html, /\/api\/engagements\/manual-authorization/);
+  assert.doesNotMatch(html, /setInputChecked\(\s*['"]manualAuthorizationToggle['"]\s*,\s*true\s*\)/);
+  assert.doesNotMatch(html, /id="manualAuthorizationToggle"[^>]*\bchecked\b/);
+  assert.match(api, /app\.post\('\/api\/engagements\/manual-authorization', requireScope\('engagement\.write'\)/);
+
+  assert.match(html, /engagement opcional/i);
+  assert.doesNotMatch(html, /const authorizeNow = window\.confirm\(/);
+
+  const autoApproval = html.indexOf('const approved = true;', html.indexOf('async function prepareManualReconApproval'));
+  const confirmed = html.indexOf('confirmActive: true', autoApproval);
+  assert.notEqual(autoApproval, -1);
+  assert.ok(confirmed > autoApproval, 'a seleção manual deve aprovar o plano exato antes do stream');
+  assert.doesNotMatch(html, /Plano manual recusado pelo operador/);
+  assert.doesNotMatch(html, /return window\.confirm\(`Vigolium guardrail:/);
 });
 
-test('body do Auto não transporta auth e RUN manual usa preflight + popup + aprovação vinculada', async () => {
+test('body do Auto não transporta auth e RUN manual usa preflight + aprovação automática vinculada', async () => {
   const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
   const route = await fs.readFile(new URL('../routes/recon-stream.mjs', import.meta.url), 'utf8');
   const autoBodyStart = html.indexOf(
@@ -44,6 +63,31 @@ test('UI diferencia lifecycle parcial e timeout de motores Auto', async () => {
   const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
   assert.match(html, /ev\.type === 'engine_partial'/);
   assert.match(html, /ev\.type === 'engine_timeout'/);
+});
+
+test('UI separa FTP de bug bounty sem escrita do write probe de laboratório', async () => {
+  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /value="ftp_anonymous_audit"/);
+  assert.match(html, /FTP anonymous audit \(sem escrita\)/);
+  assert.match(html, /FTP anonymous audit \(sem escrita\)<\/span>\s*<span class="tag tag-high">INTRUSIVE<\/span>/);
+  assert.match(html, /Não lista, baixa, envia, altera ou exclui arquivos/);
+  assert.match(html, /Follow-ups de serviço \(SMB \/ RPC \/ versões\)/);
+  assert.match(html, /FTP não é executado por esta caixa/);
+  assert.match(html, /value="ftp_write_probe"/);
+  const fullExclude = html.slice(html.indexOf('const FULL_MODULES_EXCLUDE'), html.indexOf('function applyFullModulesPresetFromUi'));
+  assert.match(fullExclude, /ftp_write_probe/);
+  assert.doesNotMatch(fullExclude, /ftp_anonymous_audit/);
+});
+
+test('UI descreve Supabase como leitura e não promete reutilizar token ou executar writes', async () => {
+  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /Supabase audit \(somente leitura\)/);
+  assert.match(html, /Tokens do cliente nunca são reutilizados/);
+  assert.match(html, /sb_publishable_/);
+  assert.match(html, /sb_secret_/);
+  assert.match(html, /falham antes da rede/);
+  assert.doesNotMatch(html, /Supabase audit \(auto token \/ RLS \/ payment\)/);
+  assert.doesNotMatch(html, /Token autenticado: bundle → signup anônimo/);
 });
 
 test('UI Auto continua em error recuperável e distingue AUTO PARCIAL de COMPLETO', async () => {

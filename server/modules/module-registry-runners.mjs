@@ -8,6 +8,7 @@ import { runPanelExposureAudit } from './panel-exposure-audit.mjs';
 import { runServiceWorkerAudit } from './service-worker-audit.mjs';
 import {
   findPreviousApiContractSnapshots,
+  moduleManifest as apiContractManifest,
   runApiContractDiff,
 } from './api-contract-diff.mjs';
 import { runWebSocketRecon } from './websocket-recon.mjs';
@@ -16,7 +17,15 @@ import { runDomClobberingAudit } from './dom-clobbering-audit.mjs';
 import { runEmailSecurityDeep } from './email-security-deep.mjs';
 import { runHexstrikeOrchestrator } from './hexstrike-orchestrator.mjs';
 import { rankSecretFindings } from './secrets-context-ranker.mjs';
-import { getRunById, listRuns } from './db.js';
+import { runPastebinIntel } from './pastebin-intel.mjs';
+import { runSqliDeepVerification } from './sqli-deep-verify.mjs';
+import { runSafeXssVibesAudit } from './xss-vibes-safe.mjs';
+import {
+  getRunByStorageRef,
+  listRuns,
+  listRunsForTarget,
+} from './db.js';
+import { combineAbortSignals } from './http-utils.js';
 
 function activeOriginsFromState(s) {
   const map = s.originByHost;
@@ -32,6 +41,45 @@ function htmlAuditBodiesFromProbe(s) {
 
 /** Adaptadores `run(state)` — lote 1 (manifests existentes). */
 export const moduleRunners = {
+  async pastebin(s) {
+    const env = s.env || process.env;
+    return runPastebinIntel({
+      target: s.domain,
+      apiKey: env.GOOGLE_CSE_KEY,
+      cx: env.GOOGLE_CSE_CX,
+      signal: s.signal || null,
+      log: s.log,
+    });
+  },
+
+  async verify_sqli_deep(s) {
+    return runSqliDeepVerification({
+      findings: s.findings || [],
+      auth: s.auth || null,
+      log: s.log,
+      signal: s.signal || null,
+      urlAllowed: (url) => s.urlInScope(url),
+      fetchImpl: s.fetchImpl || globalThis.fetch,
+      identityCtrl: s.identityCtrl || null,
+    });
+  },
+
+  async kali_xss_vibes(s) {
+    const urls = [
+      ...(Array.isArray(s.paramUrlsForKali) ? s.paramUrlsForKali : []),
+      ...(s.findings || []).flatMap((finding) => [finding?.url, finding?.value]),
+    ].filter((value) => typeof value === 'string' && /^https?:\/\//i.test(value));
+    return runSafeXssVibesAudit({
+      urls,
+      auth: s.auth || null,
+      signal: s.signal || null,
+      urlAllowed: (url) => s.urlInScope(url),
+      fetchImpl: s.fetchImpl || globalThis.fetch,
+      identityCtrl: s.identityCtrl || null,
+      log: s.log,
+    });
+  },
+
   async cookie_session_audit(s) {
     const findings = auditCookieSession(s.probeResults, { target: s.domain });
     return {
@@ -59,6 +107,8 @@ export const moduleRunners = {
       origins: activeOriginsFromState(s),
       modules: s.modules,
       log: s.log,
+      fetchImpl: s.fetchImpl || globalThis.fetch,
+      signal: s.signal || null,
       urlAllowed: (url) => s.urlInScope(url),
     });
     return {
@@ -112,6 +162,8 @@ export const moduleRunners = {
       origins: activeOriginsFromState(s),
       modules: s.modules,
       log: s.log,
+      fetchImpl: s.fetchImpl || globalThis.fetch,
+      signal: s.signal || null,
       urlAllowed: (url) => s.urlInScope(url),
     });
     return {
@@ -139,20 +191,63 @@ export const moduleRunners = {
   },
 
   async api_contract_diff(s) {
+    const requestedTimeoutMs = Number(s.apiContractTimeoutMs);
+    const timeoutMs = Math.max(1, Math.min(
+      120_000,
+      Math.floor(
+        Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
+          ? requestedTimeoutMs
+          : apiContractManifest.timeoutMs,
+      ),
+    ));
+    const startedAt = Date.now();
+    const deadlineAt = startedAt + timeoutMs;
+    const runSignal = combineAbortSignals(s.signal || null, timeoutMs);
+    const targetedListFn = s.listRunsForTargetFn
+      || (s.listRunsFn
+        ? null
+        : (target, limit, options = {}) => listRunsForTarget(target, limit, {
+            ...options,
+            localProjectName: s.projectNameRaw,
+          }));
+    const targetedGetRunFn = s.getRunByIdFn
+      || ((id, options = {}) => getRunByStorageRef(id, {
+        ...options,
+        localProjectName: s.projectNameRaw,
+      }));
     const previousSnapshots = await findPreviousApiContractSnapshots({
       target: s.domain,
-      listRunsFn: listRuns,
-      getRunByIdFn: getRunById,
+      listRunsFn: s.listRunsFn || listRuns,
+      listRunsForTargetFn: targetedListFn,
+      getRunByIdFn: targetedGetRunFn,
+      signal: runSignal,
     });
-    const { findings, summaries } = await runApiContractDiff({
+    const remainingTimeoutMs = deadlineAt - Date.now();
+    if (remainingTimeoutMs <= 0) {
+      throw new DOMException('API contract baseline deadline exhausted', 'TimeoutError');
+    }
+    const {
+      findings,
+      summaries,
+      status,
+      outcomes,
+      reason,
+      metrics: apiContractMetrics,
+    } = await runApiContractDiff({
       origins: activeOriginsFromState(s),
       domain: s.domain,
       outOfScopeList: s.outOfScopeList,
       scopePolicy: s.scopePolicy,
       modules: s.modules,
       previousSnapshots,
+      fetchImpl: s.fetchImpl || globalThis.fetch,
       log: s.log,
+      signal: s.signal || null,
+      timeoutMs: Math.max(1, Math.floor(remainingTimeoutMs)),
     });
+    const materializedSnapshots = findings.filter(
+      (finding) => finding.type === 'api_contract_snapshot',
+    ).length;
     const diffs = findings.filter((f) => f.type === 'api_contract_diff').length;
     let logOk = 'API contract diff: nenhuma spec OpenAPI encontrada';
     let logLevel = 'info';
@@ -164,7 +259,46 @@ export const moduleRunners = {
     } else if (summaries.length) {
       logOk = 'API contract diff: snapshot inicial gravado para próximos runs';
     }
-    return { findings, logOk, logLevel };
+    if (status === 'partial') {
+      logOk = `API contract diff: cobertura parcial; ${summaries.length} contrato(s) válido(s), consulte outcomes`;
+      logLevel = 'warn';
+    } else if (status === 'timeout') {
+      logOk = `API contract diff: deadline atingido; ${materializedSnapshots} snapshot(s) preservado(s), consulte outcomes`;
+      logLevel = 'warn';
+    }
+    const outcomeMetrics = outcomes.reduce((metrics, outcome) => {
+      const key = `state_${String(outcome?.state || 'unknown').replace(/[^a-z0-9_]/gi, '_').toLowerCase()}`;
+      metrics[key] = (metrics[key] || 0) + 1;
+      return metrics;
+    }, {
+      contracts: apiContractMetrics?.contracts ?? summaries.length,
+      snapshotsMaterialized:
+        apiContractMetrics?.snapshotsMaterialized ?? materializedSnapshots,
+      changes: apiContractMetrics?.changes ?? diffs,
+      snapshotSchemaVersion: apiContractMetrics?.snapshotSchemaVersion,
+      canonicalizationVersion: apiContractMetrics?.canonicalizationVersion,
+      baselineBytesRead: apiContractMetrics?.baselineBytesRead,
+      baselineBytesRetained: apiContractMetrics?.baselineBytesRetained,
+      baselineByteLimit: apiContractMetrics?.baselineByteLimit,
+      baselineByteLimitReached: apiContractMetrics?.baselineByteLimitReached,
+      attempts: apiContractMetrics?.coverage?.candidatesEvaluated ?? outcomes.length,
+      outcomes: outcomes.length,
+      ...(apiContractMetrics?.coverage || {}),
+    });
+    return {
+      findings,
+      logOk,
+      logLevel,
+      status,
+      partial: status === 'timeout',
+      reason: status === 'partial'
+        ? reason || 'api_contract_collection_incomplete'
+        : reason,
+      attempted: apiContractMetrics?.coverage?.candidatesEvaluated ?? outcomes.length,
+      resultCount: findings.length,
+      outcomeMetrics,
+      metrics: apiContractMetrics,
+    };
   },
 
   async hpp_param_pollution(s) {
@@ -211,6 +345,7 @@ export const moduleRunners = {
     const { findings: emailFindings } = await runEmailSecurityDeep(s.domain, {
       log: s.log,
       hostAllowed: (host) => s.hostInScope(host),
+      signal: s.signal || null,
     });
     return {
       findings: emailFindings,

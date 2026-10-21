@@ -13,6 +13,7 @@ import { rethrowFatalVigoliumExecutionError } from '../../../bridge/vigolium-err
  * Corre após asset-discovery, antes de finalize.
  */
 export async function runGoAgentPhase(s) {
+  s.signal?.throwIfAborted?.();
   const { modules, log, pipe, addFinding, progress } = s;
   const agentMode = s.vigoliumAgentMode || resolveVigoliumAgentMode(s);
 
@@ -20,6 +21,16 @@ export async function runGoAgentPhase(s) {
     pipe('vigolium_agent', 'skip');
     pipe('vigolium_audit', 'skip');
     pipe('vigolium_swarm', 'skip');
+    return;
+  }
+
+  if (agentMode === 'swarm') {
+    const out = await runVigoliumAgent(s, agentMode);
+    log(`Vigolium agent: ${out.reason}`, 'warn');
+    pipe('vigolium_agent', 'skip');
+    pipe('vigolium_audit', 'skip');
+    pipe('vigolium_swarm', 'skip');
+    progress(92);
     return;
   }
 
@@ -80,13 +91,23 @@ export async function runGoAgentPhase(s) {
       logVigoliumFindingsSummary(log, out.findings, {
         label: `Vigolium agent (${out.mode})`,
       });
+      if (!out.ok) {
+        const state = out.timedOut ? 'timeout' : 'failed';
+        log(`Vigolium agent: ${state}; ${out.partial ? 'evidência parcial preservada' : 'sem conclusão válida'}`, 'warn');
+        if (agentMode === 'audit') pipe('vigolium_audit', state);
+        if (agentMode === 'autopilot') pipe('vigolium_autopilot', state);
+        pipe('vigolium_agent', state);
+        progress(92);
+        return;
+      }
+      if (out.planOnly) log('Vigolium autopilot: prévia concluída; nenhuma vulnerabilidade foi testada', 'info');
     }
   } catch (e) {
     rethrowFatalVigoliumExecutionError(e, s.signal);
     log(`Vigolium agent: ${e?.message || e}`, 'warn');
-    if (agentMode === 'audit') pipe('vigolium_audit', 'skip');
-    if (agentMode === 'swarm') pipe('vigolium_swarm', 'skip');
-    pipe('vigolium_agent', 'skip');
+    if (agentMode === 'audit') pipe('vigolium_audit', 'failed');
+    if (agentMode === 'autopilot') pipe('vigolium_autopilot', 'failed');
+    pipe('vigolium_agent', 'failed');
     progress(92);
     return;
   }

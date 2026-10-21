@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "description": "Corpus sintético e versionado de mudanças contratuais OpenAPI/Swagger, com ground truth revisável.",
+  "cases": [
+    {
+      "id": "oas30_annotation_only",
+      "expectedChanged": false,
+      "before": { "openapi": "3.0.3", "info": { "title": "Store", "version": "1", "description": "A" }, "paths": { "/pets": { "get": { "summary": "List", "responses": { "200": { "description": "A" } } } } } },
+      "after": { "openapi": "3.0.3", "info": { "title": "Store", "version": "1", "description": "B" }, "paths": { "/pets": { "get": { "summary": "List all", "responses": { "200": { "description": "B" } } } } } }
+    },
+    {
+      "id": "oas31_unordered_equivalence",
+      "expectedChanged": false,
+      "before": { "openapi": "3.1.0", "security": [{ "oauth": ["read", "write"] }], "paths": { "/pets": { "post": { "tags": ["pets", "write"], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["name", "kind"], "properties": { "name": { "type": "string", "enum": ["a", "b"] }, "kind": { "type": "string" } } } } } }, "responses": { "201": { "description": "ok" } } } } }, "components": { "securitySchemes": { "oauth": { "type": "oauth2", "flows": { "clientCredentials": { "tokenUrl": "/token", "scopes": { "read": "r", "write": "w" } } } } } } },
+      "after": { "openapi": "3.1.0", "security": [{ "oauth": ["write", "read"] }], "paths": { "/pets": { "post": { "tags": ["write", "pets"], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["kind", "name"], "properties": { "name": { "type": "string", "enum": ["b", "a"] }, "kind": { "type": "string" } } } } } }, "responses": { "201": { "description": "changed annotation" } } } } }, "components": { "securitySchemes": { "oauth": { "type": "oauth2", "flows": { "clientCredentials": { "tokenUrl": "/token", "scopes": { "read": "r", "write": "w" } } } } } } }
+    },
+    {
+      "id": "swagger2_body_name_only",
+      "expectedChanged": false,
+      "before": { "swagger": "2.0", "paths": { "/pets": { "post": { "parameters": [{ "name": "payload", "in": "body", "schema": { "type": "object" } }], "responses": { "204": { "description": "ok" } } } } } },
+      "after": { "swagger": "2.0", "paths": { "/pets": { "post": { "parameters": [{ "name": "documentationName", "in": "body", "schema": { "type": "object" } }], "responses": { "204": { "description": "ok" } } } } } }
+    },
+    {
+      "id": "http_header_case_only",
+      "expectedChanged": false,
+      "before": { "openapi": "3.0.3", "paths": { "/pets": { "get": { "parameters": [{ "name": "X-Trace", "in": "header", "schema": { "type": "string" } }], "responses": { "200": { "description": "ok", "headers": { "X-Rate-Limit": { "schema": { "type": "integer" } } } } } } } }, "components": { "securitySchemes": { "key": { "type": "apiKey", "in": "header", "name": "X-API-Key" } } } },
+      "after": { "openapi": "3.0.3", "paths": { "/pets": { "get": { "parameters": [{ "name": "x-trace", "in": "header", "schema": { "type": "string" } }], "responses": { "200": { "description": "ok", "headers": { "x-rate-limit": { "schema": { "type": "integer" } } } } } } } }, "components": { "securitySchemes": { "key": { "type": "apiKey", "in": "header", "name": "x-api-key" } } } }
+    },
+    {
+      "id": "swagger2_global_produces_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["root_contract"],
+      "before": { "swagger": "2.0", "produces": ["application/json"], "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok" } } } } } },
+      "after": { "swagger": "2.0", "produces": ["application/xml"], "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok" } } } } } }
+    },
+    {
+      "id": "oas30_operation_added",
+      "expectedChanged": true,
+      "expectedSignals": ["added_operation"],
+      "before": { "openapi": "3.0.3", "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok" } } } } } },
+      "after": { "openapi": "3.0.3", "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok" } } }, "post": { "responses": { "201": { "description": "created" } } } } } }
+    },
+    {
+      "id": "oas30_response_schema_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["response_contract"],
+      "before": { "openapi": "3.0.3", "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "string" } } } } } } } } },
+      "after": { "openapi": "3.0.3", "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "integer" } } } } } } } } }
+    },
+    {
+      "id": "oas30_security_removed",
+      "expectedChanged": true,
+      "expectedSignals": ["security_alternatives", "security_regression", "security_requirement"],
+      "before": { "openapi": "3.0.3", "security": [{ "bearer": [] }], "paths": { "/me": { "get": { "responses": { "200": { "description": "ok" } } } } }, "components": { "securitySchemes": { "bearer": { "type": "http", "scheme": "bearer" } } } },
+      "after": { "openapi": "3.0.3", "security": [{ "bearer": [] }], "paths": { "/me": { "get": { "security": [], "responses": { "200": { "description": "ok" } } } } }, "components": { "securitySchemes": { "bearer": { "type": "http", "scheme": "bearer" } } } }
+    },
+    {
+      "id": "oas31_webhook_added",
+      "expectedChanged": true,
+      "expectedSignals": ["added_operation", "added_webhook"],
+      "before": { "openapi": "3.1.0", "paths": {}, "components": {} },
+      "after": { "openapi": "3.1.0", "paths": {}, "webhooks": { "payment": { "post": { "responses": { "202": { "description": "ok" } } } } } }
+    },
+    {
+      "id": "oas31_webhook_response_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["modified_webhook", "response_contract", "responses"],
+      "before": { "openapi": "3.1.0", "paths": {}, "webhooks": { "payment": { "post": { "responses": { "200": { "description": "ok" } } } } } },
+      "after": { "openapi": "3.1.0", "paths": {}, "webhooks": { "payment": { "post": { "responses": { "204": { "description": "ok" } } } } } }
+    },
+    {
+      "id": "oas31_component_callback_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["components"],
+      "before": { "openapi": "3.1.0", "paths": { "/subscribe": { "post": { "callbacks": { "notify": { "$ref": "#/components/callbacks/Notify" } }, "responses": { "201": { "description": "ok" } } } } }, "components": { "callbacks": { "Notify": { "{$request.body#/url}": { "post": { "responses": { "200": { "description": "ok" } } } } } } } },
+      "after": { "openapi": "3.1.0", "paths": { "/subscribe": { "post": { "callbacks": { "notify": { "$ref": "#/components/callbacks/Notify" } }, "responses": { "201": { "description": "ok" } } } } }, "components": { "callbacks": { "Notify": { "{$request.body#/url}": { "post": { "responses": { "204": { "description": "ok" } } } } } } } }
+    },
+    {
+      "id": "oas31_component_header_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["components"],
+      "before": { "openapi": "3.1.0", "paths": { "/quota": { "get": { "responses": { "200": { "$ref": "#/components/responses/Quota" } } } } }, "components": { "responses": { "Quota": { "description": "ok", "headers": { "limit": { "$ref": "#/components/headers/Limit" } } } }, "headers": { "Limit": { "schema": { "type": "integer" } } } } },
+      "after": { "openapi": "3.1.0", "paths": { "/quota": { "get": { "responses": { "200": { "$ref": "#/components/responses/Quota" } } } } }, "components": { "responses": { "Quota": { "description": "ok", "headers": { "limit": { "$ref": "#/components/headers/Limit" } } } }, "headers": { "Limit": { "schema": { "type": "string" } } } } }
+    },
+    {
+      "id": "oas31_xml_mapping_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["components"],
+      "before": { "openapi": "3.1.0", "paths": {}, "components": { "schemas": { "Pet": { "type": "object", "xml": { "name": "OldPet", "wrapped": true } } } } },
+      "after": { "openapi": "3.1.0", "paths": {}, "components": { "schemas": { "Pet": { "type": "object", "xml": { "name": "NewPet", "wrapped": true } } } } }
+    },
+    {
+      "id": "oas31_server_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["servers"],
+      "before": { "openapi": "3.1.0", "servers": [{ "url": "https://api.example.test/v1" }], "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok" } } } } } },
+      "after": { "openapi": "3.1.0", "servers": [{ "url": "https://api.example.test/v2" }], "paths": { "/pets": { "get": { "responses": { "200": { "description": "ok" } } } } } }
+    },
+    {
+      "id": "oas32_query_added",
+      "expectedChanged": true,
+      "expectedSignals": ["added_operation"],
+      "before": { "openapi": "3.2.0", "paths": { "/search": {} } },
+      "after": { "openapi": "3.2.0", "paths": { "/search": { "query": { "responses": { "200": { "description": "ok" } } } } } }
+    },
+    {
+      "id": "oas31_json_schema_dialect_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["root_contract"],
+      "before": { "openapi": "3.1.0", "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema", "paths": {}, "components": {} },
+      "after": { "openapi": "3.1.0", "jsonSchemaDialect": "https://spec.openapis.org/oas/3.1/dialect/base", "paths": {}, "components": {} }
+    },
+    {
+      "id": "oas31_component_response_header_case_only",
+      "expectedChanged": false,
+      "before": { "openapi": "3.1.0", "paths": {}, "components": { "responses": { "Quota": { "description": "ok", "headers": { "X-Rate-Limit": { "schema": { "type": "integer" } } } } } } },
+      "after": { "openapi": "3.1.0", "paths": {}, "components": { "responses": { "Quota": { "description": "ok", "headers": { "x-rate-limit": { "schema": { "type": "integer" } } } } } } }
+    },
+    {
+      "id": "oas31_schema_property_named_description_changed",
+      "expectedChanged": true,
+      "expectedSignals": ["components"],
+      "before": { "openapi": "3.1.0", "paths": {}, "components": { "schemas": { "Pet": { "type": "object", "properties": { "description": { "type": "string" } } } } } },
+      "after": { "openapi": "3.1.0", "paths": {}, "components": { "schemas": { "Pet": { "type": "object", "properties": { "description": { "type": "integer" } } } } } }
+    }
+  ]
+}

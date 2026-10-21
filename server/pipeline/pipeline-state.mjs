@@ -3,6 +3,7 @@ import {
   parseOutOfScopeEnv,
   parseOutOfScopeClientInput,
   mergeOutOfScopeLists,
+  dnsResolvedAddressesEligibleForProbe,
   urlInReconScope,
   validateEngagementScopePolicy,
 } from '../modules/scope.js';
@@ -127,6 +128,7 @@ export function createPipelineState(ctx) {
     tokenCaptureOptions = null,
     forgeSandboxRunner = null,
     forgeCanaryId = null,
+    fetchImpl: injectedFetchImpl = null,
   } = ctx;
 
   const apexHostIsIp = targetIsIp(domain);
@@ -334,6 +336,11 @@ export function createPipelineState(ctx) {
       ? Object.freeze(frozenVigolium.vigoliumAuthAllowedRoots.map(String))
       : Object.freeze([]),
     signal,
+    fetchImpl: typeof injectedFetchImpl === 'function'
+      ? injectedFetchImpl
+      : typeof identityCtrl?.fetchWithPolicy === 'function'
+        ? identityCtrl.fetchWithPolicy
+        : globalThis.fetch,
     requestRunId,
     autoModeExecution: autoModeExecution === true,
     autoCapabilityIds,
@@ -347,6 +354,15 @@ export function createPipelineState(ctx) {
     },
     hostInScope(hostname) {
       return hostInReconScope(hostname, domain, outOfScopeList, scopePolicy);
+    },
+    resolvedAddressInScope(hostname, address) {
+      if (!hostInReconScope(hostname, domain, outOfScopeList, scopePolicy)) return false;
+      return dnsResolvedAddressesEligibleForProbe(
+        [address],
+        domain,
+        outOfScopeList,
+        scopePolicy,
+      ).eligible;
     },
     urlInScope(url) {
       return urlInReconScope(url, domain, outOfScopeList, scopePolicy);

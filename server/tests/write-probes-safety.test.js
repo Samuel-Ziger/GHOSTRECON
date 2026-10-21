@@ -9,6 +9,8 @@ import {
   resolveSupabaseAuthToken,
 } from '../modules/supabase-rls-audit.mjs';
 
+const PUBLIC_SUPABASE_KEY = 'sb_publishable_fixture_public_key_1234567890';
+
 function fakeResponse(status = 403, body = '{}', headers = {}) {
   return { status, body, headers, error: null };
 }
@@ -65,7 +67,7 @@ test('Supabase ignora env de write e mantém todos os caminhos mutáveis desliga
     const result = await runSupabaseAudit(
       {
         supabaseUrl: 'https://project.supabase.co',
-        anonKey: 'anon-key',
+        anonKey: PUBLIC_SUPABASE_KEY,
         bundleText: '',
       },
       {

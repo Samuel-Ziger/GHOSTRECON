@@ -48,3 +48,28 @@ describe('navegation navigator mode', () => {
     assert.match(res.stdout || '', /openvpn=skipped-user-mode/);
   });
 });
+
+describe('navegation Tor evidence', () => {
+  const baseDeps = {
+    torHealthImpl: async () => ({ bootstrap: { tag: 'done' } }),
+    runSimpleImpl: async () => ({ stdout: '{"ip":"198.51.100.10"}', code: 0 }),
+  };
+
+  it('não valida Tor quando o provedor não confirma IsTor', async () => {
+    const { quickValidateTor } = await import('../modules/navegation.js');
+    const result = await quickValidateTor({
+      ...baseDeps,
+      torIpProbeImpl: async () => ({ ok: true, ip: '203.0.113.20', isTor: null }),
+    });
+    assert.equal(result.validated, false);
+  });
+
+  it('valida somente IPs distintos e IsTor=true com bootstrap concluído', async () => {
+    const { quickValidateTor } = await import('../modules/navegation.js');
+    const result = await quickValidateTor({
+      ...baseDeps,
+      torIpProbeImpl: async () => ({ ok: true, ip: '203.0.113.20', isTor: true }),
+    });
+    assert.equal(result.validated, true);
+  });
+});

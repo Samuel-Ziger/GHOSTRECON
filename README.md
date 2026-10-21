@@ -113,6 +113,61 @@ Pelo cockpit:
 5. Acompanhe eventos e findings em tempo real.
 6. Continue a investigação no Reporte, GhostTrace, GhostMap ou History.
 
+No RUN manual, o toggle **Modo Kali** apenas disponibiliza as ferramentas: cada
+scanner é decidido pelas caixas de módulo. `kali_nmap` executa o Nmap TCP base e
+`nmap_service_followups` usa o resultado para checks limitados de SMB/RPC e
+correlações de versão. Overrides do TCP base passam por allowlist: scripts,
+alvos e arquivos de saída são recusados; `-A`, `-p-`, `-T5` e `--min-rate`
+pertencem apenas à capacidade agressiva, enquanto portas/`--top-ports` do perfil
+base ficam limitadas a 1024. No UDP, `-sU` é obrigatório, as portas são anexadas
+pelo runtime e a lista validada tem no máximo 128 itens.
+
+FTP não é implícito nesse módulo: se o Nmap identificar
+FTP (inclusive 21/tcp), somente `ftp_anonymous_audit` tenta `USER anonymous`.
+Ele usa o endereço observado no XML do Nmap, reaplica o escopo, fixa e confere
+o peer do socket, envia `QUIT` e somente conclui depois de fechamento ou
+destruição local atestada. O finding é contextual e baixo quando o login é
+aceito. O outcome diferencia ausência de FTP, login negado, bloqueio, timeout,
+falha de cleanup e sucesso. Não lista nem transfere arquivos.
+Se a resposta ultrapassar 64 KiB depois do login, a evidência de autenticação
+é preservada, o socket é destruído localmente e o outcome fica parcial.
+`ftp_write_probe` é uma capacidade exclusiva de laboratório,
+desligada por padrão e bloqueada sem `GHOSTRECON_FTP_WRITE_PROBE=1`,
+`GHOSTRECON_FTP_WRITE_PROBE_LAB_ACK=1` e allowlist exata em
+`GHOSTRECON_FTP_WRITE_PROBE_LAB_TARGETS`. Em programas de bug bounty autorizados,
+use `ftp_anonymous_audit`; o write probe não deve ser habilitado.
+O write probe não ativa follow-ups SMB/RPC e não entra no preset Full.
+Desde o reply preliminar de `STOR`, o runtime registra estado remoto possível e
+tenta `DELE` seguido de `SIZE`. O módulo possui outcome próprio; cleanup incerto
+termina como `failed`, gera finding alto e impede novos writes na execução,
+mas ainda exige inspeção/recuperação do laboratório.
+
+No RUN manual, a seleção explícita do operador dispensa Engagement ID. Módulos
+intrusivos ainda exigem papel `red`/`admin`; o cockpit transforma a seleção em
+aprovação automática vinculada ao plano exato, sem um segundo diálogo.
+O painel **Autorização manual · identidade** permanece opcional para registrar
+ROE, janela, exclusões e allowlist; quando preenchido, esses controles são
+validados. Escrita e ação destrutiva mantêm gates laboratoriais próprios. Nmap
+limitado e os follow-ups somente leitura são classificados como `active`.
+
+Os módulos manuais abaixo usam contratos conservadores:
+
+- `pastebin`: OSINT passivo real via Google CSE; requer `GOOGLE_CSE_KEY` e
+  `GOOGLE_CSE_CX`, aceita somente provedores públicos conhecidos e não persiste
+  snippets do resultado;
+- `identity_rotation`: ID legado para uma política agora estável por RUN; não
+  troca proxy/User-Agent nem repete 403/captcha para atravessar bloqueios;
+- `curl_probe`: somente `GET`, `HEAD` e `OPTIONS`, sem body, SQLi ou método
+  mutável; redirects não são seguidos e segredos ficam em temporário `0600`;
+- `verify_sqli_deep`: diferencial repetível e limitado, sem UNION, delay,
+  enumeração ou bypass de login; o resultado máximo é `probable`;
+- `kali_xss_vibes`: apesar do ID legado, não depende de Kali/Python; usa duas
+  reflexões com marcador não executável e retorna somente candidato/inventário.
+
+Perfil OPSEC e contexto do programa bug bounty são controles do **Modo Auto**
+e ficam dentro do popup Auto. O RUN manual usa o perfil OPSEC `standard` e
+executa somente os módulos selecionados pelo operador.
+
 Pela CLI:
 
 ```bash
@@ -320,6 +375,16 @@ capabilities de escrita ou tentativa de credencial que não aparecem
 individualmente no popup. Por isso o opt-in do Vigolium não deve ser usado até
 essa expansão falhar fechado e writes/credential probes serem separados.
 
+O modal do Auto recebe dois contextos operacionais explícitos:
+
+- **OPSEC da sessão**, limitado no servidor pelo teto do nível de autonomia;
+- **contexto do programa bug bounty**, um objeto JSON redigido e limitado que
+  entra no prompt de planejamento, na política de retomada, no hash do plano e
+  na priorização final.
+
+O contexto bounty é dado não confiável e nunca amplia target/scope, substitui
+engagement/ROE ou autoriza uma classe de risco.
+
 ### Autonomia
 
 | Nível | Identificador | Política |
@@ -367,23 +432,70 @@ assets/takeover, recheck HIGH, browser XSS e ferramentas/follow-ups Kali.
 Fontes passivas de URL não habilitam sozinhas o fetch de bundles do alvo.
 
 Findings de segredo são mascarados antes de eventos/persistência.
-`secret_validation` é intrusivo e explícito. Writes/signup de
-Supabase/Firebase e FTP `STOR` ficam desligados por padrão e não são habilitados
+`secret_validation` é intrusivo e explícito. `firebase_audit` é estritamente
+somente leitura e recusa writes/signup. Writes de Supabase e FTP `STOR`
+ficam desligados por padrão e não são habilitados
 pela simples presença de token, anon key, `service_role` ou variável de
 ambiente. Quando auth é compartilhado com Vigolium, ele segue por arquivo
 temporário restrito, não por argv/log.
 
+No Supabase, requests anônimos aceitam somente `sb_publishable_*` ou JWT legado
+com `role=anon`; `sb_secret_*`, `service_role`, tokens `authenticated`/custom e
+chaves opacas inválidas falham antes da rede. Em projetos hospedados, o `ref`
+do JWT anon deve coincidir com o host. `lovable_fingerprint` usa o mesmo
+extrator fail-closed e apenas reporta candidatos privilegiados estaticamente.
+A validação é repetida na entrada dos runners antes de qualquer request.
+
+Estado da revisão manual em 2026-09-06: os 12 módulos anteriormente em
+“Falta muito” receberam correções de precisão, limites e resultados de execução.
+Sete passaram a Bom e um a Ótimo; quatro mantêm lacunas. A análise completa,
+as notas estimadas e os testes estão em
+[ANALISE-MODULOS-MODO-MANUAL.md](ANALISE-MODULOS-MODO-MANUAL.md).
+
+Na revisão atual, `api_contract_diff`, `robots_sitemap`,
+`cookie_session_audit` e `security_headers` permanecem **Top no código**
+(9/9/9/9). `api_contract_diff` usa snapshot schema 2/canonicalização 8,
+parser estrito para JSON/YAML, valida contexto e tipo das referências
+incorporadas e falha fechado quando a cobertura é incompleta. Dialetos de
+Schema desconhecidos também tornam a cobertura parcial. Referências externas
+são apenas detectadas, não dereferenciadas, e impedem baseline/diff. A coleta
+usa concorrência 2, serializa em modo stealth, limita cumulativamente contratos
+e baselines e preserva snapshots concluídos quando o deadline próprio expira;
+cancelamento do operador continua fatal. O ciclo SQLite foi exercitado por
+save/close/reopen/dispatcher/diff. PostgreSQL e Supabase têm contratos testados
+com adapters, sem instância remota real. Nenhum módulo é classificado como
+Excelente absoluto.
+
+Painéis/MySQL são inventário; leitura pública Firebase e correlação DOM não
+comprovam vulnerabilidade. `webshell_probe` não envia comandos. Falha/timeout de
+ffuf/dirsearch não aparece como busca concluída sem resultados. O Swarm está
+indisponível até haver enforcement do plano no motor; Autopilot é apenas prévia
+`dry-run`, sem importar exemplos como findings. Shannon solicita cancelamento
+Temporal, mas não atesta término remoto; `cleanup.confirmed=false` não deve ser
+interpretado como limpeza comprovada. Esta rodada foi verificada com fixtures,
+não com scanners em alvos externos.
+
+Pesquisa GitHub não transforma resultado de busca em segredo: o conteúdo é
+baixado com limite e precisa conter relação com o alvo e padrão de segredo. O
+clone local também é opt-in (`GHOSTRECON_GITHUB_CLONE_ENABLED=1`), usa
+diretórios `0700` e retenção padrão de 24 horas. Se o binário TruffleHog já
+estiver instalado, `GHOSTRECON_TRUFFLEHOG_LOCAL_ENABLED=1` habilita apenas scan
+`filesystem` dos clones locais, com `--no-verification`; nenhum segredo é
+enviado a provedores. `GHOSTRECON_TRUFFLEHOG_BIN` permite indicar o binário.
+O clone-fonte AGPL do TruffleHog e o KeyHunter não são incorporados ao runtime
+nem têm seus metadados Git removidos automaticamente.
+
 O timeout do Auto é aplicado por fase e os runners gerenciados possuem
-TERM→KILL. Ainda existem caminhos em que cancelamento/falha fatal é capturado,
-um módulo é marcado como `done` ou uma avaliação `partial` fecha a sessão como
-`completed`. A UI também abandona o stream em qualquer evento `error`, inclusive
-recuperável. Até a correção, o terminal exibido não é prova de conclusão real.
+TERM→KILL. Outcomes `done` com `partial:true` degradam a avaliação, falha fatal
+tem precedência sobre `partial` e status ausente não vira sucesso. A UI continua
+o NDJSON em erros recuperáveis e distingue `AUTO COMPLETO` de `AUTO PARCIAL`.
+Ainda assim, consumidores devem conferir os outcomes reais para medir cobertura.
 
 No RUN manual, qualquer módulo intrusivo encontrado depois da expansão de
 aliases, engines e dependências exige cumulativamente `recon.intrusive`,
-engagement formal ativo, ROE assinado, alvo dentro do escopo e da janela, além
-de `confirmActive` **e** uma aprovação emitida pelo servidor e vinculada ao
-plano; perfil `aggressive` não substitui esses gates. Isso inclui qualquer
+`confirmActive` **e** uma aprovação emitida pelo servidor e vinculada ao plano.
+Engagement é opcional nesse fluxo, mas, quando informado, ROE, janela, escopo e
+exclusões continuam obrigatórios e são revalidados. Isso inclui qualquer
 capacidade Vigolium já classificada como intrusiva quando solicitada.
 
 O protocolo do RUN intrusivo é
@@ -744,11 +856,11 @@ npm run test:mcp
 GHOSTRECON_NO_HTTP_LISTEN=1 node -e "import('./server/index.js').then(() => console.log('node app ok'))"
 ```
 
-O gate padrão `npm test` é hermético e exclui smokes de rede. Use
-`npm run test:network` somente em ambiente autorizado e controlado. O estado
-corrente do gate deve ser confirmado pela execução dos comandos acima; falhas
-temporárias não são documentadas aqui como contrato permanente.
-
+O gate hermético oficial é `npm test`; `pipeline-smoke.test.js` fica fora dele e
+somente entra em `npm run test:network`/`npm run test:all`. O gate Auto focado é
+`npm run test:auto:hermetic`. Use os gates de rede somente em ambiente autorizado
+e controlado. O estado corrente deve ser confirmado pela execução dos comandos
+acima; restrições temporárias do ambiente não são contrato permanente.
 
 Mocks e fixtures não substituem o E2E controlado de navegador, DAST,
 cancelamento, restart, contenção de escopo, redação e cleanup.

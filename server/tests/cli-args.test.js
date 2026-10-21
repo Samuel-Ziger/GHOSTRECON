@@ -111,7 +111,8 @@ test('CLI RUN não herda confirmação global e usa aprovação vinculada ao pla
   assert.doesNotMatch(source, /delete preflightBody\.vigoliumAuth/);
   assert.match(source, /requestPlanSpecificApproval\(preflight\.plan\)/);
   assert.match(source, /includeManualImplicit:\s*true/);
-  assert.match(source, /includeManualIntrusive:\s*Boolean\(opts\[['"]confirm-active['"]\]\)/);
+  assert.match(source, /includeManualIntrusive:\s*false/);
+  assert.doesNotMatch(source, /includeManualIntrusive:\s*Boolean\(opts\[['"]confirm-active['"]\]\)/);
   assert.match(source, /kaliMode:\s*Boolean\(opts\.kali\)/);
   assert.match(source, /body\.manualApproval/);
 });

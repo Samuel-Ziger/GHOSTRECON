@@ -5,12 +5,13 @@
 
 /**
  * @param {object} finding
- * @param {{ how?: string, relation?: string }} p
+ * @param {string | { how?: string, relation?: string }} p
  * @returns {object}
  */
 export function withProvenance(finding, p) {
-  const how = String(p?.how ?? '').trim();
-  const relation = String(p?.relation ?? '').trim();
+  const descriptor = typeof p === 'string' ? { how: p } : p || {};
+  const how = String(descriptor.how ?? finding?.provenance?.how ?? '').trim();
+  const relation = String(descriptor.relation ?? finding?.provenance?.relation ?? '').trim();
   if (!how && !relation) return finding;
   return {
     ...finding,

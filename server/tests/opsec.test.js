@@ -35,7 +35,7 @@ test('opsec: engine go/both expande gate Vigolium', () => {
   );
 });
 
-test('opsec: RUN manual expande capacidades implícitas e sentinel Kali antes dos gates', () => {
+test('opsec: modo Kali não injeta sentinel; plano depende dos módulos explícitos', () => {
   const expanded = expandIntrusiveRunModules({
     modules: ['security_headers'],
     includeManualImplicit: true,
@@ -44,12 +44,42 @@ test('opsec: RUN manual expande capacidades implícitas e sentinel Kali antes do
   });
   assert.deepEqual(
     expanded,
-    ['security_headers', ...MANUAL_IMPLICIT_CAPABILITIES, MANUAL_KALI_SENTINEL],
+    ['security_headers', ...MANUAL_IMPLICIT_CAPABILITIES],
   );
-  assert.equal(isIntrusive(MANUAL_KALI_SENTINEL), true);
+  assert.equal(isIntrusive(MANUAL_KALI_SENTINEL), false);
   for (const id of ['evidence_verification', 'active_param_discovery', 'browser_xss_verify']) {
     assert.equal(isIntrusive(id), true, id);
   }
+});
+
+test('opsec: login anônimo SMB/RPC/FTP torna follow-ups intrusivos', () => {
+  for (const id of [
+    'kali_nmap',
+    'nmap_cve_match',
+    'nmap_backport_review',
+    'mysql_3306_intel',
+  ]) {
+    assert.equal(isIntrusive(id), false, id);
+  }
+  assert.equal(isIntrusive('nmap_service_followups'), true);
+  assert.equal(isIntrusive('ftp_anonymous_audit'), true);
+  assert.equal(isIntrusive('ftp_write_probe'), true);
+  assert.equal(isIntrusive('kali_nmap_aggressive'), true);
+});
+
+test('opsec: dependências Nmap entram no plano efetivo antes dos gates', () => {
+  assert.deepEqual(
+    expandIntrusiveRunModules({ modules: ['nmap_service_followups'] }),
+    ['nmap_service_followups', 'kali_nmap'],
+  );
+  assert.deepEqual(
+    expandIntrusiveRunModules({ modules: ['ftp_write_probe'] }),
+    ['ftp_write_probe', 'kali_nmap', 'ftp_anonymous_audit'],
+  );
+  assert.deepEqual(
+    expandIntrusiveRunModules({ modules: ['ftp_anonymous_audit'] }),
+    ['ftp_anonymous_audit', 'kali_nmap'],
+  );
 });
 
 test('opsec: RUN sem confirmação mantém implícitas intrusivas fora do plano', () => {

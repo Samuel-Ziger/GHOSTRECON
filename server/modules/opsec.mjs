@@ -79,9 +79,8 @@ export const MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES = Object.freeze([
 ]);
 
 /**
- * `kaliMode` habilita uma fase legada inteira e não corresponde a um único
- * checkbox. O sentinel torna essa capacidade visível no plano, nos gates e na
- * aprovação vinculada ao hash.
+ * Sentinel histórico. O modo Kali agora é somente uma dependência de ambiente:
+ * as ferramentas executadas são determinadas pelos IDs de módulo explícitos.
  */
 export const MANUAL_KALI_SENTINEL = 'kali_active';
 
@@ -92,15 +91,16 @@ export const MANUAL_KALI_SENTINEL = 'kali_active';
 export const INTRUSIVE_MODULES = new Set([
   'sqlmap', 'nuclei', 'nuclei-aggressive', 'wpscan', 'ffuf', 'feroxbuster',
   'dirsearch', 'gobuster', 'nmap-aggressive', 'nmap-port-scan', 'nikto',
-  'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe', MANUAL_KALI_SENTINEL,
+  'xss-verify', 'lfi-verify', 'sqli-verify', 'webshell-probe',
   'info_disclosure_hunter', 'info-disclosure-hunter', 'info_disclosure_errors', 'info-disclosure-errors',
   'authz_matrix', 'cloud_bruteforce', 'cred_spray', 'dom_xss_verify',
   'active_param_discovery', 'browser_xss_verify', 'evidence_verification',
   'secret_validation',
-  'ftp_write_probe', 'kali_dalfox', 'kali_dirsearch', 'kali_ffuf',
-  'kali_nmap', 'kali_nmap_aggressive', 'kali_nmap_udp', 'kali_nuclei', 'kali_proxychains',
-  'kali_wifi', 'kali_wpscan', 'kali_xss_vibes', 'micro_exploit', 'mysql_3306_intel',
-  'nmap_backport_review', 'nmap_cve_match', 'nmap_service_followups', 'race_harness',
+  'ftp_anonymous_audit', 'ftp_write_probe', 'kali_dalfox', 'kali_dirsearch', 'kali_ffuf',
+  'kali_nmap_aggressive', 'kali_nmap_udp', 'kali_nuclei', 'kali_proxychains',
+  'kali_wifi', 'kali_wpscan', 'kali_xss_vibes', 'micro_exploit',
+  'nmap_service_followups',
+  'race_harness',
   'sandbox_exec', 'sandbox-exec', 'secret_validation', 'shannon_whitebox', 'verify_sqli_deep',
   'naabu-active', 'masscan',
   'vigolium-dast', 'vigolium_dast', 'vigolium-swarm', 'vigolium_swarm',
@@ -128,13 +128,33 @@ export function expandIntrusiveRunModules({
   kaliMode = false,
 } = {}) {
   const out = [...(Array.isArray(modules) ? modules : [])];
+  const normalizedRequested = new Set(
+    out.map((moduleId) => String(moduleId || '').trim().toLowerCase().replace(/-/g, '_')),
+  );
+  const needsNmapBase = [
+    'ftp_anonymous_audit',
+    'ftp_write_probe',
+    'mysql_3306_intel',
+    'nmap_backport_review',
+    'nmap_cve_match',
+    'nmap_service_followups',
+  ].some((moduleId) => normalizedRequested.has(moduleId));
+  if (needsNmapBase && !normalizedRequested.has('kali_nmap')) out.push('kali_nmap');
+  if (
+    normalizedRequested.has('ftp_write_probe')
+    && !normalizedRequested.has('ftp_anonymous_audit')
+  ) {
+    out.push('ftp_anonymous_audit');
+  }
   if (includeManualImplicit) {
     const intrusiveImplicit = new Set(MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES);
     out.push(...MANUAL_IMPLICIT_CAPABILITIES.filter((moduleId) => (
       includeManualIntrusive || !intrusiveImplicit.has(moduleId)
     )));
   }
-  if (kaliMode === true) out.push(MANUAL_KALI_SENTINEL);
+  // `kaliMode` não injeta mais uma capacidade oculta. Ele apenas informa ao
+  // runtime que as dependências Kali podem ser usadas para módulos selecionados.
+  void kaliMode;
   const e = String(engine || '').trim().toLowerCase();
   if (e === 'go' || e === 'both') out.push('vigolium_dast');
   const agent = String(vigoliumAgent || '').trim().toLowerCase();

@@ -91,6 +91,13 @@ export function buildModuleReadiness({
 }
 
 function withReadiness(module, readiness) {
+  if (normalizeModuleId(module.id) === 'vigolium_swarm') {
+    readiness = buildModuleReadiness({
+      available: false,
+      reason: 'Swarm indisponível: execução nativa não restrita ao plano aprovado',
+      checks: [{ id: 'native_plan_sealed', ok: false }],
+    });
+  }
   const resolved = readiness || buildModuleReadiness({
     available: module.available !== false,
     reason: module.unavailableReason || null,

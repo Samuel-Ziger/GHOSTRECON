@@ -107,7 +107,7 @@ test('resolveEffectiveIdentityConfig aplica request > módulo > env > defaults',
     env,
   });
   assert.equal(envWins.enabled, true);
-  assert.equal(envWins.rotation, 'random');
+  assert.equal(envWins.rotation, 'fixed');
   assert.equal(envWins.isolate, true);
   assert.equal(envWins.proxyPool.length, 1);
 
@@ -119,7 +119,7 @@ test('resolveEffectiveIdentityConfig aplica request > módulo > env > defaults',
   assert.equal(defaults.enabled, false);
   assert.equal(defaults.behavior, true);
   assert.deepEqual(defaults.proxyPool, []);
-  assert.equal(defaults.rotation, 'round_robin');
+  assert.equal(defaults.rotation, 'fixed');
   assert.equal(defaults.isolate, false);
 });
 
@@ -209,6 +209,113 @@ test('normalizeIdentityOptions: expõe rotação quando enviada no body', () => 
     proxyPool: ['127.0.0.1:8080'],
   }, { env: {} });
   assert.equal(out.enabled, true);
-  assert.equal(out.rotation, 'random');
+  assert.equal(out.rotation, 'fixed');
   assert.equal(out.proxyPool.length, 1);
+});
+
+test('identity-controller não repete 403 nem consome o body antecipadamente', async () => {
+  const requests = [];
+  const ctrl = createIdentityController({
+    enabled: true,
+    resolved: true,
+    behavior: true,
+    proxyPool: [],
+    rotation: 'round_robin',
+    runId: 'run-stable',
+    modules: [],
+    fetchImpl: async (_url, init) => {
+      requests.push(init);
+      return new Response('<html>Attention Required cloudflare challenge-platform</html>', {
+        status: 403,
+        headers: { 'content-type': 'text/html' },
+      });
+    },
+  });
+  const response = await ctrl.fetchHtmlProbe('https://target.test/', { headers: {} });
+  assert.equal(response.status, 403);
+  assert.equal(requests.length, 1);
+  assert.equal(ctrl.getStats().rotationStrategy, 'fixed');
+  assert.equal(ctrl.getStats().captchaResponses, 0);
+});
+
+test('identity-controller reutiliza e encerra dispatcher HTTP', async () => {
+  let created = 0;
+  let closed = 0;
+  const dispatcher = { close: async () => { closed += 1; } };
+  const ctrl = createIdentityController({
+    enabled: true,
+    resolved: true,
+    behavior: false,
+    proxyPool: ['http://127.0.0.1:8080'],
+    modules: [],
+    httpProxyDispatcherFactory: async () => {
+      created += 1;
+      return dispatcher;
+    },
+    fetchImpl: async (_url, init) => {
+      assert.equal(init.dispatcher, dispatcher);
+      return new Response(null, { status: 204 });
+    },
+  });
+  await ctrl.fetchHtmlProbe('https://target.test/');
+  await ctrl.fetchHtmlProbe('https://target.test/again');
+  assert.equal(created, 1);
+  await ctrl.dispose();
+  assert.equal(closed, 1);
+  await assert.rejects(() => ctrl.fetchHtmlProbe('https://target.test/after'), /encerrado/);
+});
+
+test('identity-controller registra Retry-After sem retry imediato', async () => {
+  let current = 1_000;
+  const sleeps = [];
+  const requests = [];
+  const ctrl = createIdentityController({
+    enabled: true,
+    resolved: true,
+    proxyPool: [],
+    rotation: 'fixed',
+    modules: [],
+    now: () => current,
+    sleepImpl: async (ms) => {
+      sleeps.push(ms);
+      current += ms;
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(init);
+      if (requests.length === 1) {
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '2' } });
+      }
+      return new Response('ok', { status: 200 });
+    },
+  });
+  assert.equal((await ctrl.fetchVerifyGet('https://target.test/a', {})).status, 429);
+  assert.equal(requests.length, 1);
+  assert.equal((await ctrl.fetchVerifyGet('https://target.test/b', {})).status, 200);
+  assert.equal(requests.length, 2);
+  assert.ok(sleeps.some((ms) => ms >= 2_000));
+  assert.equal(requests[0].headers['User-Agent'], requests[1].headers['User-Agent']);
+});
+
+test('identity-controller cancela espera de backoff antes da próxima rede', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  let releaseSleep;
+  const ctrl = createIdentityController({
+    enabled: true,
+    resolved: true,
+    proxyPool: [],
+    modules: [],
+    now: () => 1_000,
+    sleepImpl: () => new Promise((resolve) => { releaseSleep = resolve; }),
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response('rate', { status: 429, headers: { 'retry-after': '30' } });
+    },
+  });
+  await ctrl.fetchVerifyGet('https://target.test/first', {});
+  const pending = ctrl.fetchVerifyGet('https://target.test/second', { signal: controller.signal });
+  controller.abort(new Error('operator stop'));
+  await assert.rejects(pending, /operator stop/);
+  releaseSleep?.();
+  assert.equal(calls, 1);
 });

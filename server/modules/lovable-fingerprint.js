@@ -3,11 +3,17 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { parseSourceMap } from './js-intel.mjs';
 import { detectCatchAll, matchesCatchAll } from './catchall-detect.mjs';
+import { readResponseSnippet } from './module-runner.mjs';
 import {
   combineAbortSignals,
   isAbortError,
   throwIfAborted,
 } from './http-utils.js';
+import {
+  detectServiceRoleExposure,
+  extractSupabaseCredentials,
+} from './supabase-rls-audit.mjs';
+import { redactAutoText, redactAutoValue } from '../auto-agent/redaction.mjs';
 
 /**
  * lovable-fingerprint.js
@@ -24,13 +30,13 @@ const COMMON_TABLES = [
 ];
 
 const COMMON_DOTFILES = [
-  { path: '/.env', severity: 'critical', label: 'dotenv' },
-  { path: '/.env.production', severity: 'critical', label: 'dotenv-prod' },
-  { path: '/.env.local', severity: 'critical', label: 'dotenv-local' },
-  { path: '/.git/config', severity: 'high', label: 'git-config' },
-  { path: '/.git/HEAD', severity: 'high', label: 'git-head' },
-  { path: '/package.json', severity: 'medium', label: 'package-json' },
-  { path: '/package-lock.json', severity: 'low', label: 'package-lock' },
+  { path: '/.env', severity: 'critical', label: 'dotenv', signature: /(?:^|\n)[A-Z][A-Z0-9_]{2,}\s*=\s*[^\n]+/ },
+  { path: '/.env.production', severity: 'critical', label: 'dotenv-prod', signature: /(?:^|\n)[A-Z][A-Z0-9_]{2,}\s*=\s*[^\n]+/ },
+  { path: '/.env.local', severity: 'critical', label: 'dotenv-local', signature: /(?:^|\n)[A-Z][A-Z0-9_]{2,}\s*=\s*[^\n]+/ },
+  { path: '/.git/config', severity: 'high', label: 'git-config', signature: /^\s*\[(?:core|remote\s+"[^"]+")\]/m },
+  { path: '/.git/HEAD', severity: 'high', label: 'git-head', signature: /^\s*(?:ref:\s+refs\/|[a-f0-9]{40,64}\s*$)/im },
+  { path: '/package.json', severity: 'medium', label: 'package-json', signature: /"(?:name|version|scripts|dependencies)"\s*:/ },
+  { path: '/package-lock.json', severity: 'low', label: 'package-lock', signature: /"lockfileVersion"\s*:/ },
 ];
 
 const COMMON_AUTHLESS_ENDPOINTS = [
@@ -48,7 +54,6 @@ const REQUIRED_SECURITY_HEADERS = [
 
 const SECRET_PATTERNS = [
   { name: 'stripe_secret', re: /\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b/g, severity: 'critical' },
-  { name: 'supabase_jwt', re: /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, severity: 'high' },
   { name: 'resend_key', re: /\bre_[A-Za-z0-9]{20,}\b/g, severity: 'high' },
   { name: 'openai_key', re: /\bsk-[A-Za-z0-9_-]{32,}\b/g, severity: 'high' },
 ];
@@ -86,6 +91,35 @@ function maskSecret(value) {
   return `${s.slice(0, 12)}...${s.slice(-10)}`;
 }
 
+function redactLovableEvidenceText(value) {
+  let text = String(value || '')
+    .replace(SUPABASE_JWT_RE, '[REDACTED_JWT]')
+    .replace(/\bsb_(?:secret|publishable)_[A-Za-z0-9_-]{8,512}\b/gi, '[REDACTED_SUPABASE_KEY]');
+  for (const pattern of SECRET_PATTERNS) {
+    text = text.replace(pattern.re, '[REDACTED_SECRET]');
+  }
+  return redactAutoText(text, process.env, { cloud: false });
+}
+
+function sanitizeJwtClaims(claims) {
+  if (!claims || typeof claims !== 'object' || Array.isArray(claims)) return null;
+  const out = {};
+  for (const key of ['role', 'ref', 'iss', 'aud', 'exp', 'iat', 'nbf']) {
+    const value = claims[key];
+    if (typeof value === 'string') {
+      out[key] = redactLovableEvidenceText(value).slice(0, 300);
+    } else if (Number.isFinite(value)) {
+      out[key] = value;
+    } else if (key === 'aud' && Array.isArray(value)) {
+      out[key] = value
+        .filter((item) => typeof item === 'string')
+        .slice(0, 8)
+        .map((item) => redactLovableEvidenceText(item).slice(0, 120));
+    }
+  }
+  return out;
+}
+
 function htmlEscape(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -110,7 +144,7 @@ function snippetAround(text, index, secret, span = 340) {
   const body = String(text || '');
   const start = Math.max(0, index - span);
   const end = Math.min(body.length, index + String(secret || '').length + span);
-  return body.slice(start, end).replaceAll(String(secret || ''), maskSecret(secret));
+  return redactLovableEvidenceText(body.slice(start, end));
 }
 
 function collectSupabaseJwtEvidence({ targetUrl, rootText, bundles }) {
@@ -121,9 +155,10 @@ function collectSupabaseJwtEvidence({ targetUrl, rootText, bundles }) {
   const seen = new Set();
   const out = [];
   for (const source of sources) {
+    if (out.length >= 64) break;
     SUPABASE_JWT_RE.lastIndex = 0;
     let m;
-    while ((m = SUPABASE_JWT_RE.exec(source.text)) !== null) {
+    while (out.length < 64 && (m = SUPABASE_JWT_RE.exec(source.text)) !== null) {
       const token = m[0];
       const hash = sha256Hex(token);
       if (seen.has(hash)) continue;
@@ -131,10 +166,10 @@ function collectSupabaseJwtEvidence({ targetUrl, rootText, bundles }) {
       const claims = decodeJwtPayload(token);
       out.push({
         source: source.label,
-        sourceUrl: source.url,
+        sourceUrl: redactLovableEvidenceText(source.url),
         masked: maskSecret(token),
         hash,
-        claims,
+        claims: sanitizeJwtClaims(claims),
         snippet: snippetAround(source.text, m.index, token),
       });
     }
@@ -174,19 +209,21 @@ async function writeSupabasePocPage({
   const rlsRows = Array.isArray(context?.rlsBrokenDetails)
     ? context.rlsBrokenDetails
     : (context?.rlsBrokenTables || []).map((table) => ({ table, status: 200 }));
-  const payload = {
+  const safeEvidence = Array.isArray(evidence) ? evidence.slice(0, 64) : [];
+  const payload = redactAutoValue({
     generatedAt: new Date().toISOString(),
-    targetUrl,
-    supabaseUrl,
-    anonKeyClaims: context?.anonKeyClaims || null,
+    targetUrl: redactLovableEvidenceText(targetUrl),
+    supabaseUrl: redactLovableEvidenceText(supabaseUrl),
+    anonKeyClaims: sanitizeJwtClaims(context?.anonKeyClaims),
     bundlesScanned: context?.bundlesScanned || 0,
     secretsFound: context?.secretsFound || [],
     rlsBrokenTables: rlsRows,
-    evidence,
+    evidence: safeEvidence,
     storesRawSecrets: false,
-  };
+  }, { cloud: false });
+  const safeRlsRows = Array.isArray(payload.rlsBrokenTables) ? payload.rlsBrokenTables : [];
   const json = JSON.stringify(payload, null, 2);
-  const evidenceBlocks = evidence.map((ev) => `
+  const evidenceBlocks = safeEvidence.map((ev) => `
     <section class="card">
       <div class="kv"><strong>Origem</strong><span>${htmlEscape(ev.source)} · <a href="${htmlEscape(ev.sourceUrl)}">${htmlEscape(ev.sourceUrl)}</a></span></div>
       <div class="kv"><strong>JWT</strong><code>${htmlEscape(ev.masked)}</code></div>
@@ -194,8 +231,8 @@ async function writeSupabasePocPage({
       <div class="kv"><strong>Claims</strong><pre>${htmlEscape(JSON.stringify(ev.claims || {}, null, 2))}</pre></div>
       <div class="kv block"><strong>Trecho preservado</strong><pre>${htmlEscape(ev.snippet)}</pre></div>
     </section>`).join('\n');
-  const rlsBlocks = rlsRows.length
-    ? rlsRows.map((r) => `
+  const rlsBlocks = safeRlsRows.length
+    ? safeRlsRows.map((r) => `
       <tr>
         <td>${htmlEscape(r.table)}</td>
         <td>${htmlEscape(r.status)}</td>
@@ -237,8 +274,8 @@ async function writeSupabasePocPage({
   </header>
   <main>
     <section class="card warn">
-      <div class="kv"><strong>Alvo</strong><a href="${htmlEscape(targetUrl)}">${htmlEscape(targetUrl)}</a></div>
-      <div class="kv"><strong>Supabase</strong><a href="${htmlEscape(supabaseUrl || '')}">${htmlEscape(supabaseUrl || 'nao identificado')}</a></div>
+      <div class="kv"><strong>Alvo</strong><a href="${htmlEscape(payload.targetUrl)}">${htmlEscape(payload.targetUrl)}</a></div>
+      <div class="kv"><strong>Supabase</strong><a href="${htmlEscape(payload.supabaseUrl || '')}">${htmlEscape(payload.supabaseUrl || 'nao identificado')}</a></div>
       <div class="kv"><strong>Bundles lidos</strong><span>${htmlEscape(context?.bundlesScanned || 0)}</span></div>
       <div class="kv"><strong>Segredos crus</strong><span class="pill">nao armazenados</span></div>
     </section>
@@ -265,16 +302,6 @@ async function writeSupabasePocPage({
   return { path: fullPath, file };
 }
 
-function withParentSignal(fetchImpl, signal) {
-  const f = fetchImpl || globalThis.fetch;
-  if (!signal) return f;
-  return (url, init = {}) => {
-    const signals = [signal, init?.signal].filter(Boolean);
-    const mergedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-    return f(url, { ...init, signal: mergedSignal });
-  };
-}
-
 function ensureUrlAllowed(url, urlAllowed) {
   if (typeof urlAllowed === 'function' && urlAllowed(url) !== true) {
     const error = new Error(`out_of_scope: ${url}`);
@@ -289,14 +316,18 @@ async function safeFetch(url, opts, fetchImpl, signal = null, urlAllowed = null)
   throwIfAborted(signal);
   ensureUrlAllowed(url, urlAllowed);
   const requestSignal = combineAbortSignals(signal, opts?.timeout ?? 12000);
-  return f(url, { ...(opts || {}), signal: requestSignal });
+  const res = await f(url, { redirect: 'manual', ...(opts || {}), signal: requestSignal });
+  if (res?.url) ensureUrlAllowed(res.url, urlAllowed);
+  return res;
 }
 
 async function fetchText(url, fetchImpl, headers, signal = null, urlAllowed = null) {
   try {
     const res = await safeFetch(url, { headers: headers || {} }, fetchImpl, signal, urlAllowed);
     if (!res.ok) return { status: res.status, text: '' };
-    return { status: res.status, text: await res.text() };
+    const length = Number(res.headers?.get?.('content-length') || 0);
+    if (length > 1024 * 1024) return { status: res.status, text: '' };
+    return { status: res.status, text: await readResponseSnippet(res, 1024 * 1024) };
   } catch (error) {
     if (isAbortError(error, signal)) throw error;
     return { status: 0, text: '' };
@@ -306,7 +337,9 @@ async function fetchText(url, fetchImpl, headers, signal = null, urlAllowed = nu
 async function fetchWithHeaders(url, fetchImpl, headers, signal = null, urlAllowed = null) {
   try {
     const res = await safeFetch(url, { headers: headers || {} }, fetchImpl, signal, urlAllowed);
-    return { status: res.status, headers: res.headers, text: await res.text() };
+    const length = Number(res.headers?.get?.('content-length') || 0);
+    if (length > 1024 * 1024) return { status: res.status, headers: res.headers, text: '' };
+    return { status: res.status, headers: res.headers, text: await readResponseSnippet(res, 1024 * 1024) };
   } catch (error) {
     if (isAbortError(error, signal)) throw error;
     return { status: 0, headers: null, text: '' };
@@ -337,7 +370,7 @@ function isLovableHost(targetUrl) {
 }
 
 function makeFinding({ type, value, score = 50, url, meta, owasp, mitre }) {
-  const prio = score >= 85 ? 'critical' : score >= 70 ? 'high' : score >= 50 ? 'medium' : score >= 30 ? 'low' : 'info';
+  const prio = score >= 85 ? 'critical' : score >= 70 ? 'high' : score >= 50 ? 'med' : score >= 30 ? 'low' : 'info';
   return { type, value, score, prio, url, meta, owasp, mitre, source: 'lovable-fingerprint' };
 }
 
@@ -392,7 +425,12 @@ async function probeSupabaseTables({
   urlAllowed = null,
 }) {
   const out = [];
-  for (const table of (tables || COMMON_TABLES)) {
+  const tableCandidates = [...new Set(
+    (Array.isArray(tables) ? tables : COMMON_TABLES)
+      .map((table) => String(table || '').trim())
+      .filter((table) => /^[A-Za-z_][A-Za-z0-9_]{0,79}$/.test(table)),
+  )].slice(0, 40);
+  for (const table of tableCandidates) {
     throwIfAborted(signal);
     const url = `${supabaseUrl}/rest/v1/${encodeURIComponent(table)}?select=*&limit=1`;
     try {
@@ -400,7 +438,7 @@ async function probeSupabaseTables({
         headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Accept-Profile': 'public' },
       }, fetchImpl, signal, urlAllowed);
       if (res.status === 200) {
-        const text = await res.text();
+        const text = await readResponseSnippet(res, 256 * 1024);
         let rows = [];
         try {
           const parsed = JSON.parse(text);
@@ -409,7 +447,7 @@ async function probeSupabaseTables({
           rows = [];
         }
         const columns = rows[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]).slice(0, 24) : [];
-        out.push({ table, status: 200, url, rowCount: rows.length, columns });
+        if (rows.length > 0) out.push({ table, status: 200, url, rowCount: rows.length, columns });
       }
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
@@ -419,7 +457,38 @@ async function probeSupabaseTables({
   return out;
 }
 
-async function probeDotfiles({ targetUrl, fetchImpl, signal = null, urlAllowed = null }) {
+async function discoverSupabaseTables({ supabaseUrl, anonKey, fetchImpl, signal, urlAllowed }) {
+  const url = `${supabaseUrl}/rest/v1/`;
+  try {
+    const res = await safeFetch(url, {
+      headers: {
+        apikey: anonKey,
+        Authorization: `Bearer ${anonKey}`,
+        Accept: 'application/openapi+json,application/json',
+      },
+    }, fetchImpl, signal, urlAllowed);
+    if (res.status !== 200) return [];
+    const body = await readResponseSnippet(res, 512 * 1024);
+    const doc = JSON.parse(body);
+    const names = new Set();
+    for (const route of Object.keys(doc?.paths || {})) {
+      const match = route.match(/^\/([^/?{}]+)$/);
+      if (match) names.add(decodeURIComponent(match[1]));
+    }
+    return [...names].filter((name) => /^[a-zA-Z0-9_]{1,80}$/.test(name)).slice(0, 40);
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
+    return [];
+  }
+}
+
+async function probeDotfiles({
+  targetUrl,
+  fetchImpl,
+  catchAllSig = null,
+  signal = null,
+  urlAllowed = null,
+}) {
   const out = [];
   for (const entry of COMMON_DOTFILES) {
     throwIfAborted(signal);
@@ -433,9 +502,14 @@ async function probeDotfiles({ targetUrl, fetchImpl, signal = null, urlAllowed =
         urlAllowed,
       );
       if (res.status !== 200) continue;
-      const body = await res.text();
+      const length = Number(res.headers?.get?.('content-length') || 0);
+      if (length > 256 * 1024) continue;
+      const body = await readResponseSnippet(res, 256 * 1024);
+      const contentType = (res.headers?.get?.('content-type') || '').toLowerCase();
+      if (matchesCatchAll(catchAllSig, { status: res.status, contentType, body })) continue;
       if (/<html[\s>]/i.test(body)) continue;
-      out.push({ ...entry, url, bodySize: body.length, contentType: (res.headers?.get?.('content-type') || '').toLowerCase() });
+      if (!entry.signature.test(body)) continue;
+      out.push({ ...entry, signature: undefined, url, bodySize: body.length, contentType });
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
       // ignore
@@ -466,7 +540,9 @@ async function probeSourceMaps({
         urlAllowed,
       );
       if (res.status !== 200) continue;
-      const body = await res.text();
+      const length = Number(res.headers?.get?.('content-length') || 0);
+      if (length > 1024 * 1024) continue;
+      const body = await readResponseSnippet(res, 1024 * 1024);
       const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
       // SPA/catch-all devolve o index.html com 200 — não é um source map real.
       if (matchesCatchAll(catchAllSig, { status: res.status, contentType: ct, body })) continue;
@@ -496,6 +572,7 @@ async function probeCorsPermissive({
 }) {
   try {
     const origin = 'https://evil.example';
+    const secondOrigin = 'https://unrelated.invalid';
     const res = await safeFetch(
       targetUrl,
       { headers: { Origin: origin } },
@@ -503,12 +580,20 @@ async function probeCorsPermissive({
       signal,
       urlAllowed,
     );
+    const second = await safeFetch(
+      targetUrl,
+      { headers: { Origin: secondOrigin } },
+      fetchImpl,
+      signal,
+      urlAllowed,
+    );
     const acao = res.headers?.get?.('access-control-allow-origin') || '';
+    const secondAcao = second.headers?.get?.('access-control-allow-origin') || '';
     const acc = (res.headers?.get?.('access-control-allow-credentials') || '').toLowerCase() === 'true';
     return {
       wildcard: acao === '*',
-      reflected: acao === origin,
-      originReflected: acao === origin ? origin : null,
+      reflected: acao === origin && secondAcao === secondOrigin,
+      originReflected: acao === origin && secondAcao === secondOrigin ? 'two_unrelated_origins' : null,
       allowCredentials: acc,
     };
   } catch (error) {
@@ -537,7 +622,7 @@ async function probeAuthlessEndpoints({
         urlAllowed,
       );
       if (res.status >= 200 && res.status < 300) {
-        const body = await res.text();
+        const body = await readResponseSnippet(res, 256 * 1024);
         const ct = (res.headers?.get?.('content-type') || '').toLowerCase();
         // SPA/catch-all (200 + index.html) não é um endpoint de API exposto.
         if (matchesCatchAll(catchAllSig, { status: res.status, contentType: ct, body })) continue;
@@ -628,28 +713,40 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     context.secretsFound = secretFindings.map((s) => s.meta?.secretType);
   }
 
-  const supabaseUrl = extractMatches(joined, SUPABASE_URL_RE)[0] || null;
-  const jwtCandidates = extractMatches(joined, SUPABASE_JWT_RE);
-  let anonKey = null;
-  let anonClaims = null;
-  for (const jwt of jwtCandidates) {
-    const claims = decodeJwtPayload(jwt);
-    if (claims?.role === 'anon' || claims?.iss?.includes('supabase')) {
-      anonKey = jwt;
-      anonClaims = claims;
-      break;
-    }
-  }
+  // Uma única seleção fail-closed é compartilhada com o auditor geral:
+  // somente sb_publishable_* ou JWT legado role=anon podem alimentar requests.
+  const extractedSupabase = extractSupabaseCredentials(joined);
+  const supabaseUrl = extractedSupabase.supabaseUrl
+    || extractMatches(joined, SUPABASE_URL_RE)[0]
+    || null;
+  const anonKey = extractedSupabase.anonKey || null;
+  const anonClaims = anonKey?.startsWith('eyJ') ? decodeJwtPayload(anonKey) : null;
   context.supabaseUrl = supabaseUrl;
   context.anonKey = anonKey;
-  context.anonKeyClaims = anonClaims;
-  context.bundleText = joined.slice(0, 800_000);
+  context.anonKeyClaims = sanitizeJwtClaims(anonClaims);
+  // O auditor Supabase ainda precisa do bundle cru durante este RUN, mas ele
+  // não pode atravessar JSON/eventos/snapshots por acidente.
+  Object.defineProperty(context, 'bundleText', {
+    value: joined.slice(0, 800_000),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+
+  const privilegedCandidates = detectServiceRoleExposure(joined, { anonKey });
+  if (privilegedCandidates.length) {
+    findings.push(...privilegedCandidates);
+    context.secretsFound = [...new Set([
+      ...context.secretsFound,
+      'supabase_privileged_key_candidate',
+    ])];
+  }
 
   if (supabaseUrl) {
     findings.push(makeFinding({
       type: 'supabase_url_exposed',
       value: `Endpoint Supabase no cliente: ${supabaseUrl}`,
-      score: 30,
+      score: 16,
       url: supabaseUrl,
       meta: { source: 'bundle/html' },
       owasp: 'A05:2021',
@@ -659,11 +756,17 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
 
   if (anonKey) {
     findings.push(makeFinding({
-      type: 'supabase_anon_key_exposed',
-      value: 'Anon key JWT encontrada no bundle cliente',
-      score: 45,
+      type: 'supabase_anon_key_inventory',
+      value: 'Anon/publishable key Supabase encontrada no cliente (inventário esperado)',
+      score: 12,
       url: targetUrl,
-      meta: { role: anonClaims?.role, ref: anonClaims?.ref, iat: anonClaims?.iat },
+      meta: {
+        role: anonClaims?.role,
+        ref: anonClaims?.ref,
+        iat: anonClaims?.iat,
+        evidenceStatus: 'inventory',
+        note: 'Chaves anon/publishable são públicas por design; a segurança depende de RLS/policies.',
+      },
       owasp: 'A05:2021',
       mitre: 'T1552',
     }));
@@ -674,11 +777,14 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     || typeof urlAllowed !== 'function'
     || urlAllowed(supabaseUrl) === true;
   if (probeRls && supabaseUrl && anonKey && supabaseProbeAllowed) {
+    const tables = Array.isArray(opts.tables)
+      ? opts.tables
+      : await discoverSupabaseTables({ supabaseUrl, anonKey, fetchImpl, signal, urlAllowed });
     const broken = await probeSupabaseTables({
       supabaseUrl,
       anonKey,
       fetchImpl,
-      tables: opts.tables || COMMON_TABLES,
+      tables,
       signal,
       urlAllowed,
     });
@@ -687,10 +793,17 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     if (broken.length) {
       findings.push(makeFinding({
         type: 'supabase_rls_bypass_suspected',
-        value: `Tabelas acessiveis com anon key sem autenticacao: ${broken.map((b) => b.table).join(', ')}`,
-        score: broken.length >= 2 ? 92 : 82,
+        value: `Dados retornados com anon key em ${broken.length} tabela(s): ${broken.map((b) => b.table).join(', ')}`,
+        score: broken.some((b) => b.columns.some((c) => /email|token|secret|password|role|payment/i.test(c))) ? 56 : 28,
         url: `${supabaseUrl}/rest/v1/`,
-        meta: { tables: broken, cve: 'CVE-2025-48757' },
+        meta: {
+          tables: broken,
+          evidenceStatus: 'observed_rows',
+          confidence: 'medium',
+          accessPolicyVerified: false,
+          impactVerified: false,
+          note: 'Confirmar se as linhas são intencionalmente públicas antes de classificar como falha de RLS.',
+        },
         owasp: 'A01:2021',
         mitre: 'T1190',
       }));
@@ -699,7 +812,13 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
 
   if (probeMisconfig) {
     // Assinatura de catch-all/soft-404: evita FP em probes baseados em status 200.
-    const scopedFetch = withParentSignal(fetchImpl, signal);
+    const scopedFetch = (url, init = {}) => safeFetch(
+      url,
+      { ...init, redirect: 'manual' },
+      fetchImpl,
+      signal,
+      urlAllowed,
+    );
     const catchAllSig = await detectCatchAll(targetUrl, scopedFetch).catch((error) => {
       if (isAbortError(error, signal)) throw error;
       return null;
@@ -707,7 +826,7 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     throwIfAborted(signal);
     context.catchAll = !!(catchAllSig && catchAllSig.catchAll);
 
-    const dotfiles = await probeDotfiles({ targetUrl, fetchImpl, signal, urlAllowed });
+    const dotfiles = await probeDotfiles({ targetUrl, fetchImpl, catchAllSig, signal, urlAllowed });
     context.dotfilesExposed = dotfiles.map((d) => d.path);
     findings.push(...dotfiles.map((d) => makeFinding({
       type: 'dotfile_exposed',
@@ -731,9 +850,14 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     findings.push(...maps.map((m) => makeFinding({
       type: 'source_map_exposed',
       value: `Source map publico: ${m.mapPath} (${m.sources} fonte(s))`,
-      score: m.internal?.length ? 62 : 58,
+      score: m.internal?.length ? 48 : 38,
       url: m.mapUrl,
-      meta: `jsPath=${m.jsPath} - sources=${m.sources}${m.internal?.length ? ` - internal=${m.internal.join(',')}` : ''}`,
+      meta: {
+        jsPath: m.jsPath,
+        sources: m.sources,
+        internal: m.internal,
+        evidenceStatus: 'observed_inventory',
+      },
       owasp: 'A05:2021',
       mitre: 'T1592',
     })));
@@ -743,10 +867,15 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     if (cors.wildcard || cors.reflected) {
       findings.push(makeFinding({
         type: 'cors_misconfiguration',
-        value: cors.wildcard ? 'CORS permissivo: Access-Control-Allow-Origin=*' : `CORS refletindo Origin arbitraria (${cors.originReflected})`,
-        score: cors.allowCredentials ? 78 : 62,
+        value: cors.wildcard
+          ? 'CORS wildcard observado (inventário; pode ser intencional)'
+          : 'CORS reflete duas origens não relacionadas (candidato)',
+        score: cors.reflected && cors.allowCredentials ? 58 : 18,
         url: targetUrl,
-        meta: cors,
+        meta: {
+          ...cors,
+          evidenceStatus: cors.reflected && cors.allowCredentials ? 'unauthenticated_candidate' : 'inventory',
+        },
         owasp: 'A05:2021',
         mitre: 'T1190',
       }));
@@ -761,11 +890,17 @@ export async function fingerprintLovable(targetUrl, opts = {}) {
     });
     context.authlessEndpoints = authless.map((a) => a.path);
     findings.push(...authless.map((a) => makeFinding({
-      type: 'auth_missing_endpoint',
-      value: `Endpoint potencialmente sensivel sem auth: ${a.path} (HTTP ${a.status})`,
-      score: 80,
+      type: 'auth_endpoint_inventory',
+      value: `Endpoint respondeu sem contexto autenticado: ${a.path} (HTTP ${a.status})`,
+      score: 22,
       url: a.url,
-      meta: { path: a.path, contentType: a.contentType, bodySize: a.bodySize },
+      meta: {
+        path: a.path,
+        contentType: a.contentType,
+        bodySize: a.bodySize,
+        evidenceStatus: 'unauthenticated_inventory',
+        note: 'Resposta 2xx não prova ausência de autorização nem sensibilidade dos dados.',
+      },
       owasp: 'A07:2021',
       mitre: 'T1078',
     })));
@@ -835,6 +970,7 @@ export const _internals = {
   isLovableMarkup,
   probeDotfiles,
   probeSourceMaps,
+  probeSupabaseTables,
   probeCorsPermissive,
   probeAuthlessEndpoints,
   analyzeSecurityHeadersFromResponse,

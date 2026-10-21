@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { readFile, writeFile, mkdtemp, rm } from 'fs/promises';
+import { readFile, writeFile, mkdtemp, rm, stat } from 'fs/promises';
 import { join, delimiter } from 'path';
 import { tmpdir } from 'os';
 import net from 'node:net';
@@ -16,8 +16,14 @@ import {
 import { hostLiteralForUrl } from './recon-target.js';
 import { buildMysql3306IntelFindings } from './mysql-nmap-intel.js';
 import { probeFtpAnonymousWritable } from './ftp-anon-write-probe.js';
+import {
+  ftpAnonymousLoginFinding,
+  isFtpServiceRow,
+  probeFtpAnonymousLogin,
+} from './ftp-anonymous-login.mjs';
 import { postFtpAnonymousWritableCriticalWebhook } from './webhook-notify.js';
 import { positiveIntEnv, runProcess } from './module-runner.mjs';
+import { throwIfAborted } from './http-utils.js';
 
 const WORDLISTS = [
   '/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt',
@@ -25,9 +31,6 @@ const WORDLISTS = [
   '/usr/share/wordlists/dirb/common.txt',
 ];
 
-const XSS_VIBES_DIR = join(process.cwd(), 'Xss', 'xss_vibes');
-const XSS_VIBES_MAIN = join(XSS_VIBES_DIR, 'main.py');
-const XSS_VIBES_PAYLOADS = join(XSS_VIBES_DIR, 'payloads.json');
 const INFO_DISCLOSURE_SCRIPT = join(process.cwd(), 'tools/info-disclosure/information_disclosure.py');
 const INFO_DISCLOSURE_SAFE_MODULES = ['headers', 'files', 'listing', 'comments', 'metadata'];
 const INFO_DISCLOSURE_ERROR_MODULE = 'errors';
@@ -156,7 +159,8 @@ export async function getKaliCapabilities({ signal = null } = {}) {
     python3,
     python,
     info_disclosure_hunter: (python3 || python) && fs.existsSync(INFO_DISCLOSURE_SCRIPT),
-    xss_vibes: (python3 || python) && fs.existsSync(XSS_VIBES_MAIN) && fs.existsSync(XSS_VIBES_PAYLOADS),
+    // Implementação interna segura; não depende do scanner Python legado.
+    xss_vibes: true,
   };
 
   const ready = qualifyDistro && tools.nmap;
@@ -190,10 +194,15 @@ function runProc(cmd, args, timeoutMs, spawnOpts = {}, execOpts = {}) {
 }
 
 function isProcessAbort(error) {
-  return error?.name === 'AbortError' || error?.code === 'PROCESS_ABORTED';
+  return error?.name === 'AbortError'
+    || error?.code === 'PROCESS_ABORTED'
+    || error?.code === 'PROCESS_UNTERMINATED'
+    || error?.fatal === true;
 }
 
 const AUTO_TCP_NMAP_CAPABILITIES = new Set([
+  'ftp_anonymous_audit',
+  'kali_nmap',
   'kali_nmap_aggressive',
   'kali_nmap_udp',
   'nmap_cve_match',
@@ -203,12 +212,11 @@ const AUTO_TCP_NMAP_CAPABILITIES = new Set([
 ]);
 
 /**
- * O RUN manual mantém o nmap TCP base ligado quando entra no modo Kali.
- * No Auto, `kaliMode` é apenas uma dependência de ambiente: o scan só pode
- * ocorrer quando o plano congelado contém uma capacidade que depende dele.
+ * Em qualquer entrada, `kaliMode` é apenas uma dependência de ambiente: o
+ * scan só pode ocorrer quando o plano contém uma capacidade que depende dele.
  */
 export function shouldRunKaliTcpBase({ autoModeExecution = false, modules = [] } = {}) {
-  if (autoModeExecution !== true) return true;
+  void autoModeExecution;
   return (Array.isArray(modules) ? modules : []).some((id) =>
     AUTO_TCP_NMAP_CAPABILITIES.has(String(id || '').trim().toLowerCase()),
   );
@@ -222,16 +230,120 @@ export function resolveKaliExecutionPolicy({ autoModeExecution = false, modules 
   );
   const manual = autoModeExecution !== true;
   return Object.freeze({
-    runNmapBase: manual || [...AUTO_TCP_NMAP_CAPABILITIES].some((id) => selected.has(id)),
-    runWhois: manual || selected.has('kali_whois'),
-    runWpscan: manual || selected.has('kali_wpscan'),
-    runDalfox: manual || selected.has('kali_dalfox'),
-    runXssVibes: manual || selected.has('kali_xss_vibes'),
-    allowNmapServiceFollowups: manual || selected.has('nmap_service_followups'),
+    runNmapBase: [...AUTO_TCP_NMAP_CAPABILITIES].some((id) => selected.has(id))
+      || (manual && selected.has('ftp_write_probe')),
+    runWhois: selected.has('kali_whois'),
+    runWpscan: selected.has('kali_wpscan'),
+    runDalfox: selected.has('kali_dalfox'),
+    allowNmapServiceFollowups: selected.has('nmap_service_followups'),
+    // Caminho FTP para programas autorizados: apenas USER/PASS anonymous e
+    // QUIT. Não habilita os follow-ups SMB/RPC/searchsploit nem qualquer write.
+    allowFtpAnonymousAudit: selected.has('ftp_anonymous_audit')
+      || (manual && selected.has('ftp_write_probe')),
     // Escrita remota permanece separada dos follow-ups de leitura.
     // O Auto nunca recebe esta capacidade, mesmo se um override escapar ao catálogo.
     allowFtpWriteProbe: manual && selected.has('ftp_write_probe'),
   });
+}
+
+export function classifyFtpAnonymousAuditOutcome(
+  summary = {},
+  { enabled = true, nmapState = 'done' } = {},
+) {
+  if (!enabled) return { status: 'skipped', reason: 'not_selected', partial: false };
+  if (nmapState === 'timeout') return { status: 'timeout', reason: 'nmap_timeout', partial: false };
+  if (nmapState === 'failed') return { status: 'failed', reason: 'nmap_failed', partial: false };
+  if (nmapState === 'cancelled') return { status: 'cancelled', reason: 'operation_cancelled', partial: false };
+  if (nmapState === 'skipped') return { status: 'skipped', reason: 'nmap_unavailable_or_no_scoped_hosts', partial: false };
+
+  const confirmed = Number(summary.confirmed) || 0;
+  const denied = Number(summary.denied) || 0;
+  const timeouts = Number(summary.timeouts) || 0;
+  const failed = Number(summary.failed) || 0;
+  const skipped = Number(summary.skipped) || 0;
+  const cleanupUnconfirmed = Number(summary.cleanupUnconfirmed) || 0;
+  const hostsTruncated = Number(summary.hostsTruncated) || 0;
+  const incomplete = timeouts + failed + skipped + cleanupUnconfirmed + hostsTruncated;
+  if (!Number(summary.servicesDetected)) {
+    return {
+      status: 'done',
+      reason: hostsTruncated > 0
+        ? 'no_ftp_control_service_in_scanned_sample'
+        : 'no_ftp_control_service',
+      partial: hostsTruncated > 0,
+    };
+  }
+  if (confirmed > 0) {
+    return { status: 'done', reason: 'anonymous_login_confirmed', partial: incomplete > 0 };
+  }
+  if (denied > 0) {
+    return { status: 'done', reason: 'anonymous_login_not_accepted', partial: incomplete > 0 };
+  }
+  if (timeouts > 0) {
+    return {
+      status: 'timeout',
+      reason: incomplete === timeouts ? 'ftp_login_timeout' : 'ftp_login_incomplete_mixed',
+      partial: failed + skipped + hostsTruncated > 0,
+    };
+  }
+  if (failed > 0) {
+    return { status: 'failed', reason: 'ftp_probe_failed', partial: skipped + hostsTruncated > 0 };
+  }
+  return { status: 'skipped', reason: 'ftp_probe_blocked', partial: hostsTruncated > 0 };
+}
+
+export function classifyFtpWriteProbeOutcome(
+  summary = {},
+  {
+    enabled = true,
+    nmapState = 'done',
+    ftpAuditSummary = {},
+  } = {},
+) {
+  if (!enabled) return { status: 'skipped', reason: 'not_selected', partial: false };
+  if (nmapState === 'timeout') return { status: 'timeout', reason: 'nmap_timeout', partial: false };
+  if (nmapState === 'failed') return { status: 'failed', reason: 'nmap_failed', partial: false };
+  if (nmapState === 'cancelled') return { status: 'cancelled', reason: 'operation_cancelled', partial: false };
+  if (nmapState === 'skipped') return { status: 'skipped', reason: 'nmap_unavailable_or_no_scoped_hosts', partial: false };
+
+  const attempted = Number(summary.attempted) || 0;
+  const confirmed = Number(summary.writeConfirmed) || 0;
+  const denied = Number(summary.denied) || 0;
+  const timeouts = Number(summary.timeouts) || 0;
+  const failed = Number(summary.failed) || 0;
+  const skipped = Number(summary.skipped) || 0;
+  const cleanupUnconfirmed = Number(summary.cleanupUnconfirmed) || 0;
+  const hostsTruncated = Number(ftpAuditSummary.hostsTruncated) || 0;
+  if (cleanupUnconfirmed > 0) {
+    return { status: 'failed', reason: 'remote_cleanup_unconfirmed', partial: true };
+  }
+  if (confirmed > 0) {
+    return {
+      status: 'done',
+      reason: 'write_and_cleanup_confirmed',
+      partial: denied + timeouts + failed + skipped + hostsTruncated > 0,
+    };
+  }
+  if (timeouts > 0) {
+    return {
+      status: 'timeout',
+      reason: 'write_probe_timeout',
+      partial: failed + skipped + denied + hostsTruncated > 0,
+    };
+  }
+  if (failed > 0) {
+    return { status: 'failed', reason: 'write_probe_failed', partial: skipped + denied + hostsTruncated > 0 };
+  }
+  if (attempted > 0 && denied > 0) {
+    return { status: 'done', reason: 'anonymous_write_not_accepted', partial: skipped + hostsTruncated > 0 };
+  }
+  if (!Number(ftpAuditSummary.servicesDetected)) {
+    return { status: 'skipped', reason: 'no_ftp_control_service', partial: hostsTruncated > 0 };
+  }
+  if (!Number(ftpAuditSummary.confirmed)) {
+    return { status: 'skipped', reason: 'anonymous_login_not_confirmed', partial: hostsTruncated > 0 };
+  }
+  return { status: 'skipped', reason: 'write_gate_or_prerequisite_blocked', partial: hostsTruncated > 0 };
 }
 
 // Quando GHOSTRECON_TOR_STRICT=1, delegamos a decisão de wrap para
@@ -243,21 +355,46 @@ function shouldUseProxychainsForCommand(cmd, execOpts = {}) {
   if (isStrict()) return true; // strict → wrap todos os defaults
   const enabled = String(process.env.GHOSTRECON_PROXYCHAINS || '0') === '1' || Boolean(execOpts.useProxychains);
   if (!enabled) return false;
-  const normalized = String(cmd || '').trim().toLowerCase();
+  const normalized = String(cmd || '').trim().toLowerCase().split(/[\\/]/).pop();
   if (!normalized) return false;
   const skip = String(process.env.GHOSTRECON_PROXYCHAINS_SKIP || '')
     .split(/[,\s]+/)
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   if (skip.includes(normalized)) return false;
-  const defaults = new Set(['nmap', 'ffuf', 'nuclei', 'dirsearch', 'dalfox', 'whois', 'sqlmap', 'wpscan']);
+  const defaults = new Set(['nmap', 'ffuf', 'nuclei', 'dirsearch', 'dalfox', 'whois', 'sqlmap', 'wpscan', 'smbclient', 'rpcclient']);
   return defaults.has(normalized);
 }
 
-function buildProxychainsCommand(cmd, args, execOpts = {}) {
+export function normalizeProxychainsInvocation(cmd, args = []) {
+  const normalized = String(cmd || '').trim().toLowerCase().split(/[\\/]/).pop();
+  const safeArgs = Array.isArray(args) ? [...args] : [];
+  if (normalized !== 'nmap') return { cmd, args: safeArgs };
+  const unsupported = safeArgs.find((arg) => (
+    arg === '-sS'
+    || arg === '-sU'
+    || arg === '-O'
+    || arg === '-A'
+    || arg === '--traceroute'
+    || /^-s(?:S|U|A|F|N|X|O|Y|Z|I)/i.test(String(arg))
+  ));
+  if (unsupported) {
+    const error = new Error(`proxychains: modo Nmap incompatível (${unsupported}); somente TCP connect (-sT) é permitido`);
+    error.code = 'PROXYCHAINS_NMAP_MODE_UNSUPPORTED';
+    throw error;
+  }
+  if (!safeArgs.includes('-sT')) safeArgs.unshift('-sT');
+  return { cmd, args: safeArgs };
+}
+
+export function buildProxychainsCommand(cmd, args, execOpts = {}) {
+  const shouldWrap = isStrict() || shouldUseProxychainsForCommand(cmd, execOpts);
+  const invocation = shouldWrap
+    ? normalizeProxychainsInvocation(cmd, args)
+    : { cmd, args: Array.isArray(args) ? [...args] : [] };
   // Caminho strict: tor-strict.wrapCommand decide e devolve { cmd, args, refuse?, reason? }
   if (isStrict()) {
-    const r = torStrictWrap(cmd, args);
+    const r = torStrictWrap(invocation.cmd, invocation.args);
     if (r.refuse) {
       // Sinalizamos um pseudo-comando que forçará erro — o caller (runProc/spawn)
       // deve capturar. Em prática queremos abortar antes de chegar aqui.
@@ -265,14 +402,14 @@ function buildProxychainsCommand(cmd, args, execOpts = {}) {
     }
     return { cmd: r.cmd, args: r.args };
   }
-  if (!shouldUseProxychainsForCommand(cmd, execOpts)) return { cmd, args };
+  if (!shouldUseProxychainsForCommand(cmd, execOpts)) return invocation;
   const proxychainsBin = process.env.GHOSTRECON_PROXYCHAINS_BIN || 'proxychains4';
   const conf = String(process.env.GHOSTRECON_PROXYCHAINS_CONF || '').trim();
   const quiet = String(process.env.GHOSTRECON_PROXYCHAINS_QUIET || '1') === '1';
   const wrappedArgs = [];
   if (quiet) wrappedArgs.push('-q');
   if (conf) wrappedArgs.push('-f', conf);
-  wrappedArgs.push(cmd, ...(Array.isArray(args) ? args : []));
+  wrappedArgs.push(invocation.cmd, ...invocation.args);
   return { cmd: proxychainsBin, args: wrappedArgs };
 }
 
@@ -299,15 +436,25 @@ function portBlockIsOpen(block) {
  * o regex antigo só aceitava `<service …/>` e descartava todas as linhas.
  */
 export function parseNmapXml(xml) {
+  if (typeof xml !== 'string') return [];
+  if (Buffer.byteLength(xml, 'utf8') > 16 * 1024 * 1024) {
+    const error = new Error('XML Nmap excede o limite de 16 MiB');
+    error.code = 'NMAP_XML_TOO_LARGE';
+    throw error;
+  }
   const rows = [];
   const parts = xml.split(/<host[\s>]/);
   for (let i = 1; i < parts.length; i++) {
     const hc = parts[i];
-    const hostLabel =
-      (hc.match(/<hostname name="([^"]+)"/) || [])[1] ||
-      (hc.match(/<address addr="([^"]+)" addrtype="ipv4"/) || [])[1] ||
-      (hc.match(/<address addr="([^"]+)" addrtype="ipv6"/) || [])[1] ||
-      'unknown';
+    const hostnameTags = [...hc.matchAll(/<hostname\s+([^>]+?)\s*\/?\s*>/g)];
+    const hostname = hostnameTags
+      .map((match) => ({ name: getAttr(match[1], 'name'), type: getAttr(match[1], 'type') }))
+      .find((item) => item.name && item.type === 'user')?.name || '';
+    const address =
+      (hc.match(/<address addr="([^"]+)" addrtype="ipv4"/) || [])[1]
+      || (hc.match(/<address addr="([^"]+)" addrtype="ipv6"/) || [])[1]
+      || '';
+    const hostLabel = hostname || address || 'unknown';
 
     const portBlockRe = /<port protocol="(\w+)" portid="(\d+)">[\s\S]*?<\/port>/g;
     let m;
@@ -319,37 +466,183 @@ export function parseNmapXml(xml) {
       const product = getAttr(attrs, 'product');
       const version = getAttr(attrs, 'version');
       const extrainfo = getAttr(attrs, 'extrainfo');
+      const tunnel = getAttr(attrs, 'tunnel').toLowerCase();
       const cpes = [...block.matchAll(/<cpe>([^<]+)<\/cpe>/g)]
         .map((x) => String(x[1] || '').trim())
         .filter(Boolean);
       const searchBlob = [product, version, name, extrainfo].filter(Boolean).join(' ').trim();
       rows.push({
         host: hostLabel,
+        address: address || null,
         port: m[2],
         proto: m[1],
         name,
         product,
         version,
         extrainfo,
+        tunnel,
         cpes,
         searchBlob,
       });
+      if (rows.length >= 10_000) return rows;
     }
   }
   return rows;
 }
 
+export function classifyNmapProcessResult(result) {
+  if (result?.aborted) return { status: 'cancelled', reason: 'process_aborted', exitCode: null };
+  if (result?.timedOut) return { status: 'timeout', reason: 'process_timeout', exitCode: null };
+  if (!Number.isInteger(result?.code) || result.code !== 0) {
+    return {
+      status: 'failed',
+      reason: 'process_exit',
+      exitCode: Number.isInteger(result?.code) ? result.code : null,
+    };
+  }
+  return { status: 'done', reason: 'completed', exitCode: 0 };
+}
+
+const NMAP_FLAG_WITH_VALUE = Object.freeze({
+  '--top-ports': (value) => /^\d{1,5}$/.test(value) && Number(value) > 0 && Number(value) <= 65_535,
+  '--host-timeout': (value) => /^\d+(?:ms|s|m|h)?$/i.test(value),
+  '--max-retries': (value) => /^\d{1,3}$/.test(value),
+  '--scan-delay': (value) => /^\d+(?:ms|s|m|h)?$/i.test(value),
+  '--max-scan-delay': (value) => /^\d+(?:ms|s|m|h)?$/i.test(value),
+  '--min-rate': (value) => /^\d{1,7}$/.test(value),
+  '--max-rate': (value) => /^\d{1,7}$/.test(value),
+  '--version-intensity': (value) => /^[0-9]$/.test(value),
+});
+
+function nmapPortSpecAllowed(value, { aggressive = false } = {}) {
+  let spec = String(value || '');
+  if (/^[TUSP]:/i.test(spec)) spec = spec.slice(2);
+  if (spec === '-') return aggressive;
+  if (!/^[0-9,-]+$/.test(spec)) return false;
+  let count = 0;
+  for (const item of spec.split(',')) {
+    if (!item) return false;
+    const range = item.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
+    if (!range) return false;
+    const start = Number(range[1]);
+    const end = Number(range[2] || range[1]);
+    if (start < 1 || end > 65_535 || end < start) return false;
+    count += end - start + 1;
+    if (!aggressive && count > 1_024) return false;
+  }
+  return true;
+}
+
+function throwNmapArgsNotAllowed(message) {
+  const error = new Error(message);
+  error.code = 'NMAP_ARGS_NOT_ALLOWED';
+  throw error;
+}
+
+/**
+ * Não permite que um override de ambiente injete scripts, novos alvos,
+ * spoofing ou arquivos de saída fora do plano aprovado.
+ */
+export function normalizeNmapConfiguredArgs(raw, {
+  aggressive = false,
+  forceSafeProfile = false,
+  udp = false,
+  fixedPorts = false,
+} = {}) {
+  if (forceSafeProfile) {
+    return ['-sV', '-Pn', '-T3', '--host-timeout', '180s'];
+  }
+  const fallback = udp
+    ? '-sU -A -Pn -T4'
+    : aggressive
+      ? '-A -sV -p- -Pn'
+      : '-sV -Pn -T4 --host-timeout 180s';
+  const tokens = String(raw || fallback).split(/\s+/).filter(Boolean);
+  const allowedSwitches = new Set([
+    '-sV', ...(udp ? [] : ['-sT']), '-Pn', '-n', '-4', '-6', '--open', '--reason',
+    '--version-light', '--version-all', '--version-trace',
+    ...(aggressive ? ['-A', udp ? '-sU' : '-sS', '-O', '--traceroute'] : []),
+  ]);
+  const normalized = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (allowedSwitches.has(token)) {
+      normalized.push(token);
+      continue;
+    }
+    if (/^-T[0-5]$/.test(token)) {
+      if (!aggressive && token === '-T5') {
+        throwNmapArgsNotAllowed('Argumento Nmap -T5 exige capability agressiva');
+      }
+      normalized.push(token);
+      continue;
+    }
+    if (/^-p(?:-|(?:[TUSP]:)?[0-9][0-9,:-]*)$/i.test(token)) {
+      const spec = token.slice(2);
+      if (fixedPorts || !nmapPortSpecAllowed(spec, { aggressive })) {
+        throwNmapArgsNotAllowed('Portas Nmap fora do perfil aprovado');
+      }
+      normalized.push(token);
+      continue;
+    }
+    const assignment = token.match(/^(--[a-z-]+)=(.+)$/i);
+    if (assignment && NMAP_FLAG_WITH_VALUE[assignment[1]]?.(assignment[2])) {
+      if (fixedPorts && assignment[1] === '--top-ports') {
+        throwNmapArgsNotAllowed('Portas Nmap UDP são fixadas pela capability');
+      }
+      if (!aggressive && assignment[1] === '--min-rate') {
+        throwNmapArgsNotAllowed('Nmap --min-rate exige capability agressiva');
+      }
+      if (!aggressive && assignment[1] === '--top-ports' && Number(assignment[2]) > 1_024) {
+        throwNmapArgsNotAllowed('Nmap base limita --top-ports a 1024');
+      }
+      normalized.push(token);
+      continue;
+    }
+    if (token === '-p') {
+      const value = tokens[i + 1];
+      if (fixedPorts || !nmapPortSpecAllowed(value, { aggressive })) {
+        throwNmapArgsNotAllowed('Portas Nmap fora do perfil aprovado');
+      }
+      normalized.push(token, value);
+      i += 1;
+      continue;
+    }
+    const validateValue = NMAP_FLAG_WITH_VALUE[token];
+    if (validateValue) {
+      const value = tokens[i + 1];
+      if (!value || !validateValue(value)) {
+        throwNmapArgsNotAllowed(`Valor recusado para argumento Nmap ${token}`);
+      }
+      if (fixedPorts && token === '--top-ports') {
+        throwNmapArgsNotAllowed('Portas Nmap UDP são fixadas pela capability');
+      }
+      if (!aggressive && token === '--min-rate') {
+        throwNmapArgsNotAllowed('Nmap --min-rate exige capability agressiva');
+      }
+      if (!aggressive && token === '--top-ports' && Number(value) > 1_024) {
+        throwNmapArgsNotAllowed('Nmap base limita --top-ports a 1024');
+      }
+      normalized.push(token, value);
+      i += 1;
+      continue;
+    }
+    throwNmapArgsNotAllowed(`Argumento Nmap fora da allowlist: ${String(token).slice(0, 80)}`);
+  }
+  if (udp && !normalized.includes('-sU')) {
+    throwNmapArgsNotAllowed('Capability Nmap UDP exige -sU');
+  }
+  return normalized;
+}
+
 async function runNmapOnHosts(hosts, log, opts = {}) {
   const aggressive = Boolean(opts.aggressive);
+  const extra = normalizeNmapConfiguredArgs(
+    aggressive ? process.env.GHOSTRECON_NMAP_AGGRESSIVE_ARGS : process.env.GHOSTRECON_NMAP_ARGS,
+    { aggressive, forceSafeProfile: opts.forceSafeProfile === true },
+  );
   const dir = await mkdtemp(join(tmpdir(), 'ghnr-'));
   const xmlPath = join(dir, 'nmap.xml');
-  const extra = aggressive
-    ? (process.env.GHOSTRECON_NMAP_AGGRESSIVE_ARGS || '-A -sV -p- -Pn')
-        .split(/\s+/)
-        .filter(Boolean)
-    : (process.env.GHOSTRECON_NMAP_ARGS || '-sV -Pn -T4 --host-timeout 180s')
-        .split(/\s+/)
-        .filter(Boolean);
   const args = [...extra, '-oX', xmlPath, ...hosts];
   log(`nmap ${args.slice(0, -hosts.length).join(' ')} [${hosts.length} hosts]`, 'info');
   const timeoutMs = aggressive
@@ -357,10 +650,14 @@ async function runNmapOnHosts(hosts, log, opts = {}) {
     : 660_000;
   try {
     const proc = await runProc('nmap', args, timeoutMs, {}, opts.execOpts || {});
-    if (proc.code !== 0) {
-      log(`nmap terminou com código ${proc.code}`, 'warn');
+    const processState = classifyNmapProcessResult(proc);
+    if (processState.status !== 'done') {
+      const error = new Error(`nmap não concluiu (${processState.reason})`);
+      error.code = processState.status === 'timeout' ? 'PROCESS_TIMEOUT' : 'NMAP_PROCESS_FAILED';
+      error.exitCode = processState.exitCode;
+      throw error;
     }
-    const xml = await readFile(xmlPath, 'utf8');
+    const xml = await readBoundedToolOutput(xmlPath, 16 * 1024 * 1024);
     return parseNmapXml(xml);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -368,19 +665,33 @@ async function runNmapOnHosts(hosts, log, opts = {}) {
 }
 
 /** Portas UDP frequentemente relevantes (DNS, DHCP, TFTP, NTP, SNMP, IKE, SIP, SSDP, …). */
-function sensitiveUdpPortsSpec() {
-  const raw = process.env.GHOSTRECON_NMAP_UDP_PORTS;
-  if (raw && String(raw).trim()) {
-    const list = String(raw)
-      .trim()
-      .split(/[\s,]+/)
-      .filter((x) => /^\d{1,5}$/.test(x) && Number(x) >= 1 && Number(x) <= 65535);
-    return [...new Set(list)].join(',');
+const DEFAULT_SENSITIVE_UDP_PORTS = Object.freeze([
+  53, 67, 68, 69, 111, 123, 135, 137, 138, 161, 162, 500, 514, 520, 631, 1434, 1900, 2049, 3478, 4500, 5060,
+  5061, 5353, 11211, 1812, 1813, 3391,
+]);
+
+export function normalizeNmapUdpPortsSpec(raw, { maxPorts = 128 } = {}) {
+  const source = String(raw || '').trim();
+  const tokens = source ? source.split(/[\s,]+/) : DEFAULT_SENSITIVE_UDP_PORTS.map(String);
+  if (!tokens.length || tokens.some((port) => (
+    !/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65_535
+  ))) {
+    const error = new Error('Lista GHOSTRECON_NMAP_UDP_PORTS inválida');
+    error.code = 'NMAP_UDP_PORTS_NOT_ALLOWED';
+    throw error;
   }
-  return [
-    53, 67, 68, 69, 111, 123, 135, 137, 138, 161, 162, 500, 514, 520, 631, 1434, 1900, 2049, 3478, 4500, 5060,
-    5061, 5353, 11211, 1812, 1813, 3391,
-  ].join(',');
+  const unique = [...new Set(tokens.map((port) => String(Number(port))))];
+  const boundedMax = Math.max(1, Math.min(1_024, Number(maxPorts) || 128));
+  if (unique.length > boundedMax) {
+    const error = new Error(`Nmap UDP limitado a ${boundedMax} portas por execução`);
+    error.code = 'NMAP_UDP_PORTS_NOT_ALLOWED';
+    throw error;
+  }
+  return unique.join(',');
+}
+
+function sensitiveUdpPortsSpec() {
+  return normalizeNmapUdpPortsSpec(process.env.GHOSTRECON_NMAP_UDP_PORTS);
 }
 
 async function runNmapUdpOnHosts(hosts, log, opts = {}) {
@@ -389,21 +700,28 @@ async function runNmapUdpOnHosts(hosts, log, opts = {}) {
     log('nmap UDP: lista de portas vazia — skip', 'warn');
     return [];
   }
+  // Validar antes de criar arquivos temporários ou iniciar o processo.
+  const extra = normalizeNmapConfiguredArgs(process.env.GHOSTRECON_NMAP_UDP_ARGS, {
+    aggressive: true,
+    udp: true,
+    fixedPorts: true,
+  });
   const dir = await mkdtemp(join(tmpdir(), 'ghnrudp-'));
   const xmlPath = join(dir, 'nmap-udp.xml');
-  const extra = (process.env.GHOSTRECON_NMAP_UDP_ARGS || '-sU -A -Pn -T4')
-    .split(/\s+/)
-    .filter(Boolean);
   const pArg = `U:${portCsv}`;
   const args = [...extra, '-p', pArg, '-oX', xmlPath, ...hosts];
   log(`nmap ${args.slice(0, -hosts.length).join(' ')} [${hosts.length} hosts]`, 'info');
   const timeoutMs = Math.max(120_000, Number(process.env.GHOSTRECON_NMAP_UDP_TIMEOUT_MS || 2_700_000));
   try {
     const proc = await runProc('nmap', args, timeoutMs, {}, opts.execOpts || {});
-    if (proc.code !== 0) {
-      log(`nmap UDP terminou com código ${proc.code}`, 'warn');
+    const processState = classifyNmapProcessResult(proc);
+    if (processState.status !== 'done') {
+      const error = new Error(`nmap UDP não concluiu (${processState.reason})`);
+      error.code = processState.status === 'timeout' ? 'PROCESS_TIMEOUT' : 'NMAP_PROCESS_FAILED';
+      error.exitCode = processState.exitCode;
+      throw error;
     }
-    const xml = await readFile(xmlPath, 'utf8');
+    const xml = await readBoundedToolOutput(xmlPath, 16 * 1024 * 1024);
     return parseNmapXml(xml);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -704,16 +1022,95 @@ export function buildNmapBackportReviewFindings(rows) {
   return out;
 }
 
-async function runFfuf200(baseUrl, log, execOpts = {}) {
-  const wl = WORDLISTS.find((p) => fs.existsSync(p));
+export function parseFfufDiscoveryJson(raw, { baseUrl = '', cap = 400, strict = false } = {}) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(raw || '{}'));
+    if (!Array.isArray(parsed?.results)) throw new Error('schema ffuf inválido');
+  } catch (error) {
+    if (strict) throw error;
+    return [];
+  }
+  const allowedStatuses = new Set([200, 204, 301, 302, 307, 308, 401, 403]);
+  let baseOrigin = '';
+  try { baseOrigin = new URL(baseUrl).origin; } catch { /* empty */ }
+  const out = [];
+  for (const row of Array.isArray(parsed?.results) ? parsed.results : []) {
+    const url = normalizedHttpUrl(row?.url);
+    const status = Number(row?.status || 0) || 0;
+    if (!url || !allowedStatuses.has(status)) continue;
+    if (baseOrigin && new URL(url).origin !== baseOrigin) continue;
+    out.push({
+      url,
+      status,
+      length: Number(row?.length || 0) || 0,
+      words: Number(row?.words || 0) || 0,
+      lines: Number(row?.lines || 0) || 0,
+      redirect: String(row?.redirectlocation || '').slice(0, 500),
+    });
+    if (out.length >= Math.max(1, Number(cap) || 400)) break;
+  }
+  return out;
+}
+
+async function readBoundedToolOutput(filePath, maxBytes = 8 * 1024 * 1024) {
+  const outputStat = await stat(filePath);
+  if (!outputStat.isFile()) throw new Error('saída da ferramenta não é arquivo regular');
+  if (outputStat.size > maxBytes) throw new Error(`saída da ferramenta excede ${maxBytes} bytes`);
+  return readFile(filePath, 'utf8');
+}
+
+function discoveryProcessOutcome(result) {
+  if (result?.aborted) {
+    const error = new Error('descoberta cancelada');
+    error.name = 'AbortError';
+    error.code = 'PROCESS_ABORTED';
+    throw error;
+  }
+  if (result?.timedOut) return { state: 'timeout', results: [], reason: 'process_timeout' };
+  if (result?.code !== 0) {
+    return {
+      state: 'failed', results: [], reason: 'process_exit',
+      exitCode: Number.isInteger(result?.code) ? result.code : null,
+    };
+  }
+  return null;
+}
+
+function discoveryErrorOutcome(error, signal) {
+  throwIfAborted(signal);
+  if (isProcessAbort(error) || error?.fatal || error?.code === 'PROCESS_UNTERMINATED') throw error;
+  const state = error?.code === 'PROCESS_TIMEOUT' || error?.name === 'TimeoutError' ? 'timeout' : 'failed';
+  // Não reproduzir stderr, conteúdo de resposta ou caminho temporário no evento.
+  return { state, results: [], reason: state === 'timeout' ? 'process_timeout' : 'execution_or_output_invalid' };
+}
+
+export function summarizeDirectoryDiscoveryOutcomes(outcomes = []) {
+  const states = outcomes.map((outcome) => outcome.state);
+  const state = ['failed', 'timeout', 'done', 'skipped'].find((value) => states.includes(value)) || 'skipped';
+  return {
+    state,
+    partial: states.includes('done') && states.some((value) => value !== 'done'),
+    resultCount: outcomes.reduce((count, outcome) => count + (outcome.results?.length || 0), 0),
+    attempted: outcomes.filter((outcome) => outcome.state !== 'skipped').length,
+  };
+}
+
+export async function runFfufDiscovery(baseUrl, log = () => {}, execOpts = {}, {
+  executor = runProc,
+  outputReader = readBoundedToolOutput,
+  findWordlist = () => WORDLISTS.find((p) => fs.existsSync(p)),
+} = {}) {
+  throwIfAborted(execOpts.signal);
+  const wl = findWordlist();
   if (!wl) {
     log('ffuf: nenhuma wordlist em /usr/share/seclists ou dirb', 'warn');
-    return [];
+    return { state: 'skipped', results: [], reason: 'wordlist_unavailable' };
   }
   const dir = await mkdtemp(join(tmpdir(), 'ghff-'));
   const out = join(dir, 'out.json');
   const base = baseUrl.replace(/\/$/, '');
-  const threads = Math.min(64, Math.max(1, Number(process.env.GHOSTRECON_FFUF_THREADS || 32)));
+  const threads = clampInt(process.env.GHOSTRECON_FFUF_THREADS, 8, 1, 20);
   try {
     const args = [
       '-u',
@@ -721,35 +1118,39 @@ async function runFfuf200(baseUrl, log, execOpts = {}) {
       '-w',
       wl,
       '-mc',
-      '200',
+      '200,204,301,302,307,308,401,403',
+      '-ac',
       '-t',
       String(threads),
       '-timeout',
       '8',
       '-maxtime',
-      '120',
+      '90',
       '-of',
       'json',
       '-o',
       out,
       '-s',
     ];
-    await runProc('ffuf', args, 135000, {}, execOpts);
-    const raw = await readFile(out, 'utf8');
-    const j = JSON.parse(raw);
-    return (j.results || []).map((r) => r.url).filter(Boolean);
+    const proc = await executor('ffuf', args, 135000, {}, execOpts);
+    throwIfAborted(execOpts.signal);
+    const unsuccessful = discoveryProcessOutcome(proc);
+    if (unsuccessful) return unsuccessful;
+    const raw = await outputReader(out);
+    throwIfAborted(execOpts.signal);
+    const results = parseFfufDiscoveryJson(raw, { baseUrl: base, strict: true });
+    return { state: 'done', results, exitCode: 0 };
   } catch (e) {
-    if (isProcessAbort(e)) throw e;
-    log(`ffuf ${base}: ${e.message}`, 'warn');
-    return [];
+    return discoveryErrorOutcome(e, execOpts.signal);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-function parseDirsearchJsonResults(raw, cap = 400) {
+function parseDirsearchJsonResults(raw, cap = 400, { strict = false } = {}) {
   try {
     const j = JSON.parse(String(raw || '{}'));
+    if (!j?.results || typeof j.results !== 'object') throw new Error('schema dirsearch inválido');
     const out = [];
     const queue = [];
     if (Array.isArray(j.results)) queue.push(...j.results);
@@ -769,23 +1170,48 @@ function parseDirsearchJsonResults(raw, cap = 400) {
       if (out.length >= cap) break;
     }
     return out;
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
 
-async function runDirsearchAll(baseUrl, log, execOpts = {}) {
-  const wl = WORDLISTS.find((p) => fs.existsSync(p));
+export function filterDirsearchDiscoveryResults(rows, { baseUrl = '', cap = 400 } = {}) {
+  let baseOrigin = '';
+  try { baseOrigin = new URL(baseUrl).origin; } catch { /* empty */ }
+  const allowedStatuses = new Set([200, 201, 202, 204, 301, 302, 303, 307, 308, 401, 403]);
+  const seen = new Set();
+  const out = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!allowedStatuses.has(Number(row?.status))) continue;
+    let parsed;
+    try { parsed = new URL(row.url); } catch { continue; }
+    if (baseOrigin && parsed.origin !== baseOrigin) continue;
+    if (seen.has(parsed.href)) continue;
+    seen.add(parsed.href);
+    out.push({ ...row, url: parsed.href, status: Number(row.status) });
+    if (out.length >= Math.max(1, Number(cap) || 400)) break;
+  }
+  return out;
+}
+
+export async function runDirsearchAll(baseUrl, log = () => {}, execOpts = {}, {
+  executor = runProc,
+  outputReader = readBoundedToolOutput,
+  findWordlist = () => WORDLISTS.find((p) => fs.existsSync(p)),
+} = {}) {
+  throwIfAborted(execOpts.signal);
+  const wl = findWordlist();
   if (!wl) {
     log('dirsearch: nenhuma wordlist em /usr/share/seclists ou dirb', 'warn');
-    return [];
+    return { state: 'skipped', results: [], reason: 'wordlist_unavailable' };
   }
   const dir = await mkdtemp(join(tmpdir(), 'ghds-'));
   const out = join(dir, 'out.json');
   const base = baseUrl.replace(/\/$/, '');
-  const threads = Math.min(64, Math.max(1, Number(process.env.GHOSTRECON_DIRSEARCH_THREADS || 25)));
-  const maxTimeSec = Math.min(7200, Math.max(120, Number(process.env.GHOSTRECON_DIRSEARCH_MAXTIME || 1800)));
-  const depth = Math.min(20, Math.max(1, Number(process.env.GHOSTRECON_DIRSEARCH_RECURSION_DEPTH || 8)));
+  const threads = clampInt(process.env.GHOSTRECON_DIRSEARCH_THREADS, 8, 1, 20);
+  const maxTimeSec = clampInt(process.env.GHOSTRECON_DIRSEARCH_MAXTIME, 300, 60, 900);
+  const depth = clampInt(process.env.GHOSTRECON_DIRSEARCH_RECURSION_DEPTH, 2, 1, 4);
   try {
     const args = [
       '--url',
@@ -799,24 +1225,24 @@ async function runDirsearchAll(baseUrl, log, execOpts = {}) {
       '--max-time',
       String(maxTimeSec),
       '--recursive',
-      '--force-recursive',
       '--recursion-depth',
       String(depth),
-      '--exclude-status',
-      '404',
+      '--include-status',
+      '200-399,401,403',
       '--json-report',
       out,
       '--quiet-mode',
-      '-e',
-      '*',
     ];
-    await runProc('dirsearch', args, (maxTimeSec + 60) * 1000, {}, execOpts);
-    const raw = await readFile(out, 'utf8').catch(() => '');
-    return parseDirsearchJsonResults(raw);
+    const proc = await executor('dirsearch', args, (maxTimeSec + 60) * 1000, {}, execOpts);
+    throwIfAborted(execOpts.signal);
+    const unsuccessful = discoveryProcessOutcome(proc);
+    if (unsuccessful) return unsuccessful;
+    const raw = await outputReader(out);
+    throwIfAborted(execOpts.signal);
+    const results = filterDirsearchDiscoveryResults(parseDirsearchJsonResults(raw, 400, { strict: true }), { baseUrl: base });
+    return { state: 'done', results, exitCode: 0 };
   } catch (e) {
-    if (isProcessAbort(e)) throw e;
-    log(`dirsearch ${base}: ${e.message}`, 'warn');
-    return [];
+    return discoveryErrorOutcome(e, execOpts.signal);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1032,87 +1458,6 @@ async function runDalfoxUrl(url, log, auth = null, execOpts = {}) {
   }
 }
 
-function stripAnsi(text) {
-  return String(text || '').replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-function parseXssVibesTextForHits(text, limit = 20) {
-  const clean = stripAnsi(text);
-  const lines = clean
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const hits = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!/VULNERABLE:/i.test(line)) continue;
-    const fromMsg = line.match(/VULNERABLE:\s*(https?:\/\/\S+)/i)?.[1];
-    const nextUrl = lines
-      .slice(i + 1, i + 6)
-      .find((x) => /^https?:\/\/\S+/i.test(x))
-      ?.match(/^(https?:\/\/\S+)/i)?.[1];
-    const finalUrl = fromMsg || nextUrl || null;
-    if (finalUrl && !hits.includes(finalUrl)) hits.push(finalUrl);
-    if (hits.length >= limit) break;
-  }
-  return hits;
-}
-
-async function runXssVibesBatch({ urls, cap, log, auth = null, execOpts = {} }) {
-  const uniq = [...new Set((urls || []).filter((u) => /^https?:\/\//i.test(String(u))))];
-  if (!uniq.length) return { ok: true, hits: [], message: 'sem URLs válidas' };
-  const maxUrls = Math.max(1, Number(process.env.GHOSTRECON_XSS_VIBES_MAX_URLS || 25));
-  const selected = uniq.slice(0, maxUrls);
-  const threads = Math.min(10, Math.max(1, Number(process.env.GHOSTRECON_XSS_VIBES_THREADS || 6)));
-  const timeoutMs = Math.max(30_000, Number(process.env.GHOSTRECON_XSS_VIBES_TIMEOUT_MS || 300_000));
-  const pyCmd = cap?.tools?.python3 ? 'python3' : cap?.tools?.python ? 'python' : null;
-  if (!pyCmd) return { ok: false, hits: [], error: 'python3/python não encontrado no PATH' };
-  if (!fs.existsSync(XSS_VIBES_MAIN)) return { ok: false, hits: [], error: `xss_vibes não encontrado: ${XSS_VIBES_MAIN}` };
-
-  const dir = await mkdtemp(join(tmpdir(), 'ghxv-'));
-  const inFile = join(dir, 'targets.txt');
-  const outFile = join(dir, 'xss_vibes_hits.txt');
-  await writeFile(inFile, selected.join('\n'), 'utf8');
-  const args = [XSS_VIBES_MAIN, '-f', inFile, '-o', outFile, '-t', String(threads)];
-  if (auth?.cookie || auth?.headers) {
-    log?.('[xss_vibes] contexto autenticado omitido (a ferramenta exigiria segredo em argv)', 'warn');
-  }
-
-  if (typeof log === 'function') {
-    log(`[xss_vibes] Executando ferramenta: ${pyCmd} main.py -f targets.txt -o xss_vibes_hits.txt -t ${threads}`, 'info');
-    log(`[xss_vibes] Alvos com query: ${selected.length} (limite=${maxUrls})`, 'info');
-  }
-
-  try {
-    const proc = await runProc(pyCmd, args, timeoutMs, { cwd: XSS_VIBES_DIR }, execOpts);
-    const mixed = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
-    let hits = [];
-    try {
-      const rawOut = await readFile(outFile, 'utf8');
-      hits = rawOut
-        .split('\n')
-        .map((s) => s.trim())
-        .filter((s) => /^https?:\/\//i.test(s));
-    } catch {
-      /* output opcional */
-    }
-    if (!hits.length) hits = parseXssVibesTextForHits(mixed);
-    hits = [...new Set(hits)];
-    if (proc.code !== 0 && typeof log === 'function') {
-      log(`[xss_vibes] terminou com código ${proc.code}`, 'warn');
-    }
-    if (typeof log === 'function') {
-      log(`[xss_vibes] conclusão: ${hits.length} possível(is) XSS`, hits.length ? 'warn' : 'info');
-    }
-    return { ok: true, hits, stdout: mixed.slice(0, 6000) };
-  } catch (e) {
-    if (isProcessAbort(e)) throw e;
-    return { ok: false, hits: [], error: String(e?.message || e) };
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
 function pickFirstMatch(re, text) {
   const m = String(text || '').match(re);
   return m?.[1] ? String(m[1]).trim() : null;
@@ -1130,13 +1475,6 @@ function pickAllMatches(re, text, limit = 8) {
   return out;
 }
 
-function isFtpServiceRow(row) {
-  if (!row) return false;
-  const name = String(row.name || '').toLowerCase();
-  const product = String(row.product || '').toLowerCase();
-  return row.proto === 'tcp' && (String(row.port) === '21' || name.includes('ftp') || product.includes('ftp'));
-}
-
 function isSmbServiceRow(row) {
   if (!row) return false;
   const name = String(row.name || '').toLowerCase();
@@ -1151,6 +1489,32 @@ function isRpcServiceRow(row) {
   const product = String(row.product || '').toLowerCase();
   const p = String(row.port || '');
   return row.proto === 'tcp' && (p === '135' || name.includes('msrpc') || product.includes('msrpc') || product.includes('rpc'));
+}
+
+function recordFtpWriteCleanupUnconfirmed(addFinding, endpoint, result = {}) {
+  addFinding({
+    type: 'ftp_write_probe_cleanup_unconfirmed',
+    prio: 'high',
+    score: 96,
+    value: `FTP write probe: estado remoto/cleanup não confirmado @ ${endpoint}`,
+    meta: {
+      service: 'ftp',
+      evidenceStatus: 'remote_state_uncertain',
+      destructiveLabOnly: true,
+      probeFile: result.probeFile ? String(result.probeFile).slice(0, 120) : null,
+      payloadSent: result.payloadSent === true,
+      transferConfirmed: result.transferConfirmed === true,
+      cleanupVerified: false,
+      detail: result.detail ? String(result.detail).slice(0, 120) : null,
+      error: result.error ? String(result.error).slice(0, 120) : null,
+      requiredAction: 'Inspecionar e restaurar o laboratório antes de qualquer novo write probe.',
+    },
+    url: null,
+    provenance: {
+      how: 'O servidor aceitou o reply preliminar de STOR, mas DELE seguido de confirmação de ausência não foi atestado.',
+      relation: `Serviço FTP no laboratório autorizado ${endpoint}.`,
+    },
+  });
 }
 
 async function trySmbAnonymousList({ host, timeoutMs = 20_000, execOpts = {} }) {
@@ -1171,164 +1535,12 @@ async function tryRpcNullSession({ host, timeoutMs = 20_000, execOpts = {} }) {
     const proc = await runProc('rpcclient', ['-N', '-U', '', host, '-c', 'srvinfo'], timeoutMs, {}, execOpts);
     const mixed = `${proc.stdout || ''}\n${proc.stderr || ''}`;
     const denied = /NT_STATUS_ACCESS_DENIED|denied|logon failure/i.test(mixed);
-    return { ok: proc.code === 0 && !denied, code: proc.code, output: mixed.slice(0, 1200) };
+    const hasServerInfo = /(?:platform_id|os version|server type|server\s*:|domain\s*:)/i.test(mixed);
+    return { ok: proc.code === 0 && hasServerInfo && !denied, code: proc.code, output: mixed.slice(0, 1200) };
   } catch (e) {
     if (isProcessAbort(e)) throw e;
     return { ok: false, code: -1, output: String(e?.message || e) };
   }
-}
-
-async function tryFtpAnonymousLogin({
-  host,
-  port = 21,
-  timeoutMs = 12_000,
-  passCandidates = ['', 'anonymous@ghostrecon.local'],
-  signal = null,
-}) {
-  if (signal?.aborted) {
-    const error = signal.reason instanceof Error ? signal.reason : new Error('FTP probe cancelado');
-    error.name = 'AbortError';
-    error.code = 'PROCESS_ABORTED';
-    throw error;
-  }
-  return new Promise((resolve, reject) => {
-    const sock = net.createConnection({ host, port: Number(port) || 21 });
-    sock.setEncoding('utf8');
-    sock.setTimeout(timeoutMs);
-
-    let buf = '';
-    let done = false;
-    let sentUser = false;
-    let sentPass = false;
-    let passIndex = -1;
-    const triedPasses = [];
-    let banner = '';
-    let userReply = '';
-    let passReply = '';
-
-    const nextPass = () => {
-      const idx = passIndex + 1;
-      if (idx >= passCandidates.length) return false;
-      passIndex = idx;
-      const candidate = String(passCandidates[passIndex] ?? '');
-      triedPasses.push(candidate);
-      sock.write(`PASS ${candidate}\r\n`);
-      sentPass = true;
-      return true;
-    };
-
-    const finish = (result) => {
-      if (done) return;
-      done = true;
-      signal?.removeEventListener('abort', onAbort);
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve(result);
-    };
-    const onAbort = () => {
-      if (done) return;
-      done = true;
-      signal?.removeEventListener('abort', onAbort);
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      const error = signal?.reason instanceof Error ? signal.reason : new Error('FTP probe cancelado');
-      error.name = 'AbortError';
-      error.code = 'PROCESS_ABORTED';
-      reject(error);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-
-    const onLine = (line) => {
-      const m = String(line).match(/^(\d{3})([\s-])(.*)$/);
-      if (!m) return;
-      const code = Number(m[1]);
-      const sep = m[2];
-      const msg = m[3] || '';
-      if (!banner && code === 220 && sep === ' ') banner = msg;
-
-      // Resposta multiline usa "123-"; só tratamos a linha final "123 ".
-      if (sep !== ' ') return;
-
-      if (!sentUser && code === 220) {
-        sock.write('USER anonymous\r\n');
-        sentUser = true;
-        return;
-      }
-
-      if (sentUser && !sentPass) {
-        userReply = `${code} ${msg}`.trim();
-        if (code === 230) {
-          sock.write('QUIT\r\n');
-          finish({
-            ok: true,
-            host,
-            port,
-            banner,
-            userReply,
-            passReply: '',
-            passUsed: '(none-required)',
-            triedPasses,
-          });
-          return;
-        }
-        if (code === 331) {
-          if (!nextPass()) {
-            finish({ ok: false, host, port, banner, userReply, passReply: '', triedPasses });
-          }
-          return;
-        }
-        if (code >= 500) {
-          finish({ ok: false, host, port, banner, userReply, passReply: '', triedPasses });
-        }
-        return;
-      }
-
-      if (sentPass) {
-        passReply = `${code} ${msg}`.trim();
-        if (code === 230) {
-          sock.write('QUIT\r\n');
-          finish({
-            ok: true,
-            host,
-            port,
-            banner,
-            userReply,
-            passReply,
-            passUsed: String(passCandidates[passIndex] ?? ''),
-            triedPasses,
-          });
-          return;
-        }
-        if (code >= 500 || code === 530) {
-          if (nextPass()) return;
-          finish({ ok: false, host, port, banner, userReply, passReply, triedPasses });
-        }
-      }
-    };
-
-    sock.on('data', (chunk) => {
-      buf += chunk;
-      const lines = buf.split(/\r?\n/);
-      buf = lines.pop() || '';
-      for (const line of lines) onLine(line);
-    });
-
-    sock.on('timeout', () => finish({ ok: false, host, port, error: `timeout ${timeoutMs}ms` }));
-    sock.on('error', (e) => finish({ ok: false, host, port, error: e?.message || String(e) }));
-    sock.on('close', () => {
-      if (!done) finish({ ok: false, host, port, error: 'connection closed' });
-    });
-  });
 }
 
 /**
@@ -1352,13 +1564,25 @@ async function ingestNmapScanRows(rows, ctx) {
     scanKind,
     domain: reconTarget,
     execOpts = {},
-    allowNmapServiceFollowups = true,
+    allowNmapServiceFollowups = false,
+    allowFtpAnonymousAudit = false,
     allowFtpWriteProbe = false,
+    hostAllowed = () => true,
+    ftpAddressAllowed = () => true,
+    ftpAuditSummary = null,
+    ftpWriteState = null,
+    ftpAnonymousLoginImpl = probeFtpAnonymousLogin,
+    ftpWritableProbeImpl = probeFtpAnonymousWritable,
   } = ctx;
   const label = scanKind === 'udp' ? 'nmap UDP' : 'nmap';
   log(`${label}: ${rows.length} serviço(s) em portas abertas`, 'success');
-  for (const row of rows) {
-    const line = `${row.proto}/${row.port} ${row.host} — ${row.name || '?'} ${row.product || ''} ${row.version || ''}`.trim();
+  for (const row of rows.slice(0, 10_000)) {
+    throwIfAborted(execOpts.signal ?? null);
+    if (hostAllowed(row?.host) !== true) {
+      log(`${label}: observação descartada por escopo`, 'warn');
+      continue;
+    }
+    const line = `${row.proto}/${row.port} ${row.host} — ${row.name || '?'} ${row.product || ''} ${row.version || ''}`.trim().slice(0, 400);
     let url = null;
     const rowHl = hostLiteralForUrl(row.host);
     if (row.port === '443') url = `https://${rowHl}/`;
@@ -1367,10 +1591,20 @@ async function ingestNmapScanRows(rows, ctx) {
     const meta = scanKind === 'udp' ? `udp • ${metaBase}` : metaBase;
     addFinding({
       type: 'nmap',
-      prio: 'med',
-      score: scanKind === 'udp' ? 54 : 56,
+      prio: 'info',
+      score: scanKind === 'udp' ? 24 : 22,
       value: line,
-      meta,
+      meta: {
+        source: 'kali_nmap',
+        evidenceStatus: 'service_inventory',
+        scanKind: scanKind === 'udp' ? 'udp' : 'tcp',
+        service: String(row.name || '').slice(0, 80),
+        product: String(row.product || '').slice(0, 120),
+        version: String(row.version || '').slice(0, 80) || null,
+        networkAddress: row.address || null,
+        tunnel: row.tunnel || null,
+        note: 'Porta/serviço observado não prova vulnerabilidade',
+      },
       url,
     });
     if (isHttp3NmapRow(row)) {
@@ -1401,62 +1635,155 @@ async function ingestNmapScanRows(rows, ctx) {
           query: exploitGq,
           mod: 'nmap_version_exploit_google',
           prio: 'med',
-          forceOpen: true,
+          forceOpen: false,
         });
-        addFinding(
-          {
-            type: 'dork',
-            prio: 'med',
-            score: 50,
-            value: exploitGq,
-            meta: 'Categoria: nmap_version_exploit_google • sugestão Google (versão nmap / Exploit-DB contexto)',
-            url: googleUrl,
-          },
-          'dorks',
-        );
         log(`Google (versão nmap): ${exploitGq}`, 'info');
       }
     }
 
-    if (allowNmapServiceFollowups && isFtpServiceRow(row)) {
+    if (allowFtpAnonymousAudit && isFtpServiceRow(row)) {
+      if (ftpAuditSummary) ftpAuditSummary.servicesDetected += 1;
       const k = `${row.host}:${row.port}`;
       if (!ftpChecked.has(k)) {
         ftpChecked.add(k);
+        if (!net.isIP(String(row.address || ''))) {
+          if (ftpAuditSummary) {
+            ftpAuditSummary.skipped += 1;
+            ftpAuditSummary.reasons.add('nmap_observed_address_missing');
+          }
+          log(`[FTP] ${k} ignorado: XML Nmap sem endereço IP observado`, 'warn');
+        } else {
+          if (ftpAuditSummary) ftpAuditSummary.attempted += 1;
         const ftpTimeout = Math.max(4000, Number(process.env.GHOSTRECON_FTP_ANON_TIMEOUT_MS || 12000));
         log(`[FTP] Teste de login anônimo em ${k} (PASS vazio, depois e-mail)`, 'info');
         try {
-          const r = await tryFtpAnonymousLogin({
+          const r = await ftpAnonymousLoginImpl({
             host: row.host,
             port: Number(row.port) || 21,
             timeoutMs: ftpTimeout,
             signal: execOpts.signal ?? null,
+            hostAllowed,
+            observedAddress: row.address || null,
+            addressAllowed: (address) => ftpAddressAllowed(row.host, address),
+            // O socket FTP nativo não fala SOCKS. Em Tor/proxychains ele
+            // falha fechado, em vez de vazar uma conexão direta.
+            allowDirectNetwork: !shouldUseProxychainsForCommand('nmap', execOpts),
           });
           if (r.ok) {
+            if (ftpAuditSummary) {
+              ftpAuditSummary.confirmed += 1;
+              if (r.operationalPartial === true) {
+                ftpAuditSummary.failed += 1;
+                ftpAuditSummary.reasons.add(String(r.warning || 'ftp_login_operational_partial').slice(0, 80));
+              }
+              if (r.cleanupConfirmed !== true) {
+                ftpAuditSummary.cleanupUnconfirmed += 1;
+                ftpAuditSummary.reasons.add('ftp_socket_cleanup_unconfirmed');
+              }
+            }
             let w = { writable: false };
-            if (allowFtpWriteProbe) {
+            if (allowFtpWriteProbe && r.cleanupConfirmed !== true) {
+              w = { writable: false, detail: 'login_session_cleanup_unconfirmed' };
+              if (ftpWriteState) {
+                ftpWriteState.halted = true;
+                ftpWriteState.skipped += 1;
+                ftpWriteState.reasons.add('login_session_cleanup_unconfirmed');
+              }
+              log('[FTP] write probe bloqueado: a sessão de login anterior não confirmou encerramento', 'error');
+            } else if (allowFtpWriteProbe && ftpWriteState?.halted) {
+              w = { writable: false, detail: 'cleanup_failure_halt' };
+              ftpWriteState.skipped += 1;
+              ftpWriteState.reasons.add('cleanup_failure_halt');
+              log('[FTP] write probe bloqueado: uma remoção anterior não foi confirmada', 'error');
+            } else if (allowFtpWriteProbe) {
+              if (ftpWriteState) ftpWriteState.attempted += 1;
               try {
-                w = await probeFtpAnonymousWritable({
+                w = await ftpWritableProbeImpl({
                   host: row.host,
                   port: Number(row.port) || 21,
                   timeoutMs: Math.max(8000, Number(process.env.GHOSTRECON_FTP_WRITE_PROBE_TIMEOUT_MS || 15000)),
                   signal: execOpts.signal ?? null,
+                  hostAllowed,
+                  observedAddress: row.address || r.networkAddress || null,
+                  addressAllowed: (address) => ftpAddressAllowed(row.host, address),
+                  allowDirectNetwork: !shouldUseProxychainsForCommand('nmap', execOpts),
                 });
               } catch (e) {
-                if (isProcessAbort(e)) throw e;
+                if (isProcessAbort(e)) {
+                  if (e?.remoteWritePossible) {
+                    if (ftpWriteState) {
+                      ftpWriteState.halted = true;
+                      ftpWriteState.cleanupUnconfirmed += 1;
+                      ftpWriteState.reasons.add('operation_cancelled_after_stor_preliminary');
+                    }
+                    recordFtpWriteCleanupUnconfirmed(addFinding, k, {
+                      ...e,
+                      error: e?.message || 'operation_cancelled',
+                      detail: 'operation_cancelled_after_stor_preliminary',
+                    });
+                  }
+                  throw e;
+                }
                 log(`[FTP] write probe: ${e?.message || e}`, 'warn');
+                w = {
+                  writable: false,
+                  detail: 'probe_error',
+                  error: e?.message || String(e),
+                };
               }
               if (w.detail === 'probe_disabled') {
                 log(
-                  '[FTP] ftp_write_probe selecionado, mas o gate GHOSTRECON_FTP_WRITE_PROBE=1 não foi habilitado; nenhuma escrita foi enviada.',
+                  '[FTP] ftp_write_probe selecionado, mas o gate de escrita está desligado; nenhuma escrita foi enviada.',
                   'warn',
                 );
+              } else if (w.detail === 'controlled_lab_ack_required') {
+                log('[FTP] STOR bloqueado: falta GHOSTRECON_FTP_WRITE_PROBE_LAB_ACK=1.', 'warn');
+              } else if (w.detail === 'controlled_lab_target_not_allowlisted') {
+                log('[FTP] STOR bloqueado: alvo ausente de GHOSTRECON_FTP_WRITE_PROBE_LAB_TARGETS.', 'warn');
+              }
+              if (ftpWriteState) {
+                const detail = String(w.detail || 'write_probe_inconclusive');
+                const errorText = String(w.error || '');
+                ftpWriteState.reasons.add(detail.slice(0, 80));
+                if (w.writable) {
+                  ftpWriteState.writeConfirmed += 1;
+                } else if (w.remoteWritePossible) {
+                  ftpWriteState.failed += 1;
+                } else if (/^stor_denied_/.test(detail)) {
+                  ftpWriteState.denied += 1;
+                } else if (
+                  /^(?:probe_disabled|controlled_lab_|target_out_of_scope|direct_network_blocked|observed_address_)/.test(detail)
+                ) {
+                  ftpWriteState.skipped += 1;
+                } else if (/timeout|deadline/i.test(`${detail} ${errorText}`)) {
+                  ftpWriteState.timeouts += 1;
+                } else {
+                  ftpWriteState.failed += 1;
+                }
+              }
+              if (w.remoteWritePossible && w.cleanupVerified !== true && ftpWriteState) {
+                ftpWriteState.halted = true;
+                ftpWriteState.cleanupUnconfirmed += 1;
+                ftpWriteState.reasons.add('remote_cleanup_unconfirmed');
               }
             } else {
               w = { writable: false, detail: 'probe_disabled' };
             }
+            const loginFinding = ftpAnonymousLoginFinding(r, {
+              writeProbe: w.writable
+                ? 'stor_confirmed'
+                : w.detail === 'probe_disabled'
+                  ? 'not_run'
+                  : String(w.detail || 'not_writable'),
+            });
+            if (loginFinding) {
+              addFinding(loginFinding);
+            }
             if (w.writable) {
               addFinding({
-                type: 'security',
+                type: 'ftp_anonymous_write',
+                // A UI/estatística legada agrega severidade máxima em `high`;
+                // o rótulo CRITICAL permanece no valor e no alerta dedicado.
                 prio: 'high',
                 score: 99,
                 value: `CRITICAL: FTP anonymous write (upload) @ ${k}`,
@@ -1466,14 +1793,23 @@ async function ingestNmapScanRows(rows, ctx) {
                   'anonymous_upload=stor_confirmed',
                   w.probeFile ? `probe_file=${w.probeFile}` : null,
                   w.detail ? `probe=${w.detail}` : null,
+                  `cleanup_verified=${w.cleanupVerified === true ? 'yes' : 'no'}`,
                   r.banner ? `banner=${String(r.banner).slice(0, 80)}` : null,
-                  'evidence=stor_dele',
+                  'evidence=stor',
                 ]
                   .filter(Boolean)
                   .join(' • '),
                 url: null,
+                provenance: {
+                  how: 'O módulo ftp_write_probe confirmou STOR com um canário e registrou a resposta da tentativa de DELE.',
+                  relation: `Serviço FTP no alvo autorizado ${k}.`,
+                },
               });
-              log(`[FTP] CRITICAL: escrita anónima (upload) permitida em ${k}`, 'error');
+              log(
+                `[FTP] CRITICAL: escrita anónima (upload) permitida em ${k}; `
+                  + (w.cleanupVerified ? 'remoção DELE confirmada' : 'remoção DELE NÃO confirmada'),
+                'error',
+              );
               if (typeof emit === 'function') {
                 emit({
                   type: 'intel',
@@ -1487,46 +1823,45 @@ async function ingestNmapScanRows(rows, ctx) {
                   ftpEndpoint: k,
                   probeFile: w.probeFile,
                   probeDetail: w.detail,
+                  cleanupVerified: w.cleanupVerified === true,
                 });
               }
             } else {
-              addFinding({
-                type: 'security',
-                prio: 'high',
-                score: 91,
-                value: `FTP anonymous login enabled @ ${k}`,
-                meta: [
-                  'service=ftp',
-                  r.banner ? `banner=${String(r.banner).slice(0, 90)}` : null,
-                  r.userReply ? `user=${r.userReply}` : null,
-                  r.passReply ? `pass=${r.passReply}` : null,
-                  r.passUsed === '' ? 'auth=anonymous-empty-pass' : r.passUsed ? `auth=anonymous-pass:${r.passUsed}` : null,
-                  Array.isArray(r.triedPasses) && r.triedPasses.length
-                    ? `tried=${r.triedPasses.map((p) => (p === '' ? '<empty>' : p)).join(',')}`
-                    : null,
-                  'evidence=active_check',
-                  w.detail === 'probe_disabled' ? 'write_probe=skipped' : null,
-                ]
-                  .filter(Boolean)
-                  .join(' • '),
-                url: null,
-              });
               const authHow =
                 r.passUsed === '' ? 'PASS <empty>' : r.passUsed ? `PASS ${r.passUsed}` : 'sem PASS';
               log(`[FTP] ⚠ login anônimo permitido em ${k} (${authHow})`, 'warn');
             }
+            if (w.remoteWritePossible && w.cleanupVerified !== true) {
+              recordFtpWriteCleanupUnconfirmed(addFinding, k, w);
+              log(`[FTP] BLOQUEIO: cleanup do canário não atestado em ${k}; novos writes foram interrompidos`, 'error');
+            }
           } else {
             const why = r.error || r.passReply || r.userReply || 'negado';
-            log(`[FTP] ${k} sem login anônimo (${String(why).slice(0, 120)})`, 'info');
+            if (ftpAuditSummary) {
+              ftpAuditSummary.reasons.add(String(why).slice(0, 80));
+              if (/timeout|deadline/i.test(String(why))) ftpAuditSummary.timeouts += 1;
+              else if (/out_of_scope|blocked|unsupported/i.test(String(why))) ftpAuditSummary.skipped += 1;
+              else if (!r.error && (r.passReply || r.userReply)) ftpAuditSummary.denied += 1;
+              else ftpAuditSummary.failed += 1;
+            }
+            const level = r.error === 'target_out_of_scope' || r.error === 'direct_network_blocked'
+              ? 'warn'
+              : 'info';
+            log(`[FTP] ${k} sem login anônimo (${String(why).slice(0, 120)})`, level);
           }
         } catch (e) {
           if (isProcessAbort(e)) throw e;
+          if (ftpAuditSummary) {
+            ftpAuditSummary.failed += 1;
+            ftpAuditSummary.reasons.add('probe_error');
+          }
           log(`[FTP] erro no teste ${k}: ${e?.message || e}`, 'warn');
+        }
         }
       }
     }
 
-    if (allowNmapServiceFollowups && isSmbServiceRow(row) && cap.tools.smbclient) {
+    if (allowNmapServiceFollowups && isSmbServiceRow(row) && cap.tools.smbclient && hostAllowed(row.host) === true) {
       const k = `${row.host}:${row.port}`;
       if (!smbChecked.has(k)) {
         smbChecked.add(k);
@@ -1539,10 +1874,16 @@ async function ingestNmapScanRows(rows, ctx) {
         if (smb.ok) {
           addFinding({
             type: 'security',
-            prio: 'high',
-            score: 93,
-            value: `SMB anonymous session/share listing enabled @ ${k}`,
-            meta: `service=smb • severity=high • auth=null-session • evidence=smbclient -N -L • target=${reconTarget || row.host}`,
+            prio: 'med',
+            score: 68,
+            value: `SMB null session com listagem de shares observada @ ${k}`,
+            meta: {
+              service: 'smb',
+              auth: 'null-session',
+              evidenceStatus: 'share_listing_observed',
+              target: reconTarget || row.host,
+              note: 'Revisar se os shares enumerados foram intencionalmente publicados.',
+            },
             url: null,
           });
           if (typeof emit === 'function') emit({ type: 'intel', line: `⚠ SMB null session detectada em ${k}` });
@@ -1553,7 +1894,7 @@ async function ingestNmapScanRows(rows, ctx) {
       }
     }
 
-    if (allowNmapServiceFollowups && isRpcServiceRow(row) && cap.tools.rpcclient) {
+    if (allowNmapServiceFollowups && isRpcServiceRow(row) && cap.tools.rpcclient && hostAllowed(row.host) === true) {
       const k = `${row.host}:${row.port}`;
       if (!rpcChecked.has(k)) {
         rpcChecked.add(k);
@@ -1566,10 +1907,15 @@ async function ingestNmapScanRows(rows, ctx) {
         if (rpc.ok) {
           addFinding({
             type: 'security',
-            prio: 'high',
-            score: 90,
-            value: `RPC null session enabled @ ${k}`,
-            meta: `service=rpc • severity=high • auth=null-session • evidence=rpcclient -N -U "" • target=${reconTarget || row.host}`,
+            prio: 'med',
+            score: 64,
+            value: `RPC null session com srvinfo observada @ ${k}`,
+            meta: {
+              service: 'rpc',
+              auth: 'null-session',
+              evidenceStatus: 'srvinfo_observed',
+              target: reconTarget || row.host,
+            },
             url: null,
           });
           if (typeof emit === 'function') emit({ type: 'intel', line: `⚠ RPC null session detectada em ${k}` });
@@ -1595,11 +1941,17 @@ async function ingestNmapScanRows(rows, ctx) {
       for (const hit of hits.slice(0, 4)) {
         const title = exploitTitle(hit);
         addFinding({
-          type: 'exploit',
-          prio: 'high',
-          score: 82,
-          value: title,
-          meta: `Exploit-DB / searchsploit - nmap=${row.name || '?'} ${row.product || ''} ${row.version || ''} - queries="${queryLabel.slice(0, 120)}"`,
+          type: 'exploit_candidate',
+          prio: 'low',
+          score: 34,
+          value: `Exploit-DB candidato: ${title}`,
+          meta: {
+            source: 'searchsploit',
+            evidenceStatus: 'version_string_candidate',
+            service: `${row.name || '?'} ${row.product || ''} ${row.version || ''}`.trim(),
+            queries: queryLabel.slice(0, 120),
+            note: 'Correspondência textual não confirma build, backport, configuração ou vulnerabilidade.',
+          },
           url: exploitUrl(hit) || undefined,
         });
       }
@@ -1705,7 +2057,10 @@ function normalizeInfoDisclosureSeverity(value) {
 }
 
 function infoDisclosurePrio(sev) {
-  return sev === 'CRITICAL' || sev === 'HIGH' ? 'high' : sev === 'MEDIUM' ? 'med' : 'low';
+  if (sev === 'CRITICAL' || sev === 'HIGH') return 'high';
+  if (sev === 'MEDIUM') return 'med';
+  if (sev === 'LOW') return 'low';
+  return 'info';
 }
 
 function infoDisclosureScore(sev) {
@@ -1729,11 +2084,13 @@ export function infoDisclosureFindingFromRow(row, { targetUrl = null } = {}) {
   const title = clipText(row.titulo || `Information disclosure (${moduleName})`, 180);
   const evidence = clipText(row.evidencia || '', 260);
   const url = normalizedHttpUrl(row.url) || normalizedHttpUrl(targetUrl);
+  const errorProbe = moduleName.toLowerCase() === INFO_DISCLOSURE_ERROR_MODULE;
   const meta = [
     'scanner=infohunter_br',
     `module=${moduleName}`,
     `severity=${sev}`,
-    'confidence=active_disclosure_probe',
+    `confidence=${errorProbe ? 'probable_differential_error' : 'active_disclosure_probe'}`,
+    `evidence_status=${errorProbe ? 'probable' : 'candidate'}`,
     evidence ? `evidence=${evidence}` : null,
   ]
     .filter(Boolean)
@@ -1748,6 +2105,16 @@ export function infoDisclosureFindingFromRow(row, { targetUrl = null } = {}) {
     owasp: 'A05:2021',
     mitre: 'T1592',
   };
+}
+
+export function validateInfoDisclosureJson(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.achados)) return false;
+  if (value.achados.length > 10_000) return false;
+  return value.achados.every((row) => row && typeof row === 'object'
+    && typeof row.modulo === 'string'
+    && typeof row.titulo === 'string'
+    && (row.url == null || typeof row.url === 'string')
+    && (row.evidencia == null || typeof row.evidencia === 'string'));
 }
 
 export function mapInfoDisclosureJsonToFindings(json, { targetUrl = null, limit = 300 } = {}) {
@@ -1766,7 +2133,10 @@ export function mapInfoDisclosureJsonToFindings(json, { targetUrl = null, limit 
   return out;
 }
 
-async function executeInfoDisclosureHunter({ targetUrl, cap, log, includeErrors = false, execOpts = {} }) {
+export async function executeInfoDisclosureHunter({ targetUrl, cap, log, includeErrors = false, execOpts = {},
+  executor = runProc, outputReader = readBoundedToolOutput,
+}) {
+  throwIfAborted(execOpts.signal);
   const pyCmd = cap?.tools?.python3 ? 'python3' : cap?.tools?.python ? 'python' : null;
   if (!pyCmd) return { ok: false, findings: [], error: 'python3/python nao encontrado no PATH' };
   if (!fs.existsSync(INFO_DISCLOSURE_SCRIPT)) {
@@ -1806,30 +2176,29 @@ async function executeInfoDisclosureHunter({ targetUrl, cap, log, includeErrors 
   }
 
   try {
-    const proc = await runProc(pyCmd, args, runTimeoutMs, { cwd: process.cwd() }, execOpts);
-    const mixed = [proc.stdout, proc.stderr].filter(Boolean).join('\n');
-    if (proc.code !== 0 && typeof log === 'function') {
-      log(`[InfoHunter] terminou com codigo ${proc.code}: ${clipText(mixed, 360)}`, 'warn');
-    }
+    const proc = await executor(pyCmd, args, runTimeoutMs, { cwd: process.cwd() }, execOpts);
+    throwIfAborted(execOpts.signal);
+    const unsuccessful = discoveryProcessOutcome(proc);
+    if (unsuccessful) return { ok: false, findings: [], state: unsuccessful.state, error: unsuccessful.reason };
     let parsed = null;
     try {
-      parsed = JSON.parse(await readFile(outJson, 'utf8'));
+      parsed = JSON.parse(await outputReader(outJson, 4 * 1024 * 1024));
+      throwIfAborted(execOpts.signal);
+      if (!validateInfoDisclosureJson(parsed)) throw new Error('schema de achados inválido');
     } catch (e) {
-      const depHint = /ModuleNotFoundError|No module named/i.test(mixed)
-        ? ' (dependencias Python: requests/colorama)'
-        : '';
+      throwIfAborted(execOpts.signal);
       return {
         ok: false,
         findings: [],
-        error: `saida JSON nao encontrada ou invalida${depHint}: ${e.message}`,
-        stdout: mixed.slice(0, 6000),
+        state: 'failed',
+        error: 'saida JSON nao encontrada, excedida ou invalida',
       };
     }
     const findings = mapInfoDisclosureJsonToFindings(parsed, { targetUrl: target });
-    return { ok: true, findings, stdout: mixed.slice(0, 6000), meta: parsed?.meta || null };
+    return { ok: true, state: 'done', findings };
   } catch (e) {
-    if (isProcessAbort(e)) throw e;
-    return { ok: false, findings: [], error: String(e?.message || e) };
+    const outcome = discoveryErrorOutcome(e, execOpts.signal);
+    return { ok: false, state: outcome.state, findings: [], error: outcome.reason };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1853,25 +2222,29 @@ export async function runKaliAggressiveScan({
   runDirsearch = false,
   runInfoDisclosureHunter = false,
   runInfoDisclosureErrors = false,
+  infoDisclosureDeps = {},
   /**
    * Módulo UI `kali_nmap_aggressive`: nmap com `-A -sV -p-` (todas as portas) — muito lento;
    * substitui o perfil normal desta fase. Ver `GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS` e timeout.
    */
   runNmapAggressive = false,
-  /** Executa a passagem TCP base. No RUN manual permanece `true`. */
-  runNmapBase = true,
-  runWhois = true,
-  runWpscan = true,
-  runDalfox = true,
-  runXssVibes = true,
-  allowNmapServiceFollowups = true,
+  /** Capacidades Kali só rodam quando o plano explícito as habilitou. */
+  runNmapBase = false,
+  runWhois = false,
+  runWpscan = false,
+  runDalfox = false,
+  allowNmapServiceFollowups = false,
+  allowFtpAnonymousAudit = false,
   allowFtpWriteProbe = false,
+  ftpAnonymousLoginImpl = probeFtpAnonymousLogin,
+  ftpWritableProbeImpl = probeFtpAnonymousWritable,
+  nmapRunner = runNmapOnHosts,
   /**
    * Módulo UI `kali_nmap_udp`: segunda passagem nmap `-sU -A` só em portas UDP sensíveis
    * (lista curada ou `GHOSTRECON_NMAP_UDP_PORTS`). Corre após o nmap TCP desta fase.
    */
   runNmapUdp = false,
-  /** Módulo UI `mysql_3306_intel`: após nmap TCP, achados `intel` com comandos de referência se 3306/tcp aberto. */
+  /** Módulo UI `mysql_3306_intel`: após nmap TCP, inventário observado em 3306/tcp. */
   runNmapCveMatch = false,
   runNmapBackportReview = false,
   runMysql3306Intel = false,
@@ -1881,16 +2254,75 @@ export async function runKaliAggressiveScan({
   emit = null,
   /** Módulo UI `kali_proxychains`: encadeia scanners Kali via proxychains-ng. */
   useProxychains = false,
+  /** Revalida cada hostname imediatamente antes de scans e sockets. */
+  hostAllowed = () => true,
+  /** Revalida o endereço DNS pinado imediatamente antes do socket FTP. */
+  ftpAddressAllowed = () => true,
   signal = null,
+  /** Dependências restritas à descoberta, para fixtures sem executar scanners. */
+  directoryDiscoveryDeps = {},
 }) {
-  const execOpts = { useProxychains: Boolean(useProxychains), signal };
-  const pipeTool = (name, state) => {
+  const emitEarlyFtpPolicyFailure = (reason) => {
     if (typeof emit !== 'function') return;
-    emit({ type: 'pipe', name, state });
+    for (const moduleId of [
+      ...(allowFtpAnonymousAudit ? ['ftp_anonymous_audit'] : []),
+      ...(allowFtpWriteProbe ? ['ftp_write_probe'] : []),
+    ]) {
+      const detail = {
+        reason,
+        partial: false,
+        attempted: 0,
+        resultCount: 0,
+        reasonDetails: [reason],
+      };
+      emit({
+        type: 'module_outcome',
+        moduleId,
+        source: 'legacy',
+        status: 'failed',
+        ...detail,
+      });
+      emit({ type: 'pipe', name: moduleId, state: 'failed', ...detail });
+    }
+  };
+  if (useProxychains && runNmapAggressive) {
+    emitEarlyFtpPolicyFailure('proxychains_nmap_aggressive_incompatible');
+    const error = new Error('kali_proxychains não suporta kali_nmap_aggressive (-A/raw); use kali_nmap TCP base com -sT');
+    error.code = 'PROXYCHAINS_NMAP_AGGRESSIVE_UNSUPPORTED';
+    throw error;
+  }
+  if (useProxychains && runNmapUdp) {
+    emitEarlyFtpPolicyFailure('proxychains_nmap_udp_incompatible');
+    const error = new Error('kali_proxychains não suporta kali_nmap_udp; UDP não é roteável com garantia pelo wrapper');
+    error.code = 'PROXYCHAINS_NMAP_UDP_UNSUPPORTED';
+    throw error;
+  }
+  const execOpts = { useProxychains: Boolean(useProxychains), signal };
+  const pipeTool = (name, state, extra = {}) => {
+    if (typeof emit !== 'function') return;
+    emit({ type: 'pipe', name, state, ...extra });
+  };
+  const finishDirectoryTool = (name, outcomes, terminalState = null) => {
+    const summary = summarizeDirectoryDiscoveryOutcomes(outcomes);
+    const state = terminalState || summary.state;
+    const partial = summary.partial || Boolean(terminalState && outcomes.some((outcome) => outcome.state === 'done'));
+    const attempted = summary.attempted + (terminalState ? 1 : 0);
+    pipeTool(name, state === 'skipped' ? 'skip' : state, {
+      partial, attempted, resultCount: summary.resultCount,
+    });
+    if (typeof emit === 'function') {
+      emit({
+        type: 'module_outcome', moduleId: `kali_${name}`, source: 'legacy',
+        status: state, partial, resultCount: summary.resultCount, attempted,
+      });
+    }
   };
 
-  const rawHosts = [domain, ...(subdomainsAlive || [])].map(sanitizeHost).filter(Boolean);
-  const hostsAll = [...new Set(rawHosts)].slice(0, 22);
+  const rawHosts = [domain, ...(subdomainsAlive || [])]
+    .map(sanitizeHost)
+    .filter((host) => host && hostAllowed(host) === true);
+  const uniqueHosts = [...new Set(rawHosts)];
+  const hostsAll = uniqueHosts.slice(0, 22);
   const maxAggHosts = Math.max(
     1,
     Math.min(12, Number(process.env.GHOSTRECON_NMAP_AGGRESSIVE_MAX_HOSTS || 3)),
@@ -1906,7 +2338,7 @@ export async function runKaliAggressiveScan({
   log('Apenas em alvos com autorização explícita (bug bounty / pentest autorizado).', 'warn');
   if (runNmapAggressive) {
     log(
-      `nmap AGRESSIVO: ${hosts.length} host(s) (máx. ${maxAggHosts} — -p- escaneia todas as portas; pode demorar horas). Args: ${process.env.GHOSTRECON_NMAP_AGGRESSIVE_ARGS || '-A -sV -p- -Pn'}`,
+      `nmap AGRESSIVO: ${hosts.length} host(s) (máx. ${maxAggHosts} — -p- escaneia todas as portas; pode demorar horas). Overrides passam por allowlist antes da execução.`,
       'warn',
     );
   }
@@ -1925,14 +2357,145 @@ export async function runKaliAggressiveScan({
     Math.min(80, Number(process.env.GHOSTRECON_SEARCHSPLOIT_MAX_QUERIES || 18)),
   );
   const ftpChecked = new Set();
+  const ftpAuditSummary = {
+    servicesDetected: 0,
+    attempted: 0,
+    confirmed: 0,
+    denied: 0,
+    skipped: 0,
+    failed: 0,
+    timeouts: 0,
+    cleanupUnconfirmed: 0,
+    hostsEligible: uniqueHosts.length,
+    hostsScanned: 0,
+    hostsTruncated: Math.max(0, uniqueHosts.length - hosts.length),
+    reasons: new Set(),
+  };
+  const ftpWriteState = {
+    halted: false,
+    attempted: 0,
+    writeConfirmed: 0,
+    denied: 0,
+    skipped: 0,
+    failed: 0,
+    timeouts: 0,
+    cleanupUnconfirmed: 0,
+    reasons: new Set(),
+  };
   const smbChecked = new Set();
   const rpcChecked = new Set();
 
-  if (cap.tools.nmap && runNmapBase) {
+  let nmapBaseState = 'skipped';
+  let ftpOutcomeEmitted = false;
+  const emitFtpAuditOutcome = (override = null) => {
+    if (!allowFtpAnonymousAudit || ftpOutcomeEmitted) return;
+    ftpOutcomeEmitted = true;
+    const outcome = override || classifyFtpAnonymousAuditOutcome(ftpAuditSummary, {
+      enabled: true,
+      nmapState: nmapBaseState,
+    });
+    const detail = {
+      partial: outcome.partial === true,
+      reason: outcome.reason,
+      attempted: ftpAuditSummary.attempted,
+      serviceCount: ftpAuditSummary.servicesDetected,
+      resultCount: ftpAuditSummary.confirmed,
+      negativeCount: ftpAuditSummary.denied,
+      timeoutCount: ftpAuditSummary.timeouts,
+      failureCount: ftpAuditSummary.failed,
+      skipCount: ftpAuditSummary.skipped,
+      cleanupUnconfirmedCount: ftpAuditSummary.cleanupUnconfirmed,
+      hostsEligible: ftpAuditSummary.hostsEligible,
+      hostsScanned: ftpAuditSummary.hostsScanned,
+      hostsTruncated: ftpAuditSummary.hostsTruncated,
+      reasonDetails: [...ftpAuditSummary.reasons].slice(0, 5),
+    };
+    if (typeof emit === 'function') {
+      emit({
+        type: 'module_outcome',
+        moduleId: 'ftp_anonymous_audit',
+        source: 'legacy',
+        status: outcome.status,
+        ...detail,
+      });
+    }
+    pipeTool(
+      'ftp_anonymous_audit',
+      outcome.status === 'skipped' ? 'skip' : outcome.status,
+      detail,
+    );
+  };
+  let ftpWriteOutcomeEmitted = false;
+  const emitFtpWriteOutcome = (override = null) => {
+    if (!allowFtpWriteProbe || ftpWriteOutcomeEmitted) return;
+    ftpWriteOutcomeEmitted = true;
+    const outcome = override || classifyFtpWriteProbeOutcome(ftpWriteState, {
+      enabled: true,
+      nmapState: nmapBaseState,
+      ftpAuditSummary,
+    });
+    const detail = {
+      partial: outcome.partial === true,
+      reason: outcome.reason,
+      attempted: ftpWriteState.attempted,
+      resultCount: ftpWriteState.writeConfirmed,
+      negativeCount: ftpWriteState.denied,
+      timeoutCount: ftpWriteState.timeouts,
+      failureCount: ftpWriteState.failed,
+      skipCount: ftpWriteState.skipped,
+      cleanupUnconfirmedCount: ftpWriteState.cleanupUnconfirmed,
+      hostsEligible: ftpAuditSummary.hostsEligible,
+      hostsScanned: ftpAuditSummary.hostsScanned,
+      hostsTruncated: ftpAuditSummary.hostsTruncated,
+      reasonDetails: [...ftpWriteState.reasons].slice(0, 5),
+    };
+    if (typeof emit === 'function') {
+      emit({
+        type: 'module_outcome',
+        moduleId: 'ftp_write_probe',
+        source: 'legacy',
+        status: outcome.status,
+        ...detail,
+      });
+    }
+    pipeTool(
+      'ftp_write_probe',
+      outcome.status === 'skipped' ? 'skip' : outcome.status,
+      detail,
+    );
+  };
+  if (allowFtpAnonymousAudit) pipeTool('ftp_anonymous_audit', 'active');
+  if (allowFtpWriteProbe) pipeTool('ftp_write_probe', 'active');
+
+  if (cap.tools.nmap && runNmapBase && hosts.length > 0) {
     pipeTool('nmap', 'active');
     let tcpNmapRows = [];
     try {
-      tcpNmapRows = await runNmapOnHosts(hosts, log, { aggressive: runNmapAggressive, execOpts });
+      tcpNmapRows = await nmapRunner(hosts, log, {
+        aggressive: runNmapAggressive,
+        // A capability FTP nunca herda scripts/flags arbitrárias do ambiente.
+        forceSafeProfile: allowFtpAnonymousAudit && !runNmapAggressive,
+        execOpts,
+      });
+      nmapBaseState = 'done';
+      ftpAuditSummary.hostsScanned = hosts.length;
+      pipeTool('nmap', 'done');
+    } catch (e) {
+      nmapBaseState = isProcessAbort(e)
+        ? 'cancelled'
+        : e?.code === 'PROCESS_TIMEOUT'
+          ? 'timeout'
+          : 'failed';
+      pipeTool('nmap', nmapBaseState);
+      if (isProcessAbort(e)) {
+        emitFtpAuditOutcome({ status: 'cancelled', reason: 'operation_cancelled', partial: false });
+        emitFtpWriteOutcome({ status: 'cancelled', reason: 'operation_cancelled', partial: false });
+        throw e;
+      }
+      log(`nmap: ${e.message}`, 'error');
+    }
+
+    if (nmapBaseState === 'done') {
       const ingestCtx = {
         log,
         addFinding,
@@ -1949,15 +2512,58 @@ export async function runKaliAggressiveScan({
         domain,
         execOpts,
         allowNmapServiceFollowups,
+        allowFtpAnonymousAudit,
         allowFtpWriteProbe,
+        hostAllowed,
+        ftpAddressAllowed,
+        ftpAuditSummary,
+        ftpWriteState,
+        ftpAnonymousLoginImpl,
+        ftpWritableProbeImpl,
       };
-      await ingestNmapScanRows(tcpNmapRows, { ...ingestCtx, scanKind: 'tcp' });
+      try {
+        await ingestNmapScanRows(tcpNmapRows, { ...ingestCtx, scanKind: 'tcp' });
+      } catch (e) {
+        if (isProcessAbort(e)) {
+          emitFtpAuditOutcome({
+            status: 'cancelled',
+            reason: 'operation_cancelled',
+            partial: ftpAuditSummary.attempted > 0,
+          });
+          emitFtpWriteOutcome({
+            // O cancelamento continua sendo propagado ao pipeline, mas, se o
+            // servidor já aceitou o reply preliminar de STOR, o estado remoto
+            // incerto prevalece no outcome desta capability destrutiva.
+            status: ftpWriteState.cleanupUnconfirmed > 0 ? 'failed' : 'cancelled',
+            reason: ftpWriteState.cleanupUnconfirmed > 0
+              ? 'operation_cancelled_remote_cleanup_unconfirmed'
+              : 'operation_cancelled',
+            partial: ftpWriteState.attempted > 0,
+          });
+          throw e;
+        }
+        if (allowFtpAnonymousAudit) {
+          ftpAuditSummary.failed += 1;
+          ftpAuditSummary.reasons.add('post_nmap_ingest_failed');
+        }
+        log(`nmap pós-processamento: ${e?.message || e}`, 'error');
+      } finally {
+        emitFtpAuditOutcome();
+        emitFtpWriteOutcome();
+      }
+
       if (runNmapBackportReview && tcpNmapRows.length) {
         pipeTool('nmap_backport_review', 'active');
-        const backports = buildNmapBackportReviewFindings(tcpNmapRows);
-        for (const f of backports) addFinding(f, null);
-        if (backports.length) log(`Nmap backport review: ${backports.length} contexto(s) de distro/backport`, 'info');
-        pipeTool('nmap_backport_review', 'done');
+        try {
+          const backports = buildNmapBackportReviewFindings(tcpNmapRows);
+          for (const f of backports) addFinding(f, null);
+          if (backports.length) log(`Nmap backport review: ${backports.length} contexto(s) de distro/backport`, 'info');
+          pipeTool('nmap_backport_review', 'done');
+        } catch (e) {
+          pipeTool('nmap_backport_review', isProcessAbort(e) ? 'cancelled' : 'failed');
+          if (isProcessAbort(e)) throw e;
+          log(`Nmap backport review: ${e?.message || e}`, 'warn');
+        }
       } else {
         pipeTool('nmap_backport_review', 'skip');
       }
@@ -1965,31 +2571,35 @@ export async function runKaliAggressiveScan({
         pipeTool('nmap_cve_match', 'active');
         try {
           await runNmapCveMatchForRows(tcpNmapRows, { log, addFinding });
+          pipeTool('nmap_cve_match', 'done');
         } catch (e) {
+          pipeTool('nmap_cve_match', isProcessAbort(e) ? 'cancelled' : 'failed');
           if (isProcessAbort(e)) throw e;
           log(`Nmap CVE match: ${e?.message || e}`, 'warn');
-        } finally {
-          pipeTool('nmap_cve_match', 'done');
         }
       } else {
         pipeTool('nmap_cve_match', 'skip');
       }
       if (runMysql3306Intel && tcpNmapRows.length) {
-        const mysqlHints = buildMysql3306IntelFindings(tcpNmapRows);
+        const mysqlHints = buildMysql3306IntelFindings(tcpNmapRows, {
+          hostAllowed,
+          signal: execOpts.signal ?? null,
+        });
         if (mysqlHints.length) {
           log(`MySQL 3306/tcp: +${mysqlHints.length} achado(s) intel (follow-up)`, 'info');
           for (const f of mysqlHints) addFinding(f, null);
         }
       }
-    } catch (e) {
-      if (isProcessAbort(e)) throw e;
-      log(`nmap: ${e.message}`, 'error');
-    } finally {
-      pipeTool('nmap', 'done');
+    } else {
+      emitFtpAuditOutcome();
+      emitFtpWriteOutcome();
+      pipeTool('nmap_backport_review', 'skip');
+      pipeTool('nmap_cve_match', 'skip');
     }
 
     if (runNmapUdp) {
       pipeTool('nmap_udp', 'active');
+      let udpTerminalState = 'done';
       try {
         log(
           `nmap UDP (módulo kali_nmap_udp): -sU -A em portas sensíveis — ${hostsUdp.length} host(s) (máx. ${maxUdpHosts}). Portas: env GHOSTRECON_NMAP_UDP_PORTS ou lista por defeito.`,
@@ -2012,7 +2622,14 @@ export async function runKaliAggressiveScan({
           domain,
           execOpts,
           allowNmapServiceFollowups,
-          allowFtpWriteProbe,
+          allowFtpAnonymousAudit: false,
+          allowFtpWriteProbe: false,
+          hostAllowed,
+          ftpAddressAllowed,
+          ftpAuditSummary,
+          ftpWriteState,
+          ftpAnonymousLoginImpl,
+          ftpWritableProbeImpl,
           scanKind: 'udp',
         });
         if (runNmapBackportReview && udpRows.length) {
@@ -2021,19 +2638,29 @@ export async function runKaliAggressiveScan({
           if (backports.length) log(`Nmap UDP backport review: ${backports.length} contexto(s)`, 'info');
         }
       } catch (e) {
+        udpTerminalState = isProcessAbort(e)
+          ? 'cancelled'
+          : e?.code === 'PROCESS_TIMEOUT'
+            ? 'timeout'
+            : 'failed';
+        if (!isProcessAbort(e)) log(`nmap UDP: ${e.message}`, 'error');
         if (isProcessAbort(e)) throw e;
-        log(`nmap UDP: ${e.message}`, 'error');
       } finally {
-        pipeTool('nmap_udp', 'done');
+        pipeTool('nmap_udp', udpTerminalState);
       }
     } else {
       pipeTool('nmap_udp', 'skip');
     }
   } else {
+    if (runNmapBase && hosts.length === 0) {
+      log('nmap: nenhum host permaneceu dentro do escopo no momento da execução', 'warn');
+    }
     pipeTool('nmap', 'skip');
     pipeTool('nmap_udp', 'skip');
     pipeTool('nmap_cve_match', 'skip');
     pipeTool('nmap_backport_review', 'skip');
+    emitFtpAuditOutcome();
+    emitFtpWriteOutcome();
   }
 
   // ── WHOIS (Kali) ──
@@ -2096,6 +2723,7 @@ export async function runKaliAggressiveScan({
     else pipeTool('info_disclosure_errors', 'skip');
     log('=== InfoHunter BR (information disclosure) ===', 'section');
     const uniqTargets = [...new Set(baseUrlsForFfuf)].slice(0, 2);
+    let hunterState = 'done';
     try {
       for (const targetUrl of uniqTargets) {
         const result = await executeInfoDisclosureHunter({
@@ -2104,8 +2732,10 @@ export async function runKaliAggressiveScan({
           log,
           includeErrors: runInfoDisclosureErrors,
           execOpts,
+          ...infoDisclosureDeps,
         });
         if (!result.ok) {
+          hunterState = result.state === 'timeout' ? 'timeout' : 'failed';
           log(`[InfoHunter] ${targetUrl}: ${result.error || 'falha desconhecida'}`, 'warn');
           continue;
         }
@@ -2115,9 +2745,12 @@ export async function runKaliAggressiveScan({
           result.findings.length ? 'warn' : 'info',
         );
       }
+    } catch (error) {
+      hunterState = isProcessAbort(error) || execOpts.signal?.aborted ? 'cancelled' : 'failed';
+      throw error;
     } finally {
-      pipeTool('info_disclosure_hunter', 'done');
-      if (runInfoDisclosureErrors) pipeTool('info_disclosure_errors', 'done');
+      pipeTool('info_disclosure_hunter', hunterState);
+      if (runInfoDisclosureErrors) pipeTool('info_disclosure_errors', hunterState);
     }
   } else {
     pipeTool('info_disclosure_hunter', 'skip');
@@ -2137,10 +2770,10 @@ export async function runKaliAggressiveScan({
     addFinding(
       {
         type: 'directory',
-        prio: [200, 204, 301, 302, 307, 308].includes(status) ? 'high' : [401, 403].includes(status) ? 'med' : 'low',
-        score: [200, 204].includes(status) ? 78 : [301, 302, 307, 308].includes(status) ? 72 : [401, 403].includes(status) ? 64 : 50,
+        prio: [401, 403].includes(status) ? 'low' : 'info',
+        score: [200, 204].includes(status) ? 30 : [301, 302, 307, 308].includes(status) ? 26 : [401, 403].includes(status) ? 32 : 18,
         value,
-        meta: `${source} • status=${status || '-'} • length=${len || '-'}`,
+        meta: `${source} • evidence_status=inventory • status=${status || '-'} • length=${len || '-'} • words=${Number(entry?.words || 0) || '-'} • lines=${Number(entry?.lines || 0) || '-'}`,
         url: value,
       },
       'directories',
@@ -2149,10 +2782,10 @@ export async function runKaliAggressiveScan({
     addFinding(
       {
         type: 'endpoint',
-        prio: [200, 204].includes(status) ? 'high' : 'med',
-        score: [200, 204].includes(status) ? 72 : 62,
+        prio: 'info',
+        score: [200, 204].includes(status) ? 28 : 22,
         value,
-        meta: `${source} • status=${status || '-'} • length=${len || '-'}`,
+        meta: `${source} • evidence_status=inventory • status=${status || '-'} • length=${len || '-'}`,
         url: value,
       },
       'endpoints',
@@ -2161,16 +2794,22 @@ export async function runKaliAggressiveScan({
 
   if (runFfuf && cap.tools.ffuf) {
     pipeTool('ffuf', 'active');
-    log('═══ ffuf (apenas HTTP 200) ═══', 'section');
-    const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 5);
-    for (const u of uniqBases) {
-      const paths = await runFfuf200(u, log, execOpts);
-      for (const p of paths) {
-        addDirectoryFinding({ url: p, status: 200 }, 'ffuf');
+    log('═══ ffuf (calibrado; 2xx/3xx/401/403) ═══', 'section');
+    const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 3);
+    const outcomes = [];
+    try {
+      for (const u of uniqBases) {
+        const outcome = await runFfufDiscovery(u, log, execOpts, directoryDiscoveryDeps);
+        outcomes.push(outcome);
+        for (const p of outcome.results) addDirectoryFinding(p, 'ffuf');
+        log(`ffuf: ${outcome.state}; ${outcome.results.length} caminho(s)${outcome.reason ? `; ${outcome.reason}` : ''}`,
+          ['failed', 'timeout'].includes(outcome.state) ? 'warn' : 'info');
       }
-      if (paths.length) log(`ffuf ${u} → ${paths.length} caminho(s) 200`, 'success');
+    } catch (error) {
+      finishDirectoryTool('ffuf', outcomes, signal?.aborted || isProcessAbort(error) ? 'cancelled' : 'failed');
+      throw error;
     }
-    pipeTool('ffuf', 'done');
+    finishDirectoryTool('ffuf', outcomes);
   } else {
     pipeTool('ffuf', 'skip');
     if (!runFfuf && cap.tools.ffuf) {
@@ -2180,14 +2819,22 @@ export async function runKaliAggressiveScan({
 
   if (runDirsearch && cap.tools.dirsearch) {
     pipeTool('dirsearch', 'active');
-    log('═══ dirsearch (recursivo, completo) ═══', 'section');
-    const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 5);
-    for (const u of uniqBases) {
-      const hits = await runDirsearchAll(u, log, execOpts);
-      for (const h of hits) addDirectoryFinding(h, 'dirsearch');
-      if (hits.length) log(`dirsearch ${u} → ${hits.length} caminho(s)`, 'success');
+    log('═══ dirsearch (recursão limitada, mesmo escopo) ═══', 'section');
+    const uniqBases = [...new Set(baseUrlsForFfuf)].slice(0, 3);
+    const outcomes = [];
+    try {
+      for (const u of uniqBases) {
+        const outcome = await runDirsearchAll(u, log, execOpts, directoryDiscoveryDeps);
+        outcomes.push(outcome);
+        for (const h of outcome.results) addDirectoryFinding(h, 'dirsearch');
+        log(`dirsearch: ${outcome.state}; ${outcome.results.length} caminho(s)${outcome.reason ? `; ${outcome.reason}` : ''}`,
+          ['failed', 'timeout'].includes(outcome.state) ? 'warn' : 'info');
+      }
+    } catch (error) {
+      finishDirectoryTool('dirsearch', outcomes, signal?.aborted || isProcessAbort(error) ? 'cancelled' : 'failed');
+      throw error;
     }
-    pipeTool('dirsearch', 'done');
+    finishDirectoryTool('dirsearch', outcomes);
   } else {
     pipeTool('dirsearch', 'skip');
     if (!runDirsearch && cap.tools.dirsearch) {
@@ -2319,6 +2966,9 @@ export async function runKaliAggressiveScan({
       pipeTool('wpscan', 'skip');
     } else {
       pipeTool('wpscan', 'active');
+      let wpscanSucceeded = 0;
+      let wpscanFailed = 0;
+      let wpscanTimedOut = 0;
       if (isWpscanApiTokenConfigured()) {
         log(
           '[WPScan] WPVulnDB ligado — WPSCAN_API_TOKEN / GHOSTRECON_WPSCAN_API_TOKEN (CVEs conhecidos no JSON)',
@@ -2333,6 +2983,14 @@ export async function runKaliAggressiveScan({
       const uniqTargets = [...new Set(targets)].slice(0, 6);
       log(`[WPScan] ${uniqTargets.length} alvo(s) WordPress — a iniciar wpscan em cada URL`, 'info');
       for (const t of uniqTargets) {
+        throwIfAborted(signal);
+        let targetHost = '';
+        try { targetHost = new URL(t).hostname; } catch { /* invalid below */ }
+        if (!targetHost || hostAllowed(targetHost) !== true) {
+          wpscanFailed += 1;
+          log('[WPScan] alvo descartado por URL inválida ou fora do escopo', 'warn');
+          continue;
+        }
         log(`[WPScan] ▶︎ alvo: ${t}`, 'info');
         const res = await runWpscanJson({
           targetUrl: t,
@@ -2342,6 +3000,7 @@ export async function runKaliAggressiveScan({
           signal,
         });
         if (res?.json) {
+          wpscanSucceeded += 1;
           const findings = extractWpscanFindings({ targetUrl: t, wpscanJson: res.json });
           const vulnN = Number.isFinite(res.vulnDbCount) ? res.vulnDbCount : countWpvulndbFindings(res.json);
           if (findings.length) {
@@ -2354,19 +3013,23 @@ export async function runKaliAggressiveScan({
           }
           for (const f of findings) addFinding(f, null);
         } else {
-          addFinding({
-            type: 'wpscan',
-            prio: 'low',
-            score: 10,
-            value: `wpscan failed @ ${t}`,
-            meta: res?.error || 'unknown error',
-            url: t,
-          });
+          if (res?.status === 'timeout') wpscanTimedOut += 1;
+          else wpscanFailed += 1;
           log(`[WPScan] ✗ ${t}: sem JSON válido (${res?.error || 'unknown'})`, 'warn');
         }
       }
       log('[WPScan] Fim da fase wpscan (todos os alvos WordPress desta corrida)', 'info');
-      pipeTool('wpscan', 'done');
+      const wpscanState = wpscanSucceeded > 0
+        ? 'done'
+        : wpscanTimedOut > 0 && wpscanFailed === 0
+          ? 'timeout'
+          : 'failed';
+      pipeTool('wpscan', wpscanState, {
+        partial: wpscanSucceeded > 0 && (wpscanFailed > 0 || wpscanTimedOut > 0),
+        succeeded: wpscanSucceeded,
+        failed: wpscanFailed,
+        timedOut: wpscanTimedOut,
+      });
     }
   } else {
     pipeTool('wpscan', 'skip');
@@ -2403,40 +3066,6 @@ export async function runKaliAggressiveScan({
     pipeTool('dalfox', 'skip');
   } else {
     pipeTool('dalfox', 'skip');
-  }
-
-  // Executa após a etapa XSS (nuclei/dalfox): scanner xss_vibes externo.
-  if (runXssVibes && cap.tools.xss_vibes && xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
-    pipeTool('xss_vibes', 'active');
-    log(`═══ xss_vibes (XSS) em URLs com parâmetros (${paramUrls.length}) ═══`, 'section');
-    try {
-    const r = await runXssVibesBatch({ urls: paramUrls, cap, log, auth, execOpts });
-    if (!r.ok) {
-      log(`[xss_vibes] erro: ${r.error || 'falha desconhecida'}`, 'warn');
-    } else {
-      for (const hit of r.hits) {
-        addFinding({
-          type: 'xss',
-          prio: 'high',
-          score: 93,
-          value: `xss_vibes hit @ ${hit}`,
-          meta: 'scanner=xss_vibes • confidence=tool_output',
-          url: hit,
-        });
-      }
-      if (r.hits.length) log(`[xss_vibes] ${r.hits.length} hit(s) adicionado(s) como finding XSS`, 'warn');
-    }
-    } finally {
-      pipeTool('xss_vibes', 'done');
-    }
-  } else if (runXssVibes && cap.tools.xss_vibes && !xssSignals && Array.isArray(paramUrls) && paramUrls.length) {
-    log('[xss_vibes] skip (sem sinais XSS passivos)', 'info');
-    pipeTool('xss_vibes', 'skip');
-  } else if (runXssVibes && !cap.tools.xss_vibes) {
-    log('[xss_vibes] indisponível (python + Xss/xss_vibes/main.py/payloads.json)', 'info');
-    pipeTool('xss_vibes', 'skip');
-  } else {
-    pipeTool('xss_vibes', 'skip');
   }
 
   log('═══ Fim modo Kali ═══', 'section');

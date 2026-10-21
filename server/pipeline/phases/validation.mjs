@@ -84,6 +84,8 @@ import {
 } from '../../modules/client-surface-audit.mjs';
 import { auditOidcMetadata } from '../../modules/identity-surface.mjs';
 import { runCurlProbeModule } from '../../modules/curl-probe.mjs';
+import { runSqliDeepVerification } from '../../modules/sqli-deep-verify.mjs';
+import { runSafeXssVibesAudit } from '../../modules/xss-vibes-safe.mjs';
 import { runCorsAudit } from '../../modules/cors-audit.mjs';
 import { auditCookieSession } from '../../modules/cookie-session-audit.mjs';
 import { auditCsrfFlows } from '../../modules/csrf-flow-audit.mjs';
@@ -163,28 +165,49 @@ export async function runValidationPhase(s) {
 
     // ── VERIFY (evidence-guided) ─────────────────
     const runImplicitVerification = pipelineCapabilityAllowed(s, 'evidence_verification');
-    pipe('verify', runImplicitVerification ? 'active' : 'skip');
+    const runDeepSqliVerification = pipelineCapabilityAllowed(s, 'verify_sqli_deep');
+    const runAnyVerification = runImplicitVerification || runDeepSqliVerification;
+    pipe('verify', runAnyVerification ? 'active' : 'skip');
     progress(84);
-    if (runImplicitVerification) {
+    if (runAnyVerification) {
       try {
         if (identityCtrl?.enabled) {
           const st = identityCtrl.getStats();
           log(
-            `Rotação de identidade: ativa (proxies=${st.proxies}, backoff≈${st.backoffMul.toFixed(1)})`,
+            `Política de identidade estável: ativa (proxies=${st.proxies}, backoff≈${st.backoffMul.toFixed(1)})`,
             'info',
           );
         }
-        const verified = await runEvidenceVerification({
-          findings: findingsInScope(),
-          auth,
-          log,
-          maxEndpoints: runtimeProfile.maxVerifyEndpoints,
-          modules,
-          identityCtrl,
-        });
-        for (const vf of verified) addFinding(vf, null);
-        if (verified.length) log(`Verify: ${verified.length} resultado(s) xss/sqli/open_redirect/idor/lfi`, 'success');
+        if (runImplicitVerification) {
+          const verified = await runEvidenceVerification({
+            findings: findingsInScope(),
+            auth,
+            log,
+            maxEndpoints: runtimeProfile.maxVerifyEndpoints,
+            modules,
+            identityCtrl,
+            checks: runDeepSqliVerification
+              ? ['xss', 'open_redirect', 'idor', 'lfi']
+              : null,
+          });
+          for (const vf of verified) addFinding(vf, null);
+          if (verified.length) log(`Verify: ${verified.length} resultado(s) xss/sqli/open_redirect/idor/lfi`, 'success');
+        }
+        if (runDeepSqliVerification) {
+          const deep = await runSqliDeepVerification({
+            findings: findingsInScope(),
+            auth,
+            log,
+            signal: s.signal,
+            urlAllowed: (url) => s.urlInScope(url),
+            fetchImpl: s.fetchImpl || globalThis.fetch,
+            identityCtrl,
+            maxEndpoints: Math.min(8, runtimeProfile.maxVerifyEndpoints),
+          });
+          for (const finding of deep.findings) addFinding(finding, null);
+        }
       } catch (e) {
+        if (s.signal?.aborted || e?.name === 'AbortError') throw e;
         log(`Verify: ${e.message}`, 'warn');
       }
     } else {
@@ -199,6 +222,9 @@ export async function runValidationPhase(s) {
           modules,
           maxTests: 16,
           identityCtrl,
+          signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
+          fetchImpl: s.fetchImpl || globalThis.fetch,
         });
         for (const mf of micro) addFinding(mf, null);
       } catch (e) {
@@ -229,11 +255,21 @@ export async function runValidationPhase(s) {
         } catch {
           /* ignore */
         }
-        const ws = await runWebshellHeuristicProbe({ origins, auth, modules, log, maxOrigins: 10 });
+        const ws = await runWebshellHeuristicProbe({
+          origins,
+          auth,
+          modules,
+          log,
+          maxOrigins: 10,
+          fetchImpl: s.fetchImpl || globalThis.fetch,
+          signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
+        });
         for (const w of ws) addFinding(w, null);
         if (ws.length) log(`Webshell heurístico: ${ws.length} achado(s) — rever manualmente`, 'warn');
         else log('Webshell heurístico: sem sinais fortes (cmd=id)', 'info');
       } catch (e) {
+        if (s.signal?.aborted || e?.name === 'AbortError' || e?.code === 'ABORT_ERR') throw e;
         log(`Webshell heurístico: ${e.message}`, 'warn');
       }
       pipe('webshell_probe', 'done');
@@ -279,16 +315,20 @@ export async function runValidationPhase(s) {
 
     if (modules.includes('sqlmap')) {
       pipe('sqlmap', 'active');
+      let sqlmapFailed = false;
       try {
         const maxT = Math.max(1, Math.min(6, Number(process.env.GHOSTRECON_SQLMAP_TARGETS) || 2));
-        const sm = await runSqlmapModule({
+        const sqlmapRunner = typeof s.runSqlmapModuleImpl === 'function'
+          ? s.runSqlmapModuleImpl
+          : runSqlmapModule;
+        const sm = await sqlmapRunner({
           findings: findingsInScope(),
           auth,
           log,
           maxTargets: maxT,
           profile: runtimeProfile.name,
           identityCtrl,
-          signal,
+          signal: s.signal,
           // Auto valida sem enumerar bases, mesmo que uma variável global do
           // RUN manual tenha habilitado `--dbs`.
           allowDatabaseEnumeration: s.autoModeExecution !== true
@@ -297,16 +337,19 @@ export async function runValidationPhase(s) {
         for (const x of sm) addFinding(x, null);
         if (sm.length) log(`sqlmap: ${sm.length} achado(s) SQLi (ferramenta) registado(s)`, 'success');
       } catch (e) {
-        if (signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
+        if (s.signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
         log(`sqlmap: ${e.message}`, 'warn');
+        sqlmapFailed = true;
+        pipe('sqlmap', 'failed');
       }
-      pipe('sqlmap', 'done');
+      if (!sqlmapFailed) pipe('sqlmap', 'done');
     } else {
       pipe('sqlmap', 'skip');
     }
 
     if (modules.includes('curl_probe')) {
       pipe('curl_probe', 'active');
+      let curlFailed = false;
       try {
         const cp = await runCurlProbeModule({
           target: domain,
@@ -316,6 +359,7 @@ export async function runValidationPhase(s) {
           identityCtrl,
           log,
           signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
         });
         for (const x of cp) addFinding(x, null);
         if (cp.length) log(`curl_probe: ${cp.length} achado(s)`, 'success');
@@ -323,13 +367,42 @@ export async function runValidationPhase(s) {
       } catch (e) {
         if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
         log(`curl_probe: ${e?.message || e}`, 'warn');
+        curlFailed = true;
+        pipe('curl_probe', 'failed');
       }
-      pipe('curl_probe', 'done');
+      if (!curlFailed) pipe('curl_probe', 'done');
     } else {
       pipe('curl_probe', 'skip');
     }
 
-    if (runImplicitVerification) pipe('verify', 'done');
+    const runSafeXssVibes = pipelineCapabilityAllowed(s, 'kali_xss_vibes');
+    pipe('xss_vibes', runSafeXssVibes ? 'active' : 'skip');
+    if (runSafeXssVibes) {
+      try {
+        const candidateUrls = [
+          ...(Array.isArray(s.paramUrlsForKali) ? s.paramUrlsForKali : []),
+          ...findingsInScope().flatMap((finding) => [finding?.url, finding?.value]),
+        ].filter((value) => typeof value === 'string' && /^https?:\/\//i.test(value));
+        const audit = await runSafeXssVibesAudit({
+          urls: candidateUrls,
+          auth,
+          signal: s.signal,
+          urlAllowed: (url) => s.urlInScope(url),
+          fetchImpl: s.fetchImpl || globalThis.fetch,
+          identityCtrl,
+          log,
+          maxUrls: Math.min(12, Math.max(1, runtimeProfile.maxVerifyEndpoints)),
+        });
+        for (const finding of audit.findings) addFinding(finding, null);
+        pipe('xss_vibes', 'done');
+      } catch (e) {
+        if (s.signal?.aborted || e?.name === 'AbortError') throw e;
+        log(`XSS contextual: ${e?.message || e}`, 'warn');
+        pipe('xss_vibes', 'failed');
+      }
+    }
+
+    if (runAnyVerification) pipe('verify', 'done');
 
     if (modules.includes('authz_matrix')) {
       pipe('authz_matrix', 'active');

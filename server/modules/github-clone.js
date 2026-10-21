@@ -4,9 +4,6 @@ import path from 'path';
 import { resolveGithubToken } from './github-token.mjs';
 import { runProcess } from './module-runner.mjs';
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-const ONE_MONTH_MS = 30 * ONE_DAY_MS;
-
 function parseBool(v, defaultValue = false) {
   if (v == null || String(v).trim() === '') return defaultValue;
   const n = String(v).trim().toLowerCase();
@@ -30,21 +27,21 @@ export function githubRepoHtmlUrl(repoOrFullName) {
 }
 
 export function githubCloneConfig() {
-  const enabled = parseBool(process.env.GHOSTRECON_GITHUB_CLONE_ENABLED, true);
+  const enabled = parseBool(process.env.GHOSTRECON_GITHUB_CLONE_ENABLED, false);
   const cloneDir = String(process.env.GHOSTRECON_CLONE_DIR || 'clone')
     .trim()
     .replace(/\\/g, '/');
   const maxRepos = Math.max(1, Math.min(Number(process.env.GHOSTRECON_CLONE_MAX_REPOS) || 3, 10));
   const cloneTimeoutMs = Math.max(15000, Math.min(Number(process.env.GHOSTRECON_CLONE_TIMEOUT_MS) || 120000, 600000));
   const maxSizeMb = Math.max(50, Math.min(Number(process.env.GHOSTRECON_CLONE_MAX_SIZE_MB) || 200, 4096));
-  const retentionDays = Math.max(1, Math.min(Number(process.env.GHOSTRECON_CLONE_RETENTION_DAYS) || 30, 365));
+  const retentionHours = Math.max(1, Math.min(Number(process.env.GHOSTRECON_CLONE_RETENTION_HOURS) || 24, 168));
   return {
     enabled,
     cloneDir,
     maxRepos,
     cloneTimeoutMs,
     maxSizeBytes: maxSizeMb * 1024 * 1024,
-    retentionMs: retentionDays * ONE_DAY_MS || ONE_MONTH_MS,
+    retentionMs: retentionHours * 60 * 60 * 1000,
   };
 }
 
@@ -74,7 +71,8 @@ async function dirExists(p) {
 }
 
 async function ensureDir(p) {
-  await fs.mkdir(p, { recursive: true });
+  await fs.mkdir(p, { recursive: true, mode: 0o700 });
+  await fs.chmod(p, 0o700);
   return p;
 }
 

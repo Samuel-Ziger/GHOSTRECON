@@ -5,6 +5,8 @@ import {
   resolveWpscanApiToken,
   isWpscanApiRequired,
   countWpvulndbFindings,
+  classifyWpscanProcessResult,
+  isWpscanJsonDocument,
 } from '../modules/wpscan.js';
 
 test('extractWpscanFindings inclui vulnerabilidades WPVulnDB quando presentes no JSON', () => {
@@ -34,6 +36,10 @@ test('extractWpscanFindings inclui vulnerabilidades WPVulnDB quando presentes no
   const vals = findings.map((f) => f.value).join('\n');
   assert.ok(vals.includes('CVE-2099-0001'));
   assert.ok(vals.includes('CVE-2099-0002'));
+  const candidates = findings.filter((f) => /CVE-2099/.test(f.value));
+  assert.ok(candidates.every((f) => f.prio === 'low'));
+  assert.ok(candidates.every((f) => f.meta.evidenceStatus === 'candidate_by_vulnerability_database'));
+  assert.ok(candidates.every((f) => f.meta.applicabilityVerified === false));
 });
 
 test('resolveWpscanApiToken usa WPSCAN_API_TOKEN', () => {
@@ -69,4 +75,17 @@ test('countWpvulndbFindings', () => {
     version: { vulnerabilities: [{ title: 'x', references: { cve: ['CVE-1'] } }] },
   });
   assert.equal(n, 1);
+});
+
+test('WPScan diferencia conclusão, timeout e falha antes de aceitar o JSON', () => {
+  assert.equal(classifyWpscanProcessResult({ code: 0 }).status, 'done');
+  assert.equal(classifyWpscanProcessResult({ code: 1 }).status, 'failed');
+  assert.equal(classifyWpscanProcessResult({ code: null, timedOut: true }).status, 'timeout');
+  assert.equal(classifyWpscanProcessResult({ code: null, aborted: true }).status, 'cancelled');
+});
+
+test('WPScan recusa JSON genérico ou marcado como abortado', () => {
+  assert.equal(isWpscanJsonDocument({}), false);
+  assert.equal(isWpscanJsonDocument({ scan_aborted: true, plugins: {} }), false);
+  assert.equal(isWpscanJsonDocument({ target_url: 'https://example.test/', plugins: {} }), true);
 });

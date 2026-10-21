@@ -4,12 +4,13 @@ import {
   analyzeCorsResponses,
   collectCorsProbeUrls,
   EVIL_ORIGIN,
+  SECOND_EVIL_ORIGIN,
   runCorsAudit,
 } from '../modules/cors-audit.mjs';
 import { summarizeSecurityHeaderGaps } from '../modules/security-headers.js';
 import { analyzeSuspiciousResponseHeaders } from '../modules/header-intel.js';
 
-test('cors-audit: Origin maliciosa com HTTP 500 gera achado crítico', () => {
+test('cors-audit: HTTP 500 por Origin é erro operacional, não vulnerabilidade crítica', () => {
   const findings = analyzeCorsResponses({
     url: 'https://api.example.com/health',
     baseline: {
@@ -28,16 +29,19 @@ test('cors-audit: Origin maliciosa com HTTP 500 gera achado crítico', () => {
   });
   const hit = findings.find((f) => f.type === 'cors_origin_server_error');
   assert.ok(hit);
-  assert.ok(hit.score >= 85);
+  assert.ok(hit.score < 30);
+  assert.equal(hit.meta.evidenceStatus, 'operational_error');
 });
 
-test('cors-audit: wildcard ACAO gera achado alto', () => {
+test('cors-audit: wildcard ACAO gera inventário informativo', () => {
   const findings = analyzeCorsResponses({
     url: 'https://www.example.com/',
     baseline: { status: 200, headers: { 'access-control-allow-origin': '*' }, body: '<html/>' },
     withOrigin: { status: 200, headers: { 'access-control-allow-origin': '*' }, body: '<html/>' },
   });
-  assert.ok(findings.find((f) => f.type === 'cors_wildcard'));
+  const hit = findings.find((f) => f.type === 'cors_wildcard');
+  assert.ok(hit);
+  assert.equal(hit.prio, 'info');
 });
 
 test('cors-audit: credenciais + Origin refletida', () => {
@@ -52,8 +56,32 @@ test('cors-audit: credenciais + Origin refletida', () => {
       },
       body: '{}',
     },
+    withSecondOrigin: {
+      status: 200,
+      headers: {
+        'access-control-allow-origin': SECOND_EVIL_ORIGIN,
+        'access-control-allow-credentials': 'true',
+      },
+      body: '{}',
+    },
   });
   assert.ok(findings.find((f) => f.type === 'cors_credentials_reflected'));
+});
+
+test('cors-audit: uma única reflexão não basta para acusar CORS arbitrário', () => {
+  const findings = analyzeCorsResponses({
+    url: 'https://api.example.com/data',
+    baseline: { status: 200, headers: {}, body: '{}' },
+    withOrigin: {
+      status: 200,
+      headers: {
+        'access-control-allow-origin': EVIL_ORIGIN,
+        'access-control-allow-credentials': 'true',
+      },
+      body: '{}',
+    },
+  });
+  assert.equal(findings.some((f) => f.type === 'cors_credentials_reflected'), false);
 });
 
 test('cors-audit: collectCorsProbeUrls inclui /health nos origins', () => {
@@ -84,8 +112,10 @@ test('security-headers: summarizeSecurityHeaderGaps com 3+ ausentes', () => {
   });
   assert.ok(gap);
   assert.ok(gap.missing.length >= 3);
-  assert.equal(gap.clickjackingRisk, true);
-  assert.ok(gap.score >= 70);
+  assert.equal(gap.clickjackingProtectionGap, true);
+  assert.equal(gap.clickjackingRisk, false);
+  assert.equal(gap.evidenceStatus, 'configuration_observation');
+  assert.ok(gap.score <= 32);
 });
 
 test('header-intel: nginx com versão e SO é médio', () => {

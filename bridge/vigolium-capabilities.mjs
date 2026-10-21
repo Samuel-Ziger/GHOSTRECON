@@ -75,6 +75,10 @@ export async function getVigoliumCapabilities(opts = {}) {
     moduleCounts,
     strategies: ['lite', 'balanced', 'deep'],
     agents: ['query', 'audit', 'swarm', 'autopilot'],
+    agentExecution: {
+      swarm: { available: false, reason: 'native_plan_not_sealed' },
+      autopilot: { available: Boolean(bin), mode: 'preview_only' },
+    },
     repoPath: `${root}/vigolium`,
     codex: {
       installed: Boolean(codexBin),

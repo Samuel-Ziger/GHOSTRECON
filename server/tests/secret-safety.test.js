@@ -23,7 +23,7 @@ const RAW_PAT = `ghp_${'A1b2C3d4'.repeat(4)}`;
 function jwt(payload) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  return `${header}.${body}.signature123`;
+  return `${header}.${body}.signature12345678901234567890`;
 }
 
 test('finding secret emitido contém apenas máscara e fingerprint', () => {
@@ -141,8 +141,8 @@ test('validação de segredo é offline por padrão e nunca retorna token cru', 
       return { status: 403, body: '' };
     },
   });
-  assert.ok(probes > 0);
-  assert.equal(online[0].tokenStatus, 'valid');
+  assert.equal(probes, 0);
+  assert.equal(online[0].tokenStatus, 'probable');
   assert.equal(JSON.stringify(online).includes(rawJwt), false);
 });
 
@@ -167,14 +167,16 @@ test('validação ativa não cruza escopo e propaga cancelamento', async () => {
     },
   });
   assert.equal(probes, 0);
-  assert.equal(scoped[0].tokenStatus, 'probable');
-  assert.match(scoped[0].reason, /fora do escopo/);
+  assert.equal(scoped[0].tokenStatus, 'public_configuration');
+  assert.match(scoped[0].reason, /pública por design/);
 
   const controller = new AbortController();
   const inScopeFinding = protectSecretFinding({
     type: 'secret',
     value: `[JWT] ${jwt({
       sub: 'fixture',
+      role: 'authenticated',
+      iss: 'https://project.supabase.example.test/auth/v1',
       exp: Math.floor(Date.now() / 1000) + 3600,
     })}`,
     url: 'https://app.example.test/api/me',
@@ -200,9 +202,19 @@ test('PoC Lovable ignora storeRawSecrets e grava somente evidência 0600', async
     ref: 'abcdefghijklmnop',
     iss: 'https://abcdefghijklmnop.supabase.co/auth/v1',
   });
+  const adjacentUserJwt = jwt({
+    role: 'authenticated',
+    sub: 'sensitive-user-id',
+    email: 'private-user@example.test',
+    user_metadata: { full_name: 'Private Fixture' },
+    iss: 'https://abcdefghijklmnop.supabase.co/auth/v1',
+  });
+  const adjacentSecretKey = `sb_secret_${'PrivilegedFixture'.repeat(3)}`;
   const html = `<html><meta name="lovable"><script>
     const supabaseUrl="https://abcdefghijklmnop.supabase.co";
     const anonKey="${supabaseJwt}";
+    const adjacentUser="${adjacentUserJwt}";
+    const adjacentPrivileged="${adjacentSecretKey}";
   </script></html>`;
 
   try {
@@ -221,7 +233,18 @@ test('PoC Lovable ignora storeRawSecrets e grava somente evidência 0600', async
     const body = await fs.readFile(result.context.pocPath, 'utf8');
     assert.equal(stat.mode & 0o777, 0o600);
     assert.equal(body.includes(supabaseJwt), false);
+    assert.equal(body.includes(adjacentUserJwt), false);
+    assert.equal(body.includes(adjacentSecretKey), false);
+    assert.equal(body.includes('sensitive-user-id'), false);
+    assert.equal(body.includes('private-user@example.test'), false);
+    assert.equal(body.includes('Private Fixture'), false);
     assert.match(body, /storesRawSecrets(?:&quot;|"):\s*false/);
+    assert.equal(Object.prototype.propertyIsEnumerable.call(result.context, 'bundleText'), false);
+    const publicContext = JSON.stringify(result.context);
+    assert.equal(publicContext.includes(adjacentUserJwt), false);
+    assert.equal(publicContext.includes(adjacentSecretKey), false);
+    assert.equal(publicContext.includes('sensitive-user-id'), false);
+    assert.equal(publicContext.includes('private-user@example.test'), false);
   } finally {
     await fs.rm(temp, { recursive: true, force: true });
   }

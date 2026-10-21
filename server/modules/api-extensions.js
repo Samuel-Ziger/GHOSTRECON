@@ -29,6 +29,7 @@ import {
   listEngagements,
   getEngagement,
   upsertEngagement,
+  createManualAuthorizationEngagement,
   closeEngagement,
   preRunChecklist,
 } from './engagement.mjs';
@@ -185,6 +186,34 @@ export function registerNewApiRoutes(app, { validateCsrfToken, requireCsrf } = {
     try {
       const e = await upsertEngagement(req.body || {});
       res.json({ ok: true, engagement: e });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/engagements/manual-authorization', requireScope('engagement.write'), async (req, res) => {
+    if (!guard(req, res)) return;
+    try {
+      const engagement = await createManualAuthorizationEngagement({
+        target: req.body?.target,
+        authorizationConfirmed: req.body?.authorizationConfirmed === true,
+        basis: req.body?.basis,
+        includeSubdomains: req.body?.includeSubdomains === true,
+        exclusions: req.body?.exclusions,
+        operator: req.body?.operator,
+      });
+      res.json({
+        ok: true,
+        engagement: {
+          id: engagement.id,
+          status: engagement.status,
+          scopeDomains: engagement.scopeDomains,
+          scopeIps: engagement.scopeIps,
+          exclusions: engagement.exclusions,
+          window: engagement.window,
+          roeSigned: engagement.roeSigned === true,
+        },
+      });
     } catch (e) {
       res.status(400).json({ ok: false, error: e.message });
     }

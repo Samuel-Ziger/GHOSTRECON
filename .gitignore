@@ -1,5 +1,14 @@
 node_modules/
 
+# Artefatos locais/gerados
+*.log
+**/__pycache__/
+*.py[cod]
+/.claude/settings.local.json
+/hash.txt
+/gobuster-meliuz-small.txt
+/coletor_cves_2026/cves_web_saida/
+
 # GhostMap (HTTP History + grafo)
 ghostmap/frontend/node_modules/
 ghostmap/frontend/.next/

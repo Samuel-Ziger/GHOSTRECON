@@ -505,22 +505,62 @@ export function runProcess(cmd, args = [], opts = {}) {
   });
 }
 
-export async function readResponseSnippet(res, maxBytes) {
+export async function readResponseSnippet(res, maxBytes, { signal = null } = {}) {
   const limit = Math.max(0, Number(maxBytes) || 0);
   if (!res?.body || limit <= 0) return '';
+
+  const abortReason = () => signal?.reason || new DOMException('cancelado', 'AbortError');
+  const cancelBestEffort = (bodyOrReader, reason) => {
+    try {
+      Promise.resolve(bodyOrReader?.cancel?.(reason)).catch(() => {});
+    } catch {
+      // Cleanup de transporte nunca pode prender ou substituir o resultado terminal.
+    }
+  };
+  if (signal?.aborted) {
+    cancelBestEffort(res.body, abortReason());
+    throw abortReason();
+  }
 
   const chunks = [];
   let total = 0;
   const reader = res.body.getReader?.();
   if (!reader) {
-    const buf = await res.arrayBuffer();
+    let cleanup = () => {};
+    const pending = res.arrayBuffer();
+    const buf = signal
+      ? await Promise.race([
+          pending,
+          new Promise((_, reject) => {
+            const onAbort = () => {
+              cancelBestEffort(res.body, abortReason());
+              reject(abortReason());
+            };
+            cleanup = () => signal.removeEventListener('abort', onAbort);
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          }),
+        ]).finally(cleanup)
+      : await pending;
     const slice = buf.byteLength > limit ? buf.slice(0, limit) : buf;
     return new TextDecoder('utf-8', { fatal: false }).decode(slice);
   }
 
+  let rejectOnAbort = null;
+  const abortPromise = signal
+    ? new Promise((_, reject) => { rejectOnAbort = reject; })
+    : null;
+  const onAbort = () => {
+    const reason = abortReason();
+    cancelBestEffort(reader, reason);
+    rejectOnAbort?.(reason);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
     while (total < limit) {
-      const { done, value } = await reader.read();
+      const { done, value } = await (abortPromise
+        ? Promise.race([reader.read(), abortPromise])
+        : reader.read());
       if (done) break;
       const buf = Buffer.from(value);
       const remaining = limit - total;
@@ -533,8 +573,10 @@ export async function readResponseSnippet(res, maxBytes) {
         break;
       }
     }
-    if (total >= limit) await reader.cancel().catch(() => {});
+    if (total >= limit) cancelBestEffort(reader);
   } finally {
+    signal?.removeEventListener('abort', onAbort);
+    if (signal?.aborted) cancelBestEffort(reader, abortReason());
     try {
       reader.releaseLock?.();
     } catch {

@@ -263,12 +263,12 @@ test('requireScope: viewer NÃO pode recon.run → 403', async () => {
   assert.match(res.body.error, /missing scope/);
 });
 
-test('requireScope: escalada intrusiva — operator com módulos kali → 403', async () => {
+test('requireScope: escalada intrusiva — operator com nmap agressivo → 403', async () => {
   const auth = requireAuth();
   const scope = requireScope('recon.run', { intrusiveCheck: (req) => reconBodyIsIntrusive(req.body) });
   const req = makeReq({
     headers: { authorization: `Bearer ${KEY_OPERATOR}` },
-    body: { domain: 'x.com', modules: ['kali_nmap'] },
+    body: { domain: 'x.com', modules: ['kali_nmap_aggressive'] },
   });
   await callMw(auth, req);
   const { next, res } = await callMw(scope, req);
@@ -277,12 +277,12 @@ test('requireScope: escalada intrusiva — operator com módulos kali → 403', 
   assert.match(res.body.error, /recon\.intrusive/);
 });
 
-test('requireScope: escalada intrusiva — red com módulos kali → allow', async () => {
+test('requireScope: escalada intrusiva — red com nmap agressivo → allow', async () => {
   const auth = requireAuth();
   const scope = requireScope('recon.run', { intrusiveCheck: (req) => reconBodyIsIntrusive(req.body) });
   const req = makeReq({
     headers: { authorization: `Bearer ${KEY_RED}` },
-    body: { domain: 'x.com', modules: ['kali_nmap'] },
+    body: { domain: 'x.com', modules: ['kali_nmap_aggressive'] },
   });
   await callMw(auth, req);
   const { next } = await callMw(scope, req);
@@ -309,11 +309,11 @@ test('requireRole: red não satisfaz role admin → 403', async () => {
 });
 
 // ─── reconBodyIsIntrusive ───────────────────────────────────────────────────
-test('reconBodyIsIntrusive: kaliMode → true', () => {
-  assert.equal(reconBodyIsIntrusive({ kaliMode: true }), true);
+test('reconBodyIsIntrusive: kaliMode sem módulo não eleva risco', () => {
+  assert.equal(reconBodyIsIntrusive({ kaliMode: true }), false);
 });
-test('reconBodyIsIntrusive: opsecProfile aggressive → true', () => {
-  assert.equal(reconBodyIsIntrusive({ opsecProfile: 'aggressive' }), true);
+test('reconBodyIsIntrusive: perfil OPSEC não substitui classificação do plano', () => {
+  assert.equal(reconBodyIsIntrusive({ opsecProfile: 'aggressive' }), false);
 });
 test('reconBodyIsIntrusive: módulos passivos → false', () => {
   assert.equal(reconBodyIsIntrusive({ modules: ['dns', 'probe', 'wayback'] }), false);
