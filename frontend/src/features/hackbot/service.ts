@@ -39,6 +39,7 @@ export function createHackbotService({ apiBase, auth, fetchImpl }: Dependencies)
     status: (signal?: AbortSignal) => get('/api/hackbot/status', signal),
     agents: (signal?: AbortSignal) => get('/api/hackbot/agents', signal),
     models: (signal?: AbortSignal) => get('/api/hackbot/models', signal),
+    mindSkills: (signal?: AbortSignal) => get('/api/hackbot/mind/skills', signal),
     conversations: (signal?: AbortSignal) => get('/api/hackbot/conversations', signal),
     createConversation: (body: HackbotRecord, signal?: AbortSignal) => mutate('POST', '/api/hackbot/conversations', body, signal),
     conversation: (id: string, signal?: AbortSignal) => get(`/api/hackbot/conversations/${encodeURIComponent(id)}/messages`, signal),

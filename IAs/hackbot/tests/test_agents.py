@@ -8,7 +8,14 @@ from pydantic_ai.models.test import TestModel
 
 from hackbot.agents import AgentSystem
 from hackbot.agents import runtime as runtime_module
-from hackbot.codex_cli import CodexOutcome, CodexUsage, codex_cyber_access_args, codex_exec_args, codex_mcp_overrides
+from hackbot.codex_cli import (
+    CodexOutcome,
+    CodexUsage,
+    codex_cyber_access_args,
+    codex_exec_args,
+    codex_mcp_overrides,
+    extract_mind_result,
+)
 from hackbot.config import AGENT_NAMES, AgentModelBinding, Config
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "sample.sarif"
@@ -178,6 +185,26 @@ def test_codex_exec_args_do_not_mix_approve_for_me_with_explicit_sandbox(tmp_pat
     assert "--sandbox" not in args
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
     assert args[args.index("--cyber-access-program") + 1] == "daybreak_blue"
+
+
+def test_mind_result_is_extracted_normalized_and_redacted():
+    answer = """Análise concluída.
+GHOSTRECON_MIND_RESULT_START
+{"schema_version":1,"status":"completed","summary":"ok","skills":["outra"],"findings":[{"skill":"outra","title":"teste","confidence":9,"evidence":"token=super-secret-value"}],"false_positives":[],"evidence":[],"next_actions":[]}
+GHOSTRECON_MIND_RESULT_END
+"""
+    clean, result = extract_mind_result(answer, {
+        "enabled": True,
+        "skills": ["ywh-triage"],
+        "target": "example.com",
+    })
+
+    assert clean == "Análise concluída."
+    assert result["skills"] == ["ywh-triage"]
+    assert result["target"] == "example.com"
+    assert result["findings"][0]["skill"] == "ywh-triage"
+    assert result["findings"][0]["confidence"] == 1.0
+    assert "super-secret-value" not in str(result)
 
 
 @pytest.mark.asyncio

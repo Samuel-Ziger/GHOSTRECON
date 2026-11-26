@@ -1698,7 +1698,7 @@ body[data-ghostrecon-react-page='hackbot'] textarea { color: inherit; }
 .hackbot-chat-main { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; }
 .hackbot-chat-controls {
   display: grid;
-  grid-template-columns: minmax(150px, .7fr) minmax(190px, .8fr) minmax(220px, 1.5fr);
+  grid-template-columns: minmax(140px, .65fr) minmax(170px, .75fr) minmax(210px, 1.35fr) minmax(170px, .75fr);
   gap: 10px;
   padding: 11px 18px;
   border-bottom: 1px solid #1c2d3f;
@@ -1725,6 +1725,13 @@ body[data-ghostrecon-react-page='hackbot'] textarea { color: inherit; }
 .hackbot-chat-controls select:focus,
 .hackbot-model-fields input:focus,
 .hackbot-model-fields select:focus { border-color: #3c7a9d; box-shadow: 0 0 0 2px rgb(72 215 255 / 7%); }
+.hackbot-mind-status { display: grid; min-width: 0; min-height: 34px; align-self: end; align-items: center; grid-template-columns: auto minmax(0, 1fr) auto; gap: 7px; padding: 6px 8px; border: 1px solid #26384b; border-radius: 6px; background: #0a111a; }
+.hackbot-mind-status strong { color: #768a9d; font: 800 8px var(--mono); text-transform: uppercase; }
+.hackbot-mind-status span { overflow: hidden; color: #60768b; font: 8px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.hackbot-mind-status button { padding: 4px 6px; border: 1px solid #2b536d; border-radius: 4px; background: transparent; color: #8299ae; font: 7px var(--mono); cursor: pointer; }
+.hackbot-mind-status.is-active { border-color: rgb(72 215 255 / 36%); background: #0b1c29; }
+.hackbot-mind-status.is-active strong { color: var(--accent); }
+.hackbot-mind-status.is-active span { color: #9eb5c8; }
 
 .hackbot-transcript { min-height: 0; padding: 24px clamp(18px, 5vw, 72px); overflow-y: auto; scroll-behavior: smooth; }
 .hackbot-empty { display: grid; min-height: 54vh; place-content: center; justify-items: center; text-align: center; }
@@ -1752,6 +1759,7 @@ body[data-ghostrecon-react-page='hackbot'] textarea { color: inherit; }
 .hackbot-trace li.is-failed { border-left-color: var(--danger); }
 .hackbot-trace li.is-failed small { color: var(--danger); }
 .hackbot-evidence pre { max-height: 310px; margin: 8px 0 0; overflow: auto; color: #8da3b8; font: 9px/1.55 var(--mono); white-space: pre-wrap; }
+.hackbot-mind-result summary { color: var(--accent2); }
 .hackbot-running { display: flex; width: min(840px, 88%); margin: 0 auto 14px 0; align-items: center; gap: 5px; color: #6f859a; font: 9px var(--mono); }
 .hackbot-running i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: hackbot-pulse 1.1s infinite ease-in-out; }
 .hackbot-running i:nth-child(2) { animation-delay: .12s; }.hackbot-running i:nth-child(3) { animation-delay: .24s; }.hackbot-running span { margin-left: 5px; }
@@ -1806,6 +1814,28 @@ body[data-ghostrecon-react-page='hackbot'] textarea { color: inherit; }
 .hackbot-save-bar { position: sticky; bottom: 0; display: flex; margin-top: 16px; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 15px; border: 1px solid #284359; border-radius: 9px; background: rgb(8 18 28 / 94%); backdrop-filter: blur(14px); }
 .hackbot-save-bar p { margin: 0; color: #71869a; font: 9px var(--mono); }
 
+.hackbot-mind-config { display: grid; align-items: end; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 13px; padding: 15px; border: 1px solid #20384c; border-radius: 10px; background: #09131e; }
+.hackbot-mind-config > label:not(.hackbot-mind-check) { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #71879b; font: 700 8px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.hackbot-mind-config input:not([type='checkbox']),
+.hackbot-mind-config select { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #284158; border-radius: 6px; outline: 0; background: #08111b; color: #c8d7e5; font: 10px var(--mono); }
+.hackbot-mind-check { display: flex; min-width: 0; align-items: flex-start; gap: 8px; color: #8298ac; font: 9px/1.5 var(--mono); cursor: pointer; }
+.hackbot-mind-check input { flex: 0 0 auto; margin-top: 2px; accent-color: #55f5b0; }
+.hackbot-mind-readiness { display: flex; margin: 0 0 13px; flex-wrap: wrap; gap: 7px; }
+.hackbot-mind-readiness span { padding: 6px 8px; border: 1px solid #5b3c2c; border-radius: 999px; color: #d59d70; font: 700 7px var(--mono); letter-spacing: .06em; }
+.hackbot-mind-readiness span.is-ready { border-color: rgb(85 245 176 / 28%); color: var(--accent2); }
+.hackbot-mind-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.hackbot-mind-grid > label { display: flex; min-width: 0; min-height: 178px; align-items: flex-start; gap: 10px; padding: 15px; border: 1px solid #20384c; border-radius: 10px; background: linear-gradient(145deg, #0a151f, #081018); cursor: pointer; transition: border-color .16s ease, background .16s ease; }
+.hackbot-mind-grid > label.is-active-skill { border-left: 3px solid #9a663f; }
+.hackbot-mind-grid > label.is-selected { border-color: #327391; background: linear-gradient(145deg, #0d2230, #091722); }
+.hackbot-mind-grid input { flex: 0 0 auto; margin-top: 2px; accent-color: #48d7ff; }
+.hackbot-mind-grid input:disabled { opacity: .38; }
+.hackbot-mind-grid label > span { display: flex; min-width: 0; flex-direction: column; }
+.hackbot-mind-grid small { color: #607a90; font: 700 7px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.hackbot-mind-grid strong { margin-top: 8px; color: #dbe8f4; font-size: 13px; }
+.hackbot-mind-grid p { margin: 8px 0 12px; color: #71869a; font-size: 10px; line-height: 1.55; }
+.hackbot-mind-grid em { margin-top: auto; color: #8ca1b3; font: normal 8px var(--mono); }
+.hackbot-mind-grid .is-active-skill em { color: #e0a978; }
+
 .hackbot-hub-btn { border-color: rgb(72 215 255 / 28%) !important; }
 .hackbot-hub-icon { display: grid !important; place-items: center; color: var(--accent, #48d7ff); font: 800 11px var(--mono, monospace); }
 
@@ -1820,6 +1850,8 @@ body[data-ghostrecon-react-page='hackbot'] textarea { color: inherit; }
   .hackbot-chat-main { min-height: 680px; }
   .hackbot-chat-controls { grid-template-columns: repeat(2, 1fr); }
   .hackbot-chat-controls .is-wide { grid-column: 1 / -1; }
+  .hackbot-mind-config,
+  .hackbot-mind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 580px) {
@@ -1829,6 +1861,8 @@ body[data-ghostrecon-react-page='hackbot'] textarea { color: inherit; }
   .hackbot-model-fields { grid-template-columns: 1fr; }
   .hackbot-chat-controls .is-wide,
   .hackbot-model-fields .is-wide { grid-column: auto; }
+  .hackbot-mind-config,
+  .hackbot-mind-grid { grid-template-columns: 1fr; }
   .hackbot-transcript,
   .hackbot-composer { padding-inline: 12px; }
   .hackbot-message { width: 97%; }

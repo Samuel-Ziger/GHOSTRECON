@@ -87,6 +87,9 @@ padrão depois de avaliação com o mesmo conjunto de casos e métricas.
 6. Em **Chat**, escolha o orquestrador ou um especialista e envie a mensagem.
 7. Para análise de arquivo, informe um caminho dentro de `reports/`, `logs/`,
    `.runtime/` ou `IAs/hackbot/samples/` e selecione documento ou SARIF.
+8. Em **Skills Mind**, escolha `Automático` para roteamento por intenção ou
+   `Manual` para congelar uma cadeia. Skills ativas exigem alvo, engagement
+   formal válido e confirmação; skills de código exigem um arquivo permitido.
 
 Uma rodada multiagente pode envolver pesquisa, especialistas e consolidação. O
 limite total padrão é de 30 minutos. Ajuste
@@ -99,6 +102,26 @@ originais `HACKBOT_ACP_URL` e `HACKBOT_MCP_CONFIG`. No caminho Codex, a API web
 aceita somente ids descobertos no `CODEX_HOME` ou launchers fixos gerenciados
 pelo GHOSTRECON. Seleções desconhecidas são recusadas; a API não aceita comando
 MCP arbitrário.
+
+## Skills nativas do Mind
+
+O endpoint `GET /api/hackbot/mind/skills` publica o catálogo local das nove
+skills nativas: `artex`, `fullhunt`, `jevgrep`, `mdpsec-hunt`,
+`vulnhunt-fix-verify`, `vulnhunt`, `ywh-gotchas`, `ywh-triage` e `ywh-write`.
+O registro pesquisável de terceiros permanece separado e não é executado por
+este roteador.
+
+O modo automático é determinístico: ele classifica a intenção antes da chamada
+ao modelo e congela a cadeia. O modo manual aceita no máximo seis skills e
+recusa `artex` junto de `fullhunt`, pois são motores alternativos para cobertura
+ampla. O backend confirma que o agente usa `codex-cli`, que `codex:mind` está
+na allowlist e que os requisitos de documento/engagement foram satisfeitos.
+
+O Codex carrega cada playbook chamando `mind_skills` com o nome exato. A
+resposta final inclui um envelope `ghostrecon.mind-result.v1`, removido do texto
+mostrado ao operador, redigido e normalizado. Findings estruturados podem ser
+importados na categoria **Mind Skills** do Cortex; continuam marcados como
+candidatos sem validação humana, mesmo quando o modelo os chama de confirmados.
 
 ## Decisões de segurança
 
@@ -115,6 +138,10 @@ MCP arbitrário.
   plano Codex como origem explícita;
 - o Codex roda em `workspace-write` e não usa bypass de sandbox;
 - MCP pessoal permanece no Codex; o GHOSTRECON persiste somente a allowlist;
+- skills ativas falham antes do runtime sem engagement ativo, ROE, janela e
+  alvo dentro do escopo;
+- resultados Mind são vinculados ao alvo aprovado pelo servidor, não ao alvo
+  eventualmente devolvido pelo modelo;
 - uma execução simultânea por padrão, pois o servidor MCP upstream mantém o
   documento carregado em estado global;
 - transporte MCP em processo como padrão estável; `HACKBOT_MCP_TRANSPORT=stdio`
@@ -122,9 +149,10 @@ MCP arbitrário.
 
 ## Próximas integrações
 
-Cortex/RAG, memória compartilhada entre agentes e fine-tuning dos modelos
-locais são fases posteriores. O baseline deve ser medido antes do fine-tuning
-para separar ganho real de regressão ou overfitting.
+Memória compartilhada entre agentes e fine-tuning dos modelos locais são fases
+posteriores. O baseline deve ser medido antes do fine-tuning para separar ganho
+real de regressão ou overfitting. A integração atual com o Cortex cobre apenas
+findings normalizados; o texto completo da conversa não é enviado ao RAG.
 
 Consulte `IAs/hackbot/UPSTREAM-NOTICE.md` antes de redistribuir: o checkout
 importado não continha licença upstream identificável.

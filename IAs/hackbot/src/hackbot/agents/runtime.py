@@ -38,6 +38,7 @@ class Outcome:
     usage: RunUsage
     messages: list[ModelMessage] = field(default_factory=list)
     seconds: float = 0.0
+    mind_result: dict | None = None
 
 
 def history_from_entries(entries: list[dict], limit: int = 20) -> list[ModelMessage]:
@@ -125,6 +126,7 @@ class AgentSystem:
         message_history: list[ModelMessage] | None = None,
         agent: str = "orchestrator",
         tracer: Tracer | None = None,
+        mind_plan: dict[str, Any] | None = None,
     ) -> Outcome:
         tracer = tracer or Tracer(on_event)
         if sarif_path and not document_path:
@@ -179,6 +181,7 @@ class AgentSystem:
                     document_path=document_path,
                     sarif_path=sarif_path,
                     document_desc=document_desc,
+                    mind_plan=mind_plan,
                 )
             except Exception as exc:
                 tracer.finish(root, detail=f"{type(exc).__name__}: {exc}", status="failed")
@@ -213,6 +216,7 @@ class AgentSystem:
                 usage=usage,
                 messages=messages,
                 seconds=time.monotonic() - t0,
+                mind_result=result.mind_result,
             )
         try:
             result = await target.run(
@@ -248,6 +252,7 @@ class AgentSystem:
             usage=usage,
             messages=list(messages),
             seconds=time.monotonic() - t0,
+            mind_result=None,
         )
 
 

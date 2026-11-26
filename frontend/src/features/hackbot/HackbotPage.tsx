@@ -3,7 +3,8 @@ import type { ReactUiPage } from '../../page-registry';
 import { useNativePageDocument } from '../pages/native-page-shell';
 import { createBrowserHackbotService, type HackbotRecord } from './service';
 
-type View = 'chat' | 'agents' | 'models';
+type View = 'chat' | 'agents' | 'models' | 'skills';
+type MindMode = 'off' | 'auto' | 'manual';
 type Notice = { tone: 'info' | 'success' | 'error'; text: string };
 
 const AGENT_LABELS: Record<string, string> = {
@@ -76,6 +77,12 @@ function Message({ entry }: { entry: HackbotRecord }) {
       {entry.doc_report ? (
         <details className="hackbot-evidence"><summary>Achados do documento</summary><pre>{JSON.stringify(entry.doc_report, null, 2)}</pre></details>
       ) : null}
+      {entry.mind_result ? (
+        <details className="hackbot-evidence hackbot-mind-result"><summary>Resultado normalizado do Mind</summary><pre>{JSON.stringify(entry.mind_result, null, 2)}</pre></details>
+      ) : null}
+      {entry.cortex_sync ? (
+        <details className="hackbot-evidence"><summary>Cortex · {Number(entry.cortex_sync.imported || 0)} candidato(s)</summary><pre>{JSON.stringify(entry.cortex_sync, null, 2)}</pre></details>
+      ) : null}
     </article>
   );
 }
@@ -88,6 +95,8 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
   const [agents, setAgents] = useState<HackbotRecord[]>([]);
   const [models, setModels] = useState<HackbotRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<HackbotRecord[]>([]);
+  const [mindSkills, setMindSkills] = useState<HackbotRecord[]>([]);
+  const [mindAvailable, setMindAvailable] = useState(false);
   const [bindings, setBindings] = useState<Record<string, HackbotRecord>>({});
   const [conversations, setConversations] = useState<HackbotRecord[]>([]);
   const [conversationId, setConversationId] = useState('');
@@ -96,18 +105,26 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
   const [draft, setDraft] = useState('');
   const [documentPath, setDocumentPath] = useState('');
   const [documentKind, setDocumentKind] = useState<'document' | 'sarif'>('document');
+  const [mindMode, setMindMode] = useState<MindMode>('off');
+  const [selectedMindSkills, setSelectedMindSkills] = useState<string[]>([]);
+  const [mindTarget, setMindTarget] = useState('');
+  const [mindEngagementId, setMindEngagementId] = useState('');
+  const [mindAuthorizationConfirmed, setMindAuthorizationConfirmed] = useState(false);
+  const [mindSyncCortex, setMindSyncCortex] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const refresh = useCallback(async (quiet = false) => {
     try {
-      const [nextStatus, nextAgents, nextModels, nextConversations] = await Promise.all([
-        service.status(), service.agents(), service.models(), service.conversations(),
+      const [nextStatus, nextAgents, nextModels, nextConversations, nextMind] = await Promise.all([
+        service.status(), service.agents(), service.models(), service.conversations(), service.mindSkills(),
       ]);
       setStatus(nextStatus);
       setAgents(nextAgents.agents || nextStatus.agents || []);
       setModels(nextModels.models || []);
       setMcpServers(nextModels.mcp_servers || []);
+      setMindSkills(nextMind.skills || []);
+      setMindAvailable(nextMind.mind_available === true);
       setBindings(nextStatus.config?.bindings || {});
       setConversations(nextConversations.conversations || []);
       if (!quiet) {
@@ -190,6 +207,14 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
         body[documentKind === 'sarif' ? 'sarif_path' : 'document_path'] = documentPath.trim();
         body.document_desc = `Arquivo selecionado no painel HackBot (${documentKind})`;
       }
+      body.mind = {
+        mode: mindMode,
+        skills: mindMode === 'manual' ? selectedMindSkills : [],
+        target: mindTarget.trim(),
+        engagementId: mindEngagementId.trim(),
+        authorizationConfirmed: mindAuthorizationConfirmed,
+        syncCortex: mindSyncCortex,
+      };
       const result = await service.send(id, body);
       setEntries(result.session?.entries || []);
       await refresh(true);
@@ -213,6 +238,18 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
       const selected = new Set(Array.isArray(binding.mcp_servers) ? binding.mcp_servers.map(String) : []);
       if (enabled) selected.add(id); else selected.delete(id);
       return { ...current, [name]: { ...binding, mcp_servers: [...selected] } };
+    });
+  };
+
+  const toggleMindSkill = (id: string, enabled: boolean) => {
+    setSelectedMindSkills((current) => {
+      if (!enabled) return current.filter((item) => item !== id);
+      const withoutAlternative = id === 'artex'
+        ? current.filter((item) => item !== 'fullhunt')
+        : id === 'fullhunt'
+          ? current.filter((item) => item !== 'artex')
+          : current;
+      return withoutAlternative.includes(id) ? withoutAlternative : [...withoutAlternative, id];
     });
   };
 
@@ -256,6 +293,11 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
   const runtimeReady = Boolean(status?.online && status?.runtime?.runtime_ready);
   const missingDeps = Object.entries(status?.runtime?.dependencies || {}).filter(([, ready]) => !ready).map(([name]) => name);
   const selectedModelReady = Boolean(bindings[agent]?.configured);
+  const selectedBinding = bindings[agent] || {};
+  const mindReadyForAgent = selectedBinding.source === 'codex-cli'
+    && Array.isArray(selectedBinding.mcp_servers)
+    && selectedBinding.mcp_servers.includes('codex:mind');
+  const mindExecutionReady = mindMode === 'off' || (mindAvailable && mindReadyForAgent);
 
   return (
     <div className={`hackbot-page-shell${embedded ? ' is-embedded' : ''}`}>
@@ -263,9 +305,9 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
         {!embedded ? <a href="./index.html">← Cockpit</a> : null}
         <div><span>{embedded ? 'MOTOR MULTIAGENTE DA GHOSTIA' : 'GHOSTRECON · MULTIAGENTES'}</span><strong>{embedded ? 'Equipe HackBot' : 'HackBot'}</strong></div>
         <nav aria-label="Áreas do HackBot">
-          {(['chat', 'agents', 'models'] as View[]).map((item) => (
+          {(['chat', 'agents', 'models', 'skills'] as View[]).map((item) => (
             <button className={view === item ? 'is-active' : ''} key={item} onClick={() => setView(item)} type="button">
-              {item === 'chat' ? 'Chat' : item === 'agents' ? 'Agentes' : 'Modelos'}
+              {item === 'chat' ? 'Chat' : item === 'agents' ? 'Agentes' : item === 'models' ? 'Modelos' : 'Skills Mind'}
             </button>
           ))}
         </nav>
@@ -275,6 +317,7 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
       {notice ? <div className={`hackbot-notice is-${notice.tone}`}>{notice.text}<button onClick={() => setNotice(null)} type="button">×</button></div> : null}
       {!runtimeReady && missingDeps.length ? <div className="hackbot-dependency-warning">Dependências pendentes: {missingDeps.join(', ')}. O painel e as configurações funcionam, mas os agentes não executam até o ambiente Python do HackBot estar pronto.</div> : null}
       {runtimeReady && !selectedModelReady ? <div className="hackbot-dependency-warning">O agente {AGENT_LABELS[agent] || agent} ainda não tem provider utilizável. Configure o vínculo na aba Modelos antes de enviar.</div> : null}
+      {mindMode !== 'off' && !mindExecutionReady ? <div className="hackbot-dependency-warning">O fluxo Mind está ligado, mas o agente {AGENT_LABELS[agent] || agent} precisa usar Codex CLI com “Mind · Codex pessoal” habilitado na aba Modelos.</div> : null}
 
       {view === 'chat' ? (
         <div className="hackbot-chat-layout">
@@ -299,6 +342,7 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
               <label>Agente ativo<select value={agent} onChange={(event) => setAgent(event.target.value)}>{agents.map((item) => <option key={String(item.name)} value={String(item.name)}>{String(item.label || AGENT_LABELS[String(item.name)] || item.name)}</option>)}</select></label>
               <label>Tipo do arquivo<select value={documentKind} onChange={(event) => setDocumentKind(event.target.value as 'document' | 'sarif')}><option value="document">Documento / código / log</option><option value="sarif">Relatório SARIF</option></select></label>
               <label className="is-wide">Arquivo permitido (opcional)<input onChange={(event) => setDocumentPath(event.target.value)} placeholder="reports/arquivo.sarif" value={documentPath} /></label>
+              <div className={`hackbot-mind-status${mindMode !== 'off' ? ' is-active' : ''}`}><strong>Mind</strong><span>{mindMode === 'off' ? 'desligado' : mindMode === 'auto' ? 'roteamento automático' : `${selectedMindSkills.length} skill(s)`}</span><button onClick={() => setView('skills')} type="button">Configurar</button></div>
             </div>
             <div className="hackbot-transcript" ref={transcriptRef}>
               {!entries.length ? (
@@ -307,8 +351,8 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
               {busy ? <div className="hackbot-running"><i /><i /><i /><span>{AGENT_LABELS[agent] || agent} trabalhando…</span></div> : null}
             </div>
             <form className="hackbot-composer" onSubmit={(event) => void send(event)}>
-              <textarea disabled={busy || !runtimeReady || !selectedModelReady} onChange={(event) => setDraft(event.target.value)} placeholder={runtimeReady && selectedModelReady ? 'Pergunte, peça pesquisa ou análise do arquivo selecionado…' : 'Configure as dependências e o modelo para executar os agentes.'} rows={3} value={draft} />
-              <div><small>Orquestrador opcional · especialistas diretos · MCP/ACP preservados</small><button disabled={busy || !runtimeReady || !selectedModelReady || !draft.trim()} type="submit">{busy ? 'Executando…' : 'Enviar'}</button></div>
+              <textarea disabled={busy || !runtimeReady || !selectedModelReady || !mindExecutionReady} onChange={(event) => setDraft(event.target.value)} placeholder={runtimeReady && selectedModelReady ? 'Pergunte, peça pesquisa ou análise do arquivo selecionado…' : 'Configure as dependências e o modelo para executar os agentes.'} rows={3} value={draft} />
+              <div><small>Orquestrador opcional · especialistas diretos · MCP/ACP preservados</small><button disabled={busy || !runtimeReady || !selectedModelReady || !mindExecutionReady || !draft.trim()} type="submit">{busy ? 'Executando…' : 'Enviar'}</button></div>
             </form>
           </main>
         </div>
@@ -353,6 +397,31 @@ export function HackbotWorkspace({ embedded = false }: { embedded?: boolean }) {
             })}
           </div>
           <div className="hackbot-save-bar"><p>Os modelos locais do catálogo são sugestões e não foram baixados automaticamente.</p><button onClick={() => void saveBindings()} type="button">Salvar roteamento</button></div>
+        </main>
+      ) : null}
+
+      {view === 'skills' ? (
+        <main className="hackbot-section-page hackbot-mind-page">
+          <header><span>MCP MIND · SKILLS NATIVAS</span><h1>Roteador de skills</h1><p>O GHOSTRECON congela o fluxo, valida o engagement quando necessário e pede ao Codex que carregue cada playbook pelo `mind_skills`. Resultados estruturados podem seguir ao Cortex como candidatos pendentes de revisão humana.</p></header>
+          <section className="hackbot-mind-config">
+            <label>Modo<select value={mindMode} onChange={(event) => setMindMode(event.target.value as MindMode)}><option value="off">Desligado</option><option value="auto">Automático · roteador por intenção</option><option value="manual">Manual · fluxo escolhido</option></select></label>
+            <label>Alvo vinculado<input value={mindTarget} onChange={(event) => setMindTarget(event.target.value)} placeholder="app.exemplo.com" /></label>
+            <label>Engagement autorizado<input value={mindEngagementId} onChange={(event) => setMindEngagementId(event.target.value)} placeholder="engagement-id" /></label>
+            <label className="hackbot-mind-check"><input type="checkbox" checked={mindSyncCortex} onChange={(event) => setMindSyncCortex(event.target.checked)} /><span>Enviar achados normalizados ao Cortex</span></label>
+            <label className="hackbot-mind-check"><input type="checkbox" checked={mindAuthorizationConfirmed} onChange={(event) => setMindAuthorizationConfirmed(event.target.checked)} /><span>Confirmo que o alvo e a atividade estão autorizados pelo engagement informado</span></label>
+          </section>
+          <div className="hackbot-mind-readiness"><span className={mindAvailable ? 'is-ready' : ''}>{mindAvailable ? 'MIND DESCOBERTO NO CODEX' : 'MIND NÃO DESCOBERTO'}</span><span className={mindReadyForAgent ? 'is-ready' : ''}>{mindReadyForAgent ? `${AGENT_LABELS[agent] || agent} PRONTO` : 'VINCULE CODEX + MIND AO AGENTE'}</span></div>
+          <div className="hackbot-mind-grid">
+            {mindSkills.map((skill) => {
+              const id = String(skill.id);
+              const selected = selectedMindSkills.includes(id);
+              return <label className={`${selected ? 'is-selected ' : ''}${skill.requiresEngagement ? 'is-active-skill' : ''}`} key={id}>
+                <input type="checkbox" disabled={mindMode !== 'manual'} checked={selected} onChange={(event) => toggleMindSkill(id, event.target.checked)} />
+                <span><small>{String(skill.category || '')} · {String(skill.risk || 'passive')}</small><strong>{String(skill.name || id)}</strong><p>{String(skill.description || '')}</p><em>{skill.requiresEngagement ? 'Exige engagement + alvo + confirmação' : skill.requiresDocument ? 'Exige arquivo autorizado' : 'Análise/qualidade'}</em></span>
+              </label>;
+            })}
+          </div>
+          <div className="hackbot-save-bar"><p>{mindMode === 'auto' ? 'O roteador selecionará e mostrará o fluxo efetivo antes de enviá-lo ao runtime.' : mindMode === 'manual' ? `Fluxo: ${selectedMindSkills.join(' → ') || 'selecione as skills'}` : 'As skills não serão usadas nas próximas mensagens.'}</p><button onClick={() => setView('chat')} type="button">Usar no chat</button></div>
         </main>
       ) : null}
     </div>

@@ -29,6 +29,10 @@ if str(SOURCE) not in sys.path:
     sys.path.insert(0, str(SOURCE))
 
 AGENTS = ("orchestrator", "researcher", "analyst", "document_analyst", "tutor")
+MIND_SKILLS = {
+    "artex", "fullhunt", "jevgrep", "mdpsec-hunt", "vulnhunt-fix-verify",
+    "vulnhunt", "ywh-gotchas", "ywh-triage", "ywh-write",
+}
 SESSION_ID = re.compile(r"^[a-f0-9-]{10,40}$")
 SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
@@ -53,6 +57,7 @@ class RunRequest(BaseModel):
     document_path: str | None = None
     sarif_path: str | None = None
     document_desc: str = Field(default="", max_length=500)
+    mind_plan: dict[str, Any] | None = None
 
 
 def _redact(value: object) -> str:
@@ -257,6 +262,19 @@ async def run(request: RunRequest) -> dict[str, Any]:
     AgentSystem, history_from_entries, Config, Session, SessionStore = _load_runtime()
     cfg = Config.load()
     binding = cfg.binding_for(request.agent)
+    if request.mind_plan:
+        skills = request.mind_plan.get("skills") if isinstance(request.mind_plan, dict) else None
+        if not isinstance(skills, list) or not 1 <= len(skills) <= 6:
+            raise HTTPException(status_code=400, detail="invalid Mind skill plan")
+        if any(not isinstance(skill, str) or skill not in MIND_SKILLS for skill in skills):
+            raise HTTPException(status_code=400, detail="unknown Mind skill in plan")
+        if "artex" in skills and "fullhunt" in skills:
+            raise HTTPException(status_code=400, detail="artex and fullhunt cannot share one Mind plan")
+        if any(skill in {"artex", "fullhunt", "mdpsec-hunt"} for skill in skills):
+            if request.mind_plan.get("engagementValidated") is not True:
+                raise HTTPException(status_code=403, detail="active Mind skill plan was not engagement-validated")
+        if binding.source != "codex-cli" or "codex:mind" not in binding.mcp_servers:
+            raise HTTPException(status_code=400, detail="Mind skills require a Codex CLI binding with codex:mind")
     if binding.source == "artex" or (request.agent == "orchestrator" and cfg.uses_artex()):
         await _connect_artex(cfg)
     if not cfg.ready_for(request.agent):
@@ -276,7 +294,12 @@ async def run(request: RunRequest) -> dict[str, Any]:
                 session = Session(id=sid)
             previous_entries = list(session.entries)
             history = history_from_entries(previous_entries, cfg.history_window)
-            session.add("user", request.prompt, agent=request.agent)
+            session.add(
+                "user",
+                request.prompt,
+                agent=request.agent,
+                mind_plan=request.mind_plan,
+            )
             language = os.getenv("GHOSTRECON_HACKBOT_LANGUAGE", "pt-BR").strip()
             prompt = request.prompt
             if language:
@@ -294,6 +317,7 @@ async def run(request: RunRequest) -> dict[str, Any]:
                         document_desc=request.document_desc,
                         message_history=history,
                         agent=request.agent,
+                        mind_plan=request.mind_plan,
                     )
             session.add(
                 "assistant",
@@ -305,6 +329,8 @@ async def run(request: RunRequest) -> dict[str, Any]:
                 steps=outcome.steps,
                 usage=_public_usage(outcome.usage),
                 seconds=round(outcome.seconds, 3),
+                mind_result=outcome.mind_result,
+                mind_plan=request.mind_plan,
             )
             store.save(session)
             return {
@@ -318,6 +344,7 @@ async def run(request: RunRequest) -> dict[str, Any]:
                     "steps": outcome.steps,
                     "usage": _public_usage(outcome.usage),
                     "seconds": round(outcome.seconds, 3),
+                    "mind_result": outcome.mind_result,
                 },
             }
         except HTTPException:

@@ -12,6 +12,10 @@ import {
   writeHackbotBindings,
 } from '../integrations/hackbot/config.mjs';
 import { listCodexMcpCatalog, validateCodexMcpSelection } from '../integrations/mcp/catalog.mjs';
+import { resolveMindSkillPlan, publicMindSkillCatalog } from '../integrations/mind/skills.mjs';
+import { syncMindResultToCortex } from '../integrations/mind/cortex.mjs';
+import { getEngagement, preRunChecklist } from '../modules/engagement.mjs';
+import { parseReconTarget } from '../modules/recon-target.js';
 
 const MAX_HACKBOT_MESSAGE_CHARS = 64_000;
 
@@ -76,7 +80,12 @@ function findConversation(index, id) {
 }
 
 export function registerHackbotRoutes(app, {
-  ROOT, validateCsrfToken, client = createHackbotClient(), artexClient = getArtexClient({ root: ROOT }),
+  ROOT,
+  validateCsrfToken,
+  client = createHackbotClient(),
+  artexClient = getArtexClient({ root: ROOT }),
+  getEngagementImpl = getEngagement,
+  syncMindResultToCortexImpl = syncMindResultToCortex,
 }) {
   app.get('/api/hackbot/status', requireScope('ai.run'), async (_req, res) => {
     const config = publicHackbotBindings(await readHackbotBindings(ROOT));
@@ -127,6 +136,20 @@ export function registerHackbotRoutes(app, {
       agents: HACKBOT_AGENTS.map((agent) => ({ ...agent, binding: config.bindings[agent.name] })),
       orchestrator_optional: true,
       direct_specialists: HACKBOT_AGENTS.filter((agent) => agent.name !== 'orchestrator').map((agent) => agent.name),
+    });
+  });
+
+  app.get('/api/hackbot/mind/skills', requireScope('ai.run'), async (_req, res) => {
+    const [config, mcpServers] = await Promise.all([
+      readHackbotBindings(ROOT).then(publicHackbotBindings),
+      listCodexMcpCatalog({ root: ROOT }).catch(() => []),
+    ]);
+    res.json({
+      ok: true,
+      skills: publicMindSkillCatalog(),
+      mind_available: mcpServers.some((item) => item.id === 'codex:mind' && item.available === true),
+      bindings: config.bindings,
+      output_schema: 'ghostrecon.mind-result.v1',
     });
   });
 
@@ -219,6 +242,60 @@ export function registerHackbotRoutes(app, {
     if (!HACKBOT_AGENTS.some((item) => item.name === requestedAgent)) {
       return res.status(400).json({ ok: false, error: 'agente HackBot inválido' });
     }
+    let mindPlan;
+    try {
+      mindPlan = resolveMindSkillPlan({
+        request: req.body?.mind,
+        prompt,
+        agent: requestedAgent,
+        hasDocument: Boolean(req.body?.document_path),
+      });
+      if (mindPlan.enabled) {
+        const config = await readHackbotBindings(ROOT);
+        const binding = config.bindings?.[requestedAgent];
+        if (binding?.source !== 'codex-cli' || !binding.mcp_servers?.includes('codex:mind')) {
+          throw new Error(`o agente ${requestedAgent} precisa usar Codex CLI com codex:mind habilitado`);
+        }
+        if (mindPlan.requiresDocument && !req.body?.document_path) {
+          throw new Error('este fluxo Mind exige um documento ou checkout autorizado no campo de arquivo');
+        }
+        if (mindPlan.target) {
+          const parsed = parseReconTarget(mindPlan.target);
+          if (!parsed.ok) throw new Error(parsed.message || 'alvo Mind inválido');
+          mindPlan.target = parsed.target;
+        }
+        if (mindPlan.requiresEngagement) {
+          if (!mindPlan.authorizationConfirmed) {
+            const error = new Error('confirme explicitamente a autorização antes de usar skills Mind ativas');
+            error.status = 403;
+            throw error;
+          }
+          if (!mindPlan.target || !mindPlan.engagementId) {
+            throw new Error('skills Mind ativas exigem alvo e engagement autorizado');
+          }
+          const engagement = await getEngagementImpl(mindPlan.engagementId);
+          if (!engagement) {
+            const error = new Error(`engagement não encontrado: ${mindPlan.engagementId}`);
+            error.status = 403;
+            throw error;
+          }
+          const checklist = preRunChecklist({
+            engagement,
+            target: mindPlan.target,
+            requireFormalAuthorization: true,
+          });
+          if (!checklist.ok) {
+            const error = new Error(`engagement recusou o fluxo Mind: ${checklist.errors.join('; ')}`);
+            error.status = 403;
+            throw error;
+          }
+          mindPlan.engagementValidated = true;
+        }
+      }
+    } catch (error) {
+      const status = Number(error?.status) === 403 ? 403 : 400;
+      return res.status(status).json({ ok: false, error: publicError(error) });
+    }
     row.agent = requestedAgent;
     row.last_status = 'running';
     row.updated_at = new Date().toISOString();
@@ -231,12 +308,40 @@ export function registerHackbotRoutes(app, {
         document_path: req.body?.document_path || null,
         sarif_path: req.body?.sarif_path || null,
         document_desc: String(req.body?.document_desc || '').slice(0, 500),
+        mind_plan: mindPlan.enabled ? mindPlan : null,
       });
+      let cortexSync = null;
+      if (mindPlan.enabled && mindPlan.syncCortex && result?.outcome?.mind_result) {
+        try {
+          cortexSync = await syncMindResultToCortexImpl({
+            target: mindPlan.target,
+            conversationId: row.id,
+            plan: mindPlan,
+            result: result.outcome.mind_result,
+          });
+        } catch (error) {
+          cortexSync = { ok: false, error: publicError(error), imported: 0 };
+        }
+      }
+      const entries = result?.session?.entries;
+      if (Array.isArray(entries) && entries.length) {
+        const last = entries[entries.length - 1];
+        if (last?.role === 'assistant' && mindPlan.enabled) {
+          last.mind_plan = mindPlan;
+          if (cortexSync) last.cortex_sync = cortexSync;
+        }
+      }
       row.title = row.title === 'Nova conversa HackBot' ? prompt.split(/\r?\n/, 1)[0].slice(0, 80) : row.title;
       row.last_status = 'completed';
       row.updated_at = new Date().toISOString();
       await writeIndex(ROOT, index);
-      return res.json({ ok: true, ...result, conversation: publicConversation(row) });
+      return res.json({
+        ok: true,
+        ...result,
+        mind_plan: mindPlan.enabled ? mindPlan : null,
+        cortex_sync: cortexSync,
+        conversation: publicConversation(row),
+      });
     } catch (error) {
       row.last_status = 'failed';
       row.updated_at = new Date().toISOString();
