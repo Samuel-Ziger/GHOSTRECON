@@ -20,6 +20,18 @@ import { moduleManifest as vigoliumAudit } from './vigolium-audit.mjs';
 import { moduleManifest as vigoliumSwarm } from './vigolium-swarm.mjs';
 import { moduleManifest as sqliDeepVerify } from './sqli-deep-verify.mjs';
 import { moduleManifest as xssVibesSafe } from './xss-vibes-safe.mjs';
+import { moduleManifest as cloudDebugEnvAudit } from './cloud-debug-env-audit.mjs';
+import { moduleManifest as runtimeEndpointPivot } from './runtime-endpoint-pivot.mjs';
+import { moduleManifest as deterministicVoucherAudit } from './deterministic-voucher-audit.mjs';
+import { moduleManifest as jwtClaimAuthzDiff } from './jwt-claim-authz-diff.mjs';
+import { moduleManifest as authzObjectMatrixV2 } from './authz-object-matrix-v2.mjs';
+import { moduleManifest as artifactSafetyAudit } from './artifact-safety-audit.mjs';
+import { moduleManifest as apiExcessiveDataAudit } from './api-excessive-data-audit.mjs';
+import { moduleManifest as boundedObjectKeyDiscovery } from './bounded-object-key-discovery.mjs';
+import { moduleManifest as cloudObjectProxyAuthz } from './cloud-object-proxy-authz.mjs';
+import { moduleManifest as sensitivePaymentData } from './sensitive-payment-data.mjs';
+import { moduleManifest as financialIntegrityAudit } from './financial-integrity-audit.mjs';
+import { moduleManifest as sqliTargetedVerify } from './sqli-targeted-verify.mjs';
 import { moduleRunners } from './module-registry-runners.mjs';
 import { normalizeModuleId } from './module-ids.mjs';
 
@@ -46,6 +58,18 @@ export const moduleManifests = [
   vigoliumSwarm,
   sqliDeepVerify,
   xssVibesSafe,
+  cloudDebugEnvAudit,
+  runtimeEndpointPivot,
+  deterministicVoucherAudit,
+  jwtClaimAuthzDiff,
+  authzObjectMatrixV2,
+  artifactSafetyAudit,
+  apiExcessiveDataAudit,
+  boundedObjectKeyDiscovery,
+  cloudObjectProxyAuthz,
+  sensitivePaymentData,
+  financialIntegrityAudit,
+  sqliTargetedVerify,
 ];
 
 const registry = new Map(

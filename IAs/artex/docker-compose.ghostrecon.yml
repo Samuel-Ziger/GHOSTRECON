@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ghostrecon-artex-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ARTEX_POSTGRES_USER:-artex}
+      POSTGRES_PASSWORD: ${ARTEX_POSTGRES_PASSWORD:?ARTEX_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${ARTEX_POSTGRES_DB:-artex}
+    ports:
+      - "127.0.0.1:${ARTEX_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - ghostrecon_artex_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  ghostrecon_artex_postgres:
+    name: ghostrecon_artex_postgres

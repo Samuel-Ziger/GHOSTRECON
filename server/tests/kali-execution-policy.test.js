@@ -5,9 +5,23 @@ import {
   classifyFtpAnonymousAuditOutcome,
   classifyFtpWriteProbeOutcome,
   resolveKaliExecutionPolicy,
+  resolveNmapTimeoutMs,
   runKaliAggressiveScan,
   shouldRunKaliTcpBase,
 } from '../modules/kali-scan.js';
+
+test('AUTO reserva orçamento para os módulos posteriores ao Nmap', () => {
+  const env = {};
+  assert.equal(resolveNmapTimeoutMs({ aggressive: true, autoModeExecution: true, env }), 300_000);
+  assert.equal(resolveNmapTimeoutMs({ udp: true, autoModeExecution: true, env }), 180_000);
+  assert.equal(resolveNmapTimeoutMs({ aggressive: true, autoModeExecution: false, env }), 7_200_000);
+  assert.equal(resolveNmapTimeoutMs({ udp: true, autoModeExecution: false, env }), 2_700_000);
+  assert.equal(resolveNmapTimeoutMs({
+    aggressive: true,
+    autoModeExecution: true,
+    env: { GHOSTRECON_AUTO_NMAP_AGGRESSIVE_TIMEOUT_MS: '420000' },
+  }), 420_000);
+});
 
 test('RUN manual não injeta nmap TCP sem módulo explícito', () => {
   assert.equal(

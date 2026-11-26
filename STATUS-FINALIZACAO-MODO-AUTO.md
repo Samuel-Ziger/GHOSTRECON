@@ -8,9 +8,8 @@ Este documento registra **somente o que ainda falta** para considerar o Modo
 Auto concluído. Histórico de entregas, itens marcados como concluídos e
 contagens antigas de testes foram removidos.
 
-Código, schemas e testes continuam sendo a fonte de verdade. O contrato
-operacional está em `MODO-AUTO-GHOSTRECON.md` e o backlog executável em
-`MELHORIAS-PENDENTES-MODO-AUTO.md`.
+Código, schemas e testes continuam sendo a fonte de verdade. O backlog
+executável está em `MELHORIAS-PENDENTES-MODO-AUTO.md`.
 
 ## Veredito atual
 
@@ -26,7 +25,6 @@ tratada como finalizada:
 | `authorized_opsec` | implementado experimentalmente; não liberado e deve permanecer desabilitado por política |
 | Vigolium no Auto | não liberado; deve permanecer desabilitado até expansão interna, gates e contenção de escopo |
 | FrameSeven ofensivo/autenticado | não liberado; deve permanecer desabilitado até contenção de escopo, cleanup e E2E |
-| Provider externo com evidência autenticada | não liberado; deve permanecer desabilitado até consentimento, isolamento, redação e custo verificáveis |
 | Writes, credential attempts e `-active-scan` | fora do Auto atual |
 
 O evento `completed` agora exige ausência de falha recuperável na avaliação
@@ -62,19 +60,14 @@ recursos.
 
 ### 3. Tornar cancelamento, timeout e falha fatal incontornáveis
 
-- [x] Repropagar `AbortError` no conselho (sem turno `ok:false`); providers
-      OpenAI-compatible não mascaram cancel externo como timeout.
 - [x] Dispatcher: AbortError/`PROCESS_UNTERMINATED` sem `done`
       (`dispatcher-abort`, `dispatcher-unterminated`); adapters/pipeline
       restantes ainda abertos.
-- [x] Impedir fallback determinístico depois de cancelamento no conselho.
 - [x] Remover o caminho em que o dispatcher captura erro e ainda emite `done`.
 - [x] `assertActive` nas fronteiras principais do orquestrador Auto; cobertura
       E2E de desconexão HTTP ainda aberta.
-- [x] Deadline por turno (`combineTurnSignal`) + watchdog ancorado no turno
-      mais antigo (`activeAgentTurns` / `getAgentIdleMs`).
-- [x] Abort durante review do conselho repropaga sem fallback; `recordUsage`
-      tolera `usage: null`.
+- [x] O planejamento determinístico respeita cancelamento antes do pipeline e
+      não possui turnos externos ou fallback de IA.
 
 ### 4. Emitir outcomes e terminais verdadeiros
 
@@ -123,13 +116,8 @@ recursos.
       memória expirada não é recuperada.
 - [x] APIs `/api/auto-rag/*` isoladas por principal/engagement/alvo.
 - [x] Snapshot terminal com falha emite `auto_persist_failed`.
-- [x] Exigir `cloudEvidenceConsent` antes de openrouter/cloud receber evidência.
-- [ ] Tornar redação, política de dados e contabilização de custo verificáveis
-      para todos os providers.
-- [x] Quando nenhum provider selecionado estiver utilizável, entrar em estado
-      `degraded`/`ask_operator` explícito (`auto_council_degraded`).
-- [x] Proibir fallback determinístico silencioso apresentado como decisão das
-      IAs selecionadas (baseline só com commanders vazio).
+- [x] O Modo Auto não envia evidência a providers: o planejamento é
+      determinístico e não aceita comandantes.
 
 ### 7. Renovar a evidência de teste
 
@@ -175,7 +163,7 @@ recursos.
 - [x] Paridade de classificação de risco (`risk-classification-parity.test.js`).
 - [x] Tor estrito → FrameSeven fail-closed Node; `scopePolicy` inicial no CLI
       Go; SOCKS completo ainda aberto.
-- [x] Sessões retomáveis na API/UI + `auto_council_degraded` / relatório na UI.
+- [x] Sessões retomáveis na API/UI + estados degradados / relatório na UI.
 - [x] Comando `ghostrecon auto` na CLI.
 - [x] Tools MCP `ghostrecon_auto_approve` / `ghostrecon_auto_deny`.
 - [x] `npm run stack:status` / `stack:stop` via PID file.
@@ -212,8 +200,7 @@ verdadeiros:
       proveniência real;
 - [ ] RAG, snapshots, SQLite, NDJSON e relatórios não vazam segredos nem dados
       entre principals/engagements;
-- [ ] providers externos possuem consentimento, redação, política de dados e
-      custo verificáveis;
+- [x] o planejador Auto não chama providers externos nem acumula custo de IA;
 - [ ] regressão hermética, CLI, MCP e smoke de import passam no estado final;
 - [ ] E2E controlado repetido deixa zero browser, processo ou temporário
       residual;
@@ -226,7 +213,7 @@ verdadeiros:
 2. corrigir expansão interna do Vigolium e contenção de escopo;
 3. corrigir propagação de falhas e verdade terminal;
 4. corrigir retomada, orçamento e cleanup;
-5. isolar dados e comportamento de providers;
+5. isolar dados, snapshots e artefatos por principal/engagement;
 6. consolidar relatório, progresso e executabilidade;
 7. passar a regressão hermética;
 8. executar os E2E controlados;

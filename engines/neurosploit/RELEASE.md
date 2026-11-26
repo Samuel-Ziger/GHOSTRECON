@@ -1,0 +1,1817 @@
+# NeuroSploit v4.4.3 — Release Notes
+
+**Credits:** Joas A Santos & Red Team Leaders
+
+## v4.4.3 — Global MCP server, C2 framework, reactive engine and 200+ tool catalog
+
+- **Global MCP server package** (`mcp/`). `bash mcp/install.sh` builds the binary,
+  links it to `/usr/local/bin`, and auto-registers the NeuroSploit MCP server in
+  Claude Code, Cursor, Windsurf and VS Code. 48 MCP tools expose the full platform:
+  pentesting, code review, C2, toolbox, graph reasoning, reactive engine, Neo4j,
+  sandbox, capability tokens and more. Any MCP client can now drive NeuroSploit.
+- **9 new MCP tools**: `neo4j` (graph DB management), `sandbox` (Kali container),
+  `capability` (token sign/verify), `provenance` (build verification), `reactive`
+  (engine control), `knowledge` (agent methodology queries), `graph_chains`
+  (exploitation chain discovery), `mcp_profiles` (tool profile descriptions),
+  `config` (engagement defaults).
+- **C2 framework** with local daemon, HTTP listener, session management, task dispatch,
+  beacon protocol and WebShell support. Full MCP integration.
+- **200+ security tools catalog** (`toolbox/`) with structured output parsing,
+  install checks, and MCP tool server management.
+- **Reactive engine** — event-driven planner/worker loop with graph reasoning (BFS
+  chain discovery from findings to untested assets), knowledge base, MCP profiles
+  (web/mobile/binary/burp), session resume, heartbeat lease, hint injection, and
+  intelligent replan trigger.
+- **Web UI** — reactive engine toggle, MCP profile selector, autonomy level, modals
+  for feature info and profile descriptions, settings integration.
+
+---
+
+# NeuroSploit v4.4.2 — Release Notes
+
+**Credits:** Joas A Santos & Red Team Leaders
+
+## v4.4.2 — Managed Neo4j and a populated exploration graph
+
+- **Managed Neo4j.** `neurosploit neo4j up|down|status|info|sync` starts a local Neo4j in
+  Docker (ports bound to `127.0.0.1` only), generates a password, saves the connection to
+  `~/.neurosploit/neo4j.json` (mode `0600`) and hands the password to Docker through the
+  environment, never on a command line. Once up, runs use it automatically; an explicit
+  `--neo4j` or `NEO4J_URI` always wins. `down` keeps the data and disables auto-use;
+  `down --purge` deletes data and the saved connection. `docker-compose.neo4j.yml` is provided
+  for those who prefer compose.
+- **Exploration graph in Neo4j.** Assets and the exploration graph (goals, intents, facts,
+  negatives, findings, anchors) are MERGEd with closed-enum labels and relationship types;
+  free text only travels as parameters. A chain query surfaces untested assets sitting next to
+  something already broken and injects them into agent prompts as unverified hypotheses.
+- **The graph is now actually populated.** At every graph checkpoint the pipeline writes
+  `graphs/dual-graph.json` from recon (in-scope hosts, subdomains, endpoints, parameters) and
+  findings (intent -> finding with anchors). Idempotent; validation updates status in place;
+  out-of-scope hosts and URLs never enter.
+- **Operator constraints and cold digests are wired into the pipeline** (from 4.4.1's
+  modules): extracted constraints reach every recon/exploit prompt and are enforced on recon
+  commands; settled exploration history is folded into digests in the prompt block.
+- **Web backend.** `GET /api/neo4j/status`, `POST /api/neo4j/up`, `POST /api/neo4j/down`,
+  `POST /api/runs/<id>/neo4j-sync`.
+
+Known gap: the intent queue, wrap-up and retest modules from 4.4.1 are library-only; their
+drivers in the agent loop are not wired yet.
+
+---
+
+# NeuroSploit v4.4.1 — Release Notes
+
+**Credits:** Joas A Santos & Red Team Leaders
+
+## v4.4.1 — Operations engineering for long runs
+
+Five new harness modules, inspired by Artex's operating model. Each is pure,
+deterministic and unit-tested (562 harness tests pass).
+
+- **Cold-node digests** (`cold_digest`) — settled exploration nodes (completed
+  intents, facts, negatives) that stay untouched for N planner rounds are grouped
+  and folded into short digests for the planner prompt. Goals, findings, hints and
+  pending work are never folded. The graph itself is never mutated; a member that
+  becomes active again invalidates its digest. LLM digest prompt plus an offline
+  heuristic fallback.
+- **Operator constraints** (`constraints`) — "no port scan", "passive only" and
+  similar rules are extracted from the task text into self-contained deny/allow
+  statements (the concrete target replaces "the current target"), injected into
+  worker prompts, and the common classes (port scan, brute force, DoS) are blocked
+  deterministically at command level. Constraints only restrict; they never widen
+  what `scope.rs` allows.
+- **Single-generator intent queue** (`intent_queue`) — only the planner (or the
+  operator) can create intents; workers claim, complete or fail them and can only
+  `suggest()` leads. Dedupe, priority claiming that respects `depends_on`, bounded
+  retries, attempt refund on release.
+- **Wrap-up** (`wrapup`) — when turns or time run out, the run gets a short
+  settlement phase with only persistence tools open and a per-role prompt, so
+  findings, facts and negative results already identified are saved instead of lost.
+- **Retest verdicts** (`retest`) — `reproduced` / `fixed` / `inconclusive` computed
+  in code. `fixed` requires a comparable environment, met preconditions, a completed
+  trigger, a passing positive control and written evidence; timeouts, WAF blocks and
+  auth failures can never produce `fixed`.
+
+Pipeline wiring (post-4.4.1): operator constraints are injected into every
+recon/exploit prompt and enforced on recon commands; the exploration block in
+prompts is folded into digests (persisted as `graphs/digest-state.json`). The queue,
+wrap-up and retest modules are available in the harness crate; their drivers land
+in a later release.
+
+---
+
+# NeuroSploit v3.6.8 — Release Notes
+
+**Release Date:** August 2026
+**Codename:** Chain & Exploit
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+## v3.6.8 — Auth resilience, circuit breaker, recon budget, Ollama error handling, empty-evidence validation
+
+### Recon Time Budget (NEW)
+
+- **5-minute total recon budget.** Recon phase is now time-boxed to 300 seconds
+  across ALL rounds. Previously, a single recon round could run 150+ commands
+  over 15 minutes via subscription CLI, leaving no time for exploitation.
+- **Per-round budget directive.** Each recon round receives a prompt instruction
+  with its share of the time budget (e.g. "~100 seconds for this round") and a
+  command count guideline (30-50 commands max). The model is instructed to
+  prioritise high-signal actions and stop early when enough intel is gathered.
+- **Elapsed time check between rounds.** Before starting each follow-up round,
+  the pipeline checks elapsed time. If the budget is exhausted, recon stops
+  immediately and proceeds to exploitation with the intelligence gathered so far.
+
+### Auth Resilience & Circuit Breaker (NEW)
+
+- **`is_auth_failure()` detector.** New function recognises OAuth token revocation
+  (401), session expiry, invalid/revoked API keys, and "not logged in" errors from
+  subscription CLIs. Distinct from `is_exhaustion()` (quota/rate-limit) — auth
+  failures are non-recoverable without re-login or provider switch.
+- **Circuit breaker (3 consecutive auth failures → auto-pause).** A shared atomic
+  counter tracks consecutive auth failures across ALL agents. After 3 failures the
+  pool pauses the run BEFORE burning through the remaining agents on a dead token.
+  Previously, a revoked OAuth token caused all 66+ agents to silently return 0
+  findings with no pause or warning.
+- **Auth-aware park: findings preserved, fallback offered.** When auth fails the
+  run parks with a clear message:
+  `⏸ authentication failed (...). Run is PAUSED — all findings so far are SAFE.`
+  The user can `/continue openai:gpt-5.1` (or any provider) to switch and resume.
+  All `LiveCheckpoint` findings on disk are preserved across the pause.
+- **No retry burn on auth failure.** `one()` returns immediately on auth errors
+  instead of retrying 3 times against a dead token (same as quota exhaustion).
+- **Recon preserves probe facts on auth failure.** When model recon fails with an
+  auth error, the HTTP probe data is still returned and the pipeline continues
+  with probe-only intelligence instead of silently dropping everything.
+- **Phase tracking for auth pauses.** The REPL status line shows `paused (auth)`
+  (distinct from `paused (quota)`) so the operator knows the root cause at a glance.
+
+### Bugfixes
+
+- **Better Ollama/local provider error messages.** Connection-refused and timeout
+  errors now name the provider, URL, and suggest checking if the server is running.
+  Previously showed raw reqwest errors.
+- **Empty-evidence findings skip the vote and go straight to `needs-review`.**
+  Findings with no evidence are unverifiable by the adversarial validator (which
+  always rejects "no evidence" per its system prompt). Now they bypass the vote
+  and are flagged for human review instead of being silently dropped.
+- **Single-model + vote_n=1 warning.** When only one model is configured and
+  vote_n is 1, the pipeline emits a warning that validation is weaker (same model
+  validates its own findings).
+- **JSON parse resilience for local models.** `extract_findings` now logs when a
+  model returns text but no parseable JSON (previously silent drop — 0 findings
+  with no diagnostic). Also auto-fixes trailing-comma JSON (`[...,]`) which small
+  models commonly produce.
+- **Visible diagnostics when agents return 0 findings.** Pipeline emits the
+  response tail so the operator can see what the model actually returned (helps
+  debug model quality issues with local/small models).
+
+---
+
+## v3.6.7 Highlights
+
+- **CVE exploitation pipeline — 4 new agents.** `cve_version_fingerprint` (pin
+  exact versions) → `cve_research_analyst` (map to NVD/GHSA, judge reachability) →
+  `cve_poc_finder` (locate/vet/adapt a public PoC) → `cve_exploit_scripter` (write
+  a custom exploit when none exists). Focus: actually exploiting vulns that have
+  CVEs, not just flagging versions.
+- **PoCs land in the run's `pocs/` folder and are listed in the report.** Every
+  agent writes runnable proofs to `$NEUROSPLOIT_POCS`; the report gains a
+  **"Reproduction — PoC scripts"** section so findings replay end-to-end.
+- **Chaining for any primitive.** New `CHAIN_DOCTRINE` + a `chain_cve_to_rce_to_pivot`
+  recipe turn any confirmed foothold into the next step (upload→RCE, SSRF→cloud
+  creds, IDOR→takeover, CVE→RCE→pivot), reusing looted creds and reasoning about
+  **business logic** — strictly non-destructive (no data loss / DB overwrite / DoS).
+- **`--only <agent>` — re-test a single vulnerability.** Runs exactly the named
+  agent(s), skipping recon selection. On `run` / `whitebox` / `greybox`; repeatable
+  or comma/semicolon-separated. (Implements the previously-dead `pinned` allowlist.)
+- **White-box stays white-box.** A `WHITEBOX_DOCTRINE` keeps code agents in static
+  source-review mode (symbolic `file:line` receipts, source→sink taint, manifest
+  version→CVE) and blocks hallucinated live/black-box network actions; agents can
+  emit a repro PoC.
+- **435 markdown agents** (was 430).
+
+**Full changelog:** https://github.com/JoasASantos/NeuroSploit/compare/v3.6.6...v3.6.7
+
+---
+
+# NeuroSploit v3.6.6 — Release Notes
+
+**Release Date:** August 2026
+**Codename:** Local & Uncensored
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+## Highlights
+
+- **Local, uncensored & CPU-only — new `llamacpp:` provider.** Drives a
+  `llama-server` OpenAI-compatible endpoint (`localhost:8080`), **no API key**,
+  no data off-host, CPU-only or GPU-offloaded. Override with `LLAMACPP_BASE_URL`;
+  `model` = the gguf you loaded (pass-through). **15 → 16 providers.**
+- **clippy clean under `-D warnings`** across the workspace.
+- **Rust CI template** — `examples/github-actions/ci.yml` (build / test / clippy)
+  for the `neurosploit-rs/` workspace.
+
+**Full changelog:** https://github.com/JoasASantos/NeuroSploit/compare/v3.6.5...v3.6.6
+
+---
+
+# NeuroSploit v3.6.5 — Release Notes
+
+**Release Date:** July 2026
+**Codename:** LLM Red Team
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## Highlights
+
+- **Human-in-the-loop validator — uncertain findings are flagged, not deleted.**
+  The vote, receipt-grounding and adversarial-refute passes no longer silently
+  drop borderline findings. A finding is now **`confirmed`** (passed all three) or
+  **`needs-review`** (partial vote, no machine-verifiable receipt, or failed
+  refute) — kept with a reason so a human makes the final call. Only zero-support
+  noise is dropped. Every report separates the two buckets.
+
+- **Richer reports in Markdown + JSON (alongside PDF/HTML).** Every run writes
+  `report.md`, `report.json`, `report.html` and the Typst **PDF** via
+  `report::write_all`, now with a full structure: **asset identification** (names
+  the product/organisation + tech stack — e.g. "OWASP Juice Shop [Angular,
+  Express]" — not just the URL), a **written executive summary**, a
+  **vulnerability table** (severity · status · CWE/OWASP), a **test-accounts
+  section** (from the vault, to delete after), detailed confirmed findings, a
+  separate **needs-review** section, and a **written conclusion**. The asset is
+  identified during the run: a deterministic probe extracts the page title,
+  fingerprints the stack, matches known apps, and reads a business/brand hint
+  (`og:site_name` / `application-name` / copyright) into `meta.json`.
+
+- **Sharper agents on modern SPA/REST apps (Juice-Shop-class).** When recon
+  detects a JS SPA and/or a REST/GraphQL API, a methodology directive gives agents
+  concrete **directions** (not an answer key) on how to hunt each class: map the API
+  from the JS bundle, brute hidden client routes (`#/administration`, score board),
+  SQLi login-bypass/UNION, JWT alg:none & RS→HS forging, IDOR/BOLA + mass-assignment,
+  path-traversal + poison-null-byte file access, forgot-password/OSINT, exposed
+  `/metrics`, DOM XSS, NoSQL, SSRF, redirect-allowlist bypass, XXE, coupon crypto.
+  Agents still discover and PROVE each issue live.
+
+- **More robust RL.** Per-agent reward is now shaped: strong for a **confirmed**
+  finding (severity × confidence), small for a **needs-review** lead, slight decay
+  for running but finding nothing — so agents that reliably land confirmed
+  high-severity bugs rise to the top of selection over runs (persisted).
+
+- **LLM red-teaming — jailbreaks & prompt injection across scenarios.** 12 new AI
+  agents (AI category 18 → **30**; total 417 → **429**) that adversarially test a
+  live AI system (LLM app / AI agent / MCP server) the way
+  [hackagent.dev](https://hackagent.dev)-style tooling does. Each agent runs an
+  **attacker → LLM-judge loop**: capture the baseline refusal, apply the technique
+  across several scenarios/variants, then judge with an explicit criterion whether
+  the guardrail was *actually* bypassed — proving it with a **benign, redacted**
+  prompt+response receipt (never real harm).
+  - **Jailbreak techniques:** `AdvPrefix` (adversarial prefix/suffix), `PAIR`
+    (automated iterative refinement), `TAP` (tree-of-attacks with pruning),
+    `Crescendo` (multi-turn escalation), many-shot, persona/DAN roleplay,
+    encoding/obfuscation (base64/ROT13/zero-width/low-resource-language),
+    refusal-suppression / prefix injection.
+  - **Prompt-injection & hijacking scenarios:** direct injection, **indirect**
+    injection via RAG doc / web page / email / tool output, **goal hijacking**,
+    agentic **tool/function-call abuse**, and **system-prompt / secret
+    exfiltration**.
+  - Runs via `neurosploit aitest <ai-url>` (or the REPL **AI Agents & LLMs**
+    onboarding scope). A new `REDTEAM_DOCTRINE` steers every AI test through the
+    baseline→technique→judge loop. Complements the existing OWASP LLM Top 10 (2025),
+    MCP and Skills/n8n agents. Authorized, non-destructive.
+
+- **New models.** Added **Claude Opus 5** and **Claude Sonnet 5** (Anthropic),
+  and a new **Moonshot AI (Kimi)** provider with **Kimi K3** / K2 (`moonshot:kimi-k3`,
+  `MOONSHOT_API_KEY`, OpenAI-compatible) — **15 providers** total. Use any of them
+  as a finder or in the validator voting panel, e.g.
+  `--model anthropic:claude-opus-5 --model moonshot:kimi-k3`.
+
+- **Liveness preflight.** Before recon, the run confirms the target actually
+  answers HTTP; a dead host prints `✗ target unreachable — … is DOWN` and aborts
+  instead of running agents against nothing. A reachable host prints `✓ target is UP`.
+
+- **Account registration & form analysis (+1 agent → total 430).** A new
+  `account_registration_and_forms` agent lets NeuroSploit reach the authenticated
+  surface on its own: it analyzes the app's forms (the deterministic probe now
+  extracts each `<form>`'s action/method/fields/kind/CSRF) and creates a benign
+  test account with **curl** or the **Playwright browser** when no creds are given.
+  When no `--auth`/creds are set on a web run, this agent is **run first
+  automatically** so the authenticated surface is always attempted (and visible).
+  - **Anti-flood guardrail (hard):** at most **2 accounts per engagement**, never
+    looping/scripting/batching the register endpoint or flooding the database —
+    reuse the account made; a test needing many sign-ups is reported as a lead and
+    stopped. Enforced in `SAFETY_DOCTRINE` (all flows) and the agent.
+  - **Credential vault:** every generated credential is saved to
+    **`.neurosploit/vault/<run-id>.json`** for the operator to consult; secrets are **masked in
+    the report**. The report adds a **"Test accounts created (DELETE after)"**
+    cleanup section listing each account and how it was created.
+  - **Finding labels:** findings are tagged **`auth_context`**
+    (authenticated/unauthenticated) and **`account`** (which test user/role proved
+    it) — so grey-box shows which findings needed a login, and black-box records how
+    the user was created.
+  - **Disposable email (opt-in, off by default):** `/tempmail on` (or `temp_email`)
+    lets agents use the free **mail.tm** API (no key) to read a registration
+    confirmation code; off by default, a required confirmation is reported as a
+    blocker rather than bypassed.
+
+## Previously in v3.6.4
+
+
+- **Fix ([#33](https://github.com/JoasASantos/NeuroSploit/issues/33)): white-box
+  findings were silently dropped from the report.** The grounding gate — the
+  anti-hallucination step that demotes any claim lacking a receipt — was running
+  in **empirical** mode for *every* engagement. Empirical grounding looks for raw
+  tool output (HTTP responses, error oracles, shell receipts), which a **SAST
+  finding never has**: its receipt is a `file:line` reference into the reviewed
+  source. So white-box (and skills/n8n audit) findings that had *passed* the
+  n-model vote were then demoted as "receipt missing" and never reported.
+  Grounding is now **mode-aware**:
+  - **Symbolic** — white-box SAST & skills audits: a `file:line` (or
+    `file:section`) reference into the reviewed source, or a quote of code that
+    appears in it, IS the receipt. No live target needed.
+  - **Empirical** — black-box / host / AI endpoints: evidence must resemble raw
+    tool output (unchanged behaviour).
+  - **Either** — grey-box: a source citation OR a tool receipt grounds a finding.
+  The symbolic check is run against the reviewed **source corpus** (not the model
+  transcript), and falls back to a structural `file:line` + code-quote check when
+  the corpus isn't available, so a well-formed SAST finding is never dropped on a
+  technicality. Covered by unit tests (including a regression test for #33).
+
+---
+
+## Previously in v3.6.3
+
+- **Interrupted runs are resumable.** When a run is cut off (terminal closed,
+  Ctrl-C, crash, SSH drop), its findings were already checkpointed live and
+  recovered as a run on the next launch. Now `/continue` (or `/resume`) also
+  **relaunches the engagement** on the same target and **carries those findings
+  forward** — steering agents to widen coverage and chain from what was already
+  found instead of re-reporting it. The offer is shown at launch right under the
+  recovery line. A fresh `/run` supersedes the pending resume.
+- **Browsing no longer kills a live run.** Opening `/results`, `/finding` or
+  `/report` while a run streams used to let the background printer and the
+  full-screen picker fight over the terminal — pressing Ctrl-C to escape could
+  take the whole process down. Live output is now paused while any picker is
+  open (still captured in `/logs`) and restored when you exit, so browsing
+  findings mid-run is safe.
+- Findings merge (dedup by title + endpoint) across the interrupted and
+  continued runs, and the merged report is rewritten to include everything.
+
+---
+
+## Previously in v3.6.2
+
+- **Codex now streams live, tool-by-tool.** `codex exec` is driven with `--json`
+  and its JSONL event stream is parsed into the same categorized activity feed
+  as Claude Code: every shell command it runs (`exec:`), file edit (`edit:`),
+  MCP tool call (`tool:`), web search (`net:`) and token count appears the moment
+  it happens. A long, intense recon (subfinder → httpx → katana → nmap …) is no
+  longer a silent black box — you watch each tool execute.
+- **`/logs` and `/status` now capture what each agent actually runs.** The
+  activity feed previously dropped the per-agent tool events; it now keeps the
+  actionable ones (commands, network, files, findings) and only filters long
+  model reasoning and token telemetry. `/logs` shows the real command trail;
+  `/status` `last:` shows a true sign-of-life.
+- Failed internal commands surface as `exec: (exit N) <cmd>` instead of
+  silently vanishing, and Codex auth/rate errors are still detected from stderr.
+
+---
+
+## Previously in v3.6.1
+
+- **Added the GPT-5.6 model line** (OpenAI / ChatGPT): `openai:gpt-5.6-sol`
+  (frontier / default), `openai:gpt-5.6-terra` (balanced), and
+  `openai:gpt-5.6-luna` (fast & affordable) — alongside the existing GPT-5.x,
+  Claude (incl. Sonnet 5), Grok 4.5 and the rest of the provider pool.
+- Everything from v3.6.0 (AI/LLM/MCP/Skills testing, n8n audit, onboarding
+  wizard, intense multi-round recon) carries forward unchanged.
+
+---
+
+# NeuroSploit v3.6.0 — Release Notes
+
+**Release Date:** July 2026
+**Codename:** AI / LLM / Agent / MCP / Skills Security
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.6.0 turns NeuroSploit into an **AI-security** platform: red-team live AI
+agents / LLM apps / MCP endpoints against the **OWASP Top 10 for LLM Apps (2025)**
++ MCP threats, audit **AI Skills/plugins and exported n8n workflows** white-box,
+and pick your engagement type up front in a new **onboarding wizard**. Library
+**417** agents. Adds **Claude Sonnet 5** and **Grok 4.5**.
+
+## AI / LLM / Agent / MCP / Skills testing (+18 agents, `agents_md/ai/`)
+
+- **Live AI red-team** — `neurosploit aitest <url>` (or the `ai` scope in the
+  REPL). Point it at an AI agent / LLM chat or API / MCP endpoint; agents cover
+  the full **OWASP LLM Top 10 (2025)**: prompt injection (direct + indirect),
+  jailbreaks, system-prompt leakage, sensitive-info disclosure, improper output
+  handling, excessive agency, RAG/embedding weaknesses, unbounded consumption,
+  supply chain, misinformation — hackagent.dev-style, with the exact prompt +
+  the model's response as proof. Plus **MCP risks**: tool poisoning / description
+  injection, excessive permissions & confused-deputy, unsafe tool execution.
+- **Skills / plugins / n8n audit (white-box)** — `neurosploit skills <file|dir>`
+  (or the `skills` scope). Audit a single `.md`/`.json` or a whole folder:
+  - **Skills/plugins**: insecure design, secrets in manifests, over-broad tools,
+    injection surface, missing human-in-the-loop.
+  - **n8n exported workflows**: hardcoded credentials, unsafe Code/Function
+    nodes (RCE/SSRF), unauthenticated webhooks, expression injection, over-scoped
+    credentials — **and a dedicated AI/LLM-node audit** (prompt injection, data
+    leakage to the provider, excessive agency, insecure output handling).
+
+## Onboarding wizard
+
+- On first launch (or `/onboard`), a guided menu asks **what you're testing** —
+  **Web & API · Infrastructure & Networks · Cloud · AI Agents & LLMs · AI
+  Skills/Plugins/n8n** — then the box type (black/white/grey for web) and the
+  minimal setup, so a plain `/run` does the right thing. Scope shown in `/show`.
+
+## Intense, multi-round recon
+
+- Recon is no longer a single quick pass. **`deep_recon`** runs an initial deep
+  enumeration then **follow-up expansion rounds** that chase what the previous
+  round found (new subdomains/hosts, unmapped endpoints, promising paths/params),
+  converging when nothing new appears.
+- Agents are told to **install the tools they need** (apt/pip/go/npm/cargo) —
+  subfinder/amass, httpx, gau/waybackurls/katana/hakrawler, gf, arjun/paramspider,
+  ffuf/feroxbuster, nuclei, nmap/rustscan, dnsx, linkfinder, whatweb, nikto,
+  testssl — and chain them (subfinder→httpx→katana/gau→gf→ffuf).
+- **`/recon <1-4>`** (REPL) and **`--recon <1-4>`** (CLI) set the intensity:
+  1 quick · 2 standard · 3 deep (default) · 4 exhaustive — more rounds + wider
+  enumeration at higher levels. Best on Kali; degrades to curl/nc if installs fail.
+
+## Models
+
+- Added **`anthropic:claude-sonnet-5`** and **`xai:grok-4.5`**.
+
+---
+
+# NeuroSploit v3.5.6 — Release Notes
+
+**Release Date:** July 2026
+**Codename:** Bug-Bounty Corpus & EOL Hunting
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.6 folds real public bug-bounty knowledge into the agent (methodology
+meta-agent + corpus-grounded techniques), adds a full **2FA/MFA bypass** agent
+(one of the most-reported classes in the writeup corpus), and ships the EOL /
+end-of-support hunting and decision-driven exploitation from the 3.5.5 line.
+Library **399** agents.
+
+## Highlights
+
+- **Bug-bounty methodology, grounded in the real corpus.** The
+  `bugbounty_methodology` meta-agent is validated against the actual technique
+  distribution in public writeup collections (Awesome-Bugbounty-Writeups,
+  bug-bounty-reference) — XSS, RCE, CSRF, SSRF, Clickjacking, SQLi, CORS, LFI,
+  **2FA bypass**, subdomain/account takeover, OAuth, race, **SAML** — and now
+  includes explicit **2FA/MFA bypass** and **SAML/SSO** sections.
+- **New `twofa_bypass_techniques` agent** — the full 2FA-bypass playbook (missing
+  rate-limit brute, code reuse/no-expiry, response manipulation, step skipping,
+  null/default codes, backup/remember-me, race, disable-2FA IDOR, SSO side door),
+  with a control-vs-bypass proof and no account lockout.
+- **KingOfBugBounty-style recon** in `RECON_SYS` (subdomains, wayback, gf, param
+  mining, content discovery, classic exposures) — from 3.5.5, degrades to
+  installed tools.
+- Carries the 3.5.5 features: EOL/end-of-support agents, decision-driven deep
+  exploitation, multi-role `/auth`, browser-driven SPA testing, global install.
+- **README**: Trendshift badge added.
+
+---
+
+# NeuroSploit v3.5.5 — Release Notes
+
+**Release Date:** July 2026
+**Codename:** Cloud Testing, REPL Navigation & Deeper Recon
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.5 adds **cloud infrastructure testing** (AWS / GCP / Azure) with first-class
+credential connection, **27 new agents** (17 cloud + 10 misconfig/CVE/PoC/rate-
+limit → library **375**), a much more capable and navigable **REPL** (idle
+guardrail, multi-target, results browser), **deeper recon** (downloads & analyzes
+JS, request/response differentials, smart nuclei), **Burp/ZAP proxy** support, a
+**PoC** workspace, a strict **data-safety/PII guardrail**, and a fix for garbled
+interactive line-editing.
+
+## Cloud testing
+
+- **+17 cloud agents.** AWS, GCP and Azure specialists in
+  `agents_md/infra/`: IAM/RBAC privilege escalation, storage exposure
+  (S3 / GCS / Blob), compute & network exposure + IMDS, secrets (Secrets Manager /
+  Secret Manager / Key Vault), service-account & service-principal abuse, and
+  Entra ID enumeration — plus a multi-cloud footprint/identity recon agent.
+  Read-only-first, non-destructive.
+- **Connect cloud credentials via `creds.yaml`** (`aws:`, `gcp:`, `azure:`
+  blocks). The harness exports the right env vars so `aws` / `gcloud` / `az` pick
+  them up automatically, and tells the agents how to authenticate & what to
+  enumerate:
+  - **AWS** — `access_key_id`/`secret_access_key`[/`session_token`]/`region`, or a `profile`.
+  - **GCP** — a service-account JSON (`service_account_json`, path recommended) →
+    `GOOGLE_APPLICATION_CREDENTIALS` + project.
+  - **Azure** — a **service principal** (`tenant_id`/`client_id`/`client_secret`/
+    `subscription_id`) → `az login --service-principal`.
+  - Secrets are never written to disk beyond your `creds.yaml`; inline GCP JSON is
+    materialized to a temp file only to satisfy the SDK/CLI.
+
+## REPL — navigation & control
+
+- **Idle guardrail — `/timeout <min>`.** If no NEW finding lands within the
+  window, the run soft-stops and validates what was found (`/timeout 1` = 1 min,
+  `10` = 10 min, `60` = 1 hour, `0` = off). **Default 5 min.**
+- **Multiple targets — `/target url1,url2,url3`.** A comma-separated list; `/run`
+  tests them **sequentially** (a queue auto-advances to the next when the current
+  finishes) — one report per URL.
+- **`/results` navigation browser** (interactive): pick a **target/run** → pick a
+  **vulnerability** → see full detail; **Esc steps back a level** (vuln → target →
+  back to the live session).
+- **`/report` selection**: with multiple runs, choose which report to open from a
+  menu.
+- **`/chain <n>`** (attack-chain depth), **`/agents list`** (library category
+  counts incl. infra/cloud); **`/show`** now shows chain-depth, idle-stop and
+  enabled integrations.
+- **Fix:** the interactive prompt no longer embeds ANSI/newline, so line editing
+  (typing, backspace, history, cursor, multiline) is no longer garbled in a real
+  terminal (the readline prompt is plain; color is applied via the highlighter).
+
+## Deeper recon & analysis (agent prompts)
+
+- **Deterministic HTTP probe (native, `harness::probe`).** Before the model
+  recon, the harness performs a **real** request/response analysis of the target
+  and injects the observed facts into recon so agent-selection and exploitation
+  decisions are grounded in evidence (more robust — works even when the model's
+  recon is weak): status & redirect, `Server`/`X-Powered-By`/content-type, the 6
+  security headers (present/missing), **cookie flags** (HttpOnly/Secure/SameSite),
+  **CORS reflection** test (arbitrary Origin + credentials), tech fingerprint,
+  linked scripts, form count, a **404 baseline** for soft-404 differentials, and
+  a few high-signal paths (`/robots.txt`, `/.git/config`, `/.env`, …). Best-effort
+  (never fatal), honors the identifying User-Agent and the Burp/ZAP proxy.
+- **RECON_SYS** now crawls pages/params/headers/cookies, **downloads the linked
+  JavaScript and analyzes it** (API endpoints, hidden params, GraphQL, secrets /
+  keys / tokens, `sourceMappingURL` → recover original source), fingerprints
+  **exact** stack versions, and does response-differential analysis; richer JSON
+  schema (`js_findings`, `secrets`, `hosts`, …).
+- **tool_doctrine** adds JS-analysis (linkfinder / gau / katana + grep for
+  endpoints/secrets/source-maps) and request/response-analysis guidance (status,
+  all headers, Set-Cookie flags, timing/length differentials, auth-vs-anon and
+  valid-vs-invalid comparisons) — applied to both recon and exploitation.
+
+## Exploitation depth, safety & Burp
+
+- **+10 exploitation agents.** Absurd-misconfig hunters (exposed `.git`/`.env`/
+  backups, debug/actuator endpoints, default creds, directory listing, exposed
+  ops dashboards, permissive CORS, verbose errors), a **CVE Hunter** (fingerprint
+  → correlate → safe PoC), a **PoC Developer** (writes runnable exploit scripts),
+  and a **Rate-Limit / Anti-Automation** tester.
+- **Data-safety / PII guardrail** injected into every exploit/chain/host prompt:
+  no modifying, deleting, exfiltrating data or changing state without explicit
+  permission; on PII, prove with a single **masked** sample + a count — never
+  dump. When unsure an action is safe, don't do it.
+- **Smart nuclei in recon** — fingerprint first, then run nuclei on **targeted**
+  templates/tags/CVE ids with rate/timeouts (fast, never a blind full scan).
+- **Burp/ZAP proxy** — `/proxy <url>` (or `/burp`, default `:8080`) in the REPL,
+  or the `NEUROSPLOIT_PROXY` env var. Agents route curl through it (`--proxy … -k`)
+  so you can inspect/replay traffic in Burp Suite while the test runs.
+- **PoC workspace** — each run gets a `pocs/` directory (`$NEUROSPLOIT_POCS`);
+  agents save custom, reproducible exploit scripts there and cite them as evidence.
+- **Tool download** (authorized) — agents may `git clone` a specific public PoC/
+  exploit repo or download a scanner when needed (reputable/pinned, reviewed).
+- **Rate-limit testing** is a first-class control check (small non-disruptive
+  burst → look for 429/lockout/Retry-After), never a DoS.
+
+## Bug-bounty methodology & recon tricks
+
+- **Bug-bounty methodology meta-agent** (`agents_md/meta/bugbounty_methodology.md`,
+  library **398**) — distilled, high-signal techniques from public writeups
+  (HackerOne Hacktivity, KingOfBugBounty tips, Awesome-Bugbounty-Writeups,
+  bug-bounty-reference and top hunters' reports): the hunter *mindset* plus the
+  concrete per-class tricks (IDOR/BOLA, 403 bypass, account takeover, SSRF→cloud,
+  business logic/race, cache poisoning, subdomain takeover, GraphQL) and how to
+  chain and report them — depth and proof over scanner breadth.
+- **Recon upgraded with KingOfBugBounty-style tricks** — `RECON_SYS` now expands
+  scope (subdomains via crt.sh/subfinder/amass → httpx), harvests historical URLs
+  (gau/waybackurls/katana), filters with `gf` patterns, mines params (arjun +
+  JS/wayback), content-discovers (ffuf/feroxbuster), and checks classic exposures
+  (.git/.env/swagger/actuator, dangling CNAMEs). Degrades gracefully to what's
+  installed; prioritises auth/reset/payment/upload/admin/export flows.
+
+## EOL / End-of-Support exploitation
+
+- **+8 EOL agents** (library **397**) that detect components past their vendor
+  end-of-life / end-of-support window and exploit the CVEs that pile up once
+  patches stop — high-value because the bugs are public and unfixed. Each pins the
+  **exact version**, checks it against public EOL data (endoflife.date) + CVE
+  feeds, and proves exploitability with a **safe** PoC:
+  - `eol_stack_detection` — fingerprint every EOL component across the stack.
+  - `eol_runtime_exploitation` — EOL PHP/Python/Node/Java/.NET/Ruby runtimes.
+  - `eol_framework_exploitation` — EOL Struts/Spring/Rails/Django/Laravel/AngularJS.
+  - `eol_cms_exploitation` — EOL WordPress/Drupal/Joomla/Magento core & plugins.
+  - `eol_client_library` — EOL front-end libs (jQuery/AngularJS/Lodash/…).
+  - `eol_webserver_exploitation` — EOL Apache/nginx/IIS/Tomcat/JBoss/WebLogic.
+  - `eol_os_service` — EOL OS & services (old OpenSSH/OpenSSL/Samba, SMBv1).
+  - `eol_tls_protocol` — deprecated TLS (SSLv3/1.0/1.1) & legacy protocols.
+
+## Decision-driven deep exploitation
+
+- **DECISION doctrine** injected into every exploit/grey/chain prompt: analyse
+  responses FIRST and let the evidence pick the technique; **map & connect
+  routes** (one endpoint's output feeds another's input) and hunt sensitive flows
+  (auth, reset, payment, upload, admin, export); **mine parameters**
+  (query/body/header/cookie + hidden ones from JS/source maps) and test the
+  fitting attack per param; **mock realistic data** to reach deeper logic (never
+  real PII); **exploit the authenticated surface** after logging in and compare
+  each role; **build PoCs** when a proof needs an artifact; and **bypass controls**
+  (verb/path/encoding/header tricks) on anything blocked.
+- **Multi-role `/auth`** — set several identities in the REPL:
+  `/auth admin <hdr>` · `/auth user <hdr>` (Bearer/cookie/API-key; a bare token
+  becomes `Authorization: Bearer …`). With ≥2 roles the run gets the access-control
+  directive (IDOR/BOLA/BFLA/privesc, authorized-vs-unauthorized proof) and tests
+  both scenarios. (Same as the `creds.yaml` role blocks, now one command away.)
+- **+6 decision agents** (library **389**): `param_miner`, `endpoint_flow_linker`,
+  `authenticated_surface_exploit`, `clickjacking_poc` (writes a framing HTML PoC),
+  `csrf_poc` (writes an auto-submitting HTML PoC), and `access_control_bypass`.
+
+## Browser-driven testing & SPA agents (Juice Shop-ready)
+
+- **Agents now actively drive the browser while testing.** The tool doctrine was
+  strengthened: on JS-heavy / SPA (Angular/React/Vue) targets the agent MUST use
+  the **Playwright MCP** browser (render, wait, read the live DOM, click
+  client-side routes, watch the network to discover the real REST/GraphQL API,
+  prove client-side issues with a screenshot). When no MCP is present, it uses the
+  **Playwright CLI** (writes & runs a small `playwright` script / `npx playwright
+  screenshot`) to render and capture the app's XHR/fetch traffic — **complementing
+  curl**, which only sees the empty shell.
+- **Deterministic probe detects SPAs** (`<app-root>`, `ng-version`, near-empty
+  body + linked scripts → Angular/React/Vue/SPA) and flags in recon that the
+  browser is required — so the SPA agents get selected.
+- **+8 SPA/API agents** (library **383**): SPA API & route discovery, hidden-admin /
+  client-side access control, login SQLi bypass, SPA DOM XSS, API BOLA via
+  sequential IDs, privileged registration / mass assignment, JWT forgery &
+  verification bypass, and SPA business-logic abuse — tuned for apps like OWASP
+  Juice Shop. (Existing NoSQLi/GraphQL/JWT/mass-assignment agents complement them.)
+
+## Subscription login check & Playwright MCP fixes
+
+- **Subscription login preflight.** Before a `--subscription` run, the harness
+  checks that the local CLI (claude/codex/…) is **installed and logged in** and
+  prints a clear warning if not — instead of the run silently coming back with
+  0 findings. (Not logged in → the CLI returns empty instantly, which was the
+  usual cause of "it found nothing / MCP didn't execute".)
+- **Playwright MCP now installs the browser.** `ensure_playwright_mcp` also runs
+  `npx playwright install chromium` (best-effort; skip with
+  `NEUROSPLOIT_SKIP_BROWSER_INSTALL=1`) so the first browser action doesn't
+  fail/hang with a missing Chromium.
+- **Codex MCP wiring fixed.** Codex takes MCP servers as `-c mcp_servers.*` TOML
+  overrides (not a config-file path); the harness now injects our Playwright
+  server correctly, so MCP works on Codex too — not just Claude.
+- **"No tool activity" diagnostic.** If a subscription+MCP run performs zero
+  browser/tool actions, the REPL warns that the CLI likely isn't logged in or the
+  MCP didn't start.
+
+## Multi-role auth & access-control testing
+
+- **Named identities in `creds.yaml`** for IDOR / BOLA / BFLA / privilege-escalation
+  testing. Define two or more roles and the agent authenticates as each and tests
+  **cross-role access** (control vs unauthorized request):
+  ```yaml
+  admin:
+    jwt: eyJ...              # or header:/cookie:/apikey:/login+username+password
+  user:
+    apikey: abc123          # → X-Api-Key: abc123
+  victim:
+    cookie: "session=..."
+  ```
+  Supported per role: `jwt`, `header` (raw), `cookie`, `apikey`, or a
+  `login`/`username`/`password` self-login. With ≥2 roles the harness injects an
+  access-control directive (capture one role's object IDs/functions, attempt them
+  as another role, prove authorized-vs-denied) under the data-safety guardrail.
+
+## Attribution & identification (anti-plagiarism)
+
+- **Identifying User-Agent** on every request — default
+  `NeuroSploit/<ver> (authorized security assessment; +github…)`, plus an
+  `X-NeuroSploit-Scan` header. Change it with **`/ua <string>`** (REPL) or the
+  `NEUROSPLOIT_UA` env var; the run banner shows it.
+- **Attribution stamped into every finding** ("Identified and validated by
+  NeuroSploit — multi-model adversarial validation …") so provenance travels with
+  the finding across the report, `findings.json` and any copy — in the traffic,
+  the finding text, and the report footer, so the work can't be silently re-badged.
+
+## Notes
+
+- Additive/back-compatible. Provider count is 14 (Azure OpenAI added in v3.5.2).
+  See the README "Cloud credentials" section for a full `creds.yaml` example.
+
+---
+
+# NeuroSploit v3.5.4 — Release Notes
+
+**Release Date:** July 2026
+**Codename:** Robust Attack Chaining & False-Positive Reduction
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.4 makes NeuroSploit both **deeper** and **more precise**: a real multi-round
+**post-exploitation attack-chaining** engine that expands each foothold in new
+directions, plus stronger **false-positive** controls so what it reports is
+trustworthy.
+
+## Attack chaining (robust, decision-driven)
+
+Replaces the old single-shot chainer with **`attack_chain()`** — an iterative,
+per-foothold pivot engine:
+
+- **Per-foothold decisions.** Each round takes the newest confirmed footholds
+  (best-first, capped per round) and, for **each one**, an agent decides which
+  directions to expand and proves new impact: **post-exploitation** (loot
+  creds/keys/config/source), **credential reuse**, **privilege escalation**
+  (horizontal & vertical), **lateral movement** to adjacent services/hosts,
+  **data exfiltration**, and **new attack surface** the foothold exposes.
+- **Loot carried forward.** Credentials/tokens/hosts/endpoints discovered in one
+  round are passed to later rounds and reused (agent returns
+  `{"findings":[...],"loot":[...]}`), so the engine genuinely pivots in new
+  directions instead of re-testing the same spot.
+- **No pivoting off false positives.** Each round's new findings are validated
+  before they become the next round's footholds.
+- **Convergence.** Runs up to `chain_depth` rounds **or** stops when a round finds
+  nothing new (loop-until-dry).
+- **Control.** New `RunConfig.chain_depth` (default **2**) and a `--chain-depth`
+  flag on every engagement command (`0` disables).
+
+## False-positive reduction
+
+- **Robust verdict parsing** (`pool::parse_verdict`) — whitespace-insensitive,
+  checks explicit rejection first, counts only explicit confirmations; ambiguous
+  replies are *not* counted as confirmed. Replaces the fragile exact-JSON /
+  loose-`yes` matching.
+- **Severity-aware quorum** (`pool::quorum_confirmed`) — **High/Critical now need
+  ≥2 validators AND ≥2/3 agreement** (a single vote can no longer confirm a
+  Critical); lower severities need a strict majority. Single-model panels fall
+  back to majority so they aren't nuked.
+- **Adversarial refute pass** — every confirmed High/Critical is re-examined by a
+  skeptical panel that assumes false-positive; findings that can't withstand a
+  majority of skeptics are dropped.
+- **Stronger validator prompt** with an explicit false-positive checklist
+  (reflected-not-executed, version/banner guesses, self-XSS, error-as-injection,
+  thin evidence, inflated severity).
+
+## Notes
+
+- Additive and back-compatible; defaults keep behavior sensible if you change
+  nothing. Unit tests cover verdict parsing, quorum, and report-hygiene logic.
+
+---
+
+# NeuroSploit v3.5.3 — Release Notes
+
+**Release Date:** June 2026
+**Codename:** Integrations (GitHub · GitLab · Jira)
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.3 plugs NeuroSploit into your SDLC: review **private** GitHub/GitLab repos
+and **Pull Requests**, **watch** a branch and re-review on every commit, and open
+a **Jira card per finding** — all toggleable via a new `/integrations` command.
+
+## Highlights
+
+- **GitHub integration**
+  - **Private repos**: when enabled, `whitebox` / `greybox --repo` / `tui --repo`
+    inject your `GITHUB_TOKEN` into the clone URL (token never printed/stored).
+  - **`neurosploit pr <owner/repo> <number>`** — clones the **PR head**
+    (`refs/pull/N/head`), runs a white-box review, optionally **posts a summary
+    comment** back on the PR (`--comment`) and/or **opens Jira cards** (`--jira`).
+  - **`neurosploit watch <owner/repo> --branch <b> --interval <s>`** — polls the
+    branch and runs a white-box review **each time a new commit lands**.
+- **GitLab integration** — private clone (token-injected) for `whitebox`/`greybox`
+  against `gitlab.com` or a self-hosted base.
+- **Jira integration** — `--jira` on any engagement (or `pr`/`watch`) opens **one
+  card per finding** (summary, severity, CVSS, CWE, location, PoC, evidence,
+  remediation) in your project via the Jira REST API.
+- **`/integrations` (REPL) + `neurosploit integrations` (CLI)** — `show`,
+  `enable`/`disable <github|gitlab|jira>`, and `setup <jira|gitlab|github>`
+  (interactive). Config persists to `<project>/.neurosploit/integrations.json`.
+  **Secrets are never stored** — only the env-var *name* is saved; values come
+  from the environment at use time.
+- New harness module `integrations` + app commands `pr` / `watch` /
+  `integrations`, plus a `--jira` flag on `run` / `whitebox`.
+
+## Setup
+
+Step-by-step for tokens, scopes and configuration is in
+**[TUTORIAL-INTEGRATION.md](TUTORIAL-INTEGRATION.md)** and summarized in the README.
+
+## Notes
+
+- Additive and back-compatible: all existing modes/flags are unchanged; if no
+  integration is enabled the behavior is identical to v3.5.2.
+- Tokens use env vars: `GITHUB_TOKEN`, `GITLAB_TOKEN`, `JIRA_EMAIL` +
+  `JIRA_API_TOKEN` (names configurable per integration).
+
+---
+
+# NeuroSploit v3.5.2 — Release Notes
+
+**Release Date:** June 2026
+**Codename:** Exploitation Depth & Report Hygiene
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.2 hard-codes the discipline that separates a great pentest from a noisy
+one — distilled from reviewing real AI-pentest output that kept stopping at
+*"exposed"* instead of *"exploited"*. The engine now pushes every exposure to
+demonstrated impact, **chains** findings, decodes/fingerprints artifacts and
+correlates CVEs, audits tokens, and keeps the final report honest (deduplicated
+and severity-calibrated).
+
+## Highlights
+
+- **DEPTH doctrine (exploit, don't just expose).** A new doctrine is injected
+  into every exploitation prompt (black/grey/chain): any info-disclosure,
+  exposed service/catalog/WSDL, leaked credential/token, or reachable dev host
+  **must be USED** before it can be a finding — call it, decode it, log in, hit
+  the dev host. If it was only observed, it's reported as a **lead**, not a
+  confirmed High/Critical.
+- **Finding chaining.** Reuse any session/JWT/cookie/credential obtained in one
+  step across all other modules; pivot access into IDOR/privesc/exfil and report
+  the **chain**, not isolated parts (e.g. captcha-bypass→admin JWT→authenticated
+  surface; enum + no-rate-limit→password spraying).
+- **Decode & fingerprint → CVE.** Decode opaque tokens/paths (base64/JSON/marshal)
+  and pin exact library/gem/plugin/CMS versions, then correlate to known CVEs and
+  attempt a safe PoC.
+- **Token auditor.** JWT alg-confusion (RS→HS), `alg:none`, kid/jku injection,
+  real signature verification, **weak HS256 secret cracking**, and token
+  lifecycle (logout/expiry/refresh).
+- **Report-hygiene & depth pass (deterministic, in the harness).** After
+  validation the run now:
+  - **calibrates severity to proven impact** — an unproven High/Critical
+    (hedged language, no payload, thin evidence) is capped to Medium and
+    re-titled "(potential)";
+  - flags **"exposed → exploited" gaps** — exposures on a host with no actual
+    exploit get an advisory to go use them;
+  - advises **consolidating hygiene** classes (headers/cookies/TLS/HSTS/
+    clickjacking/disclosure) repeated across many assets into ONE finding with
+    an affected-asset table, instead of inflating the count one-per-host.
+- **5 new doctrine meta-agents** (`agents_md/meta/`): `exploit_depth_doctrine`,
+  `finding_chainer`, `artifact_decoder`, `token_auditor`, `report_calibrator`
+  (meta agents 17 → 22; total library 343 → 348).
+- **Source from a GitHub URL.** `whitebox` / `greybox --repo` (and the REPL
+  `/repo`) now accept a **git URL** (`https://github.com/owner/repo[.git]`) or an
+  `owner/repo` shorthand — the repo is cloned (shallow) into `<base>/repos/` and
+  reviewed automatically, no manual `git clone` needed:
+  ```bash
+  neurosploit whitebox https://github.com/digininja/DVWA \
+    --subscription --model anthropic:claude-opus-4-8 -v
+  ```
+- **Azure OpenAI provider** (resolves #21). OpenAI-compatible: set
+  `AZURE_OPENAI_ENDPOINT` (+ optional `AZURE_OPENAI_API_VERSION`, default
+  `2024-10-21`) and `AZURE_OPENAI_API_KEY`, then `--model azure:<deployment>`
+  (the model name is your Azure *deployment* name; auth via the `api-key`
+  header).
+- **`GOOGLE_API_KEY` alias for Gemini** (resolves #25 confusion). Gemini's API
+  path reads `GEMINI_API_KEY`, and now also accepts `GOOGLE_API_KEY` (Google's
+  standard env var) when the former is unset. Local providers (ollama/litellm)
+  still need **no** key at all.
+
+## Notes
+
+- Pure-additive and back-compatible: existing modes, REPL, TUI, pause/continue,
+  crash-recovery and reports are unchanged. The hygiene pass only annotates and
+  down-calibrates unproven severities — it never invents or drops findings.
+- New unit tests cover the calibration and depth-audit logic
+  (`harness::hygiene`).
+
+---
+
+# NeuroSploit v3.5.1 — Release Notes
+
+**Release Date:** June 2026
+**Codename:** Interactive POMDP Harness
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+The 3.5.x line turns the Rust harness into a full **interactive REPL** (Claude
+Code / Codex / Cursor-CLI style) on top of the multi-model engine: pick models
+with arrow-keys, configure API keys per provider, set target/repo/auth/creds and
+free-text instructions that steer the agents, then `/run` engagements **in the
+background** while you keep typing. v3.5.1 adds a **POMDP belief spine** with
+anti-hallucination grounding ("no claim without a tool receipt"), **infra/host**
+testing (IP + SSH + Windows/AD) with Linux/Windows/AD agents, **attack-chain
+agents**, a **Mission-Control TUI**, structured **Typst** reports, and resilient
+run control (live checkpointing, pause-on-quota, instant stop).
+
+## Highlights
+
+- **Interactive REPL** (`neurosploit` with no subcommand): real line editing
+  (history ↑/↓, Ctrl-A/E/K, multiline), Tab-completion of `/commands` and
+  `@filesystem-paths` (Claude-Code-style file menu), arrow-key model multi-select,
+  per-provider API-key config, and a live context bar (`model · cwd · mode▸target`).
+- **Engagement modes**: **black-box** (`run`), **white-box** SAST (`whitebox`,
+  set `/repo`), **grey-box** (`greybox`, `/repo` + `/target`), **host/infra**
+  (`/target <ip>` + `/creds` for SSH / Windows / AD), plus the **TUI** dashboard.
+- **POMDP belief state** (`belief.rs`, `pomdp.rs`): a property-graph with
+  probabilities + Bayesian update + Shannon-entropy uncertainty, a
+  value-of-information planner, and a **grounding gate** (`grounding.rs`,
+  `may_assert`) — findings must carry an empirical/symbolic **tool receipt**.
+- **Infra / credentials** (`creds.rs`): multi-block YAML (jwt/header/cookie,
+  HTTP login, SSH, Windows/AD); real automated login; Linux/Windows/AD agents.
+- **Attack-chain agents**: sqli→rce→lpe, ssrf→aws, upload→lfi→rce, and more —
+  injected as chain recipes during exploitation.
+- **App-stack & CVE hunting**: IIS/.NET (tilde shortname, WebDAV, ViewState),
+  CMS (WordPress/Joomla/Drupal), app-server consoles, known-CVE exploitation.
+- **13 providers** incl. **LiteLLM** proxy and Gemini/xAI alongside the existing
+  OpenAI-compatible set; **subscription mode** drives local agentic CLIs
+  (claude/codex/gemini/grok) via stream-json.
+- **Mission-Control TUI** (`ratatui`): concurrent activity/findings/targets panels
+  with a non-blocking composer active during the run.
+- **Structured Typst report**: executive summary, vulnerability-summary table,
+  and per-finding sections (criticality, CVSS, OWASP/CWE, PoC, evidence,
+  remediation) + an attack-graph / kill-chain mapping (OWASP/CWE/MITRE).
+- **Per-project persistence** (`.neurosploit/`, no database): `session.json`,
+  `runs.json`, `history.txt` — resumes automatically on reopen.
+
+## Run control (new in 3.5.1)
+
+- **Background `/run`** with a live progress bar, severity-colored findings, and
+  the full `file://` report URL on completion/stop.
+- **3-way `/stop`**: **[1]** validate findings so far → report · **[2]** raw
+  report **now** without validating · **[3]** discard. Raw/discard abort
+  in-flight agents immediately (running CLI children are killed via
+  `kill_on_drop`); validate soft-stops so the validator still runs.
+- **Crash/quit recovery**: every finding is checkpointed live to
+  `.neurosploit/active_run.json`; an interrupted run is recovered into `/runs`
+  on the next launch, so `/results`, `/finding` and `/report` keep working.
+- **Pause-on-exhaustion**: when all models are rate-limited / out of quota the
+  run **parks** (state kept) and prints `⏸ token/quota exhausted … PAUSED`.
+  Resume with **`/continue`** when your quota renews, or switch with
+  **`/model <provider:model>`** (or the `/model` selector) then **`/continue`**.
+- **Inspection**: `/results` (live findings), `/finding` (pick one → full
+  command + PoC + evidence), `/expand` / Ctrl-O (full untruncated commands),
+  `/status`, `/diff`, `/retest`.
+
+## Usage
+
+```bash
+cd neurosploit-rs && cargo build --release
+./target/release/neurosploit                              # interactive REPL
+./target/release/neurosploit run http://target -v --model anthropic:claude-opus-4-8
+./target/release/neurosploit whitebox --repo /path/to/code   # white-box SAST
+./target/release/neurosploit greybox  --repo /path --target http://target  # grey-box
+./target/release/neurosploit run <ip> --creds creds.yaml     # host / infra
+./target/release/neurosploit tui http://target --subscription --mcp
+```
+
+Cross-platform install (Linux / macOS / Windows, x64 + arm64) via `setup.sh` and
+`install.ps1`. See **README.md** and **TUTORIAL.md** for the full walkthrough.
+
+---
+
+# NeuroSploit v3.4.0 — Release Notes
+
+**Release Date:** June 2026
+**Codename:** Rust Multi-Model Harness
+**License:** MIT
+
+---
+
+## TL;DR
+
+A new **Rust harness** (`neurosploit-rs/`) re-implements the autonomous runtime
+as a single, fast binary built on `tokio` + `axum`. It drives a **pool of LLM
+models** with concurrency limits, **provider failover**, and **N-model validator
+voting** — multiple models must independently agree a finding is real before it
+is reported — then serves its own solid web dashboard. It reuses the existing
+`agents_md/` library (213 agents) unchanged.
+
+## Highlights
+
+- **`neurosploit-rs/` cargo workspace**: `harness` lib crate + `neurosploit`
+  binary. `cargo build --release` → one static-ish binary.
+- **Multi-model pool** (`pool.rs`): bounded concurrency + automatic **failover**
+  across providers; the same panel is reused as the **validator voting** jury.
+- **Pipeline** (`pipeline.rs`): recon → parallel agent exploitation (semaphore
+  bounded) → **N-model adversarial vote** → score → report. Streams live
+  progress over a channel.
+- **11 providers / 31 models** (`models.rs`), all OpenAI-compatible: Anthropic,
+  OpenAI, xAI, NVIDIA NIM, DeepSeek, Mistral, Qwen, Groq, Together, OpenRouter,
+  Ollama. Models like **Qwen / DeepSeek / Llama** usable directly.
+- **Axum web dashboard** (`app/`): multi-model selection panel, live execution
+  console, findings, agent browser, embedded HTML report. Single binary serves
+  the SPA — no npm/build.
+- **CLI**: `neurosploit serve | run <url> | agents | models`, plus `--offline`
+  mode to exercise the full pipeline without any API keys.
+
+## Usage
+
+```bash
+cd neurosploit-rs && cargo build --release
+./target/release/neurosploit serve                 # → http://127.0.0.1:8788
+./target/release/neurosploit run https://t.example \
+    --model anthropic:claude-opus-4-8 --model openai:gpt-5.1 --vote-n 3
+```
+
+---
+
+# NeuroSploit v3.3.0 — Release Notes
+
+**Release Date:** June 2026
+**Codename:** Autonomous MD-Agent Engine
+**License:** MIT
+
+---
+
+## TL;DR
+
+NeuroSploit's pentest agent has been **re-modeled into an autonomous,
+markdown-driven engine**. You give it a URL; it composes a master prompt from a
+curated library of **213 markdown agents** and drives a locally-installed
+**agentic CLI backend** (Claude Code / Codex / Grok CLI, or a Claude
+subscription) to run the engagement end-to-end — with **Playwright MCP** for
+proof-of-execution and a **reinforcement-learning** loop that adapts agent
+selection across runs. The old Python orchestration was retired to `legacy/`.
+
+## Highlights
+
+- **New engine `neurosploit_agent/`** + `./neurosploit` terminal launcher.
+  Interactive (`./neurosploit`) or one-shot (`./neurosploit run <url>`).
+- **213-agent markdown library (`agents_md/`)**: **196 vulnerability
+  specialists** (now covering LLM/AI, cloud/K8s, modern API/auth, advanced
+  injection, protocol smuggling, logic/crypto/supply-chain) + **17 meta-agents**.
+- **Meta-agents for quality**: `recon`, `exploit_validator`,
+  `false_positive_filter`, `severity_assessor`, `impact_evaluator`, `reporter`,
+  and `rl_feedback` — the pipeline validates and adversarially refutes every
+  candidate before it can become a finding.
+- **Pluggable agentic CLI backends** with auto-detection: Claude Code, Codex,
+  Grok CLI; **subscription mode** via Claude Code login.
+- **Playwright MCP** wired in (`.mcp.json`) so agents prove client-side execution
+  (XSS/CSTI) and capture DOM/network/screenshots instead of trusting reflection.
+- **Reinforcement learning** (`neurosploit_agent/rl.py` + `meta/rl_feedback.md`):
+  bounded per-agent weights with per-tech-stack affinity, persisted to
+  `data/rl_state.json`.
+- **Latest model registry** (`neurosploit_agent/models.py`): Anthropic Claude
+  4.x, OpenAI, xAI Grok, Gemini, OpenRouter, Ollama, and **NVIDIA NIM** (PR #28,
+  OpenAI-compatible `integrate.api.nvidia.com`, `nvapi-` keys).
+- **Data-driven agent builder** `scripts/build_agents.py` for extending the
+  library without boilerplate.
+
+## Breaking changes
+
+- The monolithic `neurosploit.py` orchestrator and Python agent classes moved to
+  `legacy/` and are no longer the supported entrypoint. Use `./neurosploit`.
+- Primary agent library moved from `prompts/agents/` to `agents_md/` (originals
+  preserved; meta/role prompts split into `agents_md/meta/`).
+
+## Upgrade notes
+
+1. Install at least one agentic CLI: Claude Code, Codex, or Grok CLI.
+2. `npx` (Node) is required for Playwright MCP.
+3. Copy `.env.example` → `.env`; set a provider key (or use Claude subscription).
+4. `./neurosploit backends` to confirm detection, then `./neurosploit`.
+
+---
+
+# NeuroSploit v3.0.0 — Release Notes
+
+**Release Date:** February 2026
+**Codename:** Autonomous Pentester
+**License:** MIT
+
+---
+
+## Overview
+
+NeuroSploit v3 is a ground-up overhaul of the AI-powered penetration testing platform. This release transforms the tool from a scanner into an autonomous pentesting agent — capable of reasoning, adapting strategy in real-time, chaining exploits, validating findings with anti-hallucination safeguards, and executing tools inside isolated Kali Linux containers.
+
+### By the Numbers
+
+| Metric | Count |
+|--------|-------|
+| Vulnerability types supported | 100 |
+| Payload libraries | 107 |
+| Total payloads | 477+ |
+| Kali sandbox tools | 55 |
+| Backend core modules | 63 Python files |
+| Backend core code | 37,546 lines |
+| Autonomous agent | 7,592 lines |
+| AI decision prompts | 100 (per-vuln-type) |
+| Anti-hallucination prompts | 12 composable templates |
+| Proof-of-execution rules | 100 (per-vuln-type) |
+| Known CVE signatures | 400 |
+| EOL version checks | 19 |
+| WAF signatures | 16 |
+| WAF bypass techniques | 12 |
+| Exploit chain rules | 10+ |
+| Frontend pages | 14 |
+| API endpoints | 111+ |
+| LLM providers supported | 6 |
+
+---
+
+## Architecture
+
+```
+                      +---------------------+
+                      |   React/TypeScript   |
+                      |     Frontend (14p)   |
+                      +----------+----------+
+                                 |
+                           WebSocket + REST
+                                 |
+                      +----------v----------+
+                      |   FastAPI Backend    |
+                      |   14 API routers     |
+                      +----------+----------+
+                                 |
+              +---------+--------+--------+---------+
+              |         |        |        |         |
+         +----v---+ +---v----+ +v------+ +v------+ +v--------+
+         | LLM    | | Vuln   | | Agent | | Kali  | | Report  |
+         | Manager| | Engine | | Core  | |Sandbox| | Engine  |
+         | 6 provs| | 100typ | |7592 ln| | 55 tl | | 2 fmts  |
+         +--------+ +--------+ +-------+ +-------+ +---------+
+```
+
+**Stack:** Python 3.10+ / FastAPI / SQLAlchemy (async) / React 18 / TypeScript / Tailwind CSS / Vite / Docker
+
+---
+
+## Core Engine: 100 Vulnerability Types
+
+The vulnerability engine covers 100 distinct vulnerability types organized in 10 categories with dedicated testers, payloads, AI prompts, and proof-of-execution rules for each.
+
+### Categories & Types
+
+| Category | Types | Examples |
+|----------|-------|---------|
+| **Injection** | 12 | SQLi (error, union, blind, time-based), Command Injection, SSTI, NoSQL, LDAP, XPath, Expression Language, HTTP Parameter Pollution |
+| **XSS** | 3 | Reflected, Stored (two-phase form+display), DOM-based |
+| **Authentication** | 7 | Auth Bypass, JWT Manipulation, Session Fixation, Weak Password, Default Credentials, 2FA Bypass, OAuth Misconfig |
+| **Authorization** | 5 | IDOR, BOLA, BFLA, Privilege Escalation, Mass Assignment, Forced Browsing |
+| **Client-Side** | 9 | CORS, Clickjacking, Open Redirect, DOM Clobbering, PostMessage, WebSocket Hijack, Prototype Pollution, CSS Injection, Tabnabbing |
+| **File Access** | 5 | LFI, RFI, Path Traversal, XXE, File Upload |
+| **Request Forgery** | 3 | SSRF, SSRF Cloud (AWS/GCP/Azure metadata), CSRF |
+| **Infrastructure** | 7 | Security Headers, SSL/TLS, HTTP Methods, Directory Listing, Debug Mode, Exposed Admin, Exposed API Docs, Insecure Cookies |
+| **Advanced** | 9 | Race Condition, Business Logic, Rate Limit Bypass, Type Juggling, Timing Attack, Host Header Injection, HTTP Smuggling, Cache Poisoning, CRLF |
+| **Data Exposure** | 6 | Sensitive Data, Information Disclosure, API Key Exposure, Source Code Disclosure, Backup Files, Version Disclosure |
+| **Cloud & Supply Chain** | 6 | S3 Misconfig, Cloud Metadata, Subdomain Takeover, Vulnerable Dependency, Container Escape, Serverless Misconfig |
+
+### Injection Routing
+
+Every vulnerability type is routed to the correct injection point:
+
+- **Parameter injection** (default): SQLi, XSS, IDOR, SSRF, etc.
+- **Header injection**: CRLF, Host Header, HTTP Smuggling
+- **Body injection**: XXE
+- **Path injection**: Path Traversal, LFI
+- **Both (param + path)**: LFI, directory traversal variants
+
+### XSS Pipeline (Reflected)
+
+The reflected XSS engine is a multi-stage pipeline:
+
+1. **Canary probe** — unique marker per endpoint+param to detect reflection
+2. **Context analysis** — 8 contexts: html_body, attribute_value, script_string, script_block, html_comment, url_context, style_context, event_handler
+3. **Filter detection** — batch probe to map allowed/blocked chars, tags, events
+4. **AI payload generation** — LLM generates context-aware bypass payloads
+5. **Escalation payloads** — WAF/encoding bypass variants
+6. **Testing** — up to 30 payloads per param with per-payload dedup
+7. **Browser validation** — Playwright popup/cookie/DOM/event verification (optional)
+
+### POST Form Support
+
+- HTML forms detected during recon with method, action, all input fields (including `<select>`, `<textarea>`, hidden fields)
+- POST form testing includes **all form fields** (CSRF tokens, hidden inputs) — not just the parameter under test
+- Redirect following for POST responses (search forms that redirect to results)
+- Full HTTP method support: GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD
+
+---
+
+## Autonomous Agent Architecture
+
+### 3-Stream Parallel Auto-Pentest
+
+The agent runs 3 concurrent streams via `asyncio.gather()`:
+
+```
+Stream 1: Recon          Stream 2: Junior Tester      Stream 3: Tool Runner
+  - Crawl target           - Immediate target test       - Nuclei + Naabu
+  - Extract forms           - Consume endpoint queue      - AI-selected tools
+  - JS analysis             - 3 payloads/endpoint         - Dynamic install
+  - Deep fingerprint        - AI-prioritized types        - Process findings
+  - Push to queue           - Skip tested types           - Feed back to recon
+        |                         |                             |
+        +----------+--------------+-----------------------------+
+                   |
+            Deep Analysis (50-75%)
+            Researcher AI (75%)    ← NEW
+            Finalization (75-100%)
+```
+
+### Reasoning Engine (ReACT)
+
+AI reasoning at strategic checkpoints (50%, 75%):
+
+- **Think**: analyze situation, available data, findings so far
+- **Plan**: recommend next actions, prioritize vuln types
+- **Reflect**: evaluate results, adjust strategy
+
+Token budget tracking with graceful degradation:
+- 0-60% budget: full AI (reasoning + verification + enhancement)
+- 60-80%: reduced (skip enhancement)
+- 80-95%: minimal (verification only)
+- 95%+: technical only (no AI calls)
+
+### Strategy Adaptation
+
+- **Dead endpoint detection**: skip after 5+ consecutive errors
+- **Diminishing returns**: reduce testing on low-yield endpoints
+- **Priority recomputation**: re-rank vuln types based on results
+- **Pattern propagation**: IDOR on `/users/1` automatically queues `/orders/1`, `/accounts/1`
+- **Checkpoint refinement**: at 30%/60%/90% refine attack strategy
+
+### Exploit Chaining
+
+10+ chain rules for multi-step attack paths:
+
+- SSRF -> Internal service access -> Data extraction
+- SQLi -> Database-specific escalation (MySQL, PostgreSQL, MSSQL)
+- XSS -> Session hijacking -> Account takeover
+- LFI -> Source code disclosure -> Credential extraction
+- Auth bypass -> Privilege escalation -> Admin access
+
+AI-driven chain discovery during finalization phase.
+
+---
+
+## Validation & Anti-Hallucination Pipeline
+
+### 4-Layer Verification
+
+Every finding passes through 4 independent verification layers before confirmation:
+
+```
+Finding Signal
+    |
+    v
+[1] Negative Controls  — Send benign/empty probes. Same response = false positive (-60 penalty)
+    |
+    v
+[2] Proof of Execution — Per-vuln-type proof checks (25+ methods). XSS: context analyzer.
+    |                      SSRF: metadata markers. SQLi: DB error patterns. Score 0-60.
+    v
+[3] AI Interpretation  — LLM analyzes with anti-hallucination system prompt + per-type
+    |                      proof requirements. Speculative language rejected.
+    v
+[4] Confidence Scorer  — Numeric 0-100 score. >=90 confirmed, >=60 likely, <60 rejected.
+    |
+    v
+ValidationJudge (sole authority for finding approval)
+```
+
+### Anti-Hallucination System Prompts
+
+12 composable anti-hallucination prompt templates injected into all 17 LLM call sites:
+
+| Prompt | Purpose |
+|--------|---------|
+| `anti_hallucination` | Core: never claim vuln without concrete proof |
+| `anti_scanner` | Don't behave like a scanner — reason like a pentester |
+| `negative_controls` | Explain control test methodology |
+| `think_like_pentester` | Manual testing mindset |
+| `proof_of_execution` | What constitutes real proof per vuln type |
+| `frontend_backend_correlation` | Don't confuse client-side vs server-side |
+| `multi_phase_tests` | Two-phase testing (submit + verify) |
+| `final_judgment` | Conservative final decision framework |
+| `confidence_score` | Numeric scoring calibration |
+| `anti_severity_inflation` | Don't inflate severity |
+| `operational_humility` | Acknowledge uncertainty |
+| `access_control_intelligence` | Data comparison, not status code diff |
+
+100 per-vuln-type proof requirements (e.g., SSRF requires metadata content, not just status diff).
+
+### Cross-Validation
+
+- `_cross_validate_ai_claim()` — independent check for XSS, SQLi, SSRF, IDOR, open redirect, CRLF, XXE, NoSQL
+- `_evidence_in_response()` — verify AI claim matches actual HTTP response
+- Speculative language rejection ("might be", "could be", "possibly")
+- Default `False` — findings rejected unless positively proven
+
+### Access Control Intelligence
+
+- BOLA/BFLA/IDOR use **data comparison** methodology (not status code diff)
+- JSON field comparison between authenticated user responses
+- Adaptive TP/FP learning across scans (9 patterns, 6 known FP patterns)
+- Access control types auto-inject specialized prompts
+
+---
+
+## Kali Sandbox & Tool Execution
+
+### Container-Per-Scan Architecture
+
+Each scan gets its own isolated Kali Linux Docker container:
+
+```
+ContainerPool (global coordinator)
+    |
+    +-- Scan A: KaliSandbox (neurosploit-kali-abc123)
+    |       +-- nuclei, naabu, httpx (pre-installed)
+    |       +-- wpscan (installed on-demand)
+    |       +-- sqlmap (installed on-demand)
+    |
+    +-- Scan B: KaliSandbox (neurosploit-kali-def456)
+    |       +-- nuclei, httpx (pre-installed)
+    |       +-- dirsearch (installed on-demand)
+    |
+    +-- max_concurrent, TTL, orphan cleanup
+```
+
+### 55 Security Tools
+
+| Category | Count | Examples |
+|----------|-------|---------|
+| Pre-installed (Go) | 11 | nuclei, naabu, httpx, subfinder, katana, dnsx, ffuf, gobuster, dalfox, waybackurls, uncover |
+| Pre-installed (APT) | 5 | nmap, nikto, sqlmap, masscan, whatweb |
+| Pre-installed (System) | 12 | curl, wget, git, python3, pip3, go, jq, dig, whois, openssl, netcat, bash |
+| APT on-demand | 15 | wpscan, dirb, hydra, john, hashcat, sslscan, amass, enum4linux, dnsrecon, fierce, crackmapexec |
+| Go on-demand | 4 | gau, gitleaks, anew, httprobe |
+| Pip on-demand | 8 | dirsearch, wfuzz, arjun, wafw00f, sslyze, commix, trufflehog, retire |
+
+### Dynamic Tool Engine
+
+- AI selects tools based on detected tech stack
+- On-demand install → execute → collect results → cleanup
+- Tool output parsed and converted to structured findings
+- Results fed back into recon context for deeper testing
+
+### Researcher AI Agent
+
+Hypothesis-driven 0-day discovery agent with Kali sandbox access:
+
+```
+Observe (recon data + existing findings)
+    |
+    v
+Hypothesize (AI generates targeted hypotheses)
+    |          - Logic flaws, race conditions
+    v          - CVE-based attacks, misconfigurations
+Plan Tools (AI selects from 55+ tools)
+    |
+    v
+Execute in Sandbox (isolated Kali container)
+    |
+    v
+Analyze Results (AI verdicts: confirmed/rejected)
+    |
+    v
+Loop (max 15 hypotheses, 30 tool executions, 5 iterations)
+```
+
+Enabled via: `ENABLE_RESEARCHER_AI=true` + per-scan checkbox in frontend.
+
+---
+
+## Intelligence Modules
+
+### CVE Hunter
+
+- Extracts software versions from headers, meta tags, error pages, JS files
+- Searches NVD API (NIST National Vulnerability Database)
+- Searches GitHub for public exploit PoCs
+- Correlates CVEs with detected versions
+- Optional API keys for higher rate limits
+
+### Banner Analyzer
+
+- 400 known vulnerable version signatures
+- 19 end-of-life version categories
+- Instant version-to-CVE mapping without API calls
+- AI-assisted analysis for unknown versions
+
+### Deep Recon
+
+- JavaScript file crawling for API endpoints, secrets, route definitions
+- Sitemap.xml and robots.txt parsing
+- OpenAPI/Swagger schema discovery and enumeration
+- Deep fingerprinting from multiple sources
+
+### Endpoint Classifier
+
+8 endpoint type categories with risk scoring:
+
+| Type | Risk Weight | Priority Vulns |
+|------|-------------|----------------|
+| Admin | 0.95 | auth_bypass, privilege_escalation, default_credentials |
+| Auth | 0.90 | auth_bypass, brute_force, weak_password |
+| Upload | 0.85 | file_upload, xxe, path_traversal |
+| API | 0.80 | idor, bola, bfla, jwt_manipulation, mass_assignment |
+| Data | 0.75 | idor, bola, mass_assignment, data_exposure |
+| Search | 0.70 | sqli_error, xss_reflected, nosql_injection |
+
+### Parameter Analyzer
+
+8 semantic categories for smart parameter prioritization:
+
+- ID params (`id`, `uid`, `user_id`) -> IDOR, BOLA
+- File params (`file`, `path`, `include`) -> LFI, Path Traversal
+- URL params (`url`, `redirect`, `callback`) -> SSRF, Open Redirect
+- Query params (`q`, `search`, `filter`) -> SQLi, XSS
+- Auth params (`token`, `jwt`, `session`) -> JWT Manipulation, Auth Bypass
+- Code params (`cmd`, `exec`, `template`) -> Command Injection, SSTI
+
+### Payload Mutator
+
+14 mutation strategies for WAF/filter bypass:
+
+- Double encoding, Unicode escape, case variation
+- Null byte injection, comment injection, concat bypass
+- Hex encoding, newline/tab bypass, charset bypass
+- Failure analysis: adapts strategy based on observed response patterns
+
+### WAF Detection & Bypass
+
+- 16 WAF signatures (Cloudflare, AWS WAF, Akamai, Imperva, F5, Sucuri, etc.)
+- Passive detection (response headers) + active probing
+- 12 bypass techniques per WAF type
+- Auto-applied when WAF detected
+
+---
+
+## Request Infrastructure
+
+### Resilient Request Engine
+
+- Automatic retry with exponential backoff
+- Rate limiting (requests/second configurable)
+- Circuit breaker (open after N consecutive failures, half-open probe, close on success)
+- Adaptive timeouts (increase on slow responses)
+- Per-domain rate tracking
+
+### Auth Manager
+
+- Multi-user session management
+- Login form detection and auto-authentication
+- Cookie, Bearer, Basic, Header auth types
+- Session refresh on expiry
+
+---
+
+## Multi-Agent Orchestration (Experimental)
+
+Optional replacement for the 3-stream architecture. 5 specialist agents with handoff coordination:
+
+| Agent | Budget | Responsibility |
+|-------|--------|----------------|
+| ReconAgent | 20% | Deep crawl, JS analysis, API enum, fingerprinting |
+| ExploitAgent | 35% | Classify endpoints, prioritize params, test, mutate, validate |
+| ValidatorAgent | 20% | Independent re-test, different payloads, reproducibility |
+| CVEHunterAgent | 10% | Version extraction, NVD search, GitHub exploit search |
+| ReportAgent | 15% | Finding enhancement, PoC generation, report creation |
+
+3-phase pipeline: Parallel (Recon + CVE) -> Sequential (Exploit) -> Parallel (Validator + Report)
+
+Enable: `ENABLE_MULTI_AGENT=true` in `.env`
+
+---
+
+## Frontend
+
+### 14 Pages
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Home | `/` | Dashboard with stats, activity feed, severity charts |
+| Auto Pentest | `/auto` | 3-stream display, live findings, AI reports, Kali checkbox |
+| Scan Details | `/scan/:id` | Findings with validation badges, confidence scores, pause/resume/stop |
+| New Scan | `/scan/new` | Quick/Full/Custom scan configuration |
+| Reports | `/reports` | Report listing with HTML/PDF/JSON download |
+| Report View | `/report/:id` | Interactive report viewer |
+| Terminal Agent | `/terminal` | AI chat + command execution interface |
+| Vuln Lab | `/vuln-lab` | Per-type challenge testing (100 types, 11 categories) |
+| Task Library | `/tasks` | Reusable pentest task templates |
+| Scheduler | `/scheduler` | Cron/interval scheduling with CRUD |
+| Settings | `/settings` | LLM providers, model routing, feature toggles |
+| Sandbox Dashboard | `/sandbox` | Kali container monitoring, tool status |
+| Agent Status | `/agent/:id` | Real-time agent progress and logs |
+| Realtime Task | `/realtime` | Live interactive testing session |
+
+### Key UI Features
+
+- **Real-time WebSocket updates**: live scan progress, findings, logs
+- **Confidence badges**: green (>=90), yellow (>=60), red (<60) with breakdown details
+- **Validation Pipeline display**: proof of execution, negative controls, scoring breakdown
+- **Pause/Resume/Stop**: scan control with 5 internal checkpoints
+- **Manual validation**: confirm/reject AI decisions
+- **Screenshot evidence**: inline per-finding in PoC section
+- **Rejected findings viewer**: expandable section with rejection reasons
+
+---
+
+## Report Generation
+
+### Two Report Engines
+
+| Engine | Format | Style |
+|--------|--------|-------|
+| Professional | HTML | Dark theme, collapsible findings, click-to-zoom screenshots, severity charts |
+| OHVR | HTML | Observation-Hypothesis-Validation-Result methodology, PoC code blocks |
+
+Both engines support:
+- Executive summary (AI-generated)
+- Severity breakdown with visual charts
+- Per-finding: description, PoC, exploitation code, **inline screenshots**, impact, remediation, references
+- Rejected findings section (AI-rejected, pending manual review)
+- JSON export for programmatic consumption
+
+### Screenshot Placement
+
+Screenshots are embedded **inline within each vulnerability's PoC section** — directly associated with the finding they evidence. No separate gallery at the end.
+
+```
+Vulnerability Finding
+  +-- Description
+  +-- Proof of Concept
+  |     +-- Observation
+  |     +-- Hypothesis
+  |     +-- Validation (payload + request)
+  |     +-- Exploitation Code
+  |     +-- Visual Evidence (screenshots)  <-- HERE
+  |     +-- Result (impact)
+  +-- Remediation
+  +-- References
+```
+
+---
+
+## Cross-Scan Learning
+
+### Execution History
+
+- Tracks attack success/failure across all scans
+- Records: tech_stack + vuln_type + target + success rate
+- `get_priority_types(tech_stack)` — returns types ranked by historical success
+- Auto-influences AI prompts and testing priority in future scans
+- Bounded storage (500 records, auto-save every 20)
+
+### Access Control Learner
+
+- Adaptive true-positive / false-positive pattern learning
+- 9 detection patterns, 6 known FP patterns
+- Influences ValidationJudge scoring in subsequent scans
+
+---
+
+## LLM Provider Support
+
+| Provider | Models | Config |
+|----------|--------|--------|
+| Anthropic Claude | claude-3.5-sonnet, claude-3-opus, claude-3-haiku | `ANTHROPIC_API_KEY` |
+| OpenAI | gpt-4o, gpt-4-turbo, gpt-3.5-turbo | `OPENAI_API_KEY` |
+| Google Gemini | gemini-pro, gemini-1.5-pro | `GEMINI_API_KEY` |
+| OpenRouter | Any model via unified API | `OPENROUTER_API_KEY` |
+| Ollama | Any local model (llama, mistral, etc.) | `OLLAMA_BASE_URL` |
+| LM Studio | Any local model | `LMSTUDIO_BASE_URL` |
+
+### Model Routing
+
+Optional task-type routing to different LLM profiles:
+
+| Task Type | Recommended |
+|-----------|-------------|
+| Reasoning | High-capability (Claude Opus, GPT-4) |
+| Analysis | Medium (Claude Sonnet, GPT-4-turbo) |
+| Generation | Medium (Sonnet, GPT-4-turbo) |
+| Validation | High-capability for accuracy |
+| Default | Configurable |
+
+Enable: `ENABLE_MODEL_ROUTING=true` with profiles in `config/config.json`
+
+---
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# LLM API Keys (at least one required)
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+OPENROUTER_API_KEY=
+
+# Local LLM (no key needed)
+#OLLAMA_BASE_URL=http://localhost:11434
+#LMSTUDIO_BASE_URL=http://localhost:1234
+
+# Feature Flags
+ENABLE_MODEL_ROUTING=false
+ENABLE_KNOWLEDGE_AUGMENTATION=false
+ENABLE_BROWSER_VALIDATION=false
+ENABLE_REASONING=true
+ENABLE_CVE_HUNT=true
+ENABLE_MULTI_AGENT=false
+ENABLE_RESEARCHER_AI=true
+
+# Optional API Keys
+#NVD_API_KEY=
+#GITHUB_TOKEN=
+
+# Token Budget (comment out for unlimited)
+#TOKEN_BUDGET=100000
+
+# Database
+DATABASE_URL=sqlite+aiosqlite:///./data/neurosploit.db
+
+# Server
+HOST=0.0.0.0
+PORT=8000
+DEBUG=false
+```
+
+---
+
+## Installation
+
+### Backend
+
+```bash
+cd /opt/NeuroSploitv2
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env with your API key(s)
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+### Kali Sandbox (Optional)
+
+```bash
+docker build -f docker/Dockerfile.kali -t neurosploit-kali:latest docker/
+```
+
+### Run
+
+```bash
+# Backend (serves frontend static files too)
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
+# Or development mode (frontend hot reload)
+cd frontend && npm run dev  # Port 3000
+python -m uvicorn backend.main:app --reload --port 8000
+```
+
+---
+
+## Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| Python | 3.10+ | 3.12 |
+| Node.js | 18+ | 20 LTS |
+| Docker | 24+ | Latest (for Kali sandbox) |
+| RAM | 4 GB | 8 GB |
+| Disk | 2 GB | 5 GB (with Kali image) |
+
+### Backend Dependencies
+
+- **Framework**: FastAPI, Uvicorn, Pydantic
+- **Database**: SQLAlchemy (async), aiosqlite
+- **HTTP**: aiohttp
+- **LLM**: anthropic, openai
+- **Reports**: Jinja2, WeasyPrint
+- **Scheduling**: APScheduler
+- **Optional**: playwright, docker, mcp
+
+### Frontend Dependencies
+
+- **UI**: React 18, TypeScript, Tailwind CSS
+- **State**: Zustand
+- **HTTP**: Axios
+- **Realtime**: Socket.IO Client
+- **Charts**: Recharts
+- **Icons**: Lucide React
+- **Build**: Vite
+
+---
+
+## Known Limitations
+
+- Anthropic API budget limits cause scan interruption — set a fallback provider in `.env`
+- Multi-agent orchestration (`ENABLE_MULTI_AGENT`) is experimental
+- Playwright browser validation requires Python 3.10+ and Chromium
+- MCP server requires Python 3.10+
+- Container-per-scan requires Docker daemon running
+- Token budget tracking is approximate (estimates, not exact counts)
+- CLI report (`neurosploit.py`) does not embed screenshots (backend reports do)
+
+---
+
+## File Structure
+
+```
+NeuroSploitv2/
++-- backend/
+|   +-- api/v1/              # 14 API routers (111+ endpoints)
+|   +-- core/                # 63 Python modules (37,546 lines)
+|   |   +-- vuln_engine/     # 100-type vulnerability engine
+|   |   |   +-- registry.py          # 100 vuln info + 100 tester classes
+|   |   |   +-- payload_generator.py # 107 libraries, 477+ payloads
+|   |   |   +-- ai_prompts.py        # 100 per-type AI decision prompts
+|   |   |   +-- system_prompts.py    # 12 anti-hallucination templates
+|   |   |   +-- testers/             # 12 tester modules
+|   |   +-- autonomous_agent.py      # Main agent (7,592 lines)
+|   |   +-- researcher_agent.py      # 0-day discovery AI
+|   |   +-- reasoning_engine.py      # ReACT think/plan/reflect
+|   |   +-- validation_judge.py      # Finding approval authority
+|   |   +-- confidence_scorer.py     # Numeric 0-100 scoring
+|   |   +-- proof_of_execution.py    # Per-type proof checks
+|   |   +-- negative_control.py      # False positive detection
+|   |   +-- request_engine.py        # Retry, rate limit, circuit breaker
+|   |   +-- waf_detector.py          # 16 signatures, 12 bypasses
+|   |   +-- strategy_adapter.py      # Dead endpoints, priority recompute
+|   |   +-- chain_engine.py          # 10+ exploit chain rules
+|   |   +-- exploit_generator.py     # AI-enhanced PoC generation
+|   |   +-- cve_hunter.py            # NVD + GitHub exploit search
+|   |   +-- deep_recon.py            # JS crawling, sitemap, API enum
+|   |   +-- banner_analyzer.py       # 400 known CVEs, 19 EOL versions
+|   |   +-- endpoint_classifier.py   # 8 types + risk scoring
+|   |   +-- param_analyzer.py        # 8 semantic categories
+|   |   +-- payload_mutator.py       # 14 mutation strategies
+|   |   +-- xss_validator.py         # Playwright browser validation
+|   |   +-- xss_context_analyzer.py  # 8 context detection
+|   |   +-- auth_manager.py          # Multi-user session management
+|   |   +-- token_budget.py          # Budget tracking + degradation
+|   |   +-- agent_tasks.py           # Priority queue task manager
+|   |   +-- agent_orchestrator.py    # Multi-agent coordinator
+|   |   +-- specialist_agents.py     # 5 specialist agents
+|   |   +-- execution_history.py     # Cross-scan learning
+|   |   +-- access_control_learner.py# TP/FP adaptive learning
+|   |   +-- report_generator.py      # Professional HTML reports
+|   |   +-- report_engine/           # OHVR report engine
+|   +-- models/              # 8 SQLAlchemy ORM models
+|   +-- config.py            # Pydantic settings
+|   +-- main.py              # FastAPI app entry
++-- frontend/
+|   +-- src/
+|   |   +-- pages/           # 14 React pages
+|   |   +-- components/      # Reusable UI components
+|   |   +-- services/        # API client + WebSocket
+|   |   +-- store/           # Zustand state management
+|   |   +-- types/           # TypeScript interfaces
++-- core/
+|   +-- llm_manager.py       # 6-provider LLM routing
+|   +-- tool_registry.py     # 55 security tools
+|   +-- kali_sandbox.py      # Per-scan container management
+|   +-- container_pool.py    # Global container coordinator
+|   +-- sandbox_manager.py   # Sandbox abstraction layer
++-- docker/
+|   +-- Dockerfile.kali      # Multi-stage Kali Linux image
+|   +-- Dockerfile.backend   # Backend service
+|   +-- Dockerfile.frontend  # Frontend builder
++-- config/
+|   +-- config.json          # Profiles, roles, tools, routing
++-- data/
+|   +-- vuln_knowledge_base.json  # 100 vulnerability entries
++-- neurosploit.py           # CLI entry point
++-- .env.example             # Environment template
+```

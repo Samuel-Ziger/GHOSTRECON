@@ -1,7 +1,9 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { parseReconTarget } from '../modules/recon-target.js';
+import { redactPublicTarget } from '../auto-agent/redaction.mjs';
 import { normalizeModuleId } from '../modules/module-ids.mjs';
+import { findRetiredModuleIds } from '../modules/retired-modules.mjs';
 import {
   computeEngagementAuthorizationBinding,
   getEngagement,
@@ -23,7 +25,6 @@ import {
   createIdentityController,
   resolveEffectiveIdentityConfig,
 } from '../modules/identity-controller.mjs';
-import { getShannonCapabilities } from '../modules/shannon-capabilities.js';
 import {
   executeNavegationPlaybook,
   quickValidateTor,
@@ -105,7 +106,6 @@ export function registerReconStreamRoutes(app, deps) {
     ROOT,
     httpHistory,
     getEngagementImpl = getEngagement,
-    getShannonCapabilitiesImpl = getShannonCapabilities,
     quickValidateTorImpl = quickValidateTor,
     executeNavegationPlaybookImpl = executeNavegationPlaybook,
     torNewnymImpl = torNewnym,
@@ -380,6 +380,7 @@ export function registerReconStreamRoutes(app, deps) {
       throw fail('MANUAL_RECON_TARGET_INVALID', parsed.message || 'alvo inválido');
     }
     const target = parsed.target;
+    const targetForPlan = parsed.targetUrl || target;
     const includeFrameSeven = body.includeFrameSeven === true;
     if (body.frameSevenAuth === true && !includeFrameSeven) {
       throw fail(
@@ -546,7 +547,7 @@ export function registerReconStreamRoutes(app, deps) {
 
     const plan = buildResolvedManualPlan({
       body,
-      target,
+      target: targetForPlan,
       modules,
       expandedModules,
       intrusiveModules,
@@ -608,6 +609,16 @@ export function registerReconStreamRoutes(app, deps) {
   }), async (req, res) => {
     if (!validateCsrfToken(req)) {
       res.status(403).json({ ok: false, code: 'CSRF_INVALID', error: 'CSRF token inválido/ausente' });
+      return;
+    }
+    const retiredModules = findRetiredModuleIds(req.body?.modules);
+    if (retiredModules.length) {
+      res.status(410).json({
+        ok: false,
+        code: 'MODULE_RETIRED',
+        error: `módulo(s) removido(s) permanentemente: ${retiredModules.join(', ')}`,
+        retiredModules,
+      });
       return;
     }
     const preflightController = new AbortController();
@@ -772,6 +783,17 @@ export function registerReconStreamRoutes(app, deps) {
   }
 
   const domainRaw = req.body?.domain;
+  const retiredModules = findRetiredModuleIds(req.body?.modules);
+  if (retiredModules.length) {
+    send({
+      type: 'error',
+      code: 'MODULE_RETIRED',
+      message: `módulo(s) removido(s) permanentemente: ${retiredModules.join(', ')}`,
+      retiredModules,
+    });
+    endResponse();
+    return;
+  }
   let modules = normalizeManualModules(req.body);
   const exactMatch = Boolean(req.body?.exactMatch);
   const kaliMode = Boolean(req.body?.kaliMode);
@@ -797,6 +819,9 @@ export function registerReconStreamRoutes(app, deps) {
   }
 
   const domain = parsed.target;
+  const targetUrl = parsed.targetUrl;
+  const targetForPlan = targetUrl || domain;
+  const publicTarget = redactPublicTarget(targetForPlan);
 
   const engagementIdRaw = req.body?.engagementId != null ? String(req.body.engagementId).trim() : '';
   const operatorRaw = req.body?.operator != null ? String(req.body.operator).trim() : '';
@@ -1047,9 +1072,6 @@ export function registerReconStreamRoutes(app, deps) {
     };
   }
 
-  const shannonPrecheck = req.body?.shannonPrecheck !== false;
-  const shannonSkipDepsVerify = Boolean(req.body?.shannonSkipDepsVerify);
-
   const extraPathRaw = typeof req.body?.extraPath === 'string' ? req.body.extraPath : '';
   if (extraPathRaw.trim()) {
     // PATH é estado global do processo. Alterá-lo por requisição permite que
@@ -1122,7 +1144,7 @@ export function registerReconStreamRoutes(app, deps) {
 
   manualReconPlan = buildResolvedManualPlan({
     body: req.body,
-    target: domain,
+    target: targetForPlan,
     modules,
     expandedModules: modulesForOpsecGate,
     intrusiveModules: intrusiveModulesForRun,
@@ -1216,28 +1238,6 @@ export function registerReconStreamRoutes(app, deps) {
         message: error?.message || 'aprovação manual inválida',
         planHash: manualReconPlan.hash,
       });
-      endResponse();
-      return;
-    }
-  }
-
-  if (modules.includes('shannon_whitebox') && shannonPrecheck && !shannonSkipDepsVerify) {
-    try {
-      const sc = await getShannonCapabilitiesImpl({
-        ghostRoot: ROOT,
-        signal: controller.signal,
-      });
-      throwIfCancelled();
-      if (!sc.ok) {
-        send({
-          type: 'error',
-          message: `Shannon: dependências incompletas — ${sc.message}`,
-        });
-        endResponse();
-        return;
-      }
-    } catch (e) {
-      send({ type: 'error', message: `Shannon: falha ao verificar dependências — ${e?.message || e}` });
       endResponse();
       return;
     }
@@ -1418,13 +1418,14 @@ export function registerReconStreamRoutes(app, deps) {
   try {
     throwIfCancelled();
     await revalidateEngagementForExecution('before_integrated_execution');
-    await reconHttpContext.run({ requestRunId, target: domain, emit: send }, async () => {
+    await reconHttpContext.run({ requestRunId, target: publicTarget, emit: send }, async () => {
       const runSelectedPipeline = (
         capturedAuth = null,
         integratedEmit = null,
         { signal: stageSignal } = {},
       ) => revalidateEngagementForExecution('immediately_before_pipeline').then((scopePolicy) => runPipeline({
         domain,
+        targetUrl,
         exactMatch,
         modules,
         emit: integratedEmit || send,
@@ -1444,12 +1445,26 @@ export function registerReconStreamRoutes(app, deps) {
             : typeof req.body?.aiPrimaryReport === 'string'
               ? req.body.aiPrimaryReport
               : null,
-        shannonPrecheck,
-        shannonSkipDepsVerify,
-        shannonGithubRepos: req.body?.shannonGithubRepos,
-        pentestgptUrl: req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl) : null,
+        githubManualRepos: req.body?.githubManualRepos,
         bountyContext:
           req.body?.bountyContext && typeof req.body.bountyContext === 'object' ? req.body.bountyContext : null,
+        jwtClaimAuthzConfig:
+          req.body?.jwtClaimAuthzConfig && typeof req.body.jwtClaimAuthzConfig === 'object'
+            ? req.body.jwtClaimAuthzConfig : null,
+        authzObjectMatrixConfig:
+          req.body?.authzObjectMatrixConfig && typeof req.body.authzObjectMatrixConfig === 'object'
+            ? req.body.authzObjectMatrixConfig : null,
+        sqliTargetedConfig:
+          req.body?.sqliTargetedConfig && typeof req.body.sqliTargetedConfig === 'object'
+            ? req.body.sqliTargetedConfig : null,
+        cloudObjectProxyAuthzConfig:
+          req.body?.cloudObjectProxyAuthzConfig && typeof req.body.cloudObjectProxyAuthzConfig === 'object'
+            ? req.body.cloudObjectProxyAuthzConfig : null,
+        financialIntegrityConfig:
+          req.body?.financialIntegrityConfig && typeof req.body.financialIntegrityConfig === 'object'
+            ? req.body.financialIntegrityConfig : null,
+        knownObjectKeys: Array.isArray(req.body?.knownObjectKeys) ? req.body.knownObjectKeys : [],
+        objectKeyDiscoveryBudget: req.body?.objectKeyDiscoveryBudget,
         engagementId: engagementIdRaw || null,
         engagementOperator: operatorRaw || null,
         scopePolicy,
@@ -1501,7 +1516,7 @@ export function registerReconStreamRoutes(app, deps) {
       if (includeFrameSeven) {
         await runIntegratedFrameSevenImpl({
           root: ROOT,
-          target: /^https?:\/\//i.test(domain) ? domain : `https://${domain}`,
+          target: targetUrl || `https://${domain}`,
           authBrowser: req.body?.frameSevenAuth === true,
           tools: FRAMESEVEN_OFFENSIVE_TOOLS_ARG_V1,
           offensiveApproved: manualApprovalGranted === true,

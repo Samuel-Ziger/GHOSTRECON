@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { runSqliDeepVerification } from '../modules/sqli-deep-verify.mjs';
+import { isSqliParameterCandidate, sqliParameterPriority } from '../modules/verify.js';
 
 function endpoint(url) {
   return { type: 'endpoint', value: url };
@@ -95,4 +96,26 @@ test('SQLi deep isola erro de rede e não cria finding', async () => {
   });
   assert.deepEqual(result.findings, []);
   assert.equal(result.metrics.requestErrors, 1);
+});
+
+test('SQLi deep prioriza name da lab sem excluir parâmetro observado desconhecido', async () => {
+  const mutated = [];
+  const result = await runSqliDeepVerification({
+    findings: [endpoint('https://target.test/products/search?custom_filter=blue&name=T-Shirt')],
+    maxParamsPerEndpoint: 1,
+    urlAllowed: () => true,
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      mutated.push(parsed);
+      const value = parsed.searchParams.get('name');
+      if (/AND '1'='2/.test(value)) return response('empty result');
+      return response('all products including T-Shirt');
+    },
+  });
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0].verification.evidence.parameter, 'name');
+  assert.equal(mutated.every((url) => url.searchParams.get('custom_filter') === 'blue'), true);
+  assert.equal(isSqliParameterCandidate('custom_filter'), true);
+  assert.equal(sqliParameterPriority('name') > sqliParameterPriority('custom_filter'), true);
+  assert.equal(isSqliParameterCandidate('access_token'), false);
 });

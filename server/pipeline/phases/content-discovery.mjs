@@ -150,7 +150,7 @@ export function resolveArchiveToolSelection({
 export async function runContentDiscoveryPhase(s) {
   const {
     domain, exactMatch, modules, emit, kaliMode, auth, profile,
-    outOfScopeClientRaw, projectNameRaw, shannonGithubRepos,
+    outOfScopeClientRaw, projectNameRaw, githubManualRepos,
     identityCtrl, navegation, navigatorMode,
     apexHostIsIp, bountyCtx, runtimeProfile, domainStr, outOfScopeList,
     findings, stats, addFinding, log, pipe, skipKaliSubPipe, progress,
@@ -229,7 +229,9 @@ export async function runContentDiscoveryPhase(s) {
     urlCorpus = [...new Set([...waybackUrls, ...ccUrls, ...archiveCliUrls])];
     if (runtimeProfile.name === 'deep') {
       const apexLit = hostLiteralForUrl(domain);
-      const seeds = [`https://${apexLit}/`, `http://${apexLit}/`];
+      const seeds = s.targetUrl
+        ? [s.targetUrl]
+        : [`https://${apexLit}/`, `http://${apexLit}/`];
       for (const seed of seeds) {
         try {
           const k = await crawlWithKatana(seed, { depth: 3 });
@@ -525,7 +527,9 @@ export async function runContentDiscoveryPhase(s) {
       }
       if (modules.includes('firebase_audit') && !firebaseContext) {
         try {
-          const cfg = extractFirebaseConfig(a.body || '', { targetOrigin: `https://${hostLiteralForUrl(domain)}` });
+          const cfg = extractFirebaseConfig(a.body || '', {
+            targetOrigin: s.targetOrigin || `https://${hostLiteralForUrl(domain)}`,
+          });
           if (cfg?.apiKey || cfg?.projectId) {
             firebaseContext = { ...cfg, bundleText: a.body || '', _auditPending: true };
             log(`Firebase audit: config extraída de ${jsUrl} — probes após fase JS`, 'info');
@@ -622,7 +626,7 @@ export async function runContentDiscoveryPhase(s) {
     }
     if (modules.includes('firebase_audit') && firebaseContext?._auditPending) {
       try {
-        const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
+        const targetUrl = s.targetUrl || `https://${hostLiteralForUrl(domain)}/`;
         const writeProbes = false;
         const { findings: fbFindings, summary } = await runFirebaseAudit(firebaseContext, {
           targetUrl,
@@ -655,6 +659,9 @@ export async function runContentDiscoveryPhase(s) {
     if (modules.includes('js_intel')) pipe('js_intel', 'done');
     await dispatchRegistryModule(s, 'websocket_recon');
     await dispatchRegistryModule(s, 'dom_clobbering_audit');
+    await dispatchRegistryModule(s, 'deterministic_voucher_audit');
+    await dispatchRegistryModule(s, 'api_excessive_data_audit');
+    await dispatchRegistryModule(s, 'bounded_object_key_discovery');
     if (fetchTargetJs) pipe('js', 'done');
     progress(72);
 
@@ -713,11 +720,11 @@ export async function runContentDiscoveryPhase(s) {
 
     // ── GITHUB API (opcional) ───────────────────
     pipe('secrets', 'active');
-    /** Clones bem-sucedidos neste run (para Shannon white-box). */
+    /** Clones GitHub bem-sucedidos neste run. */
     githubClonedItems = [];
-    const manualGithubRepos = parseGithubManualRepoList(shannonGithubRepos);
+    const manualGithubRepos = parseGithubManualRepoList(githubManualRepos);
     if (manualGithubRepos.length) {
-      log(`GitHub: ${manualGithubRepos.length} repositório(s) indicado(s) manualmente (UI Shannon)`, 'info');
+      log(`GitHub: ${manualGithubRepos.length} repositório(s) indicado(s) manualmente`, 'info');
     }
 
     const recordClonedFindings = (clonedList) => {
@@ -891,46 +898,10 @@ export async function runContentDiscoveryPhase(s) {
         log(ghRepos.note || 'GitHub Repo Search sem resultados (e sem repos manuais válidos)', 'info');
       }
       pipe('github', 'done');
-    } else if (manualGithubRepos.length && modules.includes('shannon_whitebox')) {
-      pipe('github', 'active');
-      const cloneCfg = githubCloneConfig();
-      if (!cloneCfg.enabled) {
-        log('Repos GitHub manuais: clone local desativado — define GHOSTRECON_GITHUB_CLONE_ENABLED=1.', 'warn');
-      } else {
-        log(
-          `Clone só de repos manuais (${manualGithubRepos.length}) — módulo «GitHub leaks» desligado; Shannon white-box activo.`,
-          'info',
-        );
-        try {
-          const cloned = await cloneGithubReposForTarget({
-            targetDomain: domain,
-            repos: manualGithubRepos,
-            log,
-            signal: s.signal,
-          });
-          if (!cloned.skipped && cloned.cloned?.length) {
-            githubClonedItems = cloned.cloned;
-            recordClonedFindings(cloned.cloned);
-            log(`Clone local concluído: ${cloned.cloned.length} repo(s), diretório efêmero restrito.`, 'success');
-          } else if (!cloned.skipped && cloned.failed?.length) {
-            for (const item of cloned.failed.slice(0, 4)) {
-              const url = githubRepoHtmlUrl(item);
-              log(
-                `Clone falhou (${item.full_name}): ${item.error}${url ? ` — ${url}` : ''}`,
-                'warn',
-              );
-            }
-          }
-        } catch (e) {
-          if (e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED') throw e;
-          log(`Clone local GitHub (manual): ${e.message}`, 'warn');
-        }
-      }
-      pipe('github', 'done');
     } else if (manualGithubRepos.length) {
       pipe('github', 'skip');
       log(
-        'Repos GitHub na caixa manual ignorados: activa «GitHub leaks» ou «Shannon white-box» para clonar.',
+        'Repos GitHub manuais ignorados: ative o módulo GitHub para pesquisar e clonar.',
         'info',
       );
     } else {
@@ -1031,16 +1002,6 @@ export async function runContentDiscoveryPhase(s) {
     pipe('secrets', 'done');
 
     await dispatchRegistryModule(s, 'secrets_context_ranker');
-
-    if (!modules.includes('shannon_whitebox')) {
-      emit({ type: 'pipe', name: 'shannon', state: 'skip' });
-    } else {
-      log(
-        'Shannon white-box: fase após PRIORITIZE e antes de PentestGPT HTTP (verify/Kali/score correm primeiro).',
-        'info',
-      );
-    }
-
 
   s.paramRows = paramRows;
   s.paramUrlsForKali = paramUrlsForKali;

@@ -1109,6 +1109,80 @@ img, svg, iframe, video {
   display: none;
 }
 
+.logo-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.paste-action {
+  height: 72px !important;
+  padding: 0 14px 0 18px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+.paste-action::after { display: none; }
+
+.consent-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+  color: rgba(255,255,255,.55);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.consent-option input { accent-color: #e00000; }
+.mobile-only { display: none; }
+
+.page-hero {
+  padding: 20px 0;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  margin-bottom: 20px;
+}
+
+.page-hero-label {
+  color: red;
+  font-family: Oswald, Arial, sans-serif;
+  font-size: 13px;
+  letter-spacing: 3px;
+  margin-bottom: 16px;
+  opacity: .8;
+  text-transform: uppercase;
+}
+
+.cta-section {
+  padding: 60px 0 0;
+  margin-top: -120px;
+}
+
+.cta-box { padding: 48px 40px; text-align: center; }
+.cta-box h2 { font-family: Anton, Impact, sans-serif; font-size: clamp(24px, 4vw, 42px); margin-bottom: 12px; }
+.cta-box p { color: #adb0b8; font-size: 16px; margin: 0 auto 28px; text-align: center; }
+.cta-btn {
+  display: inline-block;
+  background: red;
+  border-radius: 40px;
+  color: #fff;
+  font-family: Oswald, Arial, sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 14px 40px;
+  text-decoration: none;
+  transition: background .2s, box-shadow .2s;
+}
+.cta-btn:hover { background: #ff1111; box-shadow: 0 0 24px rgba(255,0,0,.5); }
+
+@media (min-width: 769px) {
+  nav#mainNav { display: flex; }
+  .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
 @media (max-width: 768px) {
   .title-white, .title-red { font-size: 60px; }
 
@@ -1124,6 +1198,8 @@ img, svg, iframe, video {
   }
 
   .search-icon { display: none; }
+
+  .mobile-only { display: initial; }
 
   .search-bar input {
     height: 40px;
@@ -1221,4 +1297,11 @@ img, svg, iframe, video {
   }
 
   body { padding-bottom: 64px; }
+
+  .section.container { padding-left: 16px; padding-right: 16px; }
+  .section { padding: 32px 0 40px; }
+  .grid { gap: 12px; }
+  .page-hero { padding: 20px 0 10px; }
+  .cta-section { margin-top: 0; padding-top: 32px; }
+  .cta-box { padding: 32px 16px; }
 }

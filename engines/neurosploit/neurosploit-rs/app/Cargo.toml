@@ -1,0 +1,23 @@
+[package]
+name = "neurosploit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neurosploit"
+path = "src/main.rs"
+
+[dependencies]
+harness = { package = "neurosploit-harness", path = "../crates/harness" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+clap = { version = "4", features = ["derive"] }
+rustyline = "14"
+dialoguer = "0.11"
+ratatui = "0.28"
+crossterm = "0.28"

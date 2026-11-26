@@ -18,6 +18,17 @@ A integração Node (bridge/, server/pipeline/phases/go-engine.mjs) invoca o
 binário Vigolium como motor de scan; não remove obrigações da licença AGPL
 sobre o código Go derivado ou modificado.
 
+NeuroSploit (motor autônomo Rust)
+----------------------------------
+Diretório: engines/neurosploit/
+Licença:   MIT
+Copyright: 2026 Joas A Santos & Red Team Leaders
+Upstream:  https://github.com/JoasASantos/NeuroSploit
+
+O backend importado permanece sob a licença MIT incluída em
+engines/neurosploit/LICENSE. O frontend upstream não integra esta distribuição;
+o GHOSTRECON fornece a sua própria interface React e adaptadores Node/Artex.
+
 Outros componentes
 ------------------
 Consulte package.json, GhostTrace, ghostmap, ghost-local-v5 e dependências npm

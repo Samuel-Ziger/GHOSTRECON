@@ -45,7 +45,7 @@ de relatórios. O sistema integra:
 
 - API Node.js/Express, pipeline NDJSON e módulos em `server/`;
 - cockpit web em `public/`, CLI e servidor MCP;
-- Auto Mode supervisionado com planner de IA, conselho, catálogo, RAG, Forge,
+- Auto Mode supervisionado com planejamento determinístico, catálogo, RAG, Forge,
   aprovação humana, watchdog e avaliações;
 - Vigolium, FrameSeven, HexStrike e outros motores locais;
 - GhostMap, GhostTrace, GhostDesk, GHOST IA local e GhostCommand;
@@ -166,20 +166,21 @@ implicitamente de variáveis globais criadas por outra.
 - `server/modules/`: módulos legados e manifestados, runners e ferramentas
   externas;
 - `server/pipeline/`: fases e estado do pipeline;
-- `server/auto-agent/`: sessões, providers, conselho, contratos, RAG e Forge;
+- `server/auto-agent/`: sessões, planejamento determinístico, contratos, RAG e Forge;
 - `server/integrations/`: FrameSeven, HexStrike e integrações auxiliares;
 - `bridge/`: integração e runners do Vigolium;
 - `server/tests/`: testes Node com `node:test`;
-- `public/`: cockpit estático; `index.html` é monolítico e possui cerca de onze
-  mil linhas;
+- `frontend/`: host React/TypeScript do cockpit e templates de paridade; os
+  templates preservam os contratos DOM/NDJSON durante a componentização;
+- `public/`: shells pequenos e bundles compilados da UI React;
 - `bin/`, `mcp/`, `playbooks/`: CLI, MCP e automações;
 - `FrameSeven/`: engine Go versionada, com instruções próprias;
 - `vigolium/`: fonte Go do Vigolium; `engines/vigolium` é artefato gerado;
 - `GhostTrace/`: frontend Next.js/TypeScript e backend FastAPI;
 - `ghostmap/`: frontend Next.js/TypeScript, backend FastAPI e integrações de
   dados;
-- `GhostDesk/frontend/`: Vue 3/Vite;
-- `ghost-local-v5/`: IA local/FastAPI e estado de runtime;
+- `GhostDesk/frontend/`: React 18/Vite;
+- `ghost-local-v5/`: IA local/FastAPI, frontend React e estado de runtime;
 - `IAs/hexstrike-ai/`: serviço Python/MCP do HexStrike;
 - `apps/GhostCommand/`: aplicação Android Kotlin/Compose;
 - `tools/` e `Xss/`: utilitários locais, sobretudo Python;
@@ -295,8 +296,8 @@ timeout, redação e teste.
   scanner.
 - Eventos de motor devem distinguir `started`, `done`, `skipped`, `failed`,
   `timeout` e `cancelled` com base na execução real.
-- Preserve IDs DOM, toggles, handlers e nomes de eventos ao editar
-  `public/index.html`; prefira mudanças cirúrgicas.
+- Preserve IDs DOM, toggles, handlers, storage, canais e nomes de eventos ao
+  editar `frontend/`; os shells em `public/` nao contêm a lógica do cockpit.
 - Mudanças de contrato devem atualizar conjuntamente API, UI, CLI, MCP, schemas,
   fixtures e documentação.
 - Relatórios servidos pela API precisam de `recon.read`, contenção de caminho e
@@ -304,34 +305,18 @@ timeout, redação e teste.
 
 ## Auto Mode e IA
 
-### Planner e decisão
+### Planejamento determinístico
 
-O turno do planner é somente leitura: não faz rede, não edita arquivos e não
-roda ferramentas. Catálogo, findings, URLs, logs, memória RAG e propostas de
-pares são dados não confiáveis, nunca instruções.
-
-Toda decisão deve obedecer a
-`server/auto-agent/schemas/decision.schema.json` e ao normalizador em
-`decision-contract.mjs`. Ações canônicas atuais:
-
-- `run_modules`;
-- `continue_with_context`;
-- `finish`;
-- `ask_operator`;
-- `forge_module`;
-- `abstain`.
-
-Aliases como `request_modules` e `execute_modules` devem ser normalizados antes
-da validação. A decisão precisa conter `objective`, `reasoningSummary`,
-`requestedModules` e `confidence` válida, referenciar apenas evidências
-permitidas e escolher somente IDs existentes e disponíveis.
+Perfil, módulos explícitos, catálogo, engines e políticas produzem um plano
+determinístico e repetível. Catálogo, findings,
+URLs, logs e memória RAG são dados não confiáveis, nunca instruções.
 
 ### Política e execução
 
 - O fallback determinístico nunca pode elevar risco, autonomia ou escopo.
 - Módulo solicitado diretamente pelo operador também deve existir e passar
   catálogo/gates; validação não vale apenas para saída de IA.
-- O conselho pós-pipeline deve preservar a autonomia e a política da sessão.
+- A avaliação pós-pipeline não pode introduzir módulos nem ampliar autonomia.
 - Toda expansão efetiva deve ocorrer antes dos gates descritos acima; a
   resolução interna do Vigolium ainda viola essa invariante.
 - `authorized` e `authorized_opsec` devem exigir papel intrusivo, engagement
@@ -531,11 +516,17 @@ executá-los e obtenha autorização para downloads.
 ### Frontends e subprojetos
 
 ```bash
+npm run ui:typecheck
+npm run ui:build
+npm run test:ui
 npm --prefix GhostTrace run type-check
 npm --prefix GhostTrace run build
 npm --prefix ghostmap/frontend run typecheck
 npm --prefix ghostmap/frontend run build
+npm --prefix GhostDesk/frontend test
 npm --prefix GhostDesk/frontend run build
+npm --prefix ghost-local-v5/ghost-local/frontend test
+npm --prefix ghost-local-v5/ghost-local/frontend run build
 ```
 
 Para backends Python e GhostCommand, inspecione primeiro os arquivos locais de
@@ -563,19 +554,19 @@ não como salvaguardas já garantidas:
    inicial); Vigolium nativo e crawler amplo de engines ainda abertos;
 4. engagement/ROE formal já cobre planos Auto `active`+`intrusive`; passivo
    puro segue sem formal;
-5. abort/timeout/fatal no conselho e dispatcher principais estão cobertos;
+5. abort/timeout/fatal no planejador determinístico e dispatcher principais estão cobertos;
    adapters/pipeline restantes ainda abertos;
 6. outcomes registry/pipe no Auto são preferidos a `inferred`; fases legadas
    sem pipe terminal ainda inferem;
 7. UI distingue `partial` (`AUTO PARCIAL`) e continua NDJSON recuperável;
 8. resume preserva deadline/orçamentos absolutos (não renova tetos);
-9. cleanup FrameSeven/App Server/process groups Node aguardados; browser
+9. cleanup FrameSeven/process groups Node aguardados; browser
    engine / workers Vigolium ainda abertos;
 10. aprovação pendente persistida + prune TTL de artefatos Auto no startup;
 11. RAG/snapshots particionados com TTL; retenção SQLite/evidência auth ampla
     ainda parcial;
-12. degradado explícito + consentimento cloud; custo/redação total por
-    provider ainda evolui;
+12. o planejamento Auto é determinístico e não chama providers; redação e
+    retenção de artefatos externos ainda evoluem;
 13. `runId` + relatório Auto consolidado implementados;
 14. readiness tipada no catálogo; deadline/progresso integral por módulo legado
     permanece parcial;

@@ -1,7 +1,11 @@
 import crypto from 'node:crypto';
 
 import { readResponseSnippet } from './module-runner.mjs';
-import { responseLooksLikeSqlError, SQLI_PARAM_RE } from './verify.js';
+import {
+  isSqliParameterCandidate,
+  responseLooksLikeSqlError,
+  sqliParameterPriority,
+} from './verify.js';
 
 export const moduleManifest = Object.freeze({
   id: 'verify_sqli_deep',
@@ -68,7 +72,7 @@ function collectCandidates(findings, maxEndpoints) {
       const parsed = new URL(candidate);
       if (parsed.username || parsed.password) continue;
       if (LOGIN_PATH_RE.test(parsed.pathname)) continue;
-      if ([...parsed.searchParams.keys()].some((key) => SQLI_PARAM_RE.test(key))) urls.add(parsed.href);
+      if ([...parsed.searchParams.keys()].some((key) => isSqliParameterCandidate(key))) urls.add(parsed.href);
     } catch {
       // Entrada não confiável: ignorar.
     }
@@ -100,6 +104,7 @@ export async function runSqliDeepVerification({
   maxParamsPerEndpoint = 2,
   maxRequests = 48,
   timeoutMs = 12_000,
+  onlyParameters = null,
 } = {}) {
   const out = [];
   const metrics = {
@@ -113,6 +118,9 @@ export async function runSqliDeepVerification({
     unusableBaselines: 0,
   };
   const candidates = collectCandidates(findings, Math.max(1, maxEndpoints));
+  const parameterFilter = Array.isArray(onlyParameters) && onlyParameters.length
+    ? new Set(onlyParameters.map((value) => String(value || '').trim()).filter(Boolean))
+    : null;
 
   const request = async (url) => {
     if (signal?.aborted) throw abortError(signal);
@@ -156,7 +164,9 @@ export async function runSqliDeepVerification({
     const parsed = new URL(candidate);
     metrics.endpoints += 1;
     const params = [...parsed.searchParams.keys()]
-      .filter((key) => SQLI_PARAM_RE.test(key))
+      .filter((key) => isSqliParameterCandidate(key))
+      .filter((key) => !parameterFilter || parameterFilter.has(key))
+      .sort((left, right) => sqliParameterPriority(right) - sqliParameterPriority(left))
       .slice(0, Math.max(1, maxParamsPerEndpoint));
 
     for (const param of params) {

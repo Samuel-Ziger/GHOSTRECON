@@ -128,7 +128,6 @@ export async function runInputPhase(s) {
     profile,
     outOfScopeClientRaw,
     projectNameRaw,
-    shannonGithubRepos,
     identityCtrl,
     navegation,
     navigatorMode,

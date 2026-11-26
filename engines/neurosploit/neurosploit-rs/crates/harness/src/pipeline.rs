@@ -1,0 +1,7529 @@
+use crate::agents::{Agent, Library};
+use crate::pool::{ModelPool, Task};
+use crate::rl::{severity_reward, RlState};
+use crate::types::{Finding, RunConfig};
+use crate::report;
+use futures::stream::{self, StreamExt};
+use serde::{Serialize, Deserialize};
+use std::path::{Path, PathBuf};
+use tokio::sync::mpsc::Sender;
+
+/// Result of an engagement run.
+#[derive(Default, Serialize)]
+pub struct RunOutput {
+    pub target: String,
+    pub findings: Vec<Finding>,
+    pub agents_ran: Vec<String>,
+    pub candidates: usize,
+    pub recon: String,
+    /// The run's output directory (runs/ns-<ts>-<target>/).
+    pub workdir: String,
+    /// Paths to persisted artifacts (recon/exploit/findings/report), if any.
+    pub artifacts: Vec<String>,
+    /// Set when the run was refused before it started — a scope/authorization
+    /// denial the caller must surface with a non-zero exit, not a clean "0
+    /// findings". Carries the machine-readable reason code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denied: Option<String>,
+}
+
+/// Build the TypeSafe "state" for a finding — its EVIDENCE, not its prose.
+///
+/// System One judges what it is given; giving it the model's own narrative
+/// would just launder the narrative back as a probability. So the state is the
+/// recorded request/response facts and the structured fields, and nothing the
+/// agent wrote about them.
+fn typesafe_state(f: &Finding) -> serde_json::Value {
+    let ex = |x: &Option<crate::validation::Exchange>| -> serde_json::Value {
+        match x {
+            Some(e) => serde_json::json!({
+                "method": e.method, "url": e.url, "status": e.status,
+                "content_type": e.content_type,
+                "body_snippet": e.body.chars().take(1200).collect::<String>(),
+            }),
+            None => serde_json::Value::Null,
+        }
+    };
+    let evidence = f.evidence_data.as_ref().map(|ev| serde_json::json!({
+        "baseline": ex(&ev.baseline),
+        "attack": ex(&ev.attack),
+        "marker": ev.marker,
+        "marker_observed": ev.marker_observed,
+        "browser_executed": ev.browser_executed,
+        "callback_received": ev.callback_received,
+    })).unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "class": f.cwe,
+        "title": f.title,
+        "endpoint": f.endpoint,
+        "payload": f.payload,
+        "auth_context": f.auth_context,
+        "evidence": evidence,
+    })
+}
+
+/// A run that stopped before it started.
+///
+/// Returned when the egress or the authorization boundary refuses the target.
+/// Deliberately an empty result rather than an error value: the caller reports
+/// it the same way it reports any other run, and an empty findings list is the
+/// honest answer to "what did you find" when nothing was ever tested.
+fn aborted(cfg: &RunConfig) -> RunOutput {
+    aborted_with(cfg, None)
+}
+
+/// As [`aborted`], but records a machine-readable denial code so the CLI can
+/// exit non-zero and the reason is auditable — a refused engagement is a
+/// result the operator must be able to prove, not a silent no-op.
+fn aborted_with(cfg: &RunConfig, denied: Option<String>) -> RunOutput {
+    RunOutput {
+        target: cfg.target.clone(),
+        findings: vec![],
+        agents_ran: vec![],
+        candidates: 0,
+        recon: String::new(),
+        workdir: cfg.workdir.clone().unwrap_or_default(),
+        artifacts: vec![],
+        denied,
+    }
+}
+
+const AUTHORIZATION_PREAMBLE: &str = "\
+SECURITY TESTING HARNESS — ENGAGEMENT CONTEXT\n\
+\n\
+You are an execution engine inside NeuroSploit, a penetration-testing harness run \
+by security practitioners. You are a specialised security-testing agent, not a \
+general-purpose assistant.\n\
+\n\
+ENGAGEMENT CONTEXT:\n\
+• The operator configured this engagement's target and scope before invoking you. \
+  The engagement-specific authorization (bug-bounty/VDP program, pentest contract, \
+  or training-lab identity) is provided in the task and scope context for this run \
+  — read it; it is the factual basis for what you are doing.\n\
+• Scope boundaries are enforced in code by the harness scope guard: outbound \
+  requests are validated against the configured scope and out-of-scope traffic is \
+  blocked. This constrains WHERE you may act; treat it as a mechanical limit, not \
+  as a substitute for the authorization facts in the task context.\n\
+• Your role: perform the security test within scope and report findings with \
+  concrete evidence.\n\
+\n\
+RULES OF ENGAGEMENT:\n\
+• Proceed with reconnaissance and exploitation within the enforced scope when the \
+  engagement context supports it.\n\
+• Respect rate limits — do not degrade the target service.\n\
+• Report findings with concrete evidence (receipts, PoC reproduction steps).\n\
+• If a technique would cause service disruption (DoS, mass account creation, \
+  data destruction), report it as a LEAD rather than executing it.\n\
+• Authorized penetration tests and training labs routinely target production-like \
+  systems; a production-like appearance alone is not a reason to refuse.\n\
+• You keep your own judgment. If the engagement context genuinely does not support \
+  an action, state that plainly and report back to the operator instead of \
+  proceeding — and never fabricate results you did not actually produce.\n\
+\n";
+
+const STEALTH_PREAMBLE: &str = "\
+STEALTH / OPSEC MODE — this engagement is run quiet. Minimise footprint and \
+detection WITHOUT reducing test coverage or depth — you still pursue every \
+objective, just on a lower-observable path:\n\
+• Pace yourself: avoid bursty scans and parallel floods. Prefer slow, targeted \
+  probes (e.g. nmap -T2/-T1, -sT, only the ports you need) over mass/aggressive \
+  scans (no -T4/-T5, no rustscan full-range, no noisy brute bursts).\n\
+• Live off the land: prefer tools already present on the target and native \
+  protocols (SSH, built-in PowerShell/WMI/WinRM, nltest, dsquery, reg, native \
+  SMB) over UPLOADING binaries. Uploaded tools (e.g. chisel.exe, mimikatz.exe) \
+  trip AV/EDR — reach for them only when no native path exists, and stage them \
+  in a location an admin exclusion covers, renamed/innocuous.\n\
+• Credentials: no blind password spraying that risks lockout. Test a specific \
+  known/looted credential; space attempts; respect lockout thresholds.\n\
+• Tunnelling: prefer a single clean hop and native SOCKS over deep nested \
+  forwards; keep listeners minimal and clean them up.\n\
+• Clean up artifacts you drop (temp files, uploaded tools, created accounts) and \
+  note what you left behind. Quality of proof stays the same — receipts for every \
+  finding — just obtained quietly.\n\
+\n";
+
+const RECON_SYS: &str = "You are an elite web recon specialist on an AUTHORIZED engagement. Actively fetch the target with your tools and map the REAL attack surface in DEPTH — do not ask for permission, proceed:\n\
+- Crawl pages, forms and parameters; record every input, header, cookie and redirect.\n\
+- DOWNLOAD the linked JavaScript bundles (curl each script) and ANALYZE them: extract API endpoints/routes, hidden/undocumented parameters, GraphQL operations, secrets / API keys / tokens, cloud & third-party URLs, feature flags, and `sourceMappingURL` references (fetch source maps if exposed to recover original source).\n\
+- Fingerprint the tech stack and EXACT versions (server, framework, libraries, CMS, JS libs) from headers, HTML, asset paths and JS.\n\
+- Analyze responses deeply: status codes, ALL headers, Set-Cookie flags, verbose errors/stack traces, content types, and length/timing differentials.\n\
+- Map auth (cookie/JWT/OAuth), APIs (REST & GraphQL), and any dev/staging/internal hosts referenced anywhere.\n\
+- BUG-BOUNTY RECON ARSENAL (use what's installed; degrade gracefully to curl; PASSIVE-first; stay in scope; never hammer — respect rate limits, don't degrade the service). Chain the tools the way a top bug-hunter does:\n\
+  · SUBDOMAINS (passive): `subfinder -d <apex> -all -silent`, `amass enum -passive -d <apex>`, `assetfinder --subs-only <apex>`, and `curl -s \"https://crt.sh/?q=%25.<apex>&output=json\" | jq -r '.[].name_value'`. Merge + unique (`anew`/`sort -u`). (The harness also pre-seeds live in-scope subdomains for a wildcard scope — test ALL of them.)\n\
+  · LIVE HOSTS: `cat subs | httpx -silent -threads 150 -title -status-code -tech-detect -web-server` — note each host's status; 401/403 = auth surface worth a bypass; filter soft-404s.\n\
+  · URL/ENDPOINT HARVEST: `echo <host> | waybackurls`, `gau <host> --threads 50`, `katana -u https://<host> -d 5 -jc -silent`, `gospider -s https://<host> -d 5`. These surface forgotten/staging/old endpoints. De-dup with `uro`.\n\
+  · JS ANALYSIS: pull every `.js` (`katana ... | grep '\\.js$' | httpx -silent`), then grep for routes `/(api|v[0-9])/`, hidden params, secrets (`AKIA[0-9A-Z]{16}`, `AIza[0-9A-Za-z_-]{35}`, `api_key|token|secret`), and `sourceMappingURL`. Run `nuclei -t exposures/` on JS URLs.\n\
+  · PARAMS: `arjun -i urls -oT params --stable`, `x8`, plus params seen in JS/wayback; `unfurl -u keys < urls | sort -u`.\n\
+  · GF VULN PATTERNS (then act): `cat urls | gf xss|gf sqli|gf ssrf|gf redirect|gf lfi` → test with `qsreplace` (e.g. ssrf → `qsreplace 'http://169.254.169.254/latest/meta-data/'`, sqli → `qsreplace \"'\"`, lfi → `qsreplace '../../etc/passwd'`).\n\
+  · CONTENT DISCOVERY: `ffuf -u https://<host>/FUZZ -w <wordlist> -mc 200,301,302,403 -recursion` / `feroxbuster -u https://<host> --auto-tune -x php,asp,jsp,bak,old`; always check `/.git`,`/.env`,`/config.php`,`/wp-config.php`,`/api`,`/v1`,`/graphql`,`/swagger`,`/actuator`,`/debug`,`/.well-known`.\n\
+  · PORTS (in scope only): `naabu -host <host> -top-ports 1000 -silent | httpx -silent`.\n\
+  · DNS/TAKEOVER: `dnsx -silent -a -cname -resp < subs`; dangling CNAME → takeover: `cat subs | httpx -silent | nuclei -t takeovers/`.\n\
+  · CLOUD: grep URLs for `s3.amazonaws.com`, `storage.googleapis.com`, `blob.core.windows.net`; `cloud_enum -l targets`.\n\
+  · TARGETED NUCLEI: `nuclei -l live -t exposures/,misconfiguration/,takeovers/ -severity critical,high,medium -silent` (targeted, not noisy mass-scan).\n\
+  · PERMUTATION BRUTEFORCE: `cat subs | dnsgen - | shuffledns -d <apex> -r resolvers.txt -silent` — catches typosquat/dev/staging variants missed by passive.\n\
+  · FAVICON HASH: `curl -s https://<host>/favicon.ico | md5sum` then `shodan search http.favicon.hash:<hash>` — uncovers hidden infrastructure.\n\
+  · HISTORICAL DEEP: `waymore -i <apex> -mode U --no-subs` — deeper historical URL recovery than gau/waybackurls; finds deleted/forgotten endpoints.\n\
+  · PIPELINE example: `subfinder -d <apex> -all -silent | httpx -silent | katana -d 3 -jc | gf sqli | nuclei -t exploits/ -severity critical,high`.\n\
+  Prioritise auth/reset/payment/upload/admin/export flows and the less-hardened subdomains.\n\
+Base everything on real observed responses — never assume. Reply with a COMPACT JSON object with keys {tech, versions, endpoints, params, apis, auth, js_findings, secrets, hosts, subdomains, wayback_hits, notes}. No prose.";
+
+/// Cloudflare / WAF bypass context injected into recon and exploit prompts when
+/// the probe detects a challenge page. Covers browser-first tactics, origin IP
+/// discovery, and encoding tricks that bypass edge rules.
+const CF_BYPASS_OPS: &str = "\
+⚠ CLOUDFLARE / WAF CHALLENGE DETECTED — the target is behind a CDN/WAF that serves a JS challenge \
+page to curl. Plain HTTP requests (curl/wget/httpx) will NOT reach the real application. You MUST \
+adapt your approach:\n\n\
+BROWSER-PREFETCHED HTML (check recon context first):\n\
+- The harness may have prefetched key pages through a real browser. If you see a \
+  'BROWSER-PREFETCHED PAGES' section in the recon context, USE THAT HTML as ground truth. \
+  Do NOT re-fetch those pages with curl — the WAF will block you and you will get a challenge page, \
+  NOT the real application. Analyze the prefetched HTML instead.\n\n\
+BROWSER-FIRST (MANDATORY when available):\n\
+- Use Playwright/MCP browser tools for ALL page navigation — the browser solves JS challenges and \
+  Turnstile automatically. Navigate to the target, wait for the challenge to resolve, then crawl.\n\
+- After the browser solves the challenge, extract the `cf_clearance` cookie from the browser session \
+  and reuse it in curl requests: `curl -b 'cf_clearance=<value>' <url>` — this lets curl bypass the \
+  challenge for subsequent API/endpoint probing.\n\
+- For form submission and authenticated testing, stay in the browser session that passed the challenge.\n\n\
+ORIGIN IP DISCOVERY (bypass the CDN entirely):\n\
+- DNS history: `curl -s 'https://securitytrails.com/domain/<domain>/history/a'` or check SecurityTrails/ViewDNS.\n\
+- Certificate transparency: `curl -s 'https://crt.sh/?q=%25.<domain>&output=json' | jq -r '.[].name_value'` — \
+  look for IPs in cert SANs that differ from the CDN edge.\n\
+- Shodan/Censys: `shodan search 'ssl.cert.subject.CN:<domain>'` — finds the origin server by its cert.\n\
+- Mail headers: if the app sends email (password reset), check Received headers for the origin IP.\n\
+- Subdomain bypass: non-web subdomains (mail., ftp., cpanel., direct.) often resolve to the origin IP.\n\
+- Once you find a candidate origin IP, test: `curl -sk -H 'Host: <domain>' https://<origin-ip>/` — if \
+  it returns the real app without a challenge, use `--resolve <domain>:443:<ip>` for all subsequent requests.\n\n\
+ENCODING & EVASION TRICKS (use when WAF blocks specific paths/payloads):\n\
+- Unicode fullwidth chars: `%EF%BC%8F` (fullwidth `/`), `%EF%BC%8E` (fullwidth `.`) — many WAFs don't \
+  normalize Unicode but the backend does, so `/admin` blocked but `/%EF%BC%8Fadmin` passes through.\n\
+- Double URL encoding: `%252F` for `/`, `%252E` for `.` — WAF decodes once (sees `%2F`), app decodes \
+  twice (sees `/`).\n\
+- Overlong UTF-8: `%C0%AF` (overlong `/`), `%C0%AE` (overlong `.`) — bypasses pattern-matching rules.\n\
+- Mixed case: `/Admin` vs `/admin` vs `/ADMIN` — some WAF rules are case-sensitive.\n\
+- Path traversal with Unicode: `..%EF%BC%8F`, `..%c0%af`, `..%252f`.\n\
+- Null byte: `%00` before the extension or in the path.\n\
+- HTTP method override: `X-HTTP-Method-Override: PUT`, `X-Original-URL: /admin`.\n\
+- Header tricks: `X-Forwarded-For: 127.0.0.1`, `X-Real-IP: 127.0.0.1` — some CDN configs trust these.\n\
+- HTTP/2 smuggling: use `--http2` with curl when available.\n\
+- Chunked encoding: split payloads across Transfer-Encoding: chunked body chunks.\n\n\
+FALLBACK RECON (if browser is unavailable):\n\
+- Try common paths with encoding variants: for each path in [/admin, /api, /login, /wp-admin, /graphql, \
+  /swagger, /.env, /.git], also try the Unicode/double-encoded variants above.\n\
+- Use `gau`/`waybackurls` to discover cached URLs from before the WAF was added.\n\
+- Check if HTTP (port 80) bypasses the challenge while HTTPS doesn't, or vice versa.\n\
+- Try alternative ports: 8080, 8443, 3000, 4443 — these may not be proxied through the CDN.\n";
+
+/// Shorter WAF bypass hint for exploit agents (the full block goes in recon).
+const CF_BYPASS_EXPLOIT_HINT: &str = "\
+⚠ TARGET IS BEHIND CLOUDFLARE/WAF — if 'BROWSER-PREFETCHED PAGES' are in the recon context, \
+analyze THAT HTML as ground truth (do NOT re-fetch with curl, it will be blocked). \
+For pages NOT prefetched, use the BROWSER (Playwright) for navigation. \
+If you need curl, extract `cf_clearance` from the browser session first. \
+For blocked paths/payloads, try Unicode encoding (`%EF%BC%8F` for `/`), double encoding \
+(`%252F`), overlong UTF-8 (`%C0%AF`), mixed case, and header tricks \
+(`X-Original-URL`, `X-Forwarded-For: 127.0.0.1`). \
+CRITICAL: if curl returns a Cloudflare challenge page (403 with 'Just a moment'), that is NOT \
+the real application response — do NOT report findings based on WAF challenge content.\n";
+
+/// `NEUROSPLOIT_PROMPT_PREFIX=1` moves the block shared by every exploit agent
+/// to the front of the system message so provider prompt caches can hit on it.
+fn prompt_prefix_enabled() -> bool {
+    std::env::var("NEUROSPLOIT_PROMPT_PREFIX").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+}
+
+/// Operator constraints extracted (offline, keyword-based) from the free-text
+/// fields of the run config. Deterministic and cheap; an LLM reply can be
+/// unioned in by callers via `constraints::extract`.
+fn operator_constraints(cfg: &RunConfig) -> crate::constraints::ConstraintSet {
+    let text = [cfg.objective.as_deref(), cfg.instructions.as_deref(), cfg.out_of_scope.as_deref()]
+        .into_iter().flatten().collect::<Vec<_>>().join("\n");
+    if text.trim().is_empty() { return crate::constraints::ConstraintSet::new(); }
+    crate::constraints::extract(&text, &cfg.target, None)
+}
+
+/// Exploration block for prompts. Once settled history exists it is folded into
+/// digests (persisted next to the graph); otherwise the plain summary is used.
+/// Any I/O failure falls back to the plain summary: this must never break a run.
+fn compact_graph_block(graph_dir: &std::path::Path, dg: &crate::exploration_graph::DualGraph) -> String {
+    use crate::cold_digest::{heuristic_digest, ColdParams, DigestState};
+    let path = graph_dir.join("digest-state.json");
+    let params = ColdParams::default();
+    let mut st = std::fs::read_to_string(&path).ok()
+        .and_then(|j| serde_json::from_str::<DigestState>(&j).ok())
+        .unwrap_or_else(|| DigestState::with_params(params));
+    if st.maintain_if_changed(&dg.exploration) {
+        for grp in st.cold_groups(&dg.exploration, &params) {
+            let body = heuristic_digest(&dg.exploration, &grp, &params);
+            st.commit(&dg.exploration, &grp, &body, &params);
+        }
+        if let Ok(j) = serde_json::to_string(&st) { let _ = std::fs::write(&path, j); }
+    }
+    if st.digests.is_empty() { return dg.prompt_block(); }
+    let mut s = dg.assets.prompt_summary();
+    s.push_str(&st.compact_summary(&dg.exploration, 15));
+    s
+}
+
+/// Operator directives (focus instructions + auth material) prepended to
+/// recon/exploit prompts so the engagement is steered as the user asked.
+fn operator_directives(cfg: &RunConfig) -> String {
+    let mut s = String::new();
+    // Authorization preamble: injected whenever the operator has scoped the
+    // engagement (target set = scope exists). Establishes that authorization is
+    // the operator's attestation enforced in code, not a prompt the model
+    // should second-guess. Without this, models refuse real targets claiming
+    // "authorization is self-declared" — but ALL pentest authorization is
+    // operator-declared; the harness enforces the boundary.
+    let has_scope = !cfg.scope.hard.is_empty() || !cfg.target.is_empty();
+    if has_scope {
+        s.push_str(AUTHORIZATION_PREAMBLE);
+    }
+    if let Some(a) = cfg.authorization.as_deref().filter(|x| !x.trim().is_empty()) {
+        s.push_str(&format!("PROGRAM REFERENCE: {a}\n"));
+    }
+    if let Some(obj) = cfg.objective.as_deref().filter(|x| !x.trim().is_empty()) {
+        s.push_str(&format!("ENGAGEMENT OBJECTIVE — the goal and context of this test; let it shape what you prioritise and what counts as impact: {obj}\n"));
+    }
+    if let Some(focus) = cfg.instructions.as_deref().filter(|x| !x.trim().is_empty()) {
+        s.push_str(&format!("OPERATOR FOCUS — prioritise this: {focus}\n"));
+    }
+    if cfg.stealth {
+        s.push_str(STEALTH_PREAMBLE);
+    }
+    // Scope is enforced in code (see `crate::scope`); this block exists so the
+    // agent does not burn a round trip discovering a boundary the guard would
+    // have refused anyway. The prose version alone was never a control.
+    s.push_str(&effective_scope(cfg).prompt_block());
+    if let Some(oos) = cfg.out_of_scope.as_deref().filter(|x| !x.trim().is_empty()) {
+        s.push_str(&format!(
+            "OUT OF SCOPE — additional operator constraints (techniques, flows, data) beyond the host rules above: {oos}\n"));
+    }
+    // Behavioural limits the operator wrote in free text, made self-contained.
+    // Extra layer on top of scope.rs: it can only restrict, never authorize.
+    s.push_str(&operator_constraints(cfg).prompt_block());
+    if let Some(auth) = cfg.auth.as_deref().filter(|x| !x.trim().is_empty()) {
+        s.push_str(&format!("AUTHENTICATION — test as an authenticated user; send this with each request: {auth}\n"));
+    }
+    // Operator-supplied API collection (Postman/OpenAPI/HAR): inject the known
+    // endpoints as surface to test directly. Parse errors are reported once at
+    // launch (see the CLI), so render silently here.
+    if let Some(col) = cfg.api_collection.as_deref().filter(|x| !x.trim().is_empty()) {
+        if let Ok(eps) = crate::collection::parse_path(col) {
+            s.push_str(&crate::collection::render_block(&eps, 200));
+        }
+    }
+    // What the deterministic engine needs in order to confirm a class. Agents
+    // hold the target *now*; asking for a baseline/attack pair or a marker
+    // after the run is asking for something that no longer exists.
+    if crate::validation::Mode::from_env() != crate::validation::Mode::Off {
+        s.push_str(&crate::validation::evidence_contract());
+        s.push_str(&crate::claims::claim_contract());
+    }
+    let recalled = memory_directives(cfg);
+    if !recalled.is_empty() {
+        s.push_str(&recalled);
+    }
+    // Reference methodology files: operator-supplied .md files injected as
+    // supplementary testing guidance. Each file is capped at 8000 chars to
+    // keep prompt budgets reasonable.
+    for path in &cfg.reference_prompts {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let fname = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            let truncated: String = content.chars().take(8000).collect();
+            s.push_str(&format!(
+                "\nREFERENCE METHODOLOGY ({fname}) — use as supplementary testing guidance:\n{truncated}\n"
+            ));
+        }
+    }
+    // Autonomy directives: shape how aggressively agents explore.
+    s.push_str(&autonomy_directives(&cfg.autonomy));
+    // The live attack graph — refreshed at every graph checkpoint of the test.
+    let graph = crate::graph_memory::live_context(&run_id(cfg));
+    if !graph.is_empty() {
+        s.push_str(&graph);
+    }
+    // What the other agents already observed (structured digest + where to grep).
+    s.push_str(&crate::traces::prompt_block(cfg.workdir.as_deref(), None));
+    // Adaptive payload intelligence: WAF bypass history, target stack, parameter profiles.
+    if let Some(ref workdir) = cfg.workdir {
+        let adapt_path = std::path::Path::new(workdir).join("adaptive-engine.json");
+        if let Ok(engine) = crate::adaptive::AdaptiveEngine::load(&adapt_path) {
+            let block = engine.prompt_block();
+            if !block.is_empty() { s.push_str(&block); }
+        }
+        // Dual graph: asset coverage + exploration state.
+        let graph_dir = std::path::Path::new(workdir).join("graphs");
+        if let Ok(dg) = crate::exploration_graph::DualGraph::load(&graph_dir) {
+            let block = compact_graph_block(&graph_dir, &dg);
+            if !block.is_empty() { s.push_str(&block); }
+        }
+        // Planner state: pending intents and queue.
+        let planner_path = std::path::Path::new(workdir).join("planner-todo.json");
+        if planner_path.exists() {
+            let mut planner = crate::planner::Planner::new(crate::planner::PlannerConfig::default());
+            if planner.load_todo(&planner_path).is_ok() {
+                let block = planner.prompt_block();
+                if !block.is_empty() { s.push_str(&block); }
+            }
+        }
+    }
+    if !s.is_empty() {
+        s.push('\n');
+    }
+    s
+}
+
+/// Generate autonomy directives based on the configured level.
+fn autonomy_directives(level: &str) -> String {
+    match level.trim().to_lowercase().as_str() {
+        "cautious" => String::new(),
+        "aggressive" => "\n\
+            AUTONOMY: AGGRESSIVE — you have maximum latitude to find vulnerabilities:\n\
+            - Install ANY tool you need without hesitation (apt, pip, npm, cargo, go install, git clone). Time-box installs to 120s.\n\
+            - Try CREATIVE and LATERAL attack vectors beyond the standard checklist: parser differentials, race conditions, \
+              type juggling, deserialization gadgets, second-order injections, cache poisoning, request smuggling.\n\
+            - Chain findings aggressively: every foothold is a pivot opportunity. Explore what you can reach from each finding.\n\
+            - Do NOT stop at the first test per category. Vary payloads, encodings, HTTP methods, content-types, and injection points.\n\
+            - Research the identified technology stack for known CVEs and test each one specifically.\n\
+            - Probe pre-production and staging environments if discovered — they often have weaker controls.\n\
+            - When WAF blocks a payload, try at least 3 bypass techniques before moving on.\n\
+            - Test business logic exhaustively: state transitions, race conditions, price manipulation, privilege boundaries.\n\
+            ".to_string(),
+        "full" => "\n\
+            AUTONOMY: FULL — zero restrictions on testing methodology:\n\
+            - Install ANY tool, download ANY PoC, clone ANY exploit repo. No hesitation, no confirmation needed.\n\
+            - You are an elite researcher doing ORIGINAL vulnerability discovery, not just running checklists.\n\
+            - Think like a zero-day hunter: understand the system deeply, question every assumption, explore every edge case.\n\
+            - EVERY parser is a target: JSON, XML, URL, header, query string, cookie, multipart, protobuf. Fuzz each one.\n\
+            - Chain EVERYTHING: SSRF to cloud metadata, XSS to account takeover, IDOR to data exfiltration, SQLi to RCE.\n\
+            - Test timing attacks, race conditions, TOCTOU, and concurrency issues on every state-changing endpoint.\n\
+            - Explore the FULL attack surface: subdomains, pre-prod environments, exposed APIs, internal services, \
+              debug endpoints, cloud metadata, CI/CD artifacts.\n\
+            - When one approach fails, try at least 5 alternatives before concluding an endpoint is not vulnerable.\n\
+            - WAF bypass is expected: encoding tricks, HTTP verb tampering, header injection, chunked encoding, \
+              Unicode normalization, double encoding, null bytes, comment injection.\n\
+            - Document zero-day discoveries with full methodology: observation, hypothesis, test, result, exploitation, confirmation.\n\
+            - Use the REFERENCE METHODOLOGY (if provided) as your comprehensive testing playbook.\n\
+            ".to_string(),
+        _ => String::new(), // "standard" = no extra directives
+    }
+}
+
+/// Where this project's durable state lives. The app already points
+/// `vault_dir` at `<cwd>/.neurosploit/vault`, so its parent is the project
+/// store; a caller that set neither falls back to the run's own workdir, which
+/// keeps a one-off run from writing into an unrelated directory.
+pub(crate) fn proj_store(cfg: &RunConfig) -> PathBuf {
+    if let Some(v) = cfg.vault_dir.as_deref() {
+        if let Some(parent) = Path::new(v).parent() {
+            return parent.to_path_buf();
+        }
+    }
+    cfg.workdir
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".neurosploit"))
+}
+
+/// The run id used as provenance in the graph and memory: the workdir basename
+/// (`ns-<ts>-<target>`), which is also what the report and the web console use.
+pub(crate) fn run_id(cfg: &RunConfig) -> String {
+    cfg.workdir
+        .as_deref()
+        .and_then(|d| Path::new(d).file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// The engagement's authorization boundary.
+///
+/// Built from the target unless the operator configured one explicitly, with
+/// `out_of_scope` entries that name a host or network promoted into real
+/// exclusions — until now they were only ever prose in a prompt.
+/// Verify the engagement's capability token, if one was supplied.
+///
+/// Returns the grant and any local scope entries it refused to cover. A token
+/// that does not verify is an error, not a warning: running anyway would mean
+/// acting on an authorization nobody can prove was issued.
+pub fn verify_capability(cfg: &RunConfig) -> Result<Option<crate::capability::Capability>, String> {
+    let Some(token) = cfg.capability.as_deref().filter(|t| !t.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let Some(key) = crate::capability::key_from_env() else {
+        return Err("a capability token was supplied but no verification key is configured — set NEUROSPLOIT_CAPABILITY_KEY or NEUROSPLOIT_CAPABILITY_KEY_FILE. An unverifiable token is not authorization.".into());
+    };
+    crate::capability::Capability::verify(token, &key).map(Some).map_err(|e| e.to_string())
+}
+
+/// The audit trail for this run: one per run directory, plus nothing else —
+/// the chain is per-engagement so a run's trail travels with its evidence.
+pub fn audit_log(cfg: &RunConfig) -> crate::audit::AuditLog {
+    let path = cfg
+        .workdir
+        .as_deref()
+        .map(|d| Path::new(d).join("audit.jsonl"))
+        .unwrap_or_else(|| proj_store(cfg).join("audit.jsonl"));
+    crate::audit::AuditLog::open(path)
+}
+
+/// Id of the grant in force, for the audit records. Empty when the run is
+/// operating on local configuration alone, which is itself worth recording.
+fn capability_id(cfg: &RunConfig) -> String {
+    verify_capability(cfg).ok().flatten().map(|c| c.id).unwrap_or_default()
+}
+
+pub fn effective_scope(cfg: &RunConfig) -> crate::scope::ScopePolicy {
+    let mut p = if cfg.scope.hard.is_empty() {
+        crate::scope::ScopePolicy::for_target(&cfg.target)
+    } else {
+        cfg.scope.clone()
+    };
+    if let Some(repo) = cfg.repo.as_deref().filter(|r| r.starts_with("http")) {
+        // A grey-box source repo is fetched, not attacked; authorize the fetch.
+        p.allow(&crate::scope::host_of(repo));
+    }
+    if let Some(oos) = cfg.out_of_scope.as_deref() {
+        for tok in oos.split([',', ';', '\n']) {
+            let t = tok.trim();
+            // Only host-shaped exclusions become rules; a sentence like "no
+            // destructive tests" is guidance for the prompt, not a pattern.
+            if !t.is_empty() && !t.contains(' ') && (t.contains('.') || t.contains('/')) {
+                p.deny(t);
+            }
+        }
+    }
+    // A verified grant is the ceiling. Anything the operator configured that
+    // the grant does not cover is dropped here rather than at request time —
+    // the boundary should be wrong-proof before the first packet, not enforced
+    // after an agent has already decided to go somewhere.
+    if let Ok(Some(cap)) = verify_capability(cfg) {
+        let (constrained, _dropped) = cap.constrain(&p);
+        return constrained;
+    }
+    p
+}
+
+/// Prior knowledge about this target, injected into recon/exploit prompts.
+///
+/// An engagement is usually not the first look at a host, but every model call
+/// starts blank — without this the harness re-derives the same stack, the same
+/// endpoints and the same dead ends on every run. Recall is scored and capped
+/// (see [`crate::memory`]) so the block stays a handful of lines, and it is
+/// explicitly framed as leads to verify: prior belief must not become an
+/// assertion the model is willing to report.
+fn memory_directives(cfg: &RunConfig) -> String {
+    let dir = proj_store(cfg).join("memory");
+    let q = crate::memory::Query {
+        text: format!(
+            "{} {} {}",
+            cfg.target,
+            cfg.objective.clone().unwrap_or_default(),
+            cfg.instructions.clone().unwrap_or_default()
+        ),
+        target: cfg.target.clone(),
+        limit: 6,
+        ..Default::default()
+    };
+    let Ok(mut mem) = crate::memory::shared(&dir).lock() else { return String::new() };
+    mem.prompt_block(&q)
+}
+
+/// Tool-usage doctrine prepended to recon/exploit prompts so the agent knows
+/// exactly what it may use. Best run on Kali Linux (or the Kali Docker image),
+/// where these tools are preinstalled.
+fn tool_doctrine(mcp_on: bool) -> String {
+    let browser = if mcp_on {
+        "BROWSER (Playwright MCP is available — USE IT, don't rely on curl alone): for any JS-heavy / SPA / Angular / React / Vue target, DRIVE THE REAL BROWSER — navigate, wait for the app to render, read the live DOM, click through client-side routes (e.g. #/admin, #/administration, #/score-board), submit forms, and watch the NETWORK requests the app makes to discover the real REST/GraphQL API. PROVE client-side issues (XSS actually firing, DOM sinks, auth flows) in the browser and capture a screenshot as evidence. Use curl for the API/backend calls you discover; use the browser for anything the SPA renders or executes client-side."
+    } else {
+        "BROWSER (no MCP — use the Playwright CLI to complement curl on JS-heavy targets): curl only sees the initial HTML (an empty SPA shell renders nothing useful). To render/interact, write a small Playwright script and run it, e.g.:\n\
+         `npx -y playwright@latest install chromium >/dev/null 2>&1; cat > /tmp/pw.js <<'EOF'\n\
+         const { chromium } = require('playwright');\n(async () => { const b = await chromium.launch(); const p = await b.newPage();\n\
+         p.on('request', r => console.log('REQ', r.method(), r.url()));\n await p.goto(process.argv[2], {waitUntil:'networkidle'});\n\
+         console.log(await p.content()); await p.screenshot({path:'/tmp/shot.png'}); await b.close(); })();\nEOF`\n\
+         then `node /tmp/pw.js <url>` to get the rendered DOM + the XHR/fetch URLs the app calls (that reveals the real API). Use `npx playwright screenshot <url> out.png` for quick proof. Combine with curl for the discovered API endpoints."
+    };
+    let mut doctrine = format!(
+        "TOOLING (authorized; best on Kali Linux or the kalilinux/kali-rolling Docker image):\n\
+         - HTTP: `curl` (dump ALL response headers with -i/-D-, follow/inspect redirects, set methods/params/cookies), `wget`.\n\
+         - Ports/services: `rustscan` if present, else `nmap`; if neither is installed you may \
+           install via apt (`apt install -y nmap`), brew, or cargo (`cargo install rustscan`) — \
+           otherwise probe common ports with `curl`/`nc`.\n\
+         - Content/params/URLs: `ffuf`, `gobuster`, `gau`, `katana`, `waybackurls`, `linkfinder` when available.\n\
+         - JS ANALYSIS: download every linked script (`curl -s <script.js>`) and grep it for endpoints/paths, \
+           `fetch(`/`axios`/XHR URLs, API & GraphQL routes, hidden params, and secrets (AKIA…, `api_key`, `token`, \
+           `Bearer `, `authorization`), plus `sourceMappingURL` (fetch the .map to recover original source). \
+           Prefer `linkfinder`/`gau`/`katana` to harvest more URLs when present, else regex with `grep -Eo`.\n\
+         - REQUEST/RESPONSE ANALYSIS: read status codes, every header, Set-Cookie flags, content-type, body length \
+           and response timing; use DIFFERENTIALS (authenticated vs anonymous, valid vs invalid input, existing vs \
+           missing resource) and reflected input / verbose errors to infer behavior and CONFIRM issues with evidence. \
+           Save full request/response pairs when they matter for the PoC.\n\
+         - NUCLEI (fast, targeted — never a blind full scan): first fingerprint the stack, then run nuclei ONLY on \
+           relevant templates, e.g. `nuclei -u <target> -tags <detected-tech,cve> -severity critical,high,medium \
+           -rl 50 -timeout 8 -retries 1` (or `-t <specific-template>` for a suspected CVE). Prefer targeted \
+           `-id`/`-tags` over the whole template set so it stays quick; confirm any hit manually with curl.\n\
+         - MISCONFIG HUNTING: probe for absurd-but-common misconfigurations — exposed `.git`/`.env`/backup & config \
+           files, directory listing, debug/actuator/trace endpoints, default & weak credentials, open admin panels, \
+           permissive CORS, verbose stack traces, exposed dashboards (Kibana/Grafana/Jenkins/phpMyAdmin), and cloud \
+           metadata (169.254.169.254) via SSRF.\n\
+         - RATE-LIMIT / ANTI-AUTOMATION: on auth, password-reset, OTP and sensitive endpoints, send a controlled \
+           burst (e.g. ~20-30 requests) and check for 429/lockout/Retry-After/backoff; report absence as a finding. \
+           Keep bursts small and non-disruptive — this is a control check, not a DoS.\n\
+         - TOOL DOWNLOAD (authorized): when a public PoC or scanner is needed you MAY `git clone` a specific PoC/exploit \
+           repo or download a tool (`git clone`, `wget`, `pip install`, `go install`, `cargo install`) — use pinned, \
+           reputable sources; review before running; never run destructive payloads. ALWAYS time-box downloads/installs \
+           (`timeout 90 <install> || echo skip`) and try each at most once — if it fails, isn't packaged, has no network \
+           or hangs, SKIP it and fall back to curl/nc/dig/python3. A missing or un-downloadable tool is NEVER a reason \
+           to stall: move on with what you have.\n\
+         - PICK THE BEST TOOL, DON'T SETTLE FOR THIS LIST: the tools above are a starting menu, not a limit.            You are expected to reason about the CONTEXT and reach for (or install) the strongest tool for THAT job,            the way a real operator does — if a better/more specific tool exists, research it, provision it (see TOOL            DOWNLOAD), and use it. Prefer battle-tested tooling over hand-rolled scripts when it fits.
+         - CONTEXT TOOLBOXES (provision what the detected surface calls for; time-box each install, skip on failure):
+           · Active Directory / Windows / SMB / LDAP / Kerberos: `netexec`(nxc)/`crackmapexec`, the `impacket` suite              (secretsdump, GetUserSPNs, GetNPUsers, ntlmrelayx, psexec/wmiexec/smbexec), `bloodhound-python`/`bloodhound-ce`              + neo4j for the AD graph, `kerbrute`, `certipy` (AD CS/ESC), `ldapdomaindump`, `enum4linux-ng`, `responder`,              `evil-winrm`, `Coercer`/`PetitPotam`, `adidnsdump`. Map credential→identity→permission→machine and feed the              internal attack graph.
+           · Web / API deep recon: `httpx`, `katana`, `gau`, `waybackurls`, `subfinder`/`amass` (only in-scope),              `arjun` (param mining), `nuclei` (targeted), `feroxbuster`/`ffuf`, `jwt_tool`, `graphw00f`/`clairvoyance`              (GraphQL), `trufflehog`/`gitleaks` on exposed repos.
+           · Cloud: `pacu`, `scoutsuite`, `prowler`, `trivy`, the provider CLIs (`aws`/`gcloud`/`az`), `cloud_enum`.
+           · Exploitation frameworks: `metasploit`/`msfconsole` and `msfvenom` for payloads/PoCs, `sqlmap` for deep SQLi,              `commix` for command injection — use surgically, non-destructively, never a blind auto-exploit.
+           · Secrets/creds & cracking (offline, on captured material only): `hashcat`/`john`, `trufflehog`.
+           · Mobile (APK/IPA): `mobsf` (run HEADLESS via its Docker image / REST API, not the GUI), `apktool`, `jadx`, \
+             `apkleaks`, `objection`/`frida`; `nuclei` on discovered endpoints.\n\
+           · Reverse engineering / binaries: `ghidra` HEADLESS (`analyzeHeadless`), `radare2`/`rizin`, `binwalk`, \
+             `checksec`, `gdb`; decompile and triage without any GUI.\n\
+           · Any GUI tool runs HEADLESS: prefer a CLI / REST / `analyzeHeadless` / `--no-gui` mode or the Docker \
+             image; never require an X display. If a tool is GUI-only, drive its API or skip it.\n\
+         - HEAVY TOOLBOX: many of these ship in `kali-linux-large` or install via apt/pipx/go — when running in the Kali            sandbox they are one `apt install`/`pipx install` away; provision on demand for the context at hand.
+         - CVE -> PoC SOURCING (core capability, not a last resort): the moment you fingerprint a concrete version            (WordPress core/plugin/theme, a CMS, framework/library, an OS package, a service banner), find and run a real            proof-of-concept for its known CVEs:
+           · `searchsploit <product> <version>` (Exploit-DB, offline in Kali); `searchsploit -m <id>` copies a PoC              locally, `-x` reads it, `-u` updates the DB.
+           · Search Exploit-DB, GitHub (`github.com/search?q=CVE-XXXX-YYYY`), PacketStorm, Vulners and the GHSA/NVD              advisory for a working PoC; `git clone` the specific repo (pinned) or fetch the single script.
+           · WordPress: `wpscan --url <t> --enumerate vp,vt,u` to pin vulnerable plugins/themes, then pull the PoC.
+           · BUILD when needed: compile C/Go/Rust PoCs (`gcc`/`make`/`go build`/`cargo build`) or install Python/Ruby              deps in the sandbox; READ the exploit first, adapt hardcoded targets/ports to THIS engagement, run it              non-destructively (benign marker/`id`/OOB callback as proof, never a destructive payload).
+           · Vet everything: reputable source, pinned version, read before running, time-box each fetch/build; if no PoC              exists or it will not build, fall back to a manual attempt or report the version as a lead. This is how you              exploit CVEs that have a public PoC.
+         - {browser}\n\
+         - {ua}{proxy}{pocs}\
+         Use only what is installed; degrade gracefully. Never block on a single tool install. Never run destructive or DoS actions.\n\n",
+        ua = ua_line(),
+        proxy = proxy_line(),
+        pocs = pocs_line(),
+    );
+    if std::env::var("NEUROSPLOIT_C2").ok().as_deref() == Some("1") {
+        doctrine.push_str("\n");
+        doctrine.push_str(crate::c2::doctrine());
+        doctrine.push_str("\n");
+    }
+    if std::env::var("NEUROSPLOIT_TOOLS").ok().as_deref() == Some("1") {
+        doctrine.push_str("\n");
+        doctrine.push_str(&crate::toolbox::doctrine());
+        doctrine.push_str("\n");
+    }
+    doctrine
+}
+
+/// Default identifying User-Agent so target owners (and the operator) can tell
+/// traffic came from NeuroSploit — and so authorship of a scan is unambiguous.
+/// Deliberately a plain `NeuroSploit/<ver>` token: the verbose
+/// "authorized security assessment" comment made WAFs/CDNs block or fingerprint
+/// the scan outright (false negatives). Attribution still travels in the
+/// `X-NeuroSploit-Scan` header (see `default_scan_headers`), which every request
+/// carries, so the scan stays identifiable to defenders regardless of the UA.
+pub fn default_user_agent() -> String {
+    format!("NeuroSploit/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Headers stamped on every request the harness makes, so attribution lives in
+/// the HEADER (not just the UA) and survives a browser-UA switch:
+///   `Accept: */*` and `X-NeuroSploit-Scan: <ver>`.
+pub fn default_scan_headers() -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
+    let mut h = HeaderMap::new();
+    h.insert(ACCEPT, HeaderValue::from_static("*/*"));
+    if let Ok(v) = HeaderValue::from_str(env!("CARGO_PKG_VERSION")) {
+        h.insert("X-NeuroSploit-Scan", v);
+    }
+    h
+}
+
+/// A realistic current-browser User-Agent. Use this when the identifying UA
+/// changes what the target returns — a WAF/CDN (Cloudflare, Akamai, …) commonly
+/// rate-limits, challenges, or serves different content to a self-declared
+/// scanner UA, which causes FALSE NEGATIVES. Attribution is still carried by the
+/// `X-NeuroSploit-Scan` header, so the scan stays identifiable to defenders even
+/// with a browser UA.
+pub fn realistic_user_agent() -> &'static str {
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+}
+
+/// Browser prefetch: when a WAF/JS-challenge blocks curl, use a headless
+/// browser to render key endpoints and collect the real HTML.  Returns a
+/// context block that agents receive instead of having to fetch pages
+/// themselves (which would hit the WAF and produce hallucinated evidence).
+async fn browser_prefetch(
+    target: &str,
+    recon_json: &str,
+    tx: &Sender<String>,
+) -> String {
+    let urls = extract_prefetch_urls(target, recon_json);
+    if urls.is_empty() {
+        return String::new();
+    }
+    let _ = tx.send(format!(
+        "🌐 browser prefetch: fetching {} endpoint(s) through headless Chromium to bypass WAF",
+        urls.len()
+    )).await;
+
+    let script = r#"
+const { chromium } = require('playwright');
+(async () => {
+    const urls = JSON.parse(process.argv[2]);
+    const results = {};
+    let browser;
+    try {
+        browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    } catch (e) {
+        console.log(JSON.stringify({ error: 'browser_launch_failed: ' + e.message }));
+        return;
+    }
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    });
+    for (const url of urls) {
+        try {
+            const page = await context.newPage();
+            const resp = await page.goto(url, { waitUntil: 'networkidle', timeout: 15000 });
+            const status = resp ? resp.status() : 0;
+            const html = await page.content();
+            // Truncate to 4000 chars per page to fit agent context
+            results[url] = { status, html: html.substring(0, 4000) };
+            await page.close();
+        } catch (e) {
+            results[url] = { status: 0, html: '', error: e.message };
+        }
+    }
+    await browser.close();
+    console.log(JSON.stringify(results));
+})();
+"#;
+
+    let script_path = "/tmp/ns_browser_prefetch.js";
+    if let Err(e) = std::fs::write(script_path, script) {
+        let _ = tx.send(format!("⚠ browser prefetch: failed to write script: {e}")).await;
+        return String::new();
+    }
+
+    let urls_json = serde_json::to_string(&urls).unwrap_or_default();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        tokio::process::Command::new("node")
+            .arg(script_path)
+            .arg(&urls_json)
+            .output(),
+    ).await;
+
+    let output = match result {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            let _ = tx.send(format!("⚠ browser prefetch: node failed: {e}")).await;
+            return String::new();
+        }
+        Err(_) => {
+            let _ = tx.send("⚠ browser prefetch: timed out (90s)".into()).await;
+            return String::new();
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = match serde_json::from_str(stdout.trim()) {
+        Ok(v) => v,
+        Err(_) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("Cannot find module") || stderr.contains("playwright") {
+                let _ = tx.send("⚠ browser prefetch: Playwright not installed — run `npx -y playwright@latest install chromium`".into()).await;
+            } else {
+                let _ = tx.send(format!("⚠ browser prefetch: failed to parse output (stderr: {})", &stderr[..stderr.len().min(200)])).await;
+            }
+            return String::new();
+        }
+    };
+
+    if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
+        let _ = tx.send(format!("⚠ browser prefetch: {err}")).await;
+        return String::new();
+    }
+
+    let mut block = String::from(
+        "\n\n--- BROWSER-PREFETCHED PAGES (real rendered HTML, bypassed WAF) ---\n\
+         The harness fetched these pages through a real browser. Use this HTML as\n\
+         ground truth instead of running curl (which will hit the WAF). Do NOT\n\
+         fabricate HTTP responses — if a page is not listed here, you do not have\n\
+         its content and must state that.\n\n"
+    );
+    let mut fetched = 0usize;
+    if let Some(obj) = parsed.as_object() {
+        for (url, data) in obj {
+            let status = data.get("status").and_then(|v| v.as_u64()).unwrap_or(0);
+            let html = data.get("html").and_then(|v| v.as_str()).unwrap_or("");
+            let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("");
+            if !html.is_empty() && status > 0 {
+                block.push_str(&format!(
+                    "### {url} (HTTP {status})\n```html\n{html}\n```\n\n"
+                ));
+                fetched += 1;
+            } else if !error.is_empty() {
+                block.push_str(&format!("### {url} — FAILED: {error}\n\n"));
+            }
+        }
+    }
+
+    if fetched == 0 {
+        let _ = tx.send("⚠ browser prefetch: no pages rendered successfully".into()).await;
+        return String::new();
+    }
+
+    let _ = tx.send(format!(
+        "✓ browser prefetch: {fetched}/{} page(s) rendered — agents will use real HTML",
+        urls.len()
+    )).await;
+    block
+}
+
+/// Extract URLs worth prefetching from recon JSON: the target itself plus
+/// any explicitly discovered endpoints (login, register, OAuth, verify, etc.).
+fn extract_prefetch_urls(target: &str, recon_json: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let base = target.trim_end_matches('/');
+    urls.push(base.to_string());
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(recon_json) {
+        // Walk "endpoints" object for url fields
+        if let Some(endpoints) = v.get("endpoints").and_then(|e| e.as_object()) {
+            for (_key, ep) in endpoints {
+                if let Some(url) = ep.get("url").and_then(|u| u.as_str()) {
+                    if url.starts_with("http") && !urls.contains(&url.to_string()) {
+                        urls.push(url.to_string());
+                    }
+                }
+            }
+        }
+        // Walk "oauth" for login URLs
+        if let Some(endpoints) = v.get("endpoints") {
+            if let Some(oauth) = endpoints.get("oauth").and_then(|o| o.as_object()) {
+                for (_key, url_val) in oauth {
+                    if let Some(url) = url_val.as_str() {
+                        if url.starts_with("http") && !urls.contains(&url.to_string()) {
+                            urls.push(url.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Cap to 10 URLs to avoid overlong prefetch
+    urls.truncate(10);
+    urls
+}
+
+// =========================================================================
+// CAG — Context-Augmented Generation
+// =========================================================================
+// Instead of letting agents fetch pages (and hallucinate responses when WAF
+// blocks them), the harness pre-collects HTTP evidence for every discovered
+// endpoint and injects it into the agent context.  Agents analyze provided
+// data only; they cannot fabricate what they never received.
+
+/// A single pre-collected HTTP response.
+#[derive(Clone, Serialize, Deserialize)]
+struct CagResponse {
+    url: String,
+    method: String,
+    status: u16,
+    headers: std::collections::HashMap<String, String>,
+    body: String,
+    via: String, // "browser" or "curl"
+}
+
+/// Full CAG evidence cache for a run.
+#[derive(Default, Clone, Serialize, Deserialize)]
+struct CagCache {
+    responses: Vec<CagResponse>,
+}
+
+impl CagCache {
+    fn is_empty(&self) -> bool { self.responses.is_empty() }
+    fn len(&self) -> usize { self.responses.len() }
+
+    fn to_context(&self, max_chars: usize) -> String {
+        if self.responses.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from(
+            "\n\n=== CAG: PRE-COLLECTED HTTP EVIDENCE ===\n\
+             The harness fetched these responses BEFORE you were invoked.\n\
+             RULES:\n\
+             1. Analyze ONLY the data below — do NOT fabricate HTTP responses.\n\
+             2. If an endpoint is not listed here, you do NOT have its response.\n\
+             3. Any finding you report MUST reference evidence from this section.\n\
+             4. curl/wget commands you run against WAF-protected targets will return\n\
+                challenge pages, NOT the real application — use this data instead.\n\n"
+        );
+        let mut budget = max_chars;
+        for r in &self.responses {
+            let header_block: String = r.headers.iter()
+                .filter(|(k, _)| {
+                    let lk = k.to_lowercase();
+                    ["content-type", "set-cookie", "location", "x-powered-by",
+                     "server", "x-frame-options", "content-security-policy",
+                     "access-control-allow-origin", "www-authenticate",
+                     "x-csrf-token", "x-request-id"]
+                        .iter().any(|h| lk.contains(h))
+                })
+                .map(|(k, v)| format!("  {k}: {v}"))
+                .collect::<Vec<_>>().join("\n");
+            let body_cap = r.body.chars().take(3000).collect::<String>();
+            let entry = format!(
+                "### {} {} → HTTP {status} (via {via})\n{headers}\n```\n{body}\n```\n\n",
+                r.method, r.url,
+                status = r.status, via = r.via,
+                headers = if header_block.is_empty() { String::from("  (no security-relevant headers)") } else { header_block },
+                body = body_cap,
+            );
+            if entry.len() > budget { break; }
+            budget -= entry.len();
+            out.push_str(&entry);
+        }
+        out.push_str("=== END CAG EVIDENCE ===\n");
+        out
+    }
+}
+
+/// Collect HTTP evidence for all discovered endpoints.
+/// Uses browser when WAF is detected, curl otherwise.
+async fn cag_collect(
+    target: &str,
+    recon_json: &str,
+    waf_challenge: bool,
+    tx: &Sender<String>,
+) -> CagCache {
+    let urls = extract_prefetch_urls(target, recon_json);
+    if urls.is_empty() {
+        return CagCache::default();
+    }
+
+    let _ = tx.send(format!(
+        "🧠 CAG: collecting HTTP evidence for {} endpoint(s){}",
+        urls.len(),
+        if waf_challenge { " (browser mode — WAF detected)" } else { " (curl mode)" }
+    )).await;
+
+    let mut cache = CagCache::default();
+
+    if waf_challenge {
+        // Browser-based collection
+        let browser_html = browser_prefetch(target, recon_json, tx).await;
+        // Parse the browser_prefetch output back into structured CagResponses
+        // (browser_prefetch already did the work — reuse its data)
+        for url in &urls {
+            // Run a lightweight curl too to capture headers even if body is WAF
+            let curl_resp = cag_curl_one(url, tx).await;
+            if let Some(mut r) = curl_resp {
+                // If WAF blocked curl, check if browser got real content
+                if is_waf_body(&r.body) {
+                    r.body = extract_browser_body(&browser_html, url);
+                    if !r.body.is_empty() {
+                        r.via = "browser".into();
+                    }
+                }
+                cache.responses.push(r);
+            }
+        }
+    } else {
+        // Curl-based collection (no WAF)
+        for url in &urls {
+            if let Some(r) = cag_curl_one(url, tx).await {
+                cache.responses.push(r);
+            }
+        }
+    }
+
+    // Also collect common sensitive paths
+    let sensitive_paths = [
+        "/.env", "/.git/HEAD", "/robots.txt", "/.well-known/security.txt",
+        "/sitemap.xml", "/wp-login.php", "/xmlrpc.php", "/api/", "/graphql",
+    ];
+    let base = target.trim_end_matches('/');
+    for path in &sensitive_paths {
+        let url = format!("{base}{path}");
+        if cache.responses.iter().any(|r| r.url == url) { continue; }
+        if let Some(r) = cag_curl_one(&url, tx).await {
+            cache.responses.push(r);
+        }
+    }
+
+    let _ = tx.send(format!(
+        "✓ CAG: collected {} response(s) — agents will analyze pre-fetched evidence",
+        cache.len()
+    )).await;
+
+    // Persist to workdir for post-processing
+    cache
+}
+
+/// Fetch a single URL with curl (the harness's own HTTP client).
+async fn cag_curl_one(url: &str, _tx: &Sender<String>) -> Option<CagResponse> {
+    let client = crate::probe::http_client();
+    let resp = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.get(url)
+            .header("User-Agent", realistic_user_agent())
+            .send(),
+    ).await {
+        Ok(Ok(r)) => r,
+        _ => return None,
+    };
+    let status = resp.status().as_u16();
+    let mut headers = std::collections::HashMap::new();
+    for (k, v) in resp.headers() {
+        headers.insert(k.to_string(), v.to_str().unwrap_or("").to_string());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    // Truncate body to 4000 chars
+    let body: String = body.chars().take(4000).collect();
+    Some(CagResponse {
+        url: url.to_string(),
+        method: "GET".into(),
+        status,
+        headers,
+        body,
+        via: "curl".into(),
+    })
+}
+
+/// Check if response body is a WAF challenge page.
+fn is_waf_body(body: &str) -> bool {
+    let markers = [
+        "Just a moment", "Cloudflare", "cf-browser-verification",
+        "challenge-platform", "Checking your browser", "DDoS protection",
+        "_cf_chl_opt", "Attention Required",
+    ];
+    markers.iter().any(|m| body.contains(m))
+}
+
+/// Extract rendered body for a URL from the browser_prefetch block.
+fn extract_browser_body(browser_block: &str, url: &str) -> String {
+    let marker = format!("### {} (HTTP", url);
+    if let Some(start) = browser_block.find(&marker) {
+        let rest = &browser_block[start..];
+        if let Some(code_start) = rest.find("```html\n") {
+            let content = &rest[code_start + 8..];
+            if let Some(code_end) = content.find("\n```") {
+                return content[..code_end].to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// CAG grounding gate: demote findings that reference endpoints not in the
+/// evidence cache, or whose claimed status codes contradict the cache.
+fn cag_grounding_gate(findings: &mut Vec<Finding>, cache: &CagCache, tx_sync: Option<&Sender<String>>) -> usize {
+    if cache.is_empty() { return 0; }
+    let mut demoted = 0usize;
+    for f in findings.iter_mut() {
+        let ep = f.endpoint.trim();
+        if ep.is_empty() || !ep.starts_with("http") { continue; }
+
+        // Check if we have evidence for this endpoint
+        let cached = cache.responses.iter().find(|r| {
+            r.url == ep || ep.starts_with(&r.url) || r.url.starts_with(ep)
+        });
+
+        if let Some(cr) = cached {
+            // If cached response was a WAF page but finding claims real content
+            if is_waf_body(&cr.body) && cr.via == "curl" && f.confidence > 0.3 {
+                f.review_reason = format!(
+                    "CAG grounding: endpoint {} returned WAF challenge in pre-fetch (HTTP {}), \
+                     but agent claimed exploitable content. {}",
+                    ep, cr.status, f.review_reason
+                );
+                f.confidence = f.confidence.min(0.15);
+                f.validated = false;
+                f.review_status = "needs-review".into();
+                demoted += 1;
+            }
+        }
+        // Not demoting findings for endpoints we didn't prefetch — agents may
+        // discover new endpoints during active testing (curl works for non-WAF).
+    }
+    demoted
+}
+
+/// Identify NeuroSploit traffic at the request layer (User-Agent + a marker
+/// header). Overridable via `NEUROSPLOIT_UA`.
+fn ua_line() -> String {
+    let ua = std::env::var("NEUROSPLOIT_UA").ok().filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(default_user_agent);
+    let browser = realistic_user_agent();
+    format!(
+        "IDENTIFY & UA STRATEGY (attribution lives in the HEADER, not just the UA): add \
+         `-H \"X-NeuroSploit-Scan: {ver}\"` to EVERY request — that is what keeps the scan attributable. \
+         For the User-Agent, start with the plain `-A \"{ua}\"`. BUT: if the target sits behind a WAF/CDN \
+         (Cloudflare, Akamai, …) and the scanner UA gets blocked, challenged, rate-limited, or returns \
+         DIFFERENT content than a browser would, SWITCH to a realistic browser UA `-A \"{browser}\"` — a \
+         self-declaring scanner UA causes FALSE NEGATIVES, and the X-NeuroSploit-Scan header keeps you \
+         attributable regardless. Compare a probe with each UA early; if they differ, use the browser UA \
+         for the rest of the run. Keep the UA CONSISTENT within a session unless a test needs otherwise.\n         ",
+        ver = env!("CARGO_PKG_VERSION"))
+}
+
+/// Attribution stamped into every finding's impact so the provenance travels
+/// with the finding across the report, findings.json and any copy — making it
+/// hard to silently re-badge NeuroSploit's output as someone else's work.
+const ATTRIBUTION: &str = "Identified and validated by NeuroSploit (multi-model adversarial validation) — https://github.com/JoasASantos/NeuroSploit · by Joas A Santos & Red Team Leaders.";
+
+/// Re-validate a set of candidate findings (N-model voting + adversarial refute)
+/// WITHOUT re-running recon/exploitation — for recovered/interrupted runs, so the
+/// operator can filter false positives on what was already found. Streams
+/// progress and returns the surviving, attribution-stamped findings.
+pub async fn revalidate(findings: Vec<Finding>, pool: &ModelPool, vote_n: usize, tx: Sender<String>) -> Vec<Finding> {
+    pool.set_progress(tx.clone());
+    let _ = tx.send(format!("re-validating {} recovered finding(s) by {}-model vote…", findings.len(), vote_n)).await;
+    let deduped = dedup_findings(findings);
+    let mut v = validate(deduped, pool, VOTE_SYS, vote_n, &tx).await;
+    v = refute_pass(v, pool, vote_n, &tx).await;
+    stamp_attribution(&mut v);
+    let _ = tx.send(format!("re-validation done — {} finding(s) survived", v.len())).await;
+    v
+}
+
+/// Append the NeuroSploit attribution to each finding's impact (idempotent).
+pub fn stamp_attribution(findings: &mut [Finding]) {
+    for f in findings.iter_mut() {
+        if !f.impact.contains("Identified and validated by NeuroSploit") {
+            let sep = if f.impact.trim().is_empty() { "" } else { "\n\n" };
+            f.impact = format!("{}{sep}{ATTRIBUTION}", f.impact.trim_end());
+        }
+    }
+}
+
+/// If a local proxy is configured (Burp/ZAP), tell agents to route HTTP through
+/// it so the operator can inspect/replay traffic in Burp Suite.
+fn proxy_line() -> String {
+    match std::env::var("NEUROSPLOIT_PROXY").ok().filter(|v| !v.trim().is_empty()) {
+        Some(p) => format!(
+            "PROXY: route ALL HTTP through the local intercepting proxy at {p} (Burp/ZAP) so the operator can \
+             inspect & replay in Burp — add `--proxy {p} -k` to every curl (and set http(s)_proxy for other tools). \
+             Send anything noteworthy through it for manual review.\n         "),
+        None => String::new(),
+    }
+}
+
+/// If a PoC directory is set, tell agents to save custom exploit scripts there.
+fn pocs_line() -> String {
+    match std::env::var("NEUROSPLOIT_POCS").ok().filter(|v| !v.trim().is_empty()) {
+        Some(d) => format!(
+            "POCS (required for every confirmed Medium+ finding): before reporting it, WRITE a standalone, \
+             runnable PoC to {d}/<short-slug>.py or {d}/<short-slug>.sh (prefer Python or Bash — one file per \
+             finding, not per step) that reproduces the vulnerability end-to-end: target, exact payload/request, \
+             and the observable proof (response snippet, status code, timing, etc.). Header comment: what it \
+             proves, how to run it. Actually RUN it once to confirm it works before citing it. Put the exact file \
+             name (e.g. `pocs/idor_order_id.py`) in the finding's `evidence` field so the report and UI can link \
+             it — a finding without a cited PoC path looks unproven. SAVE EVERY exploitation artifact you write              into {d}/ so it can be retrieved after the run: repro scripts, Frida hook scripts (`{d}/<slug>.frida.js`),              custom exploit code (any language), the compiled binary or its source, request collections, and any              downloaded-and-adapted public PoC. Keep the exact command to run each in its header comment.\n         "),
+        None => String::new(),
+    }
+}
+
+/// Data-safety guardrail prepended to every exploit/chain prompt.
+const SAFETY_DOCTRINE: &str = "DATA SAFETY (strict): prove impact WITHOUT harming data. Do NOT modify, delete, \
+overwrite, encrypt or exfiltrate data, create/alter/escalate accounts, or change configuration/state — unless the \
+operator has explicitly authorized that specific action. Read-only, minimal proof. If you encounter PII (names, \
+emails, CPF/SSN, phones, cards, tokens): confirm access with the SMALLEST possible sample and REDACT it in the \
+report (e.g. show 1 masked record + a count) — never dump, store, or transmit the dataset. Prefer benign markers \
+and OOB/echo checks over any state-changing payload. When unsure whether an action is safe, don't do it — report \
+it as reachable and stop.\n\
+ACCOUNT-CREATION GUARDRAIL (hard limit): creating accounts is state-changing — do it ONLY to enable authenticated \
+testing, and create AT MOST 2 accounts for the ENTIRE engagement (1 normal user; a 2nd only when a test genuinely \
+needs two users, e.g. horizontal IDOR). NEVER loop, script, fuzz, or batch the register endpoint; do not write a \
+tool/PoC that submits it repeatedly; do not flood or stress the database with sign-ups. Each account must be a \
+single, clearly-marked benign identity (`nrsplt_<rand>@example.test`). REUSE the account you already made instead of \
+making new ones. To TEST the register endpoint itself (rate-limit, mass-assignment, enumeration, CSRF, weak policy), \
+send only a FEW controlled requests and prove the flaw from those — never a high-volume run. If a test would require \
+many registrations, report it as a LEAD and STOP rather than mass-creating accounts.\n\n";
+/// Per-run operational directive: the credential VAULT path, the account cap,
+/// finding-tagging rules, and (opt-in) disposable-email use. Injected into web
+/// engagement prompts so created accounts are logged for cleanup and findings
+/// are labelled authenticated vs unauthenticated.
+fn engagement_ops(cfg: &RunConfig) -> String {
+    let (vault, _) = vault_paths(cfg);
+    let temp = if cfg.temp_email {
+        match std::env::var("NEUROSPLOIT_TEMP_INBOX").ok().filter(|a| !a.trim().is_empty()) {
+            // The harness already created a disposable inbox (see crate::inbox);
+            // hand the agent that exact address so the inbox is one the harness
+            // owns (for cleanup and audit) rather than an unrecorded one.
+            Some(addr) => Box::leak(format!(
+                "DISPOSABLE EMAIL (enabled): the harness created inbox `{addr}` for you (mail.tm). USE THIS ADDRESS as the                  account email. Read confirmation codes/links by polling `GET https://api.mail.tm/messages` — the harness                  also polls it and records what arrives.", ).into_boxed_str()) as &str,
+            None =>
+        "DISPOSABLE EMAIL (enabled): if registration requires an email confirmation code/link, you MAY use the free \
+         mail.tm API (no key) — `POST https://api.mail.tm/accounts` {address,password} to create an inbox (get a \
+         valid domain from `GET https://api.mail.tm/domains`), `POST https://api.mail.tm/token` for a JWT, then poll \
+         `GET https://api.mail.tm/messages` (Bearer JWT) to read the confirmation code/link. Use the mail.tm address \
+         as the account email. Guerrilla Mail's API is a fallback. "
+        }
+    } else {
+        "DISPOSABLE EMAIL (disabled): if registration REQUIRES an email confirmation you cannot receive, stop and \
+         report it as a blocker (do not attempt to bypass it). "
+    };
+    let oob = oob_ops(cfg);
+    let sms = sms_ops(cfg);
+    let waf = WAF_OPS;
+    format!(
+        "ENGAGEMENT OPS — TEST ACCOUNTS & VAULT:\n\
+         - CREDENTIAL VAULT: whenever you create a test account or generate any credential, APPEND one JSON line to \
+           `{vault}` (create the file if missing) of the form \
+           {{\"account\":\"<email/username>\",\"secret\":\"<password>\",\"role\":\"<role>\",\"endpoint\":\"<register endpoint>\",\"how\":\"<curl|browser + the exact steps you used>\",\"auth_flow\":\"<how you logged in / got the session>\"}}. \
+           This vault is the single place secrets are stored so you (and the operator) can consult them later; also \
+           set the finding's `secret` field so it is captured even if the file write fails.\n\
+         - CLEANUP: every account you create MUST be reported so it can be deleted afterwards — the run report lists \
+           them from the vault. Do not leave undocumented accounts.\n\
+         - LABEL FINDINGS: set `auth_context` to \"authenticated\" (proven while logged in with a test/given account) \
+           or \"unauthenticated\" (proven with no session), and `account` to which user/role you used. In grey-box, be \
+           explicit about which findings needed a login. In black-box, record in `how`/evidence exactly what you did \
+           to create the user.\n\
+         - LOGIN VERIFICATION EVIDENCE: when you authenticate (register or use given creds), CAPTURE proof the login            actually worked BEFORE deep testing — save the login request/response pair to the evidence, a Playwright            screenshot of the post-login page to $NEUROSPLOIT_POCS/../evidence/login-<role>.png, and record in the            finding/vault whether login SUCCEEDED or FAILED and why. A pentest run should be able to show it was logged            in (or explain why it could not) before claiming authenticated findings.
+         - HTTP TRAFFIC: the harness archives every request/response the replay layer makes; when you prove a finding,            keep the exact request AND response in its `evidence` so the report can show the raw exchange behind it.
+         - {temp}\n\
+         {oob}{sms}{waf}\n"
+    )
+}
+
+/// The out-of-band channel's instructions, when one is configured.
+///
+/// Blind classes are the ones agents most often assert and least often prove.
+/// Handing them a domain we control turns "the parameter might be fetched
+/// server-side" into a callback with a source address on it — and the
+/// instruction is explicit that a DNS query alone is the weaker claim, because
+/// that is the overclaim this channel otherwise invites.
+fn oob_ops(cfg: &RunConfig) -> String {
+    let Some(domain) = cfg.oob_domain.as_deref().filter(|d| d.contains('.')) else {
+        return "- OUT-OF-BAND (not configured): you cannot prove blind SSRF/XXE/RCE. Report such a candidate as a LEAD                 with the evidence you do have — never as a confirmed finding.\n"
+            .to_string();
+    };
+    let token = crate::provenance::Provenance::process().marker("oob").to_lowercase();
+    format!(
+        "- OUT-OF-BAND CHANNEL (enabled): a listener answers for *.{domain}. Build payload hostnames as          `<token>.{domain}` where <token> starts with `{token_prefix}` — use a DIFFERENT token per probe so a          callback is attributable to one payload (example: `{token}`). Report the token you used in the finding's          `payload` field and the callback details in `evidence`. An HTTP callback proves the target connected out;          a DNS query alone proves only that a resolver saw the name — say which one you observed, and never write          'the server fetched my URL' on the strength of a DNS query.\n",
+        token_prefix = crate::provenance::SIGIL.to_lowercase()
+    )
+}
+
+/// What an agent must do when the edge answers instead of the application.
+///
+/// Both failure directions are named explicitly, because agents make both: a
+/// 403 from a WAF read as "not vulnerable" (the expensive one), and a block
+/// page echoing the payload read as reflection (the embarrassing one).
+const WAF_OPS: &str = "- WAF / EDGE: if a response came from a CDN or WAF rather than the application (vendor headers plus block-page      wording, a challenge, or HTTP 429), the application NEVER SAW your request. Never record that as 'tested, not      vulnerable' — record that the control could not be reached, and say which probes were blocked. A payload echoed      back by a block page is the EDGE reflecting it, not the application: it is not XSS evidence. On a 429 or a browser      challenge, pace the requests and retry — that is not a verdict on the payload.\n";
+
+/// Inbound SMS instructions, when a number is configured.
+fn sms_ops(cfg: &RunConfig) -> String {
+    match cfg.sms.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(spec) => {
+            let number = spec.rsplit(':').next().unwrap_or("");
+            format!(
+                "- INBOUND SMS (enabled): {number} receives messages for OTP and phone-verification flows. For a                  rate-limit claim, count DELIVERED messages carrying DISTINCT codes — not HTTP 200s. An endpoint that                  accepts twenty requests and sends one message is not unthrottled.\n"
+            )
+        }
+        None => String::new(),
+    }
+}
+/// Resolve the vault directory + this run's file stem. Prefer `.neurosploit/vault`
+/// (persistent project store) set by the app; fall back to the run workdir. Returns
+/// (jsonl_append_path, json_consolidated_path).
+fn vault_paths(cfg: &RunConfig) -> (String, String) {
+    let dir = cfg.vault_dir.clone()
+        .or_else(|| cfg.workdir.clone())
+        .unwrap_or_else(|| ".".into());
+    let dir = dir.trim_end_matches('/').to_string();
+    let _ = std::fs::create_dir_all(&dir);
+    // Per-run file stem = the run id (workdir basename), so vaults don't collide.
+    let stem = cfg.workdir.as_deref()
+        .and_then(|w| w.trim_end_matches('/').rsplit('/').next())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("vault").to_string();
+    (format!("{dir}/{stem}.jsonl"), format!("{dir}/{stem}.json"))
+}
+
+/// One credential the run generated (a created test account). Stored in the run
+/// vault so the operator can consult it and later delete the account.
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct VaultEntry {
+    #[serde(default)] account: String,
+    #[serde(default)] secret: String,
+    #[serde(default)] role: String,
+    #[serde(default)] endpoint: String,
+    #[serde(default)] how: String,
+    #[serde(default)] auth_flow: String,
+}
+
+/// Read the agent-appended `vault.jsonl` (one JSON object per created account)
+/// from the run dir. Best-effort: skips malformed lines. `_findings` reserved for
+/// future correlation. Deduped by account identity.
+fn collect_vault(path: &str, _findings: &[Finding]) -> Vec<VaultEntry> {
+    let mut out: Vec<VaultEntry> = Vec::new();
+    if let Ok(txt) = std::fs::read_to_string(path) {
+        for line in txt.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            if let Ok(v) = serde_json::from_str::<VaultEntry>(line) {
+                if v.account.is_empty() { continue; }
+                if !out.iter().any(|e| e.account == v.account) { out.push(v); }
+            }
+        }
+    }
+    out
+}
+
+const VOTE_SYS: &str = "You are an adversarial security validator. Decide if the candidate finding is a REAL, reproducible, exploitable vulnerability whose EVIDENCE actually proves impact. Proof can take EITHER modality: an HTTP request/response, OR — for host / infrastructure / Active Directory testing — a command and its captured output (SSH, WinRM, SMB, MSSQL, or CLI tools). Concrete host proof includes: `sudo ... id` returning uid=0(root); a session-unique NONCE written by a root cron/SUID job and read back as root; secretsdump/DCSync returning NTLM hashes; nxc/crackmapexec reporting Pwn3d! or (Admin); a leaked credential that authenticates; a sensitive file (/etc/shadow, NTDS.dit, id_rsa) read back. Treat such command output as concrete, reproducible proof — do NOT reject a host finding merely because it lacks an HTTP request/response; that is the wrong modality for host testing. Reject GENUINE false positives: input merely reflected but not executed; version/banner guesses with no working PoC or command output; self-XSS; theoretical issues; an error message or stack trace mistaken for injection; missing, generic, or non-reproducible evidence; severity inflated beyond what the evidence demonstrates. Privilege escalation to root/SYSTEM/Domain Admin, remote code execution, credential dumping and authentication bypass are HIGH or CRITICAL when the evidence proves them — do not deflate them. Confirm only if the provided evidence concretely proves the vulnerability. Reply with JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}. Default to rejected only when the evidence does not concretely prove the effect.";
+/// Adversarial second pass for High/Critical findings: assume false positive
+/// until the evidence forces otherwise. A finding that can't withstand the
+/// skeptics is dropped.
+const REFUTE_SYS: &str = "You are a skeptical senior reviewer trying to DISPROVE a reported vulnerability. Assume it is a FALSE POSITIVE unless the evidence forces otherwise. Scrutinize: does the evidence PROVE execution/impact, or only that input was reflected/accepted? Is there a real working PoC or reproducible command output, or just a version/banner/theory? Proof may be an HTTP request/response OR, for host/infrastructure/Active-Directory findings, a command and its captured output (e.g. `sudo ... id` -> uid=0(root), a NONCE written by root and read back, secretsdump/DCSync hashes, nxc Pwn3d!/(Admin), a credential that authenticates, /etc/shadow or NTDS.dit read back) — such output is concrete proof, and a host finding must NOT be refuted solely for lacking an HTTP request/response. Could it instead be self-XSS, an error message, or an unreachable path? Privilege escalation to root/SYSTEM/Domain Admin, RCE, credential dumping and auth bypass are real and HIGH/CRITICAL when the output proves them. Reply JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"} where confirmed means the vulnerability is REAL and proven by the evidence. Reject only when the evidence does not prove the effect.";
+const CODE_VOTE_SYS: &str = "You are an adversarial source-code reviewer. Decide if the reported issue is a REAL vulnerability in the provided code (reachable, exploitable, not a false positive). Reply JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}.";
+
+/// ReAct loop directive: make the agent reason → act with a tool → observe →
+/// iterate, instead of one-shot guessing. Keeps it grounded in real evidence.
+const REACT_DOCTRINE: &str = "METHOD (ReAct): work in explicit Thought → Action → Observation cycles. \
+Each Action runs ONE concrete tool command (e.g. a curl request); read its real Observation before the next Thought. \
+Base every claim on an actual observed response — never assume. Stop when you've either proven an issue or exhausted reasonable checks. Be token-efficient: no filler, no repetition.\n\n";
+
+/// DEPTH doctrine (v3.5.2): push past detection to demonstrated impact, and
+/// chain. Distilled from reviewing real AI-pentest output that kept stopping at
+/// "exposed" instead of "exploited".
+const DEPTH_DOCTRINE: &str = "DEPTH (exploit, don't just expose):\n\
+- Exposed → exploited: any info-disclosure, exposed service/catalog/WSDL, leaked credential/token, or non-prod (dev/staging) host you find MUST be USED before you report it — call the exposed endpoint, decode the leaked artifact, log in with the leaked credential, hit the dev host. If you only observed it but never used it, report it as a LEAD (low confidence), not a confirmed finding.\n\
+- Chain across steps: reuse any session/JWT/cookie/credential you obtain in one step against every other module; if one bug yields access, pivot it into IDOR/privesc/data-exfil and report the CHAIN, not isolated parts.\n\
+- Decode & fingerprint → CVE: decode opaque tokens/paths (base64/JSON/marshal) and fingerprint the stack (server, framework, library/gem/plugin versions); map exact versions to known CVEs and attempt a safe, non-destructive PoC.\n\
+- Audit tokens: for any JWT, check alg-confusion (RS→HS), alg:none, kid/jku injection, whether the signature is actually verified, and weak/guessable HS256 secrets.\n\
+- Calibrate honestly: claim High/Critical ONLY when impact is DEMONSTRATED; unproven DoS/abuse is Low/Info or a lead, never inflated.\n\n";
+
+/// DECISION doctrine (v3.5.5): make the agent REASON about where to attack from
+/// the observed responses, map & connect routes, mine parameters, test both auth
+/// levels, and build PoCs — instead of blindly firing a fixed payload list.
+const DECISION_DOCTRINE: &str = "DECIDE WHERE TO ATTACK (analyse, then act):\n\
+- Analyse responses FIRST: read status, headers, content-type, body, redirects and TIMING; let the evidence pick the technique (e.g. SQL error → SQLi; reflected input → XSS; numeric id in JSON → IDOR; missing X-Frame-Options → clickjacking; state-changing POST without a token → CSRF). Don't run payloads that the response makes irrelevant.\n\
+- Map & CONNECT routes: build the route/endpoint graph and link one endpoint to another — an id/token/filename returned by endpoint A is the input to endpoint B; follow multi-step flows (login → profile → order → admin) and hunt the SENSITIVE ones (auth, password reset, payment, file upload/download, account/role changes, admin, export).\n\
+- Mine PARAMETERS: enumerate query/body/header/cookie params (incl. hidden ones from JS/source maps); for each, reason about what it does and test the fitting attack (IDOR, injection, path traversal, mass-assignment, open-redirect, SSRF). Add plausible params the API might accept (id, user, role, admin, debug, redirect, file, callback).\n\
+- MOCK realistic data: when a request needs valid-looking input to reach deeper logic, synthesize believable test data (emails, names, CPFs/SSNs with valid checksums, phone numbers, UUIDs, tokens, JSON bodies) so the flow proceeds — never use real PII.\n\
+- Authenticated testing: if you can authenticate (given creds/roles or a login you performed), REUSE the session and exploit the AUTHENTICATED surface — the endpoints/params only reachable while logged in are where the high-impact bugs live. Test as EACH role you have (e.g. normal user AND admin) and compare.\n\
+- Self-register when no creds are given: if the app allows sign-up, ANALYZE the register form (probe `form_details` has action/method/fields) and CREATE one clearly-marked benign test account (`nrsplt_<rand>@example.test`) — with curl (GET for CSRF+cookies, then POST the fields) or the Playwright browser for JS-rendered/multi-step forms — then log in and REUSE that session for authenticated testing. Register a second account only when a test needs two users. Non-destructive: one account, no mass-registration/spam; at signup also try mass-assignment (`role=admin`/`isAdmin`) and report it if accepted.\n\
+- Build PoCs when needed: for issues that need an artifact to prove (clickjacking → an HTML page that frames the target; CSRF → an auto-submitting HTML form; a multi-step or timing exploit → a script), WRITE the PoC to the run's PoC dir, run/validate it, and cite the file in the evidence.\n\
+- Test control BYPASSES: when something returns 401/403/redirect or is 'blocked', try to bypass it (verb tampering, path/case/encoding normalization, X-Original-URL / X-Rewrite-URL / X-Forwarded-* headers, missing-vs-invalid token, direct object/API access) and confirm the bypass with the two requests.\n\n";
+
+/// Broad default objective for a black-box WEB engagement (used when the
+/// operator set none). Grounds the run in the recognised web standards and asks
+/// for full-breadth coverage so it traverses every applicable class, then goes
+/// deep where signal is strong — without drifting off web (mobile/binary are
+/// separate modes).
+const DEFAULT_WEB_OBJECTIVE: &str = "Comprehensive black-box WEB application penetration test. \
+Methodology: OWASP Top 10 (2021), OWASP ASVS verification requirements, the OWASP Web Security Testing Guide, and CWE for classification. \
+COVER THE WHOLE SURFACE — traverse every web vulnerability class that the recon makes applicable (injection: SQL/NoSQL/command/SSTI/LDAP/XPath; XSS reflected/stored/DOM; access control: IDOR/BOLA/BFLA/privilege escalation/forced browsing; authentication & session: login, signup, password reset, MFA, OAuth/OIDC/SAML, JWT; SSRF; XXE; insecure deserialization; CSRF; open redirect; CORS; file upload/download & path traversal; business-logic & multi-step flow abuse; mass assignment; request smuggling; info disclosure & security misconfiguration; cryptographic failures; known-CVE components) — do not stop at the first class that yields something. \
+Then go DEEP where the signal is strong: prove impact with a real receipt, chain footholds into higher impact, and prioritise the authenticated surface and less-hardened subdomains. This is a WEB engagement only — do not attempt mobile/binary analysis.";
+
+/// FREE EXPLORATION doctrine: the agent is NOT limited to its named vuln class.
+/// This is what stops a run collapsing into "only SQLi": every exploit agent is
+/// told to hunt the whole application with its own judgment and report ANY class
+/// it can prove — especially the high-value auth/identity surface that a
+/// class-boxed run skips. Injected into every exploit prompt.
+const EXPLORE_DOCTRINE: &str = "HUNT THE WHOLE APP — DON'T STAY BOXED IN ONE VULN CLASS:\n\
+- Your agent name is a STARTING point, not a cage. Use your own judgment: map what this application actually DOES and attack the highest-value thing you can see, then report EVERY issue you can prove — of ANY class (not just the one you were launched for). A real tester follows the app, not a checklist.\n\
+- AUTHENTICATION & IDENTITY is usually where the high/critical bugs live — make it a FIRST-CLASS target, not an afterthought: enumerate the login, signup, password-reset, email/phone-verification, MFA/2FA, SSO and session flows. Probe OAuth/OIDC/SAML end-to-end: the authorize/redirect_uri/state/nonce/PKCE parameters (open redirect, redirect_uri bypass, missing/replayable state → CSRF, PKCE downgrade, `code`/`token` leakage via Referer or an open redirect), token handling (JWT alg/kid/jku/jwk confusion, weak secret, no exp check, audience confusion), and refresh/logout. Test password reset for host-header poisoning and token predictability; test MFA for response-flag bypass and step-skipping.\n\
+- BUSINESS LOGIC & multi-step flows: reason about what the app is FOR (accounts, purchases, entitlements, content) and chase logic abuse — price/quantity/coupon tampering, workflow/state-machine skips (skip payment/verification), IDOR/BOLA across tenants, mass-assignment of privileged fields, race conditions on balance/stock. These rarely match a single skill and are exactly what an LLM should DIRECT itself toward.\n\
+- CLIENT-SIDE and BACK-END both: DOM/stored/reflected XSS, postMessage, prototype pollution, CORS, clickjacking on the front; injection, SSRF, deserialization, access control, SSTI, file handling on the back. Pull API routes from JS bundles/source-maps and attack the API directly, not just the rendered page.\n\
+- When your assigned class yields nothing, PIVOT: say so briefly in your reasoning and spend the budget on the strongest direction the recon/responses actually point to. Zero findings in your class is fine; zero exploration is not.\n\n";
+
+/// CHAIN doctrine: turn ANY foothold into the next step. A primitive→next-step
+/// playbook (not an exhaustive script) so the agent always has a concrete pivot
+/// to reason about, plus a push to chain toward BUSINESS impact — all under the
+/// non-destructive SAFETY_DOCTRINE (prove RCE/access with a benign marker, never
+/// harm data or state).
+const CHAIN_DOCTRINE: &str = "CHAIN THE FOOTHOLD (pivot to deeper, provable impact — any primitive can chain):\n\
+- Think in primitives, not labels: reduce the foothold to what it GIVES you (code exec, file read, file write, request forgery, a trusted identity, a leaked secret, arbitrary object access) and pick the next step from that.\n\
+- Pivot playbook (attempt the fitting ones, prove each with a benign receipt):\n\
+  · File upload / write → RCE: upload a webshell/handler to an executable path or poison a config/`.htaccess`/cron/serialized file; prove with a benign marker (`id`, unique echo, OOB DNS), not damage.\n\
+  · SSRF → cloud/host takeover: hit `169.254.169.254` (IMDSv1/v2), GCP/Azure metadata, internal admin/actuator, `file://`/`gopher://`; loot temp creds/tokens and REUSE them.\n\
+  · SQLi → RCE/LPE: stacked queries, `INTO OUTFILE`/`COPY … TO`, UDF, `xp_cmdshell`, read secrets/creds; then reuse creds to log in and escalate.\n\
+  · LFI/path traversal → RCE: log/session/wrapper poisoning, `/proc/self/environ`, read source & secrets; combine with an upload for exec.\n\
+  · XXE → SSRF/file read → creds; deserialization/SSTI → RCE via a gadget/template sink; prove exec with a marker.\n\
+  · IDOR/BOLA/mass-assignment → account/tenant takeover or role escalation (`role=admin`); open-redirect/XSS/CORS → token/session theft → ATO.\n\
+  · Exposed `.git`/backup/`.env`/secrets → reconstruct source & keys → auth to internal APIs, cloud, DB; default/leaked creds → domain/service compromise.\n\
+  · A param that lands in a redirect/`Location` header → ALSO test CRLF/header injection on the SAME param (`%0d%0aX-Injected: pwned`, `%0d%0aSet-Cookie:`): an open redirect and response splitting share the sink, so never stop at the redirect.\n\
+- Second-order & preconditions: a payload you STORE (profile/bio/name/review/filename) may only fire on a DIFFERENT page, often a privileged one (e.g. an admin search). Plant the payload, then TRIGGER it from every identity you hold; if the trigger page needs a role you lack, FIRST look for a privesc/IDOR/mass-assign to reach it, and if none exists, report the second-order as a CHAINED lead (payload stored + trigger located, blocked only by authorization) rather than dropping it.\n\
+- Reuse loot relentlessly: every credential/JWT/cookie/API key/host you obtain is input to the next step — carry it forward across modules and try it everywhere it might be accepted.\n\
+- Mine object references (this is the BOLA/IDOR engine): from EVERY response harvest each object identifier you see — numeric ids, UUIDs, order/invoice/document/ticket numbers, account/customer ids, filenames, emails, and any signed/opaque token — into a reference pool. Then systematically SUBSTITUTE another principal's identifier into every request that accepts one (path segment, query param, JSON field, header, cookie) and diff the response against your own: another user's data returned under your session IS the proof. Do this ACROSS identities — register/hold ≥2 accounts and cross them — and across endpoints, because an id leaked on one route (a list/search/export) is often the key to an object on another (a detail/update/delete route). Enumerate sequential ids sparingly (a small benign sample, never a mass scrape) to show the pattern, then stop at proof.\n\
+- Understand the BUSINESS & LOGIC: reason about what the app is FOR (payments, orders, tenancy, KYC, entitlements) and chain toward business impact — payment/price/coupon abuse, cross-tenant data access, entitlement/limit bypass, workflow/state-machine skips (skip approval/verification steps), race conditions on balance/stock. These compound: each finding updates your model of the app for the next probe.\n\
+- Stop at proof: demonstrate the impact with the SMALLEST safe step and report the CHAIN end-to-end; never destroy, overwrite, encrypt, mass-exfiltrate, or DoS to 'prove' it.\n\
+- SOURCEMAP HARVEST: for every JS bundle, check for `.map` files (append `.map` to the URL, check `sourceMappingURL` comment at end of file). Sourcemaps contain FULL original TypeScript/JSX source — extract it, grep for secrets/endpoints/auth logic/TODO comments, and feed discovered endpoints back as new attack surface.\n\
+- SECRET EXTRACTION DEPTH: secrets chain transitively — an exposed `.env` yields DB creds, DB dump yields API keys, API keys yield cloud access, cloud access yields more secrets in Secrets Manager/SSM. Follow every link. Each secret found is a new foothold.\n\
+- BUILD ARTIFACT MINING: check `asset-manifest.json`, `_buildManifest.js`, `stats.json`, `compilation-stats.json`, `__NEXT_DATA__`, `window.__INITIAL_STATE__` — these leak routes, props, internal state, and sometimes secrets.\n\n";
+
+/// CAG (Context-Augmented Generation) doctrine: when the harness pre-collected
+/// HTTP evidence, agents must analyze that data instead of making their own
+/// requests. Prevents hallucination by grounding analysis in real responses.
+const CAG_DOCTRINE: &str = "\
+CAG MODE (Context-Augmented Generation):\n\
+The harness pre-fetched HTTP responses for key endpoints BEFORE you were invoked.\n\
+Look for the '=== CAG: PRE-COLLECTED HTTP EVIDENCE ===' section in the recon context.\n\
+RULES:\n\
+1. For ANY endpoint listed in the CAG section, use THAT response as ground truth.\n\
+   Do NOT re-fetch it with curl — your curl request may hit a WAF/CDN and get a\n\
+   different (blocked) response than what the real application returns.\n\
+2. You MAY still use curl for endpoints NOT in the CAG section (new endpoints you\n\
+   discover, specific paths with payloads, etc.).\n\
+3. NEVER fabricate or imagine HTTP response content. If you did not receive the\n\
+   response (not in CAG, and your curl got blocked), say so explicitly.\n\
+4. Every finding MUST cite observable evidence — either from the CAG section or\n\
+   from a curl response you actually received (quote status code + relevant body).\n\
+5. A Cloudflare/WAF challenge page (403 with 'Just a moment...') is NOT evidence\n\
+   of a vulnerability — it means the endpoint is blocked and you cannot test it.\n\n";
+
+/// WHITEBOX doctrine: this is a STATIC source review — keep the agent in the code,
+/// not on the wire. Prevents whitebox runs from hallucinating black-box network
+/// actions (curl/nuclei/live requests) they cannot perform here, and pushes for
+/// a symbolic `file:line` receipt plus a runnable repro PoC where it adds value.
+const WHITEBOX_DOCTRINE: &str = "MODE: WHITE-BOX STATIC SOURCE REVIEW. You are reading source code, NOT a live target.\n\
+- Source-only: reason strictly about the provided code. Do NOT curl, run nuclei, browse, or claim any live/HTTP/network result — there is no running app here. Any \"I sent a request / got a response\" claim is a hallucination and will be rejected.\n\
+- Symbolic receipt: EVERY finding's evidence is a `file:line` citation plus the exact vulnerable code quoted verbatim. The code citation IS the proof. No `file:line` + code quote ⇒ do not report it.\n\
+- Trace, don't guess: follow tainted input from its SOURCE (request param, env, deserialization, file) to a dangerous SINK (SQL/exec/eval/template/path/SSRF/deserialize). Report only when source reaches sink without effective sanitization; note the path (`entry → … → sink`).\n\
+- Version → CVE (static): read dependency manifests (package.json, requirements.txt, go.mod, pom.xml, Gemfile.lock, Cargo.lock) and pin exact versions; map to known CVEs and cite the manifest line. Flag reachable, exploitable ones over merely-outdated ones.\n\
+- Repro PoC (optional but valued): when a finding warrants it, WRITE a proof/repro script to $NEUROSPLOIT_POCS — e.g. the exact malicious input + the request/CLI call that would trigger the sink, or a unit-style harness exercising the vulnerable function — with a header comment (file:line it proves, how to run). Cite the PoC path in the evidence. Mark clearly that it demonstrates the code path (static-derived), not a live hit.\n\
+- Calibrate: High/Critical only when the sink is reachable and exploitable from untrusted input; guarded/unreachable code is Low or a lead.\n\n";
+
+/// Vulnerability-RESEARCH doctrine: turn a source review into a hunt for a
+/// NOVEL, CVE-reportable bug. Prepended (after the white-box doctrine) when the
+/// operator runs research mode (`--research`, `/research`, or a focus/objective
+/// that asks for a new CVE / 0-day / patch bypass). The whole point is NOVELTY:
+/// do not re-report a known CVE — use the known ones as a map to find what the
+/// fix missed, a variant, or a reintroduction.
+const WHITEBOX_RESEARCH_DOCTRINE: &str = "MISSION: VULNERABILITY RESEARCH — find a NOVEL, CVE-reportable issue in this codebase, not a known one.\n\
+- PIN THE VERSION FIRST: read the version (package.json/VERSION/__init__/composer.json/go.mod/tag) and the exact commit. Every claim is against THIS version/commit; note it in evidence.\n\
+- RESEARCH KNOWN CVEs (de-duplicate): before reporting anything, build the set of ALREADY-KNOWN issues for this project+version — read SECURITY.md, CHANGELOG/release notes, the security advisories (GHSA), CVE/NVD, the issue tracker and recent security commits (`git log --oneline`, grep messages for CVE/security/fix/vuln/XSS/RCE/injection). A finding that matches a known CVE for this version is NOT novel — drop it or recast it ONLY as a patch-bypass/variant (below). State which known CVEs you checked against.\n\
+- PATCH-DIFF / N-DAY -> 0-DAY (the highest-yield path): take a recent SECURITY fix (its commit) and study the diff. Ask: did the patch fix the ROOT CAUSE or just one path? Look for (1) incomplete fixes — another reachable sink the patch did not cover, a bypass of the new check (different encoding, type juggling, alternate parser, case/Unicode, second-order input); (2) the SAME bug pattern elsewhere in the tree (variant analysis — grep the fixed sink's shape across the repo); (3) reintroduction in a later commit. A proven bypass of an existing patch IS novel and reportable.\n\
+- SOURCE->SINK with reachability: trace untrusted input (request params, headers, body, deserialized objects, file names, env, IPC, config) to a dangerous sink (SQL/exec/eval/template/path/deserialize/SSRF/XXE/prototype/unsafe-reflection). Only call it a vuln when the path is REACHABLE from an untrusted entrypoint without an effective sanitizer; record the full path `entry -> … -> sink`.\n\
+- NOVELTY GATE (strict): report a finding ONLY if (a) it does not match a known CVE for this version, OR (b) it is a concrete bypass/variant of a patched issue. For each, state explicitly: 'novel: <why>' and 'checked-against: <CVEs/advisories/commits>'. No speculation — high-confidence, evidence-backed only.\n\
+- WRITE A PoC: produce a minimal, SAFE proof (a failing unit test, a crafted input + the exact call reaching the sink, or a request) to $NEUROSPLOIT_POCS and cite it. Where a running instance is available (greybox), CONFIRM the source-derived bug dynamically — but never run destructive payloads.\n\
+- REPORT for disclosure: each finding carries file:line, root-cause analysis, the version/commit, the novelty justification, CVSS vector, PoC path, suggested fix, and the project's disclosure channel (SECURITY.md / security@). Prefer a few solid, novel, reportable bugs over a long list of known or speculative ones.\n\n";
+
+/// True when the engagement is asking for vulnerability research / a new CVE,
+/// either via the explicit flag or from natural-language focus/objective.
+fn is_research_intent(cfg: &RunConfig) -> bool {
+    if cfg.research { return true; }
+    let hay = format!("{} {}",
+        cfg.instructions.clone().unwrap_or_default(),
+        cfg.objective.clone().unwrap_or_default()).to_lowercase();
+    ["new cve", "novel", "0-day", "0day", "zero-day", "zero day", "patch bypass",
+     "patch-bypass", "variant analysis", "n-day", "nday", "reportable", "cve research",
+     "vulnerability research", "find a cve", "nova cve", "pesquisa de vuln"]
+        .iter().any(|k| hay.contains(k))
+}
+
+/// Methodology directions for a modern JS SPA backed by a REST/GraphQL API
+/// (Angular/React/Vue front + Node/Express-style API — the shape of OWASP Juice
+/// Shop and many real apps). These are DIRECTIONS on HOW to hunt each vuln class,
+/// NOT a challenge answer key: the agent still discovers, tests and PROVES each
+/// issue against the live app. Injected only when recon shows a SPA/REST surface.
+const SPA_API_DOCTRINE: &str = "SPA + REST/API METHODOLOGY (modern JS app — hunt the API, not just the shell):\n\
+- MAP THE API FROM THE BUNDLE: curl the main JS bundle(s) (`main*.js`, `runtime*.js`, `vendor*.js`) and grep for route \
+paths and API calls — client routes (Angular/React router table), `/rest/…`, `/api/…`, GraphQL, and any `http(s)://` / \
+relative endpoints, param names, and hardcoded secrets/keys/emails. Build the real endpoint list from the code, then hit it.\n\
+- HIDDEN CLIENT ROUTES: SPA pages are client-side and often unlinked — extract the router table from the bundle AND brute \
+common ones (`#/administration`, `#/admin`, `#/accounting`, `#/score-board`, `#/wallet`, `#/deluxe-membership`); a route that \
+renders admin/score/scoreboard content is a broken-access-control finding.\n\
+- AUTH & SQLi: on the login endpoint try SQLi auth bypass (`' OR 1=1--`, `admin@…'--`, tautologies) in the email/username; on \
+search/query params try error-based then UNION SELECT to exfil the schema and user table (email+password hash). Also test \
+weak/default admin creds and account/email ENUMERATION (different response for existing vs unknown user).\n\
+- JWT: decode any JWT; test alg:none / 'unsigned' acceptance, RS256→HS256 confusion using the server's public key as the HMAC \
+secret, `kid`/`jku` injection, and whether the signature is verified at all — forge a token impersonating another/admin user.\n\
+- IDOR / BOLA / mass-assignment: numeric or guessable ids on `/api/<Object>/:id` (baskets, orders, feedbacks, reviews, users) \
+— change the id or the owner field to read/modify another user's data; at REGISTER/PATCH add unexpected fields (`role=admin`, \
+`isAdmin`, `deletedAt`, `id`) and check if the server binds them (privilege escalation / resurrecting deleted accounts).\n\
+- FILE ACCESS: file/download/ftp endpoints — path traversal (`../`), and POISON NULL BYTE / double-encoding (`%2500`, `%00`) \
+to defeat an extension allowlist and reach backup/config files (`*.bak`, `package.json.bak`, `*.md.bak`, `.env`, coupons/keys). \
+Enumerate an open `/ftp` or static dir if present.\n\
+- FORGOT-PASSWORD & OSINT: the reset flow keyed on a security question — the answer is often discoverable from the app's own \
+data (profile, photo-wall image captions/EXIF, reviews). Use the app's public data to answer it, then reset.\n\
+- OBSERVABILITY / EXPOSURE: probe `/metrics` (Prometheus), `/support/logs`, access logs, `/redirect?to=`, GraphQL introspection, \
+Swagger/OpenAPI, and any `/rest/*` that returns more fields than the UI shows (excessive data exposure — password hashes, etc.).\n\
+- CLIENT-SIDE & MISC: DOM XSS where user input is written to the DOM/innerHTML (search, product name) — prove it executes; \
+NoSQL operator injection (`$ne`,`$gt`,`$where`) on review/update endpoints; SSRF on any URL-fetching field (profile image URL); \
+open-redirect allowlist bypass by embedding an allowlisted substring; XXE on deprecated B2B/XML interfaces; weak/guessable \
+coupon or discount codes (reverse the pattern from the bundle). Force ERROR HANDLING flaws with malformed JSON / wrong types to \
+surface stack traces.\n\
+Chain what you find (leaked key → forged token → admin route → data export). Prove every issue with the exact request+response.\n\n";
+
+/// Does the recon/probe surface look like a JS SPA and/or a REST/GraphQL API,
+/// so the SPA methodology is worth injecting?
+fn looks_like_spa_api(recon: &str) -> bool {
+    let r = recon.to_lowercase();
+    ["spa", "angular", "react", "vue", "app-root", "/rest/", "/api/", "graphql", "swagger",
+     "polyfills", "runtime.", "main.js", "\"scripts\""]
+        .iter().filter(|m| r.contains(*m)).count() >= 1
+}
+
+/// Name the ASSET behind the URL — the product + tech stack — so the report says
+/// what was tested, not just an IP/URL. Recognises common known apps by their
+/// page title; otherwise uses the title and the fingerprinted tech.
+fn identify_asset(p: &crate::probe::Probe) -> String {
+    let hay = format!("{} {} {}", p.title, p.tech.join(" "), p.server).to_lowercase();
+    let known = [
+        ("juice shop", "OWASP Juice Shop"), ("juice-shop", "OWASP Juice Shop"),
+        ("dvwa", "DVWA"), ("webgoat", "WebGoat"), ("gruyere", "Google Gruyere"),
+        ("bwapp", "bWAPP"), ("mutillidae", "Mutillidae"), ("gitlab", "GitLab"),
+        ("jenkins", "Jenkins"), ("wordpress", "WordPress"), ("drupal", "Drupal"),
+        ("joomla", "Joomla"), ("grafana", "Grafana"), ("kibana", "Kibana"),
+        ("jira", "Jira"), ("confluence", "Confluence"), ("phpmyadmin", "phpMyAdmin"),
+    ];
+    let product = known.iter().find(|(k, _)| hay.contains(k)).map(|(_, n)| n.to_string());
+    let title = if p.title.trim().is_empty() { String::new() } else { p.title.trim().to_string() };
+    let brand = p.brand.trim().to_string();
+    let tech = if p.tech.is_empty() { String::new() } else { format!(" [{}]", p.tech.join(", ")) };
+    // Prefer a KNOWN product; else the org/brand from the page; else the title.
+    let name = product
+        .or(if brand.is_empty() { None } else { Some(brand) })
+        .or(if title.is_empty() { None } else { Some(title) });
+    match name {
+        Some(n) => format!("{n}{tech}"),
+        None => if tech.is_empty() { "unidentified web asset".into() } else { format!("web asset{tech}") },
+    }
+}
+
+/// Write `meta.json` (asset, tech, server, title) into the run dir so the report
+/// generator can name the asset and its stack instead of only the URL.
+fn write_meta(cfg: &RunConfig, p: &crate::probe::Probe, asset: &str) {
+    let Some(dir) = cfg.workdir.as_deref() else { return };
+    // Record whether TypeSafe was active, so a with/without pair is measurable
+    // from the artifacts alone.
+    let typesafe_on = std::env::var("NEUROSPLOIT_TYPESAFE").unwrap_or_default().trim().to_lowercase() != "off"
+        && std::env::var("TYPESAFE_API_KEY").map(|k| !k.trim().is_empty()).unwrap_or(false);
+    let mut meta = serde_json::json!({
+        "target": cfg.target, "asset": asset, "title": p.title, "brand": p.brand,
+        "tech": p.tech, "server": p.server, "status": p.status,
+        "typesafe": typesafe_on,
+    });
+    if let Some(eng) = &cfg.engagement {
+        meta["engagement"] = serde_json::json!(eng);
+    }
+    if let Ok(j) = serde_json::to_string_pretty(&meta) {
+        let _ = std::fs::write(format!("{}/meta.json", dir.trim_end_matches('/')), j);
+    }
+}
+
+/// Black-box web engagement: recon → parallel exploit → N-model vote → report.
+/// Extract `(method, absolute_url)` pairs from the recon JSON the model
+/// returned (keys `endpoints` and `apis`). Tolerant: an item may be a bare path,
+/// a full URL, a `"METHOD /path"` string, or an object with `method`+`path/url`.
+fn endpoints_from_recon(recon: &str, target: &str) -> Vec<(String, String)> {
+    let base = target.trim_end_matches('/').to_string();
+    let abs = |p: &str| -> String {
+        let p = p.trim();
+        if p.starts_with("http://") || p.starts_with("https://") {
+            p.to_string()
+        } else if p.starts_with('/') {
+            format!("{base}{p}")
+        } else {
+            format!("{base}/{p}")
+        }
+    };
+    // Pull the JSON object out of whatever the model wrapped it in.
+    let (Some(s), Some(e)) = (recon.find('{'), recon.rfind('}')) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&recon[s..=e]) else { return Vec::new() };
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    for key in ["endpoints", "apis"] {
+        let Some(arr) = v.get(key).and_then(|x| x.as_array()) else { continue };
+        for item in arr {
+            if let Some(str_item) = item.as_str() {
+                // "METHOD /path" or just a path/url.
+                let (method, path) = match str_item.split_once(char::is_whitespace) {
+                    Some((m, p)) if m.chars().all(|c| c.is_ascii_alphabetic()) && m.len() <= 7 => (m.to_uppercase(), p.trim().to_string()),
+                    _ => ("GET".to_string(), str_item.to_string()),
+                };
+                out.push((method, abs(&path)));
+            } else if let Some(obj) = item.as_object() {
+                let method = obj.get("method").and_then(|x| x.as_str()).unwrap_or("GET").to_uppercase();
+                let path = obj.get("url").or_else(|| obj.get("path")).or_else(|| obj.get("endpoint")).and_then(|x| x.as_str()).unwrap_or("");
+                if !path.is_empty() {
+                    out.push((method, abs(path)));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The authorization-matrix pass: load the multi-identity creds, build the route
+/// inventory from recon, sweep every route against every identity, and return
+/// the confirmed/needs-review findings. Deterministic; no model calls.
+async fn authz_matrix_pass(cfg: &RunConfig, recon: &str, tx: &Sender<String>) -> Vec<Finding> {
+    let mode = cfg.authz_matrix.as_deref().unwrap_or("auto").to_lowercase();
+    if mode == "off" {
+        return Vec::new();
+    }
+    let Some(path) = cfg.creds_file.as_deref() else { return Vec::new() };
+    let Some(creds) = crate::creds::Creds::load(std::path::Path::new(path)) else { return Vec::new() };
+    if !creds.authz_matrix_ready() {
+        if mode == "on" {
+            let _ = tx.send("authz-matrix: creds have fewer than 2 identity tiers — nothing to differentiate".into()).await;
+        }
+        return Vec::new();
+    }
+    let eps = endpoints_from_recon(recon, &cfg.target);
+    if eps.is_empty() {
+        return Vec::new();
+    }
+    let inv = crate::authz_matrix::RouteInventory::from_endpoints(&eps);
+    let _ = tx.send(format!(
+        "🔐 authz-matrix: sweeping {} route(s) across {} identities",
+        inv.routes.len(),
+        creds.roles.len()
+    )).await;
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(30))
+        .default_headers(default_scan_headers())
+        .user_agent(cfg.user_agent.clone().unwrap_or_else(default_user_agent))
+        .build()
+        .unwrap_or_default();
+    const CAP: usize = 400;
+    crate::authz_matrix::run_pass(&inv, &creds, &cfg.scope, CAP, |m, u, h, b| {
+        crate::authz_matrix::send_via(&client, m, u, h, b)
+    })
+    .await
+}
+
+pub async fn run(mut cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    pool.set_token_limit(cfg.budget.token_limit);
+
+    // A broad DEFAULT objective for a black-box web engagement when the operator
+    // set none — so a plain `/run` already does a comprehensive web assessment
+    // grounded in OWASP Top 10 / ASVS / CWE and traverses every applicable web
+    // vuln class, instead of stopping at the first thing it finds. Web-only by
+    // construction: this `run` path loads only the web vuln agents (mobile/APK
+    // and container are separate modes), so it never drifts into mobile/binary.
+    if cfg.objective.as_deref().map(|o| o.trim().is_empty()).unwrap_or(true) {
+        cfg.objective = Some(DEFAULT_WEB_OBJECTIVE.to_string());
+    }
+
+    // Authorization first. A supplied token that does not verify ends the run
+    // here: proceeding would mean acting on a grant nobody can prove was
+    // issued, which is the one failure this whole layer exists to prevent.
+    let grant = match verify_capability(&cfg) {
+        Ok(g) => g,
+        Err(e) => {
+            let _ = tx.send(format!("notify: ⛔ {e}")).await;
+            audit_log(&cfg).append(
+                crate::audit::AuditRecord::new("harness", "engagement-start", &cfg.target)
+                    .decision(&format!("deny: {e}"))
+                    .tool("capability")
+                    .result("run refused"),
+            );
+            return RunOutput {
+                target: cfg.target.clone(),
+                workdir: cfg.workdir.clone().unwrap_or_default(),
+                findings: vec![],
+                agents_ran: vec![],
+                candidates: 0,
+                recon: String::new(),
+                artifacts: vec![],
+                denied: None,
+            };
+        }
+    };
+    let audit = audit_log(&cfg);
+    let cap_id = grant.as_ref().map(|c| c.id.clone()).unwrap_or_default();
+    let policy_scope = effective_scope(&cfg);
+    audit.append(
+        crate::audit::AuditRecord::new("harness", "engagement-start", &cfg.target)
+            .decision(&format!("allow: scope [{}]", policy_scope.summary()))
+            .tool("neurosploit")
+            .capability(&cap_id)
+            .result(&format!(
+                "{} · {}",
+                grant.as_ref().map(|c| c.summary()).unwrap_or_else(|| "no capability token — local configuration only".into()),
+                cfg.policy.safety.summary()
+            )),
+    );
+    if let Some(c) = &grant {
+        let _ = tx.send(format!("notify: 🔏 capability verified — {}", c.summary())).await;
+    }
+    // Bind the process to this engagement before the first prompt or marker is
+    // minted, so everything the run emits agrees on which run it came from.
+    let prov = crate::provenance::Provenance::bind_run(&run_id(&cfg));
+    let _ = tx.send(format!("notify: 🧬 provenance {} (build {})", prov.tag(), prov.build)).await;
+
+    // P1 — target authorization gate, default-deny, BEFORE any reconnaissance.
+    // A capability token that does not cover the target is the exact bypass
+    // this closes: the run refuses the target instead of quietly seeding it
+    // into scope. Legacy (no token) still authorizes a bare target.
+    {
+        let has_grant = matches!(verify_capability(&cfg), Ok(Some(_)));
+        let escope = effective_scope(&cfg);
+        if let Err(reason) = escope.validate_target(&cfg.target, has_grant) {
+            let _ = tx.send(format!("notify: ⛔ DENY_TARGET_OUTSIDE_GRANT — {reason}")).await;
+            let audit = audit_log(&cfg);
+            audit.append(
+                crate::audit::AuditRecord::new("scope-guard", "deny-target-outside-grant", &cfg.target)
+                    .decision(&format!("DENY_TARGET_OUTSIDE_GRANT: {reason}"))
+                    .tool("scope-guard")
+                    .result("run refused before reconnaissance"),
+            );
+            return aborted_with(&cfg, Some(format!("DENY_TARGET_OUTSIDE_GRANT: {reason}")));
+        }
+    }
+
+    // Egress, fail-closed. An internal target with the VPN down belongs to
+    // whatever network this host is on — not the client's — so the run stops
+    // here rather than producing a confident report about the wrong machines.
+    let transport = match cfg.transport.as_deref() {
+        Some(spec) => match crate::transport::Egress::parse(spec) {
+            Ok(e) => crate::transport::Transport::new(e),
+            Err(e) => {
+                let _ = tx.send(format!("notify: ✗ transport: {e}")).await;
+                return aborted(&cfg);
+            }
+        },
+        None => crate::transport::Transport::direct(),
+    };
+    if let Err(e) = transport.admits(&cfg.target) {
+        let _ = tx.send(format!("notify: ⛔ {e}")).await;
+        return aborted(&cfg);
+    }
+    if !matches!(transport.egress, crate::transport::Egress::Direct) {
+        match transport.connect().await {
+            Ok(label) => {
+                let _ = tx.send(format!("notify: 🔌 egress via {label}")).await;
+                match transport.verify(None).await {
+                    Ok(ip) => {
+                        let _ = tx.send(format!("notify: egress address {ip}")).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(format!("notify: ⛔ {e}")).await;
+                        return aborted(&cfg);
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(format!("notify: ⛔ transport failed to come up: {e}")).await;
+                return aborted(&cfg);
+            }
+        }
+    }
+
+    // Disposable inbox: when temp-email is enabled, the HARNESS creates the
+    // mail.tm inbox (via crate::inbox) and hands the agent that exact address,
+    // so the inbox is one we own — recorded, pollable, cleanup-able — instead
+    // of an unrecorded one the agent conjures. Best-effort; on failure the
+    // prompt falls back to letting the agent create its own.
+    if cfg.temp_email && std::env::var("NEUROSPLOIT_TEMP_INBOX").map(|v| v.is_empty()).unwrap_or(true) {
+        match crate::inbox::Inbox::mail_tm().await {
+            Ok(inbox) => {
+                let addr = inbox.identity();
+                std::env::set_var("NEUROSPLOIT_TEMP_INBOX", &addr);
+                let _ = tx.send(format!("notify: 📬 disposable inbox ready — {addr}")).await;
+            }
+            Err(e) => {
+                let _ = tx.send(format!("notify: ⚠ could not create a disposable inbox ({e}) — agent will create its own")).await;
+            }
+        }
+    }
+
+    // Out-of-band channel. Optional, but without it the blind classes can only
+    // ever be leads — which the prompt says explicitly rather than letting an
+    // agent assert a callback it had no way to receive.
+    if let Some(domain) = cfg.oob_domain.as_deref().filter(|d| d.contains('.')) {
+        let http: std::net::SocketAddr = cfg
+            .oob_http
+            .as_deref()
+            .unwrap_or("0.0.0.0:8080")
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap());
+        let dns = cfg.oob_dns.as_deref().and_then(|d| d.parse().ok());
+        let collab = crate::oob::Collaborator::self_hosted(domain, http, dns);
+        match collab.listen().await {
+            Ok(()) => {
+                let note = collab.preflight().await.unwrap_or_else(|e| e);
+                let _ = tx.send(format!("notify: 📡 {note}")).await;
+            }
+            Err(e) => {
+                // A listener that did not bind would turn every blind class
+                // into a silent false negative, so say so loudly and carry on
+                // with the channel marked unavailable.
+                let _ = tx.send(format!("notify: ⚠ OOB listener did not start ({e}) — blind classes stay leads")).await;
+            }
+        }
+    }
+
+    // Intercepting proxy. Whether it is Burp, an own recording interceptor, or
+    // both, the effect is one env var the reqwest client already honours, plus
+    // the same var exported to agent child commands — so the whole engagement
+    // flows through one point the operator can watch and replay.
+    if let Some(spec) = cfg.intercept.as_deref().filter(|s| !s.trim().is_empty()) {
+        match crate::proxy::ProxyConfig::parse(spec) {
+            Ok(pc) => {
+                if pc.own_interceptor {
+                    let jsonl = cfg.workdir.as_deref().map(|d| format!("{}/flows.jsonl", d.trim_end_matches('/')));
+                    let upstream = pc.upstream.as_ref().map(|t| t.proxy_url());
+                    let mut interceptor = crate::proxy::Interceptor::new(upstream);
+                    if let Some(j) = jsonl { interceptor = interceptor.logging_to(j); }
+                    match interceptor.listen(pc.bind).await {
+                        Ok(()) => { let _ = tx.send(format!("notify: 🕵 {}", pc.summary())).await; }
+                        Err(e) => { let _ = tx.send(format!("notify: ⚠ own interceptor did not bind ({e}) — routing direct")).await; }
+                    }
+                } else if let Some(t) = &pc.upstream {
+                    // A bare tool: warn if it is not actually listening rather
+                    // than failing every request three minutes in.
+                    if !t.is_listening().await {
+                        let _ = tx.send(format!("notify: ⚠ {} is configured but nothing is listening at {} — start it or requests will fail", t.name(), t.proxy_url())).await;
+                    } else {
+                        let _ = tx.send(format!("notify: 🕵 {}", pc.summary())).await;
+                    }
+                }
+                if let Some(url) = pc.client_proxy_url() {
+                    // The reqwest client (probe + replay) reads this; child
+                    // commands get it through the process environment.
+                    std::env::set_var("NEUROSPLOIT_PROXY", &url);
+                    for (k, v) in pc.env() { std::env::set_var(k, v); }
+                }
+            }
+            Err(e) => { let _ = tx.send(format!("notify: ⚠ intercept: {e} — routing direct")).await; }
+        }
+    }
+
+    // Auto-sandbox: when the scope includes a wildcard (*.domain) and a container
+    // runtime is available, auto-enable the Kali sandbox so the recon toolbox
+    // (subfinder, httpx, nuclei, etc.) is available without --sandbox.
+    if cfg.sandbox.is_none() {
+        let has_wildcard = cfg.scope.hard.iter().any(|p| p.as_text().starts_with("*."));
+        if has_wildcard {
+            if crate::sandbox::Runtime::detect().is_some() {
+                cfg.sandbox = Some(String::new());
+                let _ = tx.send("notify: 📦 wildcard scope detected + container runtime available — auto-enabling Kali sandbox for recon tools".into()).await;
+            }
+        }
+    }
+
+    // Sandbox: run the engagement's tool commands inside a container instead of
+    // on the host. Ensured up-front so a missing runtime is reported before any
+    // work, and never silently downgraded to host execution.
+    if let Some(image) = cfg.sandbox.as_deref() {
+        let mut sc = crate::sandbox::SandboxConfig::default();
+        if !image.trim().is_empty() { sc = sc.with_image(image); }
+        if let Some(w) = cfg.workdir.as_deref() { sc = sc.mounting(w); }
+        let proxy_env: Vec<(String,String)> = std::env::var("NEUROSPLOIT_PROXY").ok()
+            .filter(|v| !v.is_empty())
+            .map(|p| vec![("HTTP_PROXY".into(), p.clone()), ("HTTPS_PROXY".into(), p)])
+            .unwrap_or_default();
+        sc = sc.with_env(proxy_env);
+        match crate::sandbox::Sandbox::new(sc) {
+            Ok(sb) => match sb.ensure().await {
+                Ok(msg) => { let _ = tx.send(format!("notify: 📦 {msg}")).await; }
+                Err(e) => { let _ = tx.send(format!("notify: ⚠ sandbox: {e}")).await; }
+            },
+            Err(e) => { let _ = tx.send(format!("notify: ⚠ {e}")).await; }
+        }
+    }
+
+    // MCP hot-reload: watch mcp.servers.json for mid-run changes so the
+    // operator can add/remove MCP servers (e.g. Playwright) without stopping.
+    let _mcp_watcher = if pool.mcp_config.is_some() {
+        if let Some(wd) = cfg.workdir.as_deref() {
+            let config_dir = std::path::PathBuf::from(wd);
+            let proj_dir = config_dir.parent().unwrap_or(&config_dir);
+            let watch_path = proj_dir.join("mcp.servers.json");
+            let reloader = std::sync::Arc::new(
+                crate::mcp_hot_reload::McpReloader::new(config_dir, watch_path),
+            );
+            Some(reloader.clone().spawn(Some(tx.clone()), pool.cancel_handle()))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let _ = tx
+        .send(format!(
+            "Loaded {} agents ({} vuln / {} recon / {} code / {} meta) · models: {} · vote_n={} · concurrency={}{} · budget: {}",
+            lib.total(), lib.vulns.len(), lib.recon.len(), lib.code.len(), lib.meta.len(),
+            pool.candidates.iter().map(|m| m.label()).collect::<Vec<_>>().join(", "),
+            effective_vote_n(&cfg), cfg.concurrency,
+            if pool.mcp_config.is_some() { " · Playwright MCP ON" } else { "" },
+            cfg.budget.summary(),
+        ))
+        .await;
+
+    // ---- 0. Preflight model check --------------------------------------
+    // Send a minimal prompt to verify the model responds before launching
+    // recon + 80 agents. Catches wrong model IDs, dead API keys, and auth
+    // issues upfront instead of burning the entire run silently.
+    if !cfg.offline {
+        let _ = tx.send("🔍 preflight: testing model connectivity...".into()).await;
+        match pool.complete("You are a connectivity test.", "Reply with the single word OK.").await {
+            Ok((model_ref, _text)) => {
+                let _ = tx.send(format!("✓ model preflight OK — {}", model_ref.label())).await;
+            }
+            Err(e) => {
+                let _ = tx.send(format!("⛔ MODEL PREFLIGHT FAILED — {e}. Check your API key and model ID.")).await;
+                let artifacts = persist(&cfg, "{}", "", &[]);
+                return RunOutput {
+                    target: cfg.target.clone(),
+                    workdir: cfg.workdir.clone().unwrap_or_default(),
+                    findings: vec![],
+                    agents_ran: vec![],
+                    candidates: 0,
+                    recon: String::new(),
+                    artifacts,
+                    denied: None,
+                };
+            }
+        }
+    }
+
+    // ---- 1. Recon ------------------------------------------------------
+    // 1a. Deterministic HTTP probe (real request/response facts) — grounds the
+    // model recon and every downstream decision. Best-effort, skipped offline.
+    let mut waf_challenge = false;
+    let mut _waf_vendor = String::new();
+    let probe_facts = if cfg.offline {
+        String::new()
+    } else {
+        let p = crate::probe::probe_in_scope(&cfg.target, &effective_scope(&cfg)).await;
+        let _ = tx.send(crate::probe::probe_summary(&p)).await;
+        waf_challenge = p.waf_challenge;
+        _waf_vendor = p.waf_vendor.clone();
+        // Liveness preflight: if the target never answered (connect failed /
+        // status 0), don't waste agents on a dead host — abort with a clear note.
+        if p.status == 0 {
+            let why = p.notes.iter().find(|n| n.contains("failed")).cloned()
+                .unwrap_or_else(|| "no HTTP response".into());
+            let _ = tx.send(format!("✗ target unreachable — {} is DOWN ({why}). Aborting; check the URL/port or that the service is up.", cfg.target)).await;
+            let artifacts = persist(&cfg, "{}", "", &[]);
+            return RunOutput { target: cfg.target.clone(), workdir: cfg.workdir.clone().unwrap_or_default(), findings: vec![], agents_ran: vec![], candidates: 0, recon: String::new(), artifacts, denied: None };
+        }
+        // WAF challenge detected: warn operator but don't abort — browser-based
+        // recon can still map the surface.
+        if p.waf_challenge {
+            let _ = tx.send(format!(
+                "⚠ {} challenge detected — switching to BROWSER-FIRST recon (curl will not reach the app)",
+                if p.waf_vendor.is_empty() { "WAF/CDN".to_string() } else { p.waf_vendor.clone() }
+            )).await;
+        }
+        // Identify the ASSET (product + stack), not just the URL, for the report.
+        let asset = identify_asset(&p);
+        let _ = tx.send(format!("✓ target is UP (HTTP {}) — {} — starting recon", p.status, asset)).await;
+        write_meta(&cfg, &p, &asset);
+        crate::probe::probe_json(&p)
+    };
+    // Wildcard engagement: deterministically enumerate + liveness-filter the
+    // in-scope subdomains and fold them into the surface, so the run tests the
+    // whole authorized domain, not just the seed host.
+    let subdomains = if cfg.offline { String::new() } else { enumerate_subdomains(&cfg, &tx).await };
+    // Live hosts discovered (parsed from the block) — fed to the tool-recon pass.
+    let live_hosts: Vec<String> = subdomains.lines()
+        .filter_map(|l| l.trim().strip_prefix("- https://").map(|r| r.split_whitespace().next().unwrap_or("").to_string()))
+        .filter(|h| !h.is_empty()).collect();
+
+    // Recon reuse: load previous recon for this host (if any).
+    let prev_recon_cache = load_recon_cache(&cfg.target);
+    if let Some((_, _, ts)) = &prev_recon_cache {
+        let _ = tx.send(format!("📂 previous recon found ({}) — will diff after new recon", format_elapsed(*ts))).await;
+    }
+
+    // KALI TOOL-RECON: run the real recon pipeline (gau/katana URL harvest +
+    // targeted nuclei) inside the sandbox (or on host tools), then let the LLM
+    // refine on top of the output. Provisions the toolbox in Kali on demand.
+    // Timeout: 90s to prevent hanging on WAF-blocked targets.
+    let tool_recon = if cfg.offline {
+        String::new()
+    } else {
+        if let Some(sb) = engagement_sandbox(&cfg) {
+            kali_provision_recon_tools(&sb, &tx).await;
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(90),
+            kali_tool_recon(&cfg, &live_hosts, &tx),
+        ).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = tx.send("⚠ tool-recon timed out (90s) — continuing with probe data".into()).await;
+                String::new()
+            }
+        }
+    };
+
+    // OPT-IN: let the model pick a bounded set of real tools from the catalog
+    // (nmap/rustscan/httpx/nuclei/ffuf/netexec/...) and feed their raw output
+    // into recon. This is the API-model path; subscription CLIs can already run
+    // the same tools directly. Never runs in offline mode.
+    let agent_tools = if cfg.offline
+        || std::env::var("NEUROSPLOIT_AGENT_TOOLS").ok().as_deref() != Some("1")
+    {
+        String::new()
+    } else {
+        agent_tool_round(&cfg, pool, &format!("{probe_facts}{subdomains}{tool_recon}"), &tx).await
+    };
+
+    let probe_facts = format!("{probe_facts}{subdomains}{tool_recon}{agent_tools}");
+
+    // Inject Cloudflare/WAF bypass context when a challenge was detected.
+    let probe_facts = if waf_challenge {
+        format!("{CF_BYPASS_OPS}\n{probe_facts}")
+    } else {
+        probe_facts
+    };
+
+    let recon = if cfg.offline {
+        let _ = tx.send("recon: offline mode — skipping model calls".into()).await;
+        "{}".to_string()
+    } else {
+        // Deep recon with timeout: if it takes >120s, fall back to cached recon.
+        // This prevents hanging on WAF-blocked targets where the LLM recon agent
+        // tries curl but Cloudflare/WAF blocks all non-browser requests.
+        let recon_timeout = if waf_challenge { 60 } else { 120 };
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(recon_timeout),
+            deep_recon(&cfg, pool, &probe_facts, &tx),
+        ).await {
+            Ok(result) if !result.is_empty() && result != "{}" => result,
+            Ok(_) | Err(_) => {
+                // Recon empty or timed out — fall back to cached recon.
+                if let Some((cached_recon, _, ts)) = &prev_recon_cache {
+                    if !cached_recon.is_empty() && cached_recon != "{}" {
+                        let _ = tx.send(format!(
+                            "⚠ recon timed out or empty — using cached recon ({})",
+                            format_elapsed(*ts)
+                        )).await;
+                        cached_recon.clone()
+                    } else {
+                        let _ = tx.send("⚠ recon timed out + no cached recon — proceeding with probe data only".into()).await;
+                        "{}".to_string()
+                    }
+                } else {
+                    let _ = tx.send("⚠ recon timed out + no cached recon — proceeding with probe data only".into()).await;
+                    "{}".to_string()
+                }
+            }
+        }
+    };
+
+    // Save recon to cache for future runs against same host.
+    if !cfg.offline {
+        save_recon_cache(&cfg.target, &recon, &tool_recon);
+    }
+    // Recon delta: compare with previous run's recon.
+    if let Some((_, prev_tool_recon, ts)) = &prev_recon_cache {
+        let new_lines: std::collections::HashSet<&str> = tool_recon.lines().collect();
+        let old_lines: std::collections::HashSet<&str> = prev_tool_recon.lines().collect();
+        let added: Vec<&str> = new_lines.difference(&old_lines).copied().collect();
+        let removed: Vec<&str> = old_lines.difference(&new_lines).copied().collect();
+        if added.is_empty() && removed.is_empty() {
+            let _ = tx.send(format!("📂 recon delta: no changes since previous run ({})", format_elapsed(*ts))).await;
+        } else {
+            let _ = tx.send(format!("📂 recon delta ({}): +{} new lines, -{} removed", format_elapsed(*ts), added.len(), removed.len())).await;
+            for line in added.iter().take(20) {
+                if !line.trim().is_empty() {
+                    let _ = tx.send(format!("  + {}", line)).await;
+                }
+            }
+            for line in removed.iter().take(10) {
+                if !line.trim().is_empty() {
+                    let _ = tx.send(format!("  - {}", line)).await;
+                }
+            }
+        }
+    }
+
+    // ---- 1a-bis. CAG: pre-collect HTTP evidence for all discovered endpoints
+    //       so exploit agents analyze real data instead of fetching (and
+    //       potentially hallucinating) their own responses.
+    let cag_cache = if !cfg.offline {
+        cag_collect(&cfg.target, &recon, waf_challenge, &tx).await
+    } else {
+        CagCache::default()
+    };
+    let cag_context = cag_cache.to_context(12000);
+    // Persist CAG cache for post-processing and report correlation.
+    if !cag_cache.is_empty() {
+        if let Some(wd) = cfg.workdir.as_deref() {
+            let path = Path::new(wd).join("cag_cache.json");
+            if let Ok(json) = serde_json::to_string_pretty(&cag_cache) {
+                let _ = std::fs::write(&path, json);
+            }
+        }
+    }
+
+    // ---- 1b. Graph checkpoint: seed the attack graph from recon ---------
+    let agent_names: Vec<String> = lib.vulns.iter().map(|a| a.name.clone()).collect();
+    let graph_agents = graph_checkpoint(&cfg, &recon, &[], "recon", &agent_names, &tx).await.agents;
+
+    // ---- 2. Intelligent, RL-ranked agent selection ---------------------
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+    let mut ranked: Vec<Agent> = lib.vulns.clone();
+    ranked.sort_by(|a, b| rl.weight(&b.name).partial_cmp(&rl.weight(&a.name)).unwrap_or(std::cmp::Ordering::Equal));
+    let cap = if cfg.max_agents > 0 { cfg.max_agents.min(ranked.len()) } else { ranked.len() };
+
+    if cfg.offline {
+        let selected: Vec<Agent> = ranked.into_iter().take(cap).collect();
+        let _ = tx.send(format!("selected {} specialist agents (RL-ranked)", selected.len())).await;
+        let _ = tx.send("offline: no exploitation performed (provide API keys or --subscription to run live)".into()).await;
+        // Recon still learned something about the target even with no
+        // exploitation, and that is exactly the kind of knowledge the next run
+        // should not have to re-derive.
+        for n in absorb(&cfg, &recon, &[]) {
+            let _ = tx.send(n).await;
+        }
+        let artifacts = persist(&cfg, &recon, "", &[]);
+        return RunOutput { target: cfg.target.clone(), workdir: cfg.workdir.clone().unwrap_or_default(), findings: vec![], agents_ran: selected.iter().map(|a| a.name.clone()).collect(), candidates: 0, recon, artifacts, denied: None };
+    }
+
+    // Use the model to pick the agents whose preconditions match the recon —
+    // the harness reasons about *which* specialists to run, not all of them.
+    // Exception: when the operator pinned an explicit set (--only), run EXACTLY
+    // those and skip recon-based selection — used to re-test a single vuln.
+    let focus = cfg.instructions.clone().unwrap_or_default();
+    let selected: Vec<Agent> = if !cfg.pinned.is_empty() {
+        let sel: Vec<Agent> =
+            ranked.iter().filter(|a| cfg.pinned.iter().any(|p| p == &a.name)).cloned().collect();
+        if sel.is_empty() {
+            let _ = tx.send(format!("--only matched no agent ({}) — falling back to recon selection",
+                cfg.pinned.join(", "))).await;
+            let chosen = select_agents(pool, &recon, &focus, &ranked, &tx).await;
+            ranked.iter().filter(|a| chosen.iter().any(|c| c == &a.name)).take(cap).cloned().collect()
+        } else {
+            let _ = tx.send(format!("--only: running exactly {} pinned agent(s): {}", sel.len(),
+                sel.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "))).await;
+            sel
+        }
+    } else {
+        let chosen = select_agents(pool, &recon, &focus, &ranked, &tx).await;
+        if !chosen.is_empty() {
+            let sel: Vec<Agent> =
+                ranked.iter().filter(|a| chosen.iter().any(|c| c == &a.name)).cloned().collect();
+            if sel.is_empty() {
+                heuristic_select(&ranked, &recon, &focus, cap)
+            } else {
+                sel.into_iter().take(cap).collect()
+            }
+        } else {
+            // LLM selection failed/empty → recon+focus keyword heuristic, not a blind flat list.
+            let _ = tx.send("selection empty — using recon-keyword heuristic".into()).await;
+            heuristic_select(&ranked, &recon, &focus, cap)
+        }
+    };
+    // Dedup: never run the same agent twice in one engagement.
+    let mut selected: Vec<Agent> = {
+        let mut seen = std::collections::HashSet::new();
+        selected.into_iter().filter(|a| seen.insert(a.name.clone())).collect()
+    };
+    // No creds given → always run the registration/form agent FIRST so the run
+    // reaches the authenticated surface (and the operator sees it happen). It
+    // self-registers one test account under the anti-flood guardrail.
+    if cfg.pinned.is_empty() && cfg.auth.as_deref().unwrap_or("").trim().is_empty() {
+        if let Some(reg) = lib.vulns.iter().find(|a| a.name == "account_registration_and_forms") {
+            if !selected.iter().any(|a| a.name == reg.name) {
+                let _ = tx.send("no creds set — running account_registration_and_forms first to reach the authenticated surface".into()).await;
+                selected.insert(0, reg.clone());
+            }
+        }
+    }
+    // Graph-directed agents: the specialists that would complete or extend an
+    // open path in the attack graph (never when the operator pinned a set).
+    if cfg.pinned.is_empty() {
+        for (name, why) in &graph_agents {
+            if selected.iter().any(|a| &a.name == name) {
+                continue;
+            }
+            if let Some(a) = lib.vulns.iter().find(|a| &a.name == name) {
+                let _ = tx.send(format!("🕸 graph-directed: {name} — {why}")).await;
+                selected.push(a.clone());
+            }
+        }
+    }
+    let _ = tx
+        .send(format!("intelligently selected {} agent(s) matching recon: {}", selected.len(),
+            selected.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", ")))
+        .await;
+
+    // ---- 3. Exploit (parallel) -----------------------------------------
+    let target = cfg.target.clone();
+    let verbose = cfg.verbose;
+    let mcp_on = pool.mcp_config.is_some();
+    let directives = operator_directives(&cfg);
+    let ops = engagement_ops(&cfg);
+    // Inject the SPA/REST methodology only when the target looks like a JS SPA or
+    // an API — gives the agents concrete directions on a Juice-Shop-class surface.
+    let spa = if looks_like_spa_api(&recon) {
+        let _ = tx.send("recon: SPA/REST surface detected — applying API-hunting methodology".into()).await;
+        SPA_API_DOCTRINE
+    } else { "" };
+    // Absolute evidence dir + the screenshot-correlation convention for the prompt.
+    let evidence_dir = cfg.workdir.as_deref().map(|d| {
+        let p = Path::new(d).join("evidence");
+        let _ = std::fs::create_dir_all(&p);
+        std::fs::canonicalize(&p).unwrap_or(p).display().to_string()
+    }).unwrap_or_default();
+    let shots = if evidence_dir.is_empty() { String::new() } else { screenshot_doctrine(&evidence_dir) };
+    // Each agent gets a capped recon context. When CAG evidence is available,
+    // append pre-collected HTTP responses so agents analyze real data.
+    let recon_ctx: String = if cag_context.is_empty() {
+        recon.chars().take(8000).collect()
+    } else {
+        let base: String = recon.chars().take(6000).collect();
+        format!("{base}{cag_context}")
+    };
+
+    // Resume support: skip agents that already ran in a previous invocation.
+    let snapshot = cfg.workdir.as_deref().and_then(crate::resilience::RunSnapshot::load);
+    let mut run_snap = if let Some(ref snap) = snapshot {
+        let _ = tx.send(format!("📂 resuming from snapshot: {} agents done, {} findings carried", snap.agents_completed.len(), snap.findings_so_far.len())).await;
+        snap.clone()
+    } else {
+        crate::resilience::RunSnapshot::new(&cfg.target, &recon_ctx)
+    };
+    run_snap.agents_pending = selected.iter().map(|a| a.name.clone()).collect();
+    run_snap.set_phase("exploit");
+
+    // Budget warnings: progressive alerts.
+    let budget_warner = std::sync::Arc::new(crate::resilience::BudgetWarner::new());
+
+    let snap_ref = snapshot.as_ref();
+    // Everything every exploit agent receives identically (directives, doctrines,
+    // evidence contract). Providers cache by identical prefix from the first
+    // token, so with NEUROSPLOIT_PROMPT_PREFIX=1 this block leads the system
+    // message instead of sitting behind each agent's own system prompt. Off by
+    // default: the prompt is then byte-for-byte what it was.
+    let cf_bypass = if waf_challenge { CF_BYPASS_EXPLOIT_HINT } else { "" };
+    let cag_doctrine = if !cag_cache.is_empty() { CAG_DOCTRINE } else { "" };
+    let shared_block = format!(
+        "{directives}{react}{depth}{decision}{explore}{spa}{safety}{ops}{cf_bypass}{cag_doctrine}{doctrine}{shots}",
+        directives = directives, react = REACT_DOCTRINE, depth = DEPTH_DOCTRINE, decision = DECISION_DOCTRINE,
+        explore = EXPLORE_DOCTRINE, spa = spa, safety = SAFETY_DOCTRINE, ops = ops,
+        cf_bypass = cf_bypass, cag_doctrine = cag_doctrine,
+        doctrine = tool_doctrine(mcp_on), shots = shots,
+    );
+    let prefix_on = prompt_prefix_enabled();
+    // Circuit breaker: track agent failures in-flight to abort early on systemic errors.
+    let cb_errors = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cb_done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total_agents = selected.len();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
+        .map(|ag| {
+            let shared_block = shared_block.clone();
+            let target = target.clone();
+            let recon = recon_ctx.clone();
+            let directives = directives.clone();
+            let ops = ops.clone();
+            let shots = shots.clone();
+            let txc = tx.clone();
+            let wd = cfg.workdir.clone();
+            let cb_errors = cb_errors.clone();
+            let cb_done = cb_done.clone();
+            async move {
+                // Circuit breaker gate: if >1/3 of agents failed and we have enough data, skip.
+                {
+                    let errs = cb_errors.load(std::sync::atomic::Ordering::Relaxed);
+                    let done = cb_done.load(std::sync::atomic::Ordering::Relaxed);
+                    if done >= 5 && errs > total_agents / 3 {
+                        let _ = txc.send(format!("🚨 circuit breaker tripped — too many agents failing ({errs}/{done}), skipping {}", ag.name)).await;
+                        return (ag.name.clone(), String::new(), vec![]);
+                    }
+                }
+                // Resume: skip agents already completed in a prior run.
+                if let Some(snap) = snap_ref {
+                    if snap.already_ran(&ag.name) {
+                        let _ = txc.send(format!("⏩ skipping {} (already ran in prior run)", ag.name)).await;
+                        let prior: Vec<Finding> = snap.findings_so_far.iter()
+                            .filter(|f| f.agent == ag.name)
+                            .cloned().collect();
+                        return (ag.name.clone(), String::new(), prior);
+                    }
+                }
+                if pool.stop_exploiting() {
+                    return (ag.name.clone(), String::new(), vec![]);
+                }
+                // Budget gate: stop spawning new agents at 95%.
+                if crate::resilience::BudgetWarner::should_stop_new_agents(
+                    pool.tokens_used(),
+                    pool.token_limit(),
+                ) {
+                    let _ = txc.send(format!("🛑 budget exhausted — skipping agent {}", ag.name)).await;
+                    return (ag.name.clone(), String::new(), vec![]);
+                }
+                if verbose {
+                    let _ = txc.send(format!("  ▶ launching agent: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await;
+                }
+                let (system_eff, shared_in_user) = if prefix_on {
+                    (format!("{shared_block}\n\n{}", ag.system), String::new())
+                } else {
+                    (ag.system.clone(), shared_block.clone())
+                };
+                let user = format!(
+                    "AUTHORIZED engagement — you have explicit permission to test {target}. \
+                     Do not ask for confirmation — proceed and PROVE each issue.\n\n\
+                     {shared_in_user}{body}\n\nWhen done, reply with ONLY a JSON array of confirmed findings (may be empty []). \
+                     Each item: {{id,title,severity,cwe,endpoint,location,payload,evidence,repro_steps,impact,remediation,confidence,auth_context,account,secret,screenshots}}. \
+                     Write for a developer who has never seen this app and has to fix it today:\n\
+                     - `location`: EXACTLY where it is — the parameter, form field, header, JSON key, or flow step (e.g. \"POST /api/orders, JSON field `role`\"). An endpoint alone sends them hunting.\n\
+                     - `impact`: what an attacker gets, stated as what you MEASURED — not what the class usually enables. If you proved 25 unthrottled requests, say that; do not claim inbox flooding unless you observed mail being sent. An inflated impact gets the whole finding rejected, and the real measurement is lost with it.\n\
+                     - `remediation`: the concrete change, naming the control (parameterised query, server-side authorisation check, allowlist), not \"sanitise input\".\n\
+                     - `repro_steps`: an ORDERED array of literal commands someone can paste one by one from a clean shell — baseline request first, then the attack, then how to read the result. Include the real URL and the real payload.\n\
+                     - `evidence`: the concrete proof (request/response excerpt with status, key headers and the decisive part of the body). \
+                     A PoC script is an EXTRA artifact, never a substitute for these steps.\n\
+                     - `evidence_data`: the artifacts the harness verifies WITHOUT a model. Shape:\n\
+                       {{\"baseline\":{{\"method\":\"GET\",\"url\":\"...\",\"status\":200,\"body\":\"...\",\"headers\":{{\"set-cookie\":\"...\"}},\"request_headers\":{{}},\"elapsed_ms\":120,\"identity\":\"\"}},\n\
+                        \"attack\":{{same shape, the request carrying the payload}},\n\
+                        \"repeats\":[{{same shape, the attack repeated}}],\n\
+                        \"marker\":\"a unique token YOU chose\",\"marker_observed\":true|false,\"browser_executed\":true|false,\"callback_received\":true|false,\n\
+                        \"identity_a\":{{the owner's response}},\"identity_b\":{{another identity requesting the SAME resource}}}}\n\
+                       Fill only what applies to the class (see the evidence contract above); truncate bodies to the decisive part. \
+                     `screenshots` is an array of proof-image paths you saved into the evidence dir (see EVIDENCE SCREENSHOTS above); omit or leave empty when you captured none. \
+                     Set `auth_context` to \"authenticated\" or \"unauthenticated\"; set `account` to the test user/role you used (if any); \
+                     for a created test account set `secret` to its generated password (it is stored in the run vault and masked in the report).",
+                    target = target,
+                    shared_in_user = shared_in_user,
+                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
+                );
+                match pool.complete_routed(Task::Exploit, &ag.name, &system_eff, &user).await {
+                    Ok((m, text)) => {
+                        let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("exploit {} via {} → {} candidate(s)", ag.name, m.label(), f.len())).await;
+                        // Detect output truncation: if text length in chars is
+                        // near the max_tokens limit (tokens ≈ 3-4 chars), the
+                        // JSON findings block was likely cut off mid-stream.
+                        let max_tok = crate::models::max_tokens_for(&m.model) as usize;
+                        let char_floor = max_tok * 3; // conservative: 3 chars/token
+                        if text.len() >= char_floor && f.is_empty() {
+                            let _ = txc.send(format!(
+                                "⚠ agent {} output length ({} chars) hit token ceiling (~{} tokens). \
+                                 JSON findings likely truncated. Consider raising NEUROSPLOIT_MAX_TOKENS.",
+                                ag.name, text.len(), max_tok
+                            )).await;
+                        }
+                        // "no findings" is a RESULT, not a parse failure. Models
+                        // wrap the empty array in a ```json fence, so comparing the
+                        // raw text to "[]" reported every honest negative as
+                        // malformed — which teaches the operator to ignore a
+                        // warning that sometimes means a real parse failure.
+                        if f.is_empty() && !text.trim().is_empty() && !reported_nothing(&text) {
+                            if looks_like_refusal(&text) {
+                                // The model declined the technique — not a parse
+                                // failure. Say so plainly so the operator knows
+                                // WHY this agent found nothing (target read as
+                                // production, or technique out of RoE) and can
+                                // re-scope / adjust rather than chase a non-bug.
+                                let reason: String = text.trim().chars().take(180).collect();
+                                let _ = txc.send(format!("notify: 🚫 agent {} DECLINED this technique (model safety/RoE pushback, not a finding and not a parse error) — \"{}…\"", ag.name, reason)).await;
+                            } else {
+                                let tail: String = text.chars().rev().take(120).collect::<String>().chars().rev().collect();
+                                let _ = txc.send(format!("⚠ agent {} returned text but 0 parseable findings (model may have produced malformed JSON). Tail: {:?}", ag.name, tail)).await;
+                            }
+                        }
+                        // Live findings feed: surface each candidate the moment it appears.
+                        for c in &f {
+                            let _ = txc.send(format!("finding: [{}] {} @ {}", c.severity, c.title, c.endpoint)).await;
+                            if let Ok(j) = serde_json::to_string(c) { let _ = txc.send(format!("finding_json: {j}")).await; }
+                        }
+                        crate::traces::record(wd.as_deref(), &ag.name, &text);
+                        cb_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        (ag.name.clone(), text, f)
+                    }
+                    Err(e) => {
+                        cb_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        cb_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let is_auth = crate::pool::is_auth_failure(&e);
+                        if is_auth {
+                            let _ = txc.send(format!("⚠ exploit {} auth failed — findings so far are SAFE, run is pausing: {e}", ag.name)).await;
+                        } else {
+                            let _ = txc.send(format!("exploit {} failed: {e}", ag.name)).await;
+                        }
+                        // Nudge: retry with simplified prompt (skip for auth failures).
+                        if !is_auth && !pool.stop_exploiting() {
+                            let _ = txc.send(format!("🔄 nudging {} with simplified prompt...", ag.name)).await;
+                            let nudged = crate::resilience::nudge_agent(pool, &ag.name, &system_eff, &user, Task::Exploit).await;
+                            if !nudged.is_empty() {
+                                let _ = txc.send(format!("✓ nudge recovered {} finding(s) from {}", nudged.len(), ag.name)).await;
+                                return (ag.name.clone(), String::new(), nudged);
+                            }
+                        }
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() {
+                            let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await;
+                        }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect()
+        .await;
+
+    // Post-mortem circuit breaker analysis: detect systemic failures.
+    {
+        let errors: Vec<&str> = raw.iter()
+            .filter_map(|(_, text, _)| text.strip_prefix("ERROR: "))
+            .collect();
+        if !errors.is_empty() {
+            let total = raw.len();
+            let error_count = errors.len();
+            // Group by first 80 chars of error message.
+            let mut pattern_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for e in &errors {
+                let key: String = e.chars().take(80).collect();
+                *pattern_counts.entry(key).or_insert(0) += 1;
+            }
+            let (dominant_pattern, dominant_count) = pattern_counts.iter()
+                .max_by_key(|(_, c)| *c)
+                .map(|(k, c)| (k.clone(), *c))
+                .unwrap_or_default();
+            let error_ratio = error_count as f64 / total as f64;
+            let dominant_ratio = if error_count > 0 { dominant_count as f64 / error_count as f64 } else { 0.0 };
+            if error_ratio > 0.5 && dominant_ratio > 0.6 {
+                let _ = tx.send(format!(
+                    "🚨 CIRCUIT BREAKER: {error_count}/{total} agents failed — dominant error ({dominant_count}x): {dominant_pattern}. Likely systemic issue (wrong model, auth, rate limit)."
+                )).await;
+            } else if error_count > 3 {
+                let _ = tx.send(format!(
+                    "⚠ {error_count}/{total} agents failed. Top error ({dominant_count}x): {dominant_pattern}"
+                )).await;
+            }
+        }
+    }
+
+    // Update snapshot with completed agents.
+    for (name, _, findings) in &raw {
+        run_snap.mark_agent_done(name, findings);
+    }
+    run_snap.set_phase("validation");
+    if let Some(ref wd) = cfg.workdir {
+        let _ = run_snap.save(wd);
+    }
+
+    // Budget warning after exploit phase.
+    if let Some(threshold) = budget_warner.check(pool.tokens_used(), pool.token_limit()) {
+        let msg = crate::resilience::BudgetWarner::message(threshold, pool.tokens_used(), pool.token_limit(), 0);
+        let _ = tx.send(format!("notify: {msg}")).await;
+    }
+
+    // Merge any previously salvaged findings from prior crashed runs.
+    let mut prior_salvaged = if let Some(ref wd) = cfg.workdir {
+        crate::resilience::load_salvaged(wd)
+    } else { Vec::new() };
+
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = transcript_of(&raw);
+    let mut all_findings: Vec<Finding> = raw.iter().flat_map(|(_, _, f)| f.clone()).collect();
+    all_findings.append(&mut prior_salvaged);
+    let candidates = dedup_findings(all_findings);
+
+    // ---- 3b. WAF anti-hallucination gate ---------------------------------
+    // When a WAF/JS-challenge is active, agents using curl/HTTP get blocked
+    // but may fabricate evidence claiming success. For each finding WITHOUT
+    // structured evidence_data, replay the endpoint and check if the WAF
+    // blocks it. If the replay gets a WAF block (403/503 challenge page),
+    // the finding is demoted to needs-review as likely hallucinated.
+    let candidates = if waf_challenge && !cfg.offline {
+        let client = crate::probe::http_client();
+        let mut kept = Vec::with_capacity(candidates.len());
+        let mut demoted_waf = 0usize;
+        for mut f in candidates {
+            // Skip findings that already have structured evidence (wire-verified separately)
+            if f.evidence_data.is_some() {
+                kept.push(f);
+                continue;
+            }
+            // Skip Info-level findings (config/disclosure, not action claims)
+            if f.severity == "Info" {
+                kept.push(f);
+                continue;
+            }
+            // Only check findings that claim an HTTP endpoint
+            let ep = f.endpoint.trim();
+            if !ep.starts_with("http://") && !ep.starts_with("https://") {
+                kept.push(f);
+                continue;
+            }
+            // Quick replay: can we actually reach the endpoint?
+            let replay_ok = match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                client.get(ep).send(),
+            ).await {
+                Ok(Ok(resp)) => {
+                    let status = resp.status().as_u16();
+                    // WAF blocks: 403 (Cloudflare), 503 (challenge page), 429 (rate limit)
+                    // If we get one of these, the agent couldn't have gotten through either
+                    if status == 403 || status == 503 {
+                        let body = resp.text().await.unwrap_or_default();
+                        let is_waf_page = body.contains("Cloudflare")
+                            || body.contains("cf-browser-verification")
+                            || body.contains("Just a moment")
+                            || body.contains("challenge-platform")
+                            || body.contains("ray ID");
+                        !is_waf_page // OK only if NOT a WAF page
+                    } else {
+                        true // non-403/503 means endpoint is reachable
+                    }
+                }
+                _ => true, // timeout/error: don't penalize, let voter decide
+            };
+            if !replay_ok {
+                f.validated = false;
+                f.review_status = "needs-review".into();
+                f.review_reason = format!(
+                    "WAF anti-hallucination: endpoint returned WAF challenge/403 on replay — agent likely fabricated evidence. {}",
+                    f.review_reason
+                );
+                f.confidence = f.confidence.min(0.15);
+                demoted_waf += 1;
+            }
+            kept.push(f);
+        }
+        if demoted_waf > 0 {
+            let _ = tx.send(format!(
+                "🛡 WAF anti-hallucination: demoted {demoted_waf} finding(s) — endpoint blocked by WAF on replay, evidence likely fabricated"
+            )).await;
+        }
+        kept
+    } else {
+        candidates
+    };
+
+    // ---- 3c. CAG grounding gate -------------------------------------------
+    // Cross-reference findings against the pre-collected evidence cache.
+    // Demote findings whose endpoints returned WAF challenges in the cache.
+    let mut candidates = candidates;
+    if !cag_cache.is_empty() {
+        let cag_demoted = cag_grounding_gate(&mut candidates, &cag_cache, Some(&tx));
+        if cag_demoted > 0 {
+            let _ = tx.send(format!(
+                "🧠 CAG grounding: demoted {cag_demoted} finding(s) — pre-fetched evidence contradicts agent claims"
+            )).await;
+        }
+    }
+
+    let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating by {}-model vote", candidates.len(), cfg.vote_n)).await;
+    if pool.candidates.len() == 1 && effective_vote_n(&cfg) <= 1 {
+        let _ = tx.send("⚠ single-model panel with vote_n=1 — validation is weaker (same model validates its own findings). Consider --vote-n 2 or adding a second model for cross-validation.".into()).await;
+    }
+
+    // ---- 4. Validate by N-model voting ---------------------------------
+    let mut findings = validate_with_persist(candidates, pool, VOTE_SYS, effective_vote_n(&cfg), &tx, cfg.workdir.as_deref()).await;
+
+    // ---- 4b. Authorization matrix: deterministic multi-identity sweep --
+    let mx = authz_matrix_pass(&cfg, &recon, &tx).await;
+    if !mx.is_empty() {
+        let _ = tx.send(format!("🔐 authz-matrix: {} finding(s) from the multi-identity sweep", mx.len())).await;
+        findings.extend(mx);
+        findings = dedup_findings(findings);
+    }
+
+    // ---- 4c. Graph checkpoint: validated findings into the graph -------
+    let _ = graph_checkpoint(&cfg, &recon, &findings, "validated", &[], &tx).await;
+
+    // ---- 5. Attack chaining: multi-round post-exploitation pivots ------
+    let chained = attack_chain(pool, &cfg, &recon, &findings, &lib.chains, &tx).await;
+    findings.extend(chained);
+    findings = dedup_findings(findings);
+    let findings = refute_pass(findings, pool, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, recon, transcript, findings, selected, &mut rl, crate::grounding::GroundMode::Empirical, String::new(), tx).await
+}
+
+/// White-box engagement: analyse a repository's source for vulnerabilities.
+pub async fn run_whitebox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    let _ = tx.send(format!("WHITEBOX · repo: {} · {} code agents · models: {}", cfg.target, lib.code.len(),
+        pool.candidates.iter().map(|m| m.label()).collect::<Vec<_>>().join(", "))).await;
+
+    let context = collect_repo_context(Path::new(&cfg.target), 200, 120_000);
+    let bytes = context.len();
+    let research = is_research_intent(&cfg);
+    if research {
+        let _ = tx.send("notify: 🔬 research mode — hunting a NOVEL, CVE-reportable issue (known-CVE dedup + patch-diff variant analysis)".into()).await;
+    }
+    let _ = tx.send(format!("collected {} bytes of source context", bytes)).await;
+    if bytes == 0 {
+        let _ = tx.send("no readable source found at the given path".into()).await;
+    }
+
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+    let pool_agents: Vec<Agent> = if lib.code.is_empty() { lib.vulns.clone() } else { lib.code.clone() };
+    let mut ranked: Vec<Agent> = if cfg.pinned.is_empty() {
+        pool_agents
+    } else {
+        // Operator pinned an explicit agent set (--only): re-test exactly those.
+        let sel: Vec<Agent> = pool_agents.iter()
+            .filter(|a| cfg.pinned.iter().any(|p| p == &a.name)).cloned().collect();
+        if sel.is_empty() {
+            let _ = tx.send(format!("--only matched no code agent ({}) — reviewing with the full set",
+                cfg.pinned.join(", "))).await;
+            pool_agents
+        } else {
+            let _ = tx.send(format!("--only: reviewing with exactly {} pinned agent(s)", sel.len())).await;
+            sel
+        }
+    };
+    ranked.sort_by(|a, b| rl.weight(&b.name).partial_cmp(&rl.weight(&a.name)).unwrap_or(std::cmp::Ordering::Equal));
+    let cap = if cfg.max_agents > 0 { cfg.max_agents.min(ranked.len()) } else { ranked.len() };
+    let selected: Vec<Agent> = ranked.into_iter().take(cap).collect();
+    let _ = tx.send(format!("selected {} code-analysis agents", selected.len())).await;
+
+    if cfg.offline || bytes == 0 {
+        let artifacts = persist(&cfg, "{}", &context, &[]);
+        return RunOutput { target: cfg.target.clone(), workdir: cfg.workdir.clone().unwrap_or_default(), findings: vec![], agents_ran: selected.iter().map(|a| a.name.clone()).collect(), candidates: 0, recon: String::new(), artifacts, denied: None };
+    }
+
+    let wb_workdir = cfg.workdir.clone();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
+        .map(|ag| {
+            let ctx = context.clone();
+            let txc = tx.clone();
+            let wd = wb_workdir.clone();
+            async move {
+                let user = format!(
+                    "{}\n\nSOURCE CODE TO REVIEW:\n```\n{}\n```\n\nReply ONLY with a JSON array of findings (may be empty []). \
+                     Each item: {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}} \
+                     where `endpoint` is the file:line and `evidence` quotes the vulnerable code. \
+                     When a finding warrants a runnable proof, write a repro script to $NEUROSPLOIT_POCS and put its path in `payload`.",
+                    ag.user.replace("{target}", "the provided repository").replace("{recon_json}", "{}"),
+                    ctx
+                );
+                let sys = if research {
+                    format!("{}{}{}", WHITEBOX_DOCTRINE, WHITEBOX_RESEARCH_DOCTRINE, ag.system)
+                } else {
+                    format!("{}{}", WHITEBOX_DOCTRINE, ag.system)
+                };
+                match pool.complete_routed(Task::Exploit, &ag.name, &sys, &user).await {
+                    Ok((m, text)) => {
+                        let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("analyze {} via {} → {} candidate(s)", ag.name, m.label(), f.len())).await;
+                        (ag.name.clone(), text, f)
+                    }
+                    Err(e) => {
+                        let _ = txc.send(format!("analyze {} failed: {e}", ag.name)).await;
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() {
+                            let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await;
+                        }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect()
+        .await;
+
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = transcript_of(&raw);
+    let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
+    let findings = validate(candidates, pool, CODE_VOTE_SYS, effective_vote_n(&cfg), &tx).await;
+    let findings = refute_pass(findings, pool, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, "{}".into(), transcript, findings, selected, &mut rl, crate::grounding::GroundMode::Symbolic, context, tx).await
+}
+
+/// Greybox engagement: review the source code AND exploit the running app in one
+/// pipeline — code-review findings become *leads* that guide live exploitation
+/// (with credentials/auth so testing is authenticated).
+pub async fn run_greybox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    let repo = cfg.repo.clone().unwrap_or_default();
+    let _ = tx.send(format!("GREYBOX · live: {} · repo: {} · {} code agents",
+        cfg.target, repo, lib.code.len())).await;
+
+    // ---- 1. Recon the live target (deterministic probe + model) -------
+    let mut gb_waf_challenge = false;
+    let recon = if cfg.offline {
+        "{}".to_string()
+    } else {
+        let p = crate::probe::probe_in_scope(&cfg.target, &effective_scope(&cfg)).await;
+        let _ = tx.send(crate::probe::probe_summary(&p)).await;
+        gb_waf_challenge = p.waf_challenge;
+        let facts = crate::probe::probe_json(&p);
+        match pool.complete_routed(Task::Recon, "recon", RECON_SYS,
+            &format!("{}{}OBSERVED HTTP PROBE (real facts — build on these):\n{}\n\nTarget: {}",
+                operator_directives(&cfg), tool_doctrine(pool.mcp_config.is_some()), facts, cfg.target)).await {
+            Ok((m, t)) => { let _ = tx.send(format!("recon complete via {}", m.label())).await; format!("{facts}\n\nMODEL RECON:\n{t}") }
+            Err(e) => { let _ = tx.send(format!("recon failed ({e}) — probe facts only")).await; facts }
+        }
+    };
+    // CAG: pre-collect HTTP evidence for greybox agents.
+    let gb_cag_cache = if !cfg.offline {
+        cag_collect(&cfg.target, &recon, gb_waf_challenge, &tx).await
+    } else {
+        CagCache::default()
+    };
+    let gb_cag_context = gb_cag_cache.to_context(8000);
+    // Graph checkpoint: seed the attack graph from recon.
+    let _ = graph_checkpoint(&cfg, &recon, &[], "recon", &[], &tx).await;
+
+    // ---- 2. Review the source for leads -------------------------------
+    let context = collect_repo_context(Path::new(&repo), 200, 90_000);
+    let _ = tx.send(format!("collected {} bytes of source for code review", context.len())).await;
+    let gb_research = is_research_intent(&cfg);
+    if gb_research {
+        let _ = tx.send("notify: 🔬 research mode — code review hunts a novel, CVE-reportable bug, then confirms it live".into()).await;
+    }
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+
+    let mut code_leads = String::new();
+    if !cfg.offline && !context.is_empty() {
+        let code_cap = if cfg.max_agents > 0 { cfg.max_agents.min(lib.code.len()) } else { lib.code.len().min(12) };
+        let code_agents: Vec<Agent> = lib.code.iter().take(code_cap).cloned().collect();
+        let leads: Vec<Finding> = stream::iter(code_agents)
+            .map(|ag| {
+                let ctx = context.clone();
+                let txc = tx.clone();
+                async move {
+                    let user = format!(
+                        "{}\n\nSOURCE:\n```\n{}\n```\nReply ONLY a JSON array of issues (may be []): \
+                         {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}} \
+                         where endpoint is file:line.",
+                        ag.user.replace("{target}", "the repository").replace("{recon_json}", "{}"), ctx
+                    );
+                    // Research mode steers the code-review half of greybox too:
+                    // find a novel, reportable bug, then confirm it live.
+                    let sys = if gb_research { format!("{}{}", WHITEBOX_RESEARCH_DOCTRINE, ag.system) } else { ag.system.clone() };
+                    match pool.complete_routed(Task::Select, &ag.name, &sys, &user).await {
+                        Ok((_, text)) => { let f = extract_findings(&text, &ag.name);
+                            let _ = txc.send(format!("review {} → {} lead(s)", ag.name, f.len())).await; f }
+                        Err(_) => vec![],
+                    }
+                }
+            })
+            .buffer_unordered(cfg.concurrency)
+            .collect::<Vec<Vec<Finding>>>().await.into_iter().flatten().collect();
+        let leads = dedup_findings(leads);
+        if !leads.is_empty() {
+            code_leads.push_str("CODE-REVIEW LEADS (confirm these against the LIVE app):\n");
+            for l in leads.iter().take(25) {
+                code_leads.push_str(&format!("- [{}] {} @ {} ({})\n", l.severity, l.title, l.endpoint, l.cwe));
+            }
+            code_leads.push('\n');
+        }
+        let _ = tx.send(format!("{} code lead(s) → guiding live exploitation", leads.len())).await;
+    }
+
+    // ---- 3. Select live agents (recon + focus + code leads) -----------
+    let mut ranked: Vec<Agent> = lib.vulns.clone();
+    ranked.sort_by(|a, b| rl.weight(&b.name).partial_cmp(&rl.weight(&a.name)).unwrap_or(std::cmp::Ordering::Equal));
+    let cap = if cfg.max_agents > 0 { cfg.max_agents.min(ranked.len()) } else { ranked.len() };
+    let focus = format!("{} {}", cfg.instructions.clone().unwrap_or_default(), code_leads);
+
+    if cfg.offline {
+        let selected: Vec<Agent> = ranked.into_iter().take(cap).collect();
+        let _ = tx.send(format!("offline: selected {} agent(s); no live exploitation", selected.len())).await;
+        let artifacts = persist(&cfg, &recon, &code_leads, &[]);
+        return RunOutput { target: cfg.target.clone(), workdir: cfg.workdir.clone().unwrap_or_default(), findings: vec![],
+            agents_ran: selected.iter().map(|a| a.name.clone()).collect(), candidates: 0, recon, artifacts, denied: None };
+    }
+
+    let chosen = select_agents(pool, &recon, &focus, &ranked, &tx).await;
+    let selected: Vec<Agent> = if !chosen.is_empty() {
+        let sel: Vec<Agent> = ranked.iter().filter(|a| chosen.iter().any(|c| c == &a.name)).cloned().collect();
+        if sel.is_empty() { heuristic_select(&ranked, &recon, &focus, cap) } else { sel.into_iter().take(cap).collect() }
+    } else {
+        heuristic_select(&ranked, &recon, &focus, cap)
+    };
+    let selected: Vec<Agent> = { let mut seen = std::collections::HashSet::new();
+        selected.into_iter().filter(|a| seen.insert(a.name.clone())).collect() };
+    let _ = tx.send(format!("selected {} live agent(s): {}", selected.len(),
+        selected.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "))).await;
+
+    // ---- 4. Exploit live, guided by code leads ------------------------
+    let target = cfg.target.clone();
+    let verbose = cfg.verbose;
+    let mcp_on = pool.mcp_config.is_some();
+    let directives = operator_directives(&cfg);
+    let ops = engagement_ops(&cfg);
+    let recon_ctx: String = if gb_cag_context.is_empty() {
+        recon.chars().take(3000).collect()
+    } else {
+        let base: String = recon.chars().take(2000).collect();
+        format!("{base}{gb_cag_context}")
+    };
+    let leads_ctx = code_leads.clone();
+    let gb_workdir = cfg.workdir.clone();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
+        .map(|ag| {
+            let target = target.clone();
+            let recon = recon_ctx.clone();
+            let directives = directives.clone();
+            let ops = ops.clone();
+            let leads = leads_ctx.clone();
+            let txc = tx.clone();
+            let wd = gb_workdir.clone();
+            async move {
+                if pool.stop_exploiting() {
+                    return (ag.name.clone(), String::new(), vec![]);
+                }
+                if verbose {
+                    let _ = txc.send(format!("  ▶ launching agent: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await;
+                }
+                let user = format!(
+                    "AUTHORIZED greybox engagement on {target} — you also have the source review below. \
+                     Proceed and PROVE each issue against the LIVE app.\n\n{directives}{leads}{react}{depth}{decision}{safety}{ops}{doctrine}{body}\n\n\
+                     Reply ONLY a JSON array of confirmed findings (may be []): \
+                     {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence,auth_context,account,secret}}. \
+                     Set `auth_context` (authenticated/unauthenticated) and `account` (test user/role used); for a created account set `secret`.",
+                    target = target, directives = directives, leads = leads,
+                    react = REACT_DOCTRINE, depth = DEPTH_DOCTRINE, decision = DECISION_DOCTRINE, safety = SAFETY_DOCTRINE, ops = ops, doctrine = tool_doctrine(mcp_on),
+                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
+                );
+                match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
+                    Ok((m, text)) => { let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("exploit {} via {} → {} candidate(s)", ag.name, m.label(), f.len())).await;
+                        (ag.name.clone(), text, f) }
+                    Err(e) => {
+                        let _ = txc.send(format!("exploit {} failed: {e}", ag.name)).await;
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() {
+                            let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await;
+                        }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect::<Vec<_>>().await;
+
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = format!("{}\n{}", code_leads, transcript_of(&raw));
+    let mut candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    // CAG grounding gate: cross-reference findings against pre-fetched evidence.
+    if !gb_cag_cache.is_empty() {
+        let cag_demoted = cag_grounding_gate(&mut candidates, &gb_cag_cache, Some(&tx));
+        if cag_demoted > 0 {
+            let _ = tx.send(format!(
+                "🧠 CAG grounding (greybox): demoted {cag_demoted} finding(s) — pre-fetched evidence contradicts agent claims"
+            )).await;
+        }
+    }
+    let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
+    let mut findings = validate(candidates, pool, VOTE_SYS, effective_vote_n(&cfg), &tx).await;
+    let chained = attack_chain(pool, &cfg, &recon, &findings, &lib.chains, &tx).await;
+    findings.extend(chained);
+    findings = dedup_findings(findings);
+    let findings = refute_pass(findings, pool, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, recon, transcript, findings, selected, &mut rl, crate::grounding::GroundMode::Either, context, tx).await
+}
+
+const CHAIN_SYS: &str = "You are a post-exploitation & attack-chaining specialist. You are given ONE confirmed foothold plus any loot already gathered. DECIDE the most promising directions to expand from THIS foothold and pursue them with real tools: post-exploitation (loot credentials/tokens/keys/config/source), credential reuse, privilege escalation (horizontal AND vertical), lateral movement to adjacent services/hosts, data exfiltration, and reaching NEW attack surface the foothold exposes (e.g. SSRF→cloud metadata creds→IAM, SQLi→DB dump→credential reuse→admin, arbitrary file read→secrets→RCE, IDOR→account takeover, auth bypass→internal APIs). PROVE each escalated step with a real tool receipt. Report ONLY NEW findings beyond the input, plus any new loot you discovered (creds, tokens, hosts, internal endpoints) so later stages can reuse it. AD/INTERNAL PIVOT TRADECRAFT: (a) a compromised domain-joined host usually ROUTES to internal/forest subnets that are unreachable from the operator box — run tooling FROM that host, or start ONE clean SOCKS relay through it (single hop; stacking forwards corrupts SMB/DRSUAPI) and run tools locally over the proxy. (b) If exec runs but output comes back EMPTY/truncated, the host AV/EDR is deleting the dropped output file — do NOT conclude failure. Reason from what you HOLD: if you already have local admin / SYSTEM on that host, you OWN it, so neuter the AV yourself (`Set-MpPreference -DisableRealtimeMonitoring $true` / `-DisableIOAVProtection $true` / `-DisableScriptScanning $true`, or add an `Add-MpPreference -ExclusionPath`) and re-run; otherwise switch to `evil-winrm` (interactive, output streams over WinRM) or stage in a path the host already excludes (e.g. C:\\Tools) and read from there. (c) APPLICATION CREDENTIAL STORES are often the fastest path to Domain Admin: with any DB read access (e.g. MSSQL `sa`/mapped login), enumerate non-system databases for credential tables (columns like pass/cred/secret/pwd) and DUMP them — one forest's app DB commonly stores the NEXT forest's admin and the forest-root DA. (d) Prefer a DIRECT credential login to a domain controller (`evil-winrm`/`impacket-psexec` with a recovered admin) over fighting a tunnel/AV for a DCSync — then `impacket-secretsdump` once you hold a DA. Authorized engagement; never destructive/DoS.";
+
+/// One orchestration round: take the confirmed findings and try to chain them
+/// into higher-impact follow-ups, reusing the recon/auth context. Returns the
+/// (unvalidated) new candidate findings produced by chaining.
+/// Dedup / identity key for a finding (cwe|endpoint|title-prefix).
+fn finding_key(f: &Finding) -> String {
+    format!("{}|{}|{}", f.cwe.to_lowercase(), f.endpoint.to_lowercase(),
+        f.title.to_lowercase().chars().take(40).collect::<String>())
+}
+
+/// Order footholds by attack-graph chain value, then severity.
+fn sort_frontier(frontier: &mut [Finding], prio: &std::collections::HashMap<String, f64>) {
+    frontier.sort_by(|a, b| {
+        let pa = prio.get(&a.id).copied().unwrap_or(0.0);
+        let pb = prio.get(&b.id).copied().unwrap_or(0.0);
+        pb.partial_cmp(&pa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(sev_rank(&b.severity).cmp(&sev_rank(&a.severity)))
+    });
+}
+
+fn sev_rank(sev: &str) -> u8 {
+    match sev.to_lowercase().as_str() {
+        x if x.starts_with("crit") => 4,
+        x if x.starts_with("high") => 3,
+        x if x.starts_with("med") => 2,
+        x if x.starts_with("low") => 1,
+        _ => 0,
+    }
+}
+
+/// Extract IPv4 addresses from a string (endpoint, evidence, loot).
+fn extract_ips(text: &str) -> Vec<String> {
+    let mut ips = Vec::new();
+    // Match patterns like 10.0.1.6, 192.168.1.1, etc.
+    let mut i = 0;
+    let bytes = text.as_bytes();
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            let candidate = &text[start..i];
+            let parts: Vec<&str> = candidate.split('.').collect();
+            if parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok()) {
+                let ip = candidate.to_string();
+                if !ips.contains(&ip) {
+                    ips.push(ip);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    ips
+}
+
+/// Extract subnet CIDRs mentioned in recon text (IPs found are grouped into /24s).
+fn extract_subnets_from_recon(recon: &str) -> Vec<String> {
+    let mut subnets = std::collections::HashSet::new();
+    for ip in extract_ips(recon) {
+        if let Ok(v4) = ip.parse::<std::net::Ipv4Addr>() {
+            if v4.is_private() {
+                let o = v4.octets();
+                subnets.insert(format!("{}.{}.{}.0/24", o[0], o[1], o[2]));
+            }
+        }
+    }
+    subnets.into_iter().collect()
+}
+
+/// Max footholds expanded per round (keeps token cost bounded).
+const CHAIN_SEEDS_PER_ROUND: usize = 6;
+
+/// Robust attack-chaining engine (v3.5.4): iterative, decision-driven,
+/// post-exploitation pivoting. Each round takes the newest confirmed footholds,
+/// and for EACH one an agent decides which directions to expand (post-ex, cred
+/// reuse, privesc, lateral, exfil, new surface), proves new impact, and reports
+/// new findings + **loot** (creds/tokens/hosts/endpoints). Loot is carried
+/// forward so later rounds reuse it. New validated findings become the next
+/// round's footholds; the loop stops at `chain_depth` rounds or when a round
+/// yields nothing new (loop-until-dry). Findings are validated each round so we
+/// never pivot off a false positive.
+/// A graph checkpoint — the attack graph as a phase of the test.
+///
+/// Projects everything known so far (the recon surface, findings, the saved
+/// internal-network graph, the project's cross-run memory and, when configured,
+/// paths read back from Neo4j), reasons over it, and then:
+/// - publishes the live context every agent prompt reads (via
+///   `operator_directives`), so the next agents test toward the open paths;
+/// - writes `graph/live-chains.md` + `graph/live.json` for the operator;
+/// - MERGEs the run's slice into Neo4j.
+///
+/// Returns the graph-directed agent suggestions and a priority per finding id.
+/// What a graph checkpoint hands back to the phase that called it.
+struct GraphOutcome {
+    /// Agents that would complete or extend an open path (name, why).
+    agents: Vec<(String, String)>,
+    /// Chain value per finding id, for ordering footholds.
+    prio: std::collections::HashMap<String, f64>,
+    /// Dependency-ready steps: (seed finding id, action, chain title).
+    ready: Vec<(String, String, String)>,
+}
+
+async fn graph_checkpoint(
+    cfg: &RunConfig,
+    recon: &str,
+    findings: &[Finding],
+    phase: &str,
+    available: &[String],
+    tx: &Sender<String>,
+) -> GraphOutcome {
+    use crate::graph_memory as gm;
+    let rid = run_id(cfg);
+    let scope = effective_scope(cfg);
+    let in_scope = |u: &str| scope.in_hard_scope(u);
+    let history = crate::knowledge_graph::KnowledgeGraph::load(proj_store(cfg).join("graph.json"));
+    let internal: Option<crate::internal::InternalGraph> = cfg
+        .workdir
+        .as_deref()
+        .and_then(|d| std::fs::read_to_string(Path::new(d).join("internal-graph.json")).ok())
+        .and_then(|t| serde_json::from_str(&t).ok());
+
+    let mut gb = gm::build(&cfg.target, &rid, findings, internal.as_ref(), Some(&history));
+    gm::project_recon(&mut gb, &cfg.target, recon, &in_scope);
+    // Keep the exploration/asset graph current (planner prompt, digests, Neo4j).
+    // Best-effort: a write problem must never fail the run.
+    if let Some(d) = cfg.workdir.as_deref() {
+        let _ = crate::dual_build::update_and_save(&Path::new(d).join("graphs"), &cfg.target, recon, findings, &in_scope);
+    }
+    let neo = gm::Neo4j::resolve(cfg.neo4j.as_deref());
+    if let Some(n) = &neo {
+        match n.fetch_paths(&gb.target_id, 300).await {
+            Ok(remote) => gb.absorb(remote),
+            Err(e) => {
+                let _ = tx.send(format!("🕸 graph [{phase}]: neo4j read skipped ({e})")).await;
+            }
+        }
+    }
+    let cs = gm::chains(&gb, 8, 30);
+    let moves = gm::next_moves(&gb, &cs, 10);
+    let todo = gm::todo(&gb, &cs);
+    gm::set_live_context(&rid, gm::context_block(&gb, &cs, &moves));
+
+    if let Some(d) = cfg.workdir.as_deref() {
+        let out = Path::new(d).join("graph");
+        if std::fs::create_dir_all(&out).is_ok() {
+            let _ = std::fs::write(out.join("live-chains.md"), gm::chains_markdown(&cfg.target, &cs, &moves));
+            let _ = std::fs::write(out.join("live.json"), gm::export_json(&gb));
+            let _ = std::fs::write(out.join("todo.md"), gm::todo_markdown(&cfg.target, &todo));
+            let _ = std::fs::write(out.join("todo.json"), gm::todo_json(&todo));
+            let _ = std::fs::write(out.join("live-chains.json"), gm::chains_json(&cs, &moves));
+        }
+    }
+    let ready: Vec<(String, String, String)> = gm::ready_steps(&todo)
+        .into_iter()
+        .filter_map(|t| t.seed_finding.clone().map(|fid| (fid, t.action.clone(), t.chain.clone())))
+        .collect();
+
+    let mut synced = String::new();
+    if let Some(n) = &neo {
+        // Push this run's slice (not the history copy — it was pushed by the
+        // runs it came from).
+        let mut pb = gm::build(&cfg.target, &rid, findings, internal.as_ref(), None);
+        gm::project_recon(&mut pb, &cfg.target, recon, &in_scope);
+        gm::record_paths(&mut pb, &cs, &rid);
+        match n.push_with_engagement(&pb, &rid, cfg.engagement.as_deref()).await {
+            Ok(_) => synced = " · neo4j synced".into(),
+            Err(e) => synced = format!(" · neo4j push skipped ({e})"),
+        }
+        // Exploration graph (assets + what was tried): push it and turn
+        // "untested assets next to a finding" into prompt leads for the agents.
+        if let Some(d) = cfg.workdir.as_deref() {
+            if let Ok(dg) = crate::exploration_graph::DualGraph::load(&Path::new(d).join("graphs")) {
+                match crate::neo4j_exploration::sync(n, &dg, &cfg.target, &rid).await {
+                    Ok(leads) if !leads.is_empty() => {
+                        let cur = gm::live_context(&rid);
+                        gm::set_live_context(&rid, format!("{cur}{}", crate::neo4j_exploration::suggestion_block(&leads)));
+                        synced.push_str(&format!(" · {} chain lead(s)", leads.len()));
+                    }
+                    Ok(_) => {}
+                    Err(e) => synced.push_str(&format!(" · exploration sync skipped ({e})")),
+                }
+            }
+        }
+        // Neo4j graph intelligence: query owned nodes, attack paths, shortest
+        // paths to high-value targets. Append to live context so agents get
+        // BloodHound-style path suggestions.
+        let engagement_id = cfg.engagement.as_deref();
+        let suggestions = n.query_graph_suggestions(engagement_id).await;
+        if !suggestions.is_empty() {
+            let cur = gm::live_context(&rid);
+            gm::set_live_context(&rid, format!("{cur}{suggestions}"));
+            synced.push_str(" · neo4j path intelligence");
+        }
+    }
+    let (h, sv, ep, sec) = gm::surface_counts(&gb);
+    let confirmed = cs.iter().filter(|c| c.status == gm::Status::Confirmed).count();
+    let _ = tx
+        .send(format!(
+            "🕸 graph [{phase}]: {h} host(s) · {sv} service(s) · {ep} endpoint(s) · {sec} secret fp · {} chain(s) ({confirmed} confirmed) · {} next move(s){synced}",
+            cs.len(),
+            moves.len()
+        ))
+        .await;
+    if let Some((_, action, chain)) = ready.first() {
+        let _ = tx.send(format!("🕸 next step ({} ready): {} — {}", ready.len(), chain, action)).await;
+    } else if let Some(m) = moves.first() {
+        let _ = tx.send(format!("🕸 next move: {m}")).await;
+    }
+    GraphOutcome { agents: gm::directed_agents(&gb, available), prio: gm::seed_priority(&cs), ready }
+}
+
+async fn attack_chain(pool: &ModelPool, cfg: &RunConfig, recon: &str,
+                      confirmed: &[Finding], chains: &[Agent], tx: &Sender<String>) -> Vec<Finding> {
+    let max_rounds = cfg.chain_depth;
+    if max_rounds == 0 || confirmed.is_empty() || pool.stop_exploiting() {
+        return vec![];
+    }
+    let recipes: String = chains.iter().map(|a| format!("- {}", a.title.replace(" Agent", ""))).collect::<Vec<_>>().join("\n");
+    let recipe_block = if recipes.is_empty() { String::new() } else { format!("KNOWN CHAIN RECIPES (apply any that fit):\n{recipes}\n\n") };
+    let recon_ctx: String = recon.chars().take(2000).collect();
+
+    // --- Pivot proxy: set up PivotManager for multi-hop subnet routing ---
+    let pivot_enabled = cfg.pivot_proxy.as_deref()
+        .map(|v| !v.eq_ignore_ascii_case("off"))
+        .unwrap_or(false);
+    let pivot_mgr = crate::pivot::PivotManager::new();
+    if pivot_enabled {
+        // Register directly reachable subnets from the target.
+        let target_subnet = {
+            let octets: Vec<&str> = cfg.target.split('.').collect();
+            if octets.len() >= 3 {
+                format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2])
+            } else {
+                String::new()
+            }
+        };
+        if !target_subnet.is_empty() {
+            pivot_mgr.set_direct_subnets(vec![target_subnet]).await;
+        }
+
+        // Manual pivot registration: `host:domain:user:pass`.
+        if let Some(spec) = cfg.pivot_proxy.as_deref() {
+            let parts: Vec<&str> = spec.split(':').collect();
+            if parts.len() >= 4 {
+                let pivot_subnets = extract_subnets_from_recon(recon);
+                let _ = tx.send(format!(
+                    "🔀 pivot: manual pivot registered — {} ({}@{}) for subnets: {}",
+                    parts[0], parts[2], parts[1], pivot_subnets.join(", ")
+                )).await;
+                pivot_mgr.register_pivot(crate::pivot::PivotHost {
+                    address: parts[0].to_string(),
+                    reachable_subnets: pivot_subnets,
+                    access: crate::pivot::PivotAccess::WinRm {
+                        domain: parts[1].to_string(),
+                        user: parts[2].to_string(),
+                        password: parts[3..].join(":"),
+                    },
+                    os: crate::pivot::PivotOs::Windows,
+                    has_chisel: false,
+                    has_ligolo: false,
+                    has_ssh: false,
+                }).await;
+            }
+        }
+
+        // Auto-register the engagement target as a pivot if we have credentials.
+        if cfg.pivot_proxy.as_deref().map(|v| v.eq_ignore_ascii_case("auto")).unwrap_or(false) {
+            if let Some(creds_path) = cfg.creds_file.as_deref() {
+                if let Some(creds) = crate::creds::Creds::load(std::path::Path::new(creds_path)) {
+                    if let Some(win) = &creds.win {
+                        if !win.host.is_empty() && !win.user.is_empty() {
+                            let pivot_subnets = extract_subnets_from_recon(recon);
+                            if !pivot_subnets.is_empty() {
+                                let _ = tx.send(format!(
+                                    "🔀 pivot: auto-registering {} as pivot for subnets: {}",
+                                    win.host, pivot_subnets.join(", ")
+                                )).await;
+                                pivot_mgr.register_pivot(crate::pivot::PivotHost {
+                                    address: win.host.clone(),
+                                    reachable_subnets: pivot_subnets,
+                                    access: crate::pivot::PivotAccess::WinRm {
+                                        domain: win.domain.clone(),
+                                        user: win.user.clone(),
+                                        password: win.password.clone(),
+                                    },
+                                    os: crate::pivot::PivotOs::Windows,
+                                    has_chisel: false,
+                                    has_ligolo: false,
+                                    has_ssh: false,
+                                }).await;
+                            }
+                        }
+                    }
+                    if let Some(ssh) = &creds.ssh {
+                        if !ssh.host.is_empty() && !ssh.user.is_empty() {
+                            let pivot_subnets = extract_subnets_from_recon(recon);
+                            if !pivot_subnets.is_empty() {
+                                let _ = tx.send(format!(
+                                    "🔀 pivot: auto-registering {} (SSH) as pivot for subnets: {}",
+                                    ssh.host, pivot_subnets.join(", ")
+                                )).await;
+                                pivot_mgr.register_pivot(crate::pivot::PivotHost {
+                                    address: ssh.host.clone(),
+                                    reachable_subnets: pivot_subnets,
+                                    access: crate::pivot::PivotAccess::Ssh {
+                                        user: ssh.user.clone(),
+                                        password: if ssh.password.is_empty() { None } else { Some(ssh.password.clone()) },
+                                        key: if ssh.key.is_empty() { None } else { Some(ssh.key.clone()) },
+                                    },
+                                    os: crate::pivot::PivotOs::Linux,
+                                    has_chisel: false,
+                                    has_ligolo: false,
+                                    has_ssh: true,
+                                }).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let _ = tx.send("🔀 pivot proxy engine enabled".to_string()).await;
+    }
+
+    let mut all_new: Vec<Finding> = Vec::new();
+    let mut loot: Vec<String> = Vec::new();
+    let mut round_summaries: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = confirmed.iter().map(finding_key).collect();
+
+    // Frontier = footholds to expand this round; start with confirmed. Order:
+    // findings on the most valuable attack-graph chains first, then severity.
+    let mut known: Vec<Finding> = confirmed.to_vec();
+    let start = graph_checkpoint(cfg, recon, &known, "chain start", &[], tx).await;
+    let mut prio = start.prio;
+    let mut ready = start.ready;
+    // Steps already dispatched — a step the agent could not prove is not
+    // re-sent every round.
+    let mut attempted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut frontier: Vec<Finding> = confirmed.to_vec();
+    sort_frontier(&mut frontier, &prio);
+
+    for round in 1..=max_rounds {
+        // Seeds: dependency-ready steps first (each with its exact step), then
+        // the freshest footholds by chain value.
+        let mut seeds: Vec<(Finding, String)> = Vec::new();
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (fid, action, chain) in &ready {
+            if seeds.len() >= CHAIN_SEEDS_PER_ROUND {
+                break;
+            }
+            if attempted.contains(action) {
+                continue;
+            }
+            if let Some(f) = known.iter().find(|f| &f.id == fid) {
+                if used.insert(f.id.clone()) {
+                    attempted.insert(action.clone());
+                    seeds.push((
+                        f.clone(),
+                        format!(
+                            "DEPENDENCY STEP for this foothold (chain `{chain}`): {action}\nDo this step only — the later steps of the chain depend on the fact it yields. Report it as a finding with evidence; put any credential/session obtained in `secret`/`account`; set `chains_from` to [\"{fid}\"].\n\n"
+                        ),
+                    ));
+                }
+            }
+        }
+        for f in frontier.iter() {
+            if seeds.len() >= CHAIN_SEEDS_PER_ROUND {
+                break;
+            }
+            if used.insert(f.id.clone()) {
+                seeds.push((f.clone(), String::new()));
+            }
+        }
+        if pool.stop_exploiting() || seeds.is_empty() {
+            break;
+        }
+        let stepped = seeds.iter().filter(|(_, h)| !h.is_empty()).count();
+        let _ = tx.send(format!("⛓ attack-chain round {round}/{max_rounds} — expanding {} foothold(s) ({stepped} dependency step(s)), {} loot item(s)", seeds.len(), loot.len())).await;
+
+        let loot_snapshot = loot.clone();
+        // Directives re-read every round: they carry the live attack-graph
+        // context the last checkpoint published.
+        let round_directives = operator_directives(cfg);
+
+        // --- Pivot: for each seed, check if its target subnet needs a tunnel ---
+        let mut pivot_ctx = String::new();
+        if pivot_enabled {
+            let mut target_ips: Vec<String> = Vec::new();
+            for (seed, _) in &seeds {
+                for ip in extract_ips(&seed.endpoint) {
+                    if !target_ips.contains(&ip) { target_ips.push(ip); }
+                }
+                for ip in extract_ips(&seed.evidence) {
+                    if !target_ips.contains(&ip) { target_ips.push(ip); }
+                }
+            }
+            for l in &loot_snapshot {
+                for ip in extract_ips(l) {
+                    if !target_ips.contains(&ip) { target_ips.push(ip); }
+                }
+            }
+            // Try to set up tunnels for unreachable IPs.
+            for ip in &target_ips {
+                if pivot_mgr.needs_pivot(ip).await {
+                    for port in [445u16, 88, 389, 5985, 3389, 1433, 135] {
+                        match pivot_mgr.ensure_tunnel(ip, port, tx).await {
+                            Ok(_) => break,
+                            Err(_) => continue,
+                        }
+                    }
+                }
+            }
+            // Collect pivot instructions for chain agents.
+            for ip in &target_ips {
+                let instr = pivot_mgr.agent_instructions(ip).await;
+                if !instr.is_empty() && !pivot_ctx.contains(&instr) {
+                    pivot_ctx.push_str(&instr);
+                }
+            }
+            let summary = pivot_mgr.summary().await;
+            if summary != "no active pivot tunnels" {
+                pivot_ctx.push_str(&format!("\nACTIVE PIVOTS: {summary}\n"));
+            }
+        }
+
+        let pivot_ctx_clone = pivot_ctx.clone();
+        let results: Vec<(Vec<Finding>, Vec<String>)> = stream::iter(seeds)
+            .map(|(seed, step)| {
+                let (dir, rc, rb, ls, pc, txc) = (round_directives.clone(), recon_ctx.clone(), format!("{recipe_block}{step}"), loot_snapshot.clone(), pivot_ctx_clone.clone(), tx.clone());
+                async move { chain_from_seed(pool, &cfg.target, &dir, &rc, &rb, &seed, &ls, round, max_rounds, &pc, &txc).await }
+            })
+            .buffer_unordered(4)
+            .collect()
+            .await;
+
+        // Merge round output: accumulate loot, gather candidate findings.
+        let mut round_cands: Vec<Finding> = Vec::new();
+        for (fs, lt) in results {
+            for l in lt {
+                if !loot.iter().any(|x| x.eq_ignore_ascii_case(&l)) { loot.push(l); }
+            }
+            round_cands.extend(fs);
+        }
+        // Keep only genuinely NEW findings (unseen key).
+        let fresh: Vec<Finding> = dedup_findings(round_cands)
+            .into_iter()
+            .filter(|f| seen.insert(finding_key(f)))
+            .collect();
+        if fresh.is_empty() {
+            let _ = tx.send("⛓ no new paths this round — chain exhausted".into()).await;
+            break;
+        }
+        // Validate before pivoting further (don't chain off false positives).
+        let validated = validate(fresh, pool, VOTE_SYS, cfg.vote_n, tx).await;
+        let _ = tx.send(format!("⛓ round {round}: +{} validated finding(s), {} loot item(s) total", validated.len(), loot.len())).await;
+        if validated.is_empty() {
+            break;
+        }
+        all_new.extend(validated.clone());
+        round_summaries.push(format!("round {round}: +{} validated finding(s), {} loot item(s) total", validated.len(), loot.len()));
+        // JEV / System One progress checkpoint (the jev-skill agent-checkpoint
+        // pattern): from the 2nd round on, ask a calibrated backend — TypeSafe
+        // or the local Laya shim — whether recent rounds are still productive,
+        // and stop early on a clear loop instead of burning the remaining depth.
+        // Optional: only when a decision backend is active and --typesafe ≠ off.
+        if round >= 2 && round < max_rounds
+            && !std::env::var("NEUROSPLOIT_TYPESAFE").unwrap_or_default().trim().eq_ignore_ascii_case("off")
+        {
+            if let Some(ts) = crate::typesafe::TypeSafe::from_env() {
+                let objective = cfg.objective.clone().unwrap_or_else(|| "maximise proven, chained impact".into());
+                if let Ok((label, p_continue)) = ts.progress_checkpoint(&objective, &round_summaries, round, max_rounds).await {
+                    if label == "stop" && p_continue < 0.5 {
+                        let _ = tx.send(format!("⛓ System One checkpoint ({}): rounds are looping (p_continue {:.2}) — stopping chain early", ts.backend_label(), p_continue)).await;
+                        break;
+                    }
+                }
+            }
+        }
+        // Next round expands the freshly-validated footholds, best-first —
+        // re-reasoning over the graph with what was just proven.
+        known.extend(validated.iter().cloned());
+        let next = graph_checkpoint(cfg, recon, &known, &format!("chain round {round}"), &[], tx).await;
+        prio = next.prio;
+        ready = next.ready;
+        frontier = validated;
+        sort_frontier(&mut frontier, &prio);
+    }
+    if !all_new.is_empty() {
+        let _ = tx.send(format!("⛓ attack-chaining added {} finding(s) across pivots", all_new.len())).await;
+    }
+    // Persist the loot. Until now it existed only inside the round prompts and
+    // died with them, so the credentials an operator actually carried forward
+    // never reached the report. The attack-path builder folds this back in as
+    // material nodes.
+    if !loot.is_empty() {
+        if let Some(dir) = cfg.workdir.as_deref() {
+            let _ = std::fs::write(
+                Path::new(dir).join("loot.json"),
+                serde_json::to_string_pretty(&loot).unwrap_or_default(),
+            );
+        }
+    }
+    all_new
+}
+
+/// Expand ONE foothold: the agent decides directions, does post-exploitation and
+/// pivots, and returns new findings + discovered loot.
+#[allow(clippy::too_many_arguments)]
+async fn chain_from_seed(pool: &ModelPool, target: &str, directives: &str, recon_ctx: &str,
+                         recipe_block: &str, seed: &Finding, loot: &[String],
+                         round: usize, max: usize, pivot_ctx: &str, tx: &Sender<String>) -> (Vec<Finding>, Vec<String>) {
+    if pool.stop_exploiting() {
+        return (vec![], vec![]);
+    }
+    let loot_block = if loot.is_empty() {
+        "(none yet)".to_string()
+    } else {
+        loot.iter().take(30).map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n")
+    };
+    let short: String = seed.title.chars().take(28).collect();
+    let c2 = crate::c2::agent_context().await;
+    let pivot_block = if pivot_ctx.is_empty() { String::new() } else { format!("\n{pivot_ctx}\n") };
+    let user = format!(
+        "AUTHORIZED engagement on {target}.\n\n{directives}{react}{depth}{decision}{chain}{safety}{doctrine}{c2}{pivot_block}\
+         FOOTHOLD TO EXPAND (round {round}/{max}):\n- [{}] {} @ {} ({})\n  payload: {}\n  evidence: {}\n\n\
+         LOOT GATHERED (reuse it):\n{loot_block}\n\n{recipe_block}RECON:\n{recon_ctx}\n\n\
+         From THIS foothold, DECIDE the best directions and PROVE new impact — post-exploitation (loot creds/keys/config/source), credential reuse, privilege escalation (horizontal & vertical), lateral movement to adjacent services/hosts, data exfiltration, and NEW attack surface it exposes. When targeting hosts on a different subnet, USE the pivot proxy instructions above — your tools run on the operator box, not on the compromised host, so without the proxy you cannot reach internal subnets. Every claim needs a real tool receipt.\n\n\
+         Reply ONLY JSON: {{\"findings\":[{{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}],\"loot\":[\"cred:user:pass@host\",\"token:...\",\"host:10.0.0.5\",\"endpoint:/internal/api\"]}} (empty arrays are fine).",
+        seed.severity, seed.title, seed.endpoint, seed.cwe, seed.payload, seed.evidence,
+        react = REACT_DOCTRINE, depth = DEPTH_DOCTRINE, decision = DECISION_DOCTRINE, chain = CHAIN_DOCTRINE, safety = SAFETY_DOCTRINE, doctrine = tool_doctrine(pool.mcp_config.is_some()),
+    );
+    let label = format!("chain:{short}");
+    match pool.complete_routed(Task::Exploit, &label, CHAIN_SYS, &user).await {
+        Ok((m, text)) => {
+            let (f, lt) = extract_chain(&text, "chain");
+            if !f.is_empty() || !lt.is_empty() {
+                let _ = tx.send(format!("chain[{short}] via {} → {} new finding(s), {} loot", m.label(), f.len(), lt.len())).await;
+            }
+            (f, lt)
+        }
+        Err(e) => {
+            let _ = tx.send(format!("chain[{short}] failed: {e}")).await;
+            (vec![], vec![])
+        }
+    }
+}
+
+/// Parse a chain agent reply into (new findings, loot). Accepts the object form
+/// `{"findings":[...],"loot":[...]}` and falls back to a bare findings array.
+fn extract_chain(text: &str, agent: &str) -> (Vec<Finding>, Vec<String>) {
+    if let Some(serde_json::Value::Object(o)) = crate::json_extract::parse_reply(text) {
+        // A chain reply wrapping its findings array (under any of the keys models
+        // use, not just "findings") also carries `loot` as a sibling — pull both.
+        let findings_arr = FINDINGS_WRAPPER_KEYS.iter().find_map(|k| o.get(*k));
+        if findings_arr.is_some() {
+            let findings = findings_arr.map(|v| extract_findings(&v.to_string(), agent)).unwrap_or_default();
+            let loot = o.get("loot").and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            return (findings, loot);
+        }
+    }
+    (extract_findings(text, agent), vec![])
+}
+
+// --------------------------------------------------------------------------- shared
+
+const SELECT_SYS: &str = "You are a penetration-test orchestrator. Given recon of a target and a catalog of specialist agents, choose agents to comprehensively test the target. THOROUGH coverage is more important than minimal selection — a missed vuln class is worse than testing one that turns out clean.
+
+SELECTION RULES:
+1. MANDATORY BASELINE (ALWAYS include unless physically impossible for the target type): XSS, SQL injection, CSRF, path traversal/LFI, information disclosure, security headers, security misconfigurations, broken authentication, and access control/IDOR agents. These are OWASP Top 10 staples — every web application must be tested for them regardless of what recon shows. A WAF or lack of visible parameters does NOT exempt a target from injection testing (WAF bypass is part of the test).
+2. MATCH TO SURFACE: ADDITIONALLY pick agents for technologies, protocols, and patterns found in recon. GraphQL endpoints get graphql agents. JWT tokens get jwt agents. File uploads get upload agents. CMS platforms get CMS-specific agents.
+3. ELIMINATE BY STACK: If the target is behind a WAF/CDN, ALSO include WAF-bypass, cache-poisoning, and header-manipulation agents — in ADDITION to the baseline, not instead of it.
+4. DIVERSITY: Pick a diverse set spanning many classes — not 4 variants of the same bug family. One SQLi variant is enough unless recon shows multiple injection surfaces.
+5. AUTH SURFACE: When recon shows login/signup/session/OAuth/OIDC/SAML/JWT, ALWAYS include auth agents.
+6. BUSINESS LOGIC: Include IDOR/BOLA/BFLA/access-control agents when authenticated or multi-step flows exist.
+7. HARD EXCLUSIONS: NEVER pick agents for databases (postgres, mysql, redis, mongo) unless recon PROVES the database is directly reachable. NEVER pick cloud-infra agents (aws/gcp/azure/k8s) unless recon shows cloud metadata or cloud-specific endpoints.
+8. ENDPOINT COVERAGE: If recon discovered endpoints, forms, or parameters, pick agents that will test EACH discovered input vector — not just the homepage.
+9. BE GENEROUS: When in doubt, INCLUDE the agent. A clean test result is valuable evidence; a skipped test is a gap in coverage. Aim for 40-80 agents for a thorough engagement.
+
+Reply with a JSON array of agent names (strings) drawn exactly from the catalog. No prose.";
+
+/// Ask the model which agents to run for this recon. Returns chosen agent names
+/// (empty on failure → caller falls back to RL-ranked agents).
+async fn select_agents(pool: &ModelPool, recon: &str, focus: &str, catalog: &[Agent], tx: &Sender<String>) -> Vec<String> {
+    let list = catalog
+        .iter()
+        .map(|a| format!("{} — {} [{}]", a.name, a.title.replace(" Agent", ""), a.cwe))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Feed more recon context so the selector sees endpoints, forms, tech stack.
+    let recon_trim: String = recon.chars().take(10000).collect();
+    let focus_line = if focus.trim().is_empty() {
+        String::new()
+    } else {
+        format!("OPERATOR FOCUS (strongly prioritise agents for this): {focus}\n\n")
+    };
+    let user = format!("{focus_line}RECON:\n{recon_trim}\n\nAGENT CATALOG (name — title [cwe]):\n{list}\n\nReturn a JSON array of agent names to run.");
+    match pool.complete_routed(Task::Select, "select", SELECT_SYS, &user).await {
+        Ok((m, text)) => {
+            let mut names = parse_string_array(&text);
+            if names.is_empty() {
+                let preview: String = text.chars().take(120).collect();
+                let _ = tx.send(format!("agent selection via {} returned no parseable list ({} chars): {}", m.label(), text.len(), preview.replace('\n', " "))).await;
+            } else {
+                let _ = tx.send(format!("agent selection via {} → {} agent(s) chosen", m.label(), names.len())).await;
+                // System One refinement: ask TypeSafe, in ONE batched request
+                // (the fan-out pattern), whether each chosen agent is relevant to
+                // the observed surface, and drop the ones it calibrates as clearly
+                // irrelevant. Additive — it only prunes obvious mismatches, never
+                // adds agents, and is skipped entirely when TypeSafe is absent.
+                names = typesafe_prune_agents(recon, catalog, names, tx).await;
+            }
+            names
+        }
+        Err(e) => {
+            let _ = tx.send(format!("agent selection failed ({e}) — falling back to RL ranking")).await;
+            vec![]
+        }
+    }
+}
+
+/// Prune agent choices TypeSafe judges irrelevant to the observed surface.
+///
+/// One request, one Noul per chosen agent (they run in parallel and cannot see
+/// one another). An agent is dropped only when the probability it is relevant is
+/// clearly low (< 0.25) — a conservative gate, because a false drop costs a
+/// missed class while a false keep only costs one agent's budget. No key, or any
+/// error, means the LLM's selection stands unchanged.
+async fn typesafe_prune_agents(recon: &str, catalog: &[Agent], chosen: Vec<String>, tx: &Sender<String>) -> Vec<String> {
+    if std::env::var("NEUROSPLOIT_TYPESAFE").unwrap_or_default().trim().to_lowercase() == "off" {
+        return chosen;
+    }
+    let Some(ts) = crate::typesafe::TypeSafe::from_env() else { return chosen };
+    use std::collections::BTreeMap;
+    let mut qs: BTreeMap<String, crate::typesafe::Question> = BTreeMap::new();
+    for name in &chosen {
+        if let Some(a) = catalog.iter().find(|a| &a.name == name) {
+            qs.insert(
+                name.clone(),
+                crate::typesafe::Question::noul(
+                    &format!("Given the observed attack surface, is the '{}' test ({}, {}) relevant enough to be worth running?", a.name, a.title, a.cwe),
+                    "the surface plausibly has this class or the technique applies",
+                    "the surface shows no sign this class could exist here",
+                ),
+            );
+        }
+    }
+    if qs.is_empty() {
+        return chosen;
+    }
+    let fallback = chosen.clone(); // the LLM's selection stands on any failure
+    let state = serde_json::json!({ "recon": recon.chars().take(4000).collect::<String>() });
+    match ts.evaluate(state, qs).await {
+        Ok(answers) => {
+            let before = chosen.len();
+            let kept: Vec<String> = chosen.into_iter().filter(|name| {
+                // Keep unless TypeSafe is clearly confident it is irrelevant.
+                answers.get(name).and_then(|a| a.noul).map(|p| p >= 0.25).unwrap_or(true)
+            }).collect();
+            let dropped = before - kept.len();
+            // Never prune to nothing — a total rejection is more likely a bad
+            // question than a truly empty surface; keep the LLM's call.
+            if kept.is_empty() {
+                return fallback;
+            }
+            if dropped > 0 {
+                let _ = tx.send(format!("notify: 🧮 TypeSafe pruned {dropped} agent(s) as irrelevant to the surface")).await;
+            }
+            kept
+        }
+        Err(e) => {
+            let _ = tx.send(format!("notify: ⚠ TypeSafe agent pruning unavailable ({e}) — keeping the selection")).await;
+            fallback
+        }
+    }
+}
+
+/// Keys a model wraps a names/strings array under when it returns an object
+/// instead of the bare array we asked for — `{"agents":[…]}`, `{"selected":[…]}`.
+/// Same deviation as [`FINDINGS_WRAPPER_KEYS`], seen on the agent-selection reply;
+/// without unwrapping, a wrapped selection reads as empty and the run silently
+/// falls back to RL ranking.
+const STRING_ARRAY_WRAPPER_KEYS: &[&str] =
+    &["agents", "selected", "selection", "names", "agent_names", "chosen", "list", "items"];
+
+/// Fields that carry the string inside an array element that is an *object*
+/// (`[{"name":"sqli"}]`) rather than a bare string (`["sqli"]`).
+const STRING_ELEMENT_KEYS: &[&str] = &["name", "agent", "id", "value"];
+
+/// Pull a list of strings out of a model reply, tolerating the shapes models use
+/// when they stray from "reply with a JSON array of strings": a wrapper object
+/// around the array, and array elements that are objects carrying the string in a
+/// `name`/`agent`/`id` field.
+fn parse_string_array(text: &str) -> Vec<String> {
+    let arr = match crate::json_extract::parse_reply(text) {
+        Some(serde_json::Value::Array(a)) => a,
+        Some(serde_json::Value::Object(o)) => {
+            match STRING_ARRAY_WRAPPER_KEYS
+                .iter()
+                .find_map(|k| o.get(*k).and_then(|v| v.as_array()))
+            {
+                Some(a) => a.clone(),
+                None => return vec![],
+            }
+        }
+        _ => return vec![],
+    };
+    arr.iter()
+        .filter_map(|v| match v {
+            serde_json::Value::String(s) => Some(s.trim().to_string()),
+            serde_json::Value::Object(o) => STRING_ELEMENT_KEYS
+                .iter()
+                .find_map(|k| o.get(*k).and_then(|x| x.as_str()))
+                .map(|s| s.trim().to_string()),
+            _ => None,
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Recon-driven agent selection with negative filtering. Scores each agent by
+/// how well its preconditions match the observed attack surface, penalizes
+/// agents for technologies NOT present, and caps output to `cap`.
+fn heuristic_select(ranked: &[Agent], recon: &str, focus: &str, cap: usize) -> Vec<Agent> {
+    let r = recon.to_lowercase();
+    let f = focus.to_lowercase();
+
+    // --- Surface detection flags ---
+    let has_web = r.contains("http") || r.contains("html") || r.contains("server:");
+    let has_login = r.contains("login") || r.contains("signin") || r.contains("sign-in")
+        || r.contains("auth") || r.contains("password") || r.contains("session");
+    let has_api = r.contains("/api") || r.contains("rest") || r.contains("openapi")
+        || r.contains("swagger") || r.contains("json") || r.contains("endpoint");
+    let has_graphql = r.contains("graphql") || r.contains("/graphql") || r.contains("introspection");
+    let has_jwt = r.contains("jwt") || r.contains("bearer") || r.contains("authorization:");
+    let has_oauth = r.contains("oauth") || r.contains("oidc") || r.contains("openid")
+        || r.contains("saml") || r.contains("/authorize") || r.contains("sso");
+    let has_upload = r.contains("upload") || r.contains("multipart") || r.contains("file");
+    let has_websocket = r.contains("websocket") || r.contains("ws://") || r.contains("wss://")
+        || r.contains("socket.io");
+    let has_waf = r.contains("akamai") || r.contains("cloudflare") || r.contains("incapsula")
+        || r.contains("aws waf") || r.contains("waf") || r.contains("imperva")
+        || r.contains("f5 ") || r.contains("barracuda");
+    let has_cdn = r.contains("cdn") || r.contains("akamai") || r.contains("cloudfront")
+        || r.contains("fastly") || r.contains("cloudflare");
+    let has_spa = r.contains("react") || r.contains("angular") || r.contains("vue")
+        || r.contains("next.js") || r.contains("nuxt") || r.contains("webpack")
+        || r.contains("single-page") || r.contains("spa");
+    let has_php = r.contains("php") || r.contains(".php") || r.contains("laravel")
+        || r.contains("wordpress") || r.contains("drupal");
+    let has_java = r.contains("java") || r.contains("spring") || r.contains("tomcat")
+        || r.contains("struts") || r.contains(".jsp");
+    let has_dotnet = r.contains(".net") || r.contains("aspnet") || r.contains("asp.net")
+        || r.contains(".aspx") || r.contains("iis");
+    let has_python = r.contains("python") || r.contains("django") || r.contains("flask")
+        || r.contains("fastapi") || r.contains("gunicorn") || r.contains("uvicorn");
+    let has_node = r.contains("node") || r.contains("express") || r.contains("koa")
+        || r.contains("next") || r.contains("npm");
+    let has_cloud_aws = r.contains("aws") || r.contains("amazonaws") || r.contains("s3")
+        || r.contains("ec2") || r.contains("lambda");
+    let has_cloud_gcp = r.contains("gcp") || r.contains("googleapis") || r.contains("gcs");
+    let has_cloud_azure = r.contains("azure") || r.contains("microsoft.com") || r.contains("blob.core");
+    let has_k8s = r.contains("kubernetes") || r.contains("k8s") || r.contains("kubelet")
+        || r.contains("kubectl");
+    let has_docker = r.contains("docker") || r.contains("container") || r.contains("registry");
+    let has_db_direct = r.contains(":5432") || r.contains(":3306") || r.contains(":1433")
+        || r.contains(":27017") || r.contains(":6379") || r.contains("postgres")
+        || r.contains("mysql") || r.contains("redis") || r.contains("mongo");
+    let has_ai = r.contains("openai") || r.contains("llm") || r.contains("chatbot")
+        || r.contains("ai") || r.contains("prompt") || r.contains("vector");
+    let has_cors = r.contains("cors") || r.contains("access-control-allow");
+    let has_template = r.contains("template") || r.contains("jinja") || r.contains("twig")
+        || r.contains("mustache") || r.contains("handlebars");
+    let has_cache = r.contains("cache") || r.contains("varnish") || r.contains("x-cache");
+    let has_xml = r.contains("xml") || r.contains("soap") || r.contains("wsdl");
+    let _has_redirect = r.contains("redirect") || r.contains("302") || r.contains("location:");
+    let _has_mail = r.contains("smtp") || r.contains("mail") || r.contains("email");
+    let _has_crypto = r.contains("tls") || r.contains("ssl") || r.contains("certificate")
+        || r.contains("cipher") || r.contains("x509");
+
+    // Positive signal mappings: recon keyword → agent name substrings to boost (+6)
+    let signals: &[(&str, &[&str])] = &[
+        // API surface
+        ("graphql", &["graphql"]),
+        ("jwt", &["jwt"]),
+        ("bearer", &["jwt", "auth"]),
+        ("oauth", &["oauth", "oidc", "saml"]),
+        ("openid", &["oauth", "oidc"]),
+        ("saml", &["saml", "oauth"]),
+        ("/api", &["api_", "bola", "bfla", "idor", "mass_assign", "rate_limit"]),
+        ("swagger", &["api_", "idor", "bola", "bfla"]),
+        ("openapi", &["api_", "idor", "bola"]),
+        ("upload", &["file_upload", "zip_slip"]),
+        ("multipart", &["file_upload"]),
+        ("websocket", &["websocket"]),
+        ("socket.io", &["websocket"]),
+        // Cloud
+        ("amazonaws", &["aws_", "s3_", "imds", "cloud_"]),
+        ("s3", &["s3_", "aws_"]),
+        ("lambda", &["aws_", "cloud_"]),
+        ("googleapis", &["gcp_", "gcs_", "metadata"]),
+        ("azure", &["azure_"]),
+        ("kubernetes", &["k8s_", "kubelet"]),
+        ("docker", &["docker_", "container_"]),
+        // Frameworks
+        ("jinja", &["ssti"]),
+        ("twig", &["ssti"]),
+        ("flask", &["ssti", "ssrf", "command_injection"]),
+        ("django", &["ssti", "ssrf", "csrf"]),
+        ("spring", &["ssrf", "deserial", "sqli"]),
+        ("struts", &["command_injection", "deserial"]),
+        ("php", &["lfi", "rfi", "sqli", "command_injection"]),
+        ("wordpress", &["sqli", "xss", "lfi", "auth"]),
+        ("laravel", &["sqli", "ssti", "csrf"]),
+        ("express", &["ssrf", "xss", "nosql"]),
+        ("asp.net", &["deserial", "sqli", "xss"]),
+        ("tomcat", &["deserial", "path_traversal"]),
+        // Patterns
+        ("template", &["ssti", "csti"]),
+        ("redirect", &["open_redirect"]),
+        ("login", &["auth_bypass", "brute_force", "sqli", "default_credentials", "mfa", "password"]),
+        ("signup", &["auth_bypass", "account", "idor"]),
+        ("register", &["account", "auth"]),
+        ("search", &["xss", "sqli"]),
+        ("cache", &["cache", "smuggl"]),
+        ("varnish", &["cache", "smuggl"]),
+        ("x-cache", &["cache"]),
+        ("cors", &["cors"]),
+        ("xml", &["xxe"]),
+        ("soap", &["xxe", "sqli"]),
+        ("smtp", &["ssrf", "header_inject"]),
+        ("chatbot", &["llm_", "prompt_injection"]),
+        ("openai", &["llm_", "prompt_injection"]),
+        // WAF/CDN — boost bypass agents
+        ("akamai", &["waf", "smuggl", "cache", "header", "bypass"]),
+        ("cloudflare", &["waf", "smuggl", "cache", "bypass"]),
+        ("incapsula", &["waf", "bypass"]),
+        // SPA/client-side
+        ("react", &["xss_dom", "csti", "cors", "postmessage"]),
+        ("angular", &["xss_dom", "csti", "cors"]),
+        ("vue", &["xss_dom", "csti"]),
+        ("webpack", &["information_disclosure", "source_map"]),
+    ];
+
+    // Negative exclusion rules: agent name substrings that get penalized heavily
+    // when the corresponding technology is NOT detected in recon.
+    let negatives: &[(&[&str], bool)] = &[
+        (&["graphql"], has_graphql),
+        (&["jwt"], has_jwt),
+        (&["oauth", "oidc", "saml"], has_oauth),
+        (&["websocket"], has_websocket),
+        (&["aws_", "s3_", "imds"], has_cloud_aws),
+        (&["gcp_", "gcs_"], has_cloud_gcp),
+        (&["azure_"], has_cloud_azure),
+        (&["k8s_", "kubelet"], has_k8s),
+        (&["docker_", "container_escape"], has_docker),
+        (&["postgres", "mysql", "redis", "mongo", "nosql", "mssql"], has_db_direct),
+        (&["llm_", "prompt_injection", "rag", "vector_db"], has_ai),
+        (&["xxe"], has_xml),
+    ];
+
+    let mut scored: Vec<(i32, &Agent)> = ranked
+        .iter()
+        .map(|a| {
+            let name_lower = a.name.to_lowercase();
+            let mut score: i32 = 0;
+
+            // Baseline: only give +4 to web-universal agents if target IS web
+            if has_web {
+                const WEB_BASELINE: &[&str] = &[
+                    "xss_reflected", "xss_stored", "ssrf", "idor", "open_redirect",
+                    "auth_bypass", "csrf", "information_disclosure", "security_headers",
+                    "cors_misconfig",
+                ];
+                if WEB_BASELINE.contains(&a.name.as_str()) {
+                    score += 4;
+                }
+            }
+            // Conditional baseline: injection agents only if web + no strong WAF
+            if has_web && !has_waf {
+                const INJECTION_BASELINE: &[&str] = &[
+                    "sqli_error", "sqli_blind", "sqli_union", "command_injection",
+                    "lfi", "path_traversal", "ssti", "file_upload",
+                ];
+                if INJECTION_BASELINE.contains(&a.name.as_str()) {
+                    score += 3;
+                }
+            }
+            // Behind WAF: injection agents get reduced baseline but WAF-aware agents get boosted
+            if has_web && has_waf {
+                const WAF_REDUCED: &[&str] = &[
+                    "sqli_error", "sqli_union", "command_injection",
+                ];
+                if WAF_REDUCED.contains(&a.name.as_str()) {
+                    score += 1; // still possible but much harder behind WAF
+                }
+                if name_lower.contains("waf") || name_lower.contains("smuggl")
+                    || name_lower.contains("bypass") || name_lower.contains("cache") {
+                    score += 8;
+                }
+            }
+            // Auth surface detected: boost auth agents
+            if has_login {
+                const AUTH_AGENTS: &[&str] = &[
+                    "auth_bypass", "brute_force", "default_credentials", "session",
+                    "password", "mfa", "csrf", "account",
+                ];
+                if AUTH_AGENTS.iter().any(|k| name_lower.contains(k)) {
+                    score += 6;
+                }
+            }
+            // API surface: boost API-specific agents
+            if has_api {
+                if name_lower.contains("api") || name_lower.contains("bola")
+                    || name_lower.contains("bfla") || name_lower.contains("mass_assign")
+                    || name_lower.contains("rate_limit") {
+                    score += 5;
+                }
+            }
+            // SPA/client-side: boost DOM/client agents
+            if has_spa {
+                if name_lower.contains("dom") || name_lower.contains("csti")
+                    || name_lower.contains("postmessage") || name_lower.contains("cors") {
+                    score += 5;
+                }
+            }
+            // CDN/cache: boost cache-related attacks
+            if has_cdn || has_cache {
+                if name_lower.contains("cache") || name_lower.contains("smuggl") {
+                    score += 5;
+                }
+            }
+            // Template engine: boost SSTI
+            if has_template {
+                if name_lower.contains("ssti") || name_lower.contains("csti") {
+                    score += 5;
+                }
+            }
+
+            // Positive signal mapping: boost agents matching identified surface
+            for (sig, names) in signals {
+                if r.contains(sig) && names.iter().any(|n| name_lower.contains(n)) {
+                    score += 6;
+                }
+            }
+
+            // Negative filtering: penalize agents for tech NOT in recon
+            for (agent_substrings, detected) in negatives {
+                if !detected && agent_substrings.iter().any(|s| name_lower.contains(s)) {
+                    score -= 10;
+                }
+            }
+
+            // Direct keyword overlap with recon text
+            for tok in a.name.split('_') {
+                if tok.len() >= 4 && r.contains(tok) {
+                    score += 2;
+                }
+            }
+            // Operator focus: strongly boost agents matching requested classes
+            if !f.is_empty() {
+                let blob = format!("{} {}", a.name, a.title).to_lowercase();
+                let hit = ["inject", "sqli", "xss", "ssrf", "ssti", "rce", "command", "lfi", "rfi",
+                           "idor", "bola", "bfla", "access", "auth", "privilege", "csrf", "redirect",
+                           "deserial", "xxe", "traversal", "upload", "jwt", "secret", "crypto",
+                           "waf", "bypass", "smuggl", "cache", "cors"]
+                    .iter()
+                    .any(|kw| f.contains(kw) && blob.contains(kw));
+                if hit {
+                    score += 10;
+                }
+            }
+            (score, a)
+        })
+        .collect();
+    scored.sort_by_key(|x| std::cmp::Reverse(x.0));
+    // Only keep agents with positive score — negative means recon actively excluded them
+    let mut out: Vec<Agent> = scored.iter().filter(|(s, _)| *s > 0).map(|(_, a)| (*a).clone()).collect();
+    if out.is_empty() {
+        out = ranked.to_vec();
+    }
+    out.into_iter().take(cap).collect()
+}
+
+async fn validate(candidates: Vec<Finding>, pool: &ModelPool, sys: &str, vote_n: usize, tx: &Sender<String>) -> Vec<Finding> {
+    validate_with_persist(candidates, pool, sys, vote_n, tx, None).await
+}
+
+async fn validate_with_persist(candidates: Vec<Finding>, pool: &ModelPool, sys: &str, vote_n: usize, tx: &Sender<String>, workdir: Option<&str>) -> Vec<Finding> {
+    // --no-validate: operator opted out of the adversarial vote. Keep every
+    // finding with the severity its agent assigned, marked `unvalidated` — the
+    // panel discards nothing. (Set by the launcher when cfg.no_validate.)
+    if std::env::var("NEUROSPLOIT_NO_VALIDATE").map(|v| v == "1").unwrap_or(false) {
+        let _ = tx.send(format!("⚠ --no-validate: skipping the vote — keeping all {} finding(s) with agent-assigned severity", candidates.len())).await;
+        return candidates.into_iter().map(|mut f| {
+            f.validated = false;
+            if f.review_status.is_empty() || f.review_status == "rejected" {
+                f.review_status = "unvalidated".into();
+            }
+            if f.review_reason.is_empty() {
+                f.review_reason = "validation vote skipped (--no-validate); kept with agent severity".into();
+            }
+            f
+        }).collect();
+    }
+    // Stamp the clock. A path is a sequence in time as much as in dependency:
+    // the attack-path builder refuses to let a later step enable an earlier
+    // one, and it can only do that if each step records when it was proven.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let candidates: Vec<Finding> = candidates
+        .into_iter()
+        .map(|mut f| {
+            if f.observed_at == 0 {
+                f.observed_at = now;
+            }
+            f
+        })
+        .collect();
+    // Fast-track: findings with no evidence are unverifiable — skip the vote
+    // and flag for human review instead of wasting a validator call that will
+    // always reject ("default to rejected when uncertain" + empty evidence).
+    let (have_evidence, no_evidence): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|f| {
+        if f.evidence_data.is_some() { return true; }
+        let e = f.evidence.trim();
+        !e.is_empty() && e != "N/A" && e != "n/a" && e != "none" && e != "-"
+    });
+    let mut flagged: Vec<Finding> = no_evidence.into_iter().map(|mut f| {
+        f.validated = false;
+        f.review_status = "needs-review".into();
+        f.review_reason = "no concrete evidence provided by agent — manual verification required".into();
+        f.votes = "0/0".into();
+        f
+    }).collect();
+    for f in &flagged {
+        let _ = tx.send(format!("vote {} → needs-review (no evidence)", f.title)).await;
+    }
+    // Prefer a model other than the primary (likely finder) to adjudicate.
+    let finder = pool.candidates.first().map(|m| m.label());
+    let validated: Vec<Finding> = stream::iter(have_evidence)
+        .map(|mut f| {
+            let txc = tx.clone();
+            let finder = finder.clone();
+            async move {
+                let q = format!(
+                    "Finding: {} | severity {} | {} | at {} | payload {} | evidence {} | impact {}",
+                    f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence, f.impact
+                );
+                let (yes, total) = pool.vote(sys, &q, vote_n, finder.as_deref()).await;
+                f.validated = crate::pool::quorum_confirmed(&f.severity, yes, total);
+                f.votes = format!("{yes}/{total}");
+                if f.confidence == 0.0 && total > 0 {
+                    f.confidence = yes as f64 / total as f64;
+                }
+                // Human-in-the-loop triage: confirmed on quorum; kept & FLAGGED
+                // (not deleted) when it has partial support; only zero-support
+                // candidates are dropped as noise.
+                if f.validated {
+                    f.review_status = "confirmed".into();
+                } else if yes >= 1 || total == 0 {
+                    f.review_status = "needs-review".into();
+                    f.review_reason = if total == 0 { "validator unavailable".into() }
+                        else { format!("below vote quorum ({yes}/{total})") };
+                } else if f.claims.is_some() {
+                    // A finding that arrived with structured claims was already
+                    // judged by `crate::claims` before the vote. The voter is
+                    // reading prose; it must not be able to delete a finding
+                    // whose mechanic the evidence supports.
+                    f.review_status = "needs-review".into();
+                    f.review_reason = format!("voter rejected the narrative, mechanic retained: {}", f.review_reason.trim());
+                    f.confidence = f.confidence.min(0.5);
+                } else if finding_has_loot(&f) {
+                    // The finding carries a looted credential, private key or
+                    // secret. A leaked long-lived credential / key / API key that
+                    // authenticates or is reused downstream is a REAL finding —
+                    // not "just a cat of a file on an already-owned host", which
+                    // is how the opinion-vote tends to dismiss it. Keep it as
+                    // needs-review at its OWN severity (never rejected, never
+                    // auto-capped to Low): a useful key must not lose its value.
+                    f.review_status = "needs-review".into();
+                    f.review_reason = format!(
+                        "kept — looted credential/secret/key present and reusable; validator under-credited it: {}",
+                        f.review_reason.trim()
+                    );
+                    f.confidence = f.confidence.max(0.5);
+                } else if grounded_receipt(&f) || has_http_receipt(&f) {
+                    // Unanimously rejected by the opinion-vote, but the finding
+                    // carries a concrete, REPRODUCIBLE receipt (a captured HTTP
+                    // response, a header/cookie the class is proven by, or a
+                    // file:line citation). Another person can reproduce this
+                    // exact finding with one request — so it is NOT dropped.
+                    // The adversarial validator is tuned to reject low-impact and
+                    // "theoretical" issues, but "the response lacks HSTS" or "the
+                    // cookie has no Secure flag" is a FACT, not a story. We cap
+                    // the severity to what the receipt alone proves and flag it
+                    // for human review, never delete it.
+                    let cwe_floor = crate::claims::cwe_severity_floor(&f.cwe);
+                    let cap = if sev_rank(cwe_floor) > sev_rank("Low") { cwe_floor } else { "Low" };
+                    let was = f.severity.clone();
+                    if sev_rank(&f.severity) > sev_rank(cap) { f.severity = cap.to_string(); }
+                    if sev_rank(&f.severity) < sev_rank(cwe_floor) { f.severity = cwe_floor.to_string(); }
+                    f.review_status = "needs-review".into();
+                    f.review_reason = if was == f.severity {
+                        format!("kept — reproducible receipt present; impact not independently demonstrated. Validator: {}", f.review_reason.trim())
+                    } else {
+                        format!("kept & capped from {was} to {} — reproducible receipt present, impact not demonstrated. Validator: {}", f.severity, f.review_reason.trim())
+                    };
+                    f.confidence = f.confidence.max(0.3).min(0.6);
+                }
+                // Reproducibility: a kept finding that reaches a URL endpoint but
+                // carries no explicit repro steps gets a minimal, pasteable one,
+                // so another person can reproduce the exact finding.
+                if (f.validated || f.review_status == "needs-review")
+                    && f.repro_steps.is_empty()
+                    && (f.endpoint.starts_with("http://") || f.endpoint.starts_with("https://")) {
+                    f.repro_steps = vec![format!("curl -i -s '{}'   # inspect the response (status + headers + body) that proves this finding", f.endpoint)];
+                }
+                let label = if f.validated { "CONFIRMED" } else if f.review_status == "needs-review" { "needs-review" } else { "rejected" };
+                let _ = txc.send(format!("vote {} → {} ({})", f.title, label, f.votes)).await;
+                f
+            }
+        })
+        .buffer_unordered(pool.candidates.len().max(2))
+        .collect()
+        .await;
+    // Keep ALL findings — confirmed, needs-review, AND vote-rejected. Operators
+    // want to see what agents found even if the validation panel did not confirm
+    // it. Mark rejected ones so the UI can distinguish them visually.
+    let all: Vec<Finding> = validated.into_iter().map(|mut f| {
+        if !f.validated && f.review_status.is_empty() {
+            f.review_status = "rejected".into();
+            f.review_reason = "vote-rejected by validation panel".into();
+        }
+        f
+    }).collect();
+    let vote_rejected: Vec<Finding> = all.iter().filter(|f| f.review_status == "rejected").cloned().collect();
+    if !vote_rejected.is_empty() {
+        persist_rejected(workdir, &vote_rejected);
+    }
+    flagged.extend(all);
+    flagged
+}
+
+/// Persist discarded/rejected findings to `rejected.jsonl` in the run workdir
+/// so the operator can review them later for harness refinement.
+fn persist_rejected(workdir: Option<&str>, rejected: &[Finding]) {
+    if rejected.is_empty() { return; }
+    let Some(wd) = workdir else { return; };
+    let path = Path::new(wd).join("rejected.jsonl");
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        for f in rejected {
+            if let Ok(line) = serde_json::to_string(f) {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+    }
+}
+
+/// One bounded collection round per undecided finding.
+///
+/// Only gaps another request can close trigger a round: a missing baseline is
+/// one request away, a confirmed account behind an email gate is not, and
+/// retrying the second is how a budget disappears while nothing changes.
+/// How many voters actually convene.
+///
+/// The operator's `--vote-n` is the ceiling; a budget can only narrow it, never
+/// widen it. Unlimited — the default when no flag is passed — leaves it alone,
+/// so a run nobody budgeted behaves exactly as it always did.
+fn effective_vote_n(cfg: &RunConfig) -> usize {
+    match cfg.budget.mode {
+        crate::budget::Mode::Unlimited => cfg.vote_n,
+        m => cfg.vote_n.min(m.reviewers()).max(1),
+    }
+}
+
+/// Bind every finding's evidence to the wire before it is judged (see
+/// `crate::wire`). Always on; replay is skipped only in offline mode.
+async fn wire_pass(cfg: &RunConfig, mut findings: Vec<Finding>, tx: &Sender<String>) -> Vec<Finding> {
+    let engine = crate::replay::ReplayEngine::new(effective_scope(cfg));
+    let flows = crate::wire::load_flows(cfg.workdir.as_deref());
+    let replay = !cfg.offline;
+    let mut checks = Vec::new();
+    for f in findings.iter_mut() {
+        if let Some(ev) = f.evidence_data.as_mut() {
+            let wc = crate::wire::verify(ev, &engine, &flows, replay).await;
+            checks.push(wc.clone());
+            ev.wire = Some(wc);
+        }
+    }
+    if !checks.is_empty() {
+        let _ = tx.send(format!("🔌 {}", crate::wire::summary(&checks))).await;
+    }
+    findings
+}
+
+async fn close_evidence_gaps(cfg: &RunConfig, findings: Vec<Finding>, tx: &Sender<String>) -> Vec<Finding> {
+    if std::env::var("NEUROSPLOIT_UNCERTAINTY").unwrap_or_default() == "off" {
+        return findings;
+    }
+    let policy = effective_scope(cfg);
+    let engine = crate::replay::ReplayEngine::new(policy.clone());
+    let browser = crate::browser::BrowserProbe::new(policy);
+    // Evidence rounds are the most expensive thing per finding, so the budget
+    // sets how many there are. Unlimited keeps the default (2).
+    let rounds = match cfg.budget.mode {
+        crate::budget::Mode::Unlimited => crate::uncertainty::Rounds::default(),
+        m => crate::uncertainty::Rounds::with_max(m.evidence_rounds()),
+    };
+    if rounds.max_per_finding == 0 {
+        let _ = tx.send(format!("notify: evidence-gap closing skipped — budget {} allows 0 rounds", cfg.budget.mode.as_str())).await;
+        return findings;
+    }
+    let mut out = Vec::with_capacity(findings.len());
+    let mut closed = 0usize;
+
+    for mut f in findings {
+        let mut assessment = crate::uncertainty::assess(&f);
+        while assessment.wants_more_evidence(0.5) && rounds.take(&f.id) {
+            let actions = crate::uncertainty::next_actions(&assessment);
+            let mut fresh = crate::validation::Evidence::default();
+            let mut acted = false;
+            for action in actions {
+                match action {
+                    crate::uncertainty::Action::CaptureBaseline | crate::uncertainty::Action::Repeat => {
+                        let Some(attack) = f.evidence_data.as_ref().and_then(|e| e.attack.clone()) else { continue };
+                        let spec = crate::replay::spec_of(&attack);
+                        let (mut repeats, _) = engine.repeat(&spec, 2).await;
+                        if !repeats.is_empty() {
+                            fresh.repeats.append(&mut repeats);
+                            acted = true;
+                        }
+                    }
+                    crate::uncertainty::Action::RunBrowser => {
+                        let marker = f
+                            .evidence_data
+                            .as_ref()
+                            .map(|e| e.marker.clone())
+                            .filter(|m| !m.is_empty())
+                            .unwrap_or_else(|| crate::validation::canary("nsxss"));
+                        let r = browser.confirm_execution(&f.endpoint, &marker, None).await;
+                        if r.available {
+                            fresh.marker = marker;
+                            fresh.browser_executed = r.proves_execution();
+                            fresh.marker_observed = r.marker_observed;
+                            fresh.notes.extend(r.notes);
+                            acted = true;
+                        }
+                    }
+                    // A second identity needs credentials the harness was not
+                    // given, and an OOB channel needs infrastructure it does not
+                    // own yet. Both are recorded as gaps rather than attempted.
+                    _ => {}
+                }
+            }
+            if !acted {
+                break;
+            }
+            crate::uncertainty::merge_evidence(&mut f, fresh);
+            let after = crate::uncertainty::assess(&f);
+            if after.uncertainty < assessment.uncertainty {
+                closed += 1;
+            }
+            assessment = after;
+        }
+        crate::uncertainty::note_gaps(&mut f, &assessment);
+        out.push(f);
+    }
+    if closed > 0 {
+        let _ = tx.send(format!("uncertainty engine: {closed} finding(s) decided after collecting more evidence")).await;
+    }
+    out
+}
+
+/// Run the Evidence Prosecutor over findings that carry claims.
+///
+/// It cannot drop anything — it returns a narrowed claim set, and the decision
+/// table downstream does the rest. Findings without claims get a ledger built
+/// from whatever they recorded, so the back catalogue is judged too instead of
+/// silently skipped.
+async fn prosecute(findings: Vec<Finding>, pool: &ModelPool, tx: &Sender<String>) -> Vec<Finding> {
+    if findings.is_empty() || std::env::var("NEUROSPLOIT_PROSECUTOR").unwrap_or_default() == "off" {
+        return findings;
+    }
+    let mut out = Vec::with_capacity(findings.len());
+    let mut narrowed = 0usize;
+    for mut f in findings {
+        let mut set = match f.claims.clone() {
+            Some(s) => s,
+            None => crate::claims::ClaimSet {
+                mechanic: crate::claims::Claim {
+                    claim: f.title.clone(),
+                    status: Some(crate::claims::ClaimStatus::Proven),
+                    evidence: Vec::new(),
+                },
+                impact: crate::claims::Claim { claim: f.impact.clone(), status: None, evidence: Vec::new() },
+                ledger: crate::prosecutor::ledger_from_finding(&f),
+                ..Default::default()
+            },
+        };
+        if set.ledger.items.is_empty() {
+            out.push(f);
+            continue;
+        }
+        // Every claim must cite the ledger it was built from; a reconstructed
+        // set has no citations yet, so seed the mechanic with what exists.
+        if set.mechanic.evidence.is_empty() {
+            set.mechanic.evidence = set.ledger.items.iter().map(|e| e.id.clone()).collect();
+        }
+        let case = crate::prosecutor::case_file(&f, &set);
+        let verdict = match tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            pool.complete_routed(Task::Validate, "prosecutor", crate::prosecutor::PROSECUTOR_SYS, &case),
+        ).await {
+            Ok(Ok((_, text))) => crate::prosecutor::parse_verdict(&text),
+            Ok(Err(e)) => {
+                if crate::pool::is_exhaustion(&e) || crate::pool::is_auth_failure(&e) {
+                    let _ = tx.send(format!("prosecutor: quota exhausted — skipping validation, keeping findings as-is")).await;
+                    // Return remaining findings without prosecution.
+                    out.extend(std::iter::once(f));
+                    break;
+                }
+                None
+            }
+            Err(_) => {
+                let _ = tx.send("prosecutor: timed out — skipping remaining prosecutions".into()).await;
+                out.push(f);
+                break;
+            }
+        };
+        if let Some(v) = verdict.filter(|v| v.coherent()) {
+            if crate::prosecutor::apply(&mut set, &v) {
+                narrowed += 1;
+                let _ = tx.send(format!(
+                    "prosecutor narrowed '{}' → {}",
+                    trunc_title(&f.title),
+                    trunc_title(&v.effective_claim(&f.title))
+                )).await;
+            }
+        }
+        f.claims = Some(set);
+        out.push(f);
+    }
+    if narrowed > 0 {
+        let _ = tx.send(format!("evidence prosecutor: {narrowed} finding(s) narrowed to what the ledger supports")).await;
+    }
+    out
+}
+
+fn trunc_title(s: &str) -> String {
+    s.chars().take(64).collect()
+}
+
+/// Assemble the claim set from an agent's reply.
+///
+/// The ledger arrives as a sibling of `claims` (agents produce it as one list
+/// rather than nesting it), so it is folded in here — a claim set without its
+/// ledger cannot resolve a single citation, and every claim would read as
+/// unsupported.
+fn parse_claims(o: &serde_json::Map<String, serde_json::Value>) -> Option<crate::claims::ClaimSet> {
+    let mut set: crate::claims::ClaimSet = o.get("claims").and_then(|v| serde_json::from_value(v.clone()).ok())?;
+    if set.ledger.items.is_empty() {
+        if let Some(items) = o.get("evidence_ledger").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            set.ledger = crate::claims::EvidenceLedger { items };
+        }
+    }
+    Some(set)
+}
+
+/// Does this finding carry evidence a reader could check, independent of the
+/// claim built on top of it? Structured artifacts count outright; otherwise the
+/// grounding pass's own verdict decides.
+/// True when the finding carries a looted, reusable secret — a credential,
+/// private key, token or API key (in `secret`, or an `account` captured with it).
+/// Such a finding is never dropped by the opinion-vote: a key that authenticates
+/// or is reused downstream is real impact, not noise.
+fn finding_has_loot(f: &Finding) -> bool {
+    let has = |s: &str| {
+        let t = s.trim();
+        !t.is_empty() && t != "N/A" && t != "n/a" && t != "none" && t != "-"
+    };
+    has(&f.secret) || has(&f.account)
+}
+
+fn grounded_receipt(f: &Finding) -> bool {
+    if f.evidence_data.is_some() {
+        return true;
+    }
+    if f.review_reason.contains("receipt_missing") || f.votes.contains("receipt_missing") {
+        return false;
+    }
+    if has_http_receipt(f) {
+        return true;
+    }
+    crate::grounding::ground(f, "", crate::grounding::GroundMode::Either).ok
+}
+
+/// True when the finding's evidence carries a concrete, reproducible HTTP
+/// receipt — a captured response (status line / headers / Set-Cookie) or a
+/// `file:line` code citation. This is the test for "another person can
+/// reproduce this exact finding": if the proof is the response itself (a missing
+/// security header, an insecure cookie flag, an internal IP leaked in a header,
+/// a status code), it is reproducible with a single request and must never be
+/// discarded by an opinion-based vote — demoted to needs-review at worst.
+fn has_http_receipt(f: &Finding) -> bool {
+    if f.evidence_data.is_some() { return true; }
+    let hay = format!("{}\n{}", f.evidence, f.payload).to_lowercase();
+    // A captured HTTP response or the headers/fields these deterministic classes
+    // are proven by.
+    const SIGNS: &[&str] = &[
+        "http/1.1", "http/2", "http/1.0", "status: ", "status code", "status=",
+        "set-cookie", "strict-transport-security", "x-frame-options",
+        "content-security-policy", "access-control-allow-origin", "location:",
+        "server:", "www-authenticate", "< http", "=> http", "response:", "200 ok",
+        "301 ", "302 ", "401 ", "403 ", "404 ", "500 ", "curl ",
+    ];
+    if SIGNS.iter().any(|s| hay.contains(s)) { return true; }
+    // A white-box file:line citation is also a reproducible receipt.
+    f.endpoint.contains(':') && f.endpoint.chars().any(|c| c.is_ascii_digit())
+        && (f.endpoint.contains(".rs") || f.endpoint.contains(".py") || f.endpoint.contains(".js")
+            || f.endpoint.contains(".php") || f.endpoint.contains(".java") || f.endpoint.contains(".go")
+            || f.endpoint.contains(".ts") || f.endpoint.contains(".rb"))
+}
+
+/// Adversarial refutation pass: every confirmed **High/Critical** finding is
+/// re-examined by a skeptical panel that tries to prove it's a false positive.
+/// A finding that fails to withstand a majority of skeptics is dropped. Lower
+/// severities pass through unchanged. Runs only when a real panel exists.
+async fn refute_pass(findings: Vec<Finding>, pool: &ModelPool, vote_n: usize, tx: &Sender<String>) -> Vec<Finding> {
+    let finder = pool.candidates.first().map(|m| m.label());
+    let mut kept = Vec::new();
+    for mut f in findings {
+        let s = f.severity.to_lowercase();
+        let high = s.starts_with("crit") || s.starts_with("high");
+        if !high || pool.stop_exploiting() {
+            kept.push(f);
+            continue;
+        }
+        let q = format!(
+            "Finding: {} | severity {} | {} | at {} | payload {} | evidence {} | impact {}",
+            f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence, f.impact
+        );
+        let (yes, total) = pool.vote(REFUTE_SYS, &q, vote_n.max(2), finder.as_deref()).await;
+        // Survive on no-response (infra failure) or a surviving majority.
+        let survives = total == 0 || yes * 2 > total;
+        if survives {
+            if total > 0 { f.votes = format!("{} · refute {yes}/{total}", f.votes); }
+            kept.push(f);
+        } else {
+            // Refuted High/Critical: don't silently delete — DEMOTE to needs-review
+            // and hand it to the human loop with the reason (they make the call).
+            f.validated = false;
+            f.review_status = "needs-review".into();
+            f.review_reason = format!("failed adversarial refute ({yes}/{total} survived)");
+            f.votes = format!("{} · refute {yes}/{total}", f.votes);
+            let _ = tx.send(format!("vote {} → flagged needs-review (adversarial refute {yes}/{total})", f.title)).await;
+            kept.push(f);
+        }
+    }
+    kept
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish(cfg: RunConfig, _lib: &Library, pool: &ModelPool, recon: String, transcript: String, mut findings: Vec<Finding>,
+                selected: Vec<Agent>, rl: &mut RlState, gmode: crate::grounding::GroundMode, source_ctx: String,
+                tx: Sender<String>) -> RunOutput {
+    use crate::grounding::GroundMode;
+    // --- Grounding gate: no claim without a receipt (anti-hallucination) ---
+    // The receipt is empirical (tool output) for black-box, symbolic (file:line
+    // into the reviewed source) for white-box SAST / skills audits, or either for
+    // grey-box. Symbolic grounding is checked against the SOURCE corpus, not the
+    // model transcript, so a code citation is honoured as its own receipt.
+    let ground_ctx = if source_ctx.is_empty() { transcript.as_str() } else { source_ctx.as_str() };
+    let before = findings.len();
+    let (kept, demoted) = crate::grounding::gate(findings, ground_ctx, gmode);
+    findings = kept;
+    if demoted > 0 {
+        let receipt = match gmode {
+            GroundMode::Symbolic => "no source reference",
+            GroundMode::Either => "no source reference nor tool receipt",
+            GroundMode::Empirical => "no tool receipt",
+        };
+        let _ = tx.send(format!("grounding gate: demoted {demoted}/{before} ungrounded claim(s) ({receipt})")).await;
+    }
+    // White-box/skills are symbolic → deterministic belief; grey-box carries source too.
+    let whitebox = matches!(gmode, GroundMode::Symbolic | GroundMode::Either);
+
+    // Final graph checkpoint (and Neo4j sync when configured). Before the vault
+    // masks secrets, so equal secrets correlate; only salted fingerprints leave.
+    let _ = graph_checkpoint(&cfg, &recon, &findings, "final", &[], &tx).await;
+
+    // --- Credential vault & test-account cleanup ---------------------------
+    // Consolidate every test account created this run (from the agent-appended
+    // vault.jsonl AND any finding that carried a generated `secret`) into a single
+    // vault.json the operator can consult, then MASK the secret in the report and
+    // add a cleanup summary listing the accounts to delete.
+    {
+        let (jsonl, path) = vault_paths(&cfg);
+        let mut vault = collect_vault(&jsonl, &findings);
+        // Fold in secrets captured on findings (dedup by account identity).
+        for f in &findings {
+            if !f.secret.is_empty() && !f.account.is_empty()
+                && !vault.iter().any(|v| v.account == f.account) {
+                vault.push(VaultEntry {
+                    account: f.account.clone(), secret: f.secret.clone(), role: String::new(),
+                    endpoint: f.endpoint.clone(), how: f.payload.clone(), auth_flow: String::new(),
+                });
+            }
+        }
+        if !vault.is_empty() {
+            if let Ok(j) = serde_json::to_string_pretty(&vault) { let _ = std::fs::write(&path, j); }
+            let _ = tx.send(format!(
+                "notify: 🔐 vault: {} test account(s) saved → {} — DELETE these after the engagement",
+                vault.len(), path)).await;
+            // Cleanup summary finding (secrets live only in the vault, masked here).
+            let list = vault.iter()
+                .map(|v| format!("• {}{} — created via {}", v.account,
+                    if v.role.is_empty() { String::new() } else { format!(" [{}]", v.role) },
+                    if v.how.is_empty() { "the registration flow".to_string() } else { v.how.chars().take(160).collect::<String>() }))
+                .collect::<Vec<_>>().join("\n");
+            findings.push(Finding {
+                id: "test-accounts".into(), agent: "account_registration_and_forms".into(),
+                title: "Test accounts created during the engagement (DELETE after)".into(),
+                severity: "Info".into(), endpoint: cfg.target.clone(),
+                evidence: format!("{} account(s) created for authenticated testing. Credentials are in vault.json (not shown here).\n{}", vault.len(), list),
+                impact: "Operational cleanup: remove these accounts once testing is complete.".into(),
+                remediation: "Delete the listed test accounts; rotate anything they touched.".into(),
+                validated: true, confidence: 1.0, auth_context: "n/a".into(),
+                account: format!("{} test account(s)", vault.len()),
+                ..Default::default()
+            });
+        }
+        // Mask any generated secret so it never appears in the human report.
+        for f in findings.iter_mut() {
+            if !f.secret.is_empty() { f.secret = "•••• (see vault.json)".into(); }
+        }
+    }
+
+    // --- v3.5.2 report-hygiene & exploitation-depth pass ---
+    // Calibrate inflated/unproven High-Critical to Medium, flag exposures that
+    // were never exploited ("exposed → exploited"), and advise consolidating
+    // hygiene findings duplicated across many assets.
+    for n in crate::hygiene::calibrate(&mut findings) {
+        let _ = tx.send(format!("calibrate: {n}")).await;
+    }
+    for n in crate::hygiene::depth_audit(&findings) {
+        let _ = tx.send(format!("notify: {n}")).await;
+    }
+    for n in crate::hygiene::hygiene_summary(&findings) {
+        let _ = tx.send(format!("notify: {n}")).await;
+    }
+
+    // --- POMDP belief: build from grounded findings, report residual uncertainty ---
+    let mut wm = crate::belief::WorldModel::new();
+    wm.deterministic = whitebox;
+    for f in &findings {
+        wm.add(&f.id, crate::belief::Kind::Exploit, &f.title, f.confidence.clamp(0.05, 0.99));
+    }
+    let unc = wm.uncertainty(None);
+    if !findings.is_empty() {
+        let _ = tx.send(format!("belief uncertainty over confirmed findings: {:.2} (0=sharp,1=diffuse)", unc)).await;
+    }
+    // POMDP anti-hallucination gate: a finding asserted as confirmed while the
+    // belief about it is diffuse or weak is flagged for review. Advisory — it
+    // never deletes, only surfaces a claim the belief does not yet support.
+    let pol = crate::pomdp::Policy::default();
+    let mut gated = 0usize;
+    for f in findings.iter_mut() {
+        if f.validated && f.review_status != "needs-review" && f.review_status != "rejected" {
+            if let Err(why) = crate::pomdp::may_assert(&wm, &f.id, &pol) {
+                f.review_status = "needs-review".into();
+                f.validated = false;
+                f.review_reason = if f.review_reason.is_empty() { format!("belief gate: {why}") } else { format!("{} · belief gate: {why}", f.review_reason) };
+                gated += 1;
+            }
+        }
+    }
+    if gated > 0 {
+        let _ = tx.send(format!("belief gate: {gated} finding(s) held for review — asserted above what the evidence supports")).await;
+    }
+
+    let _ = tx.send(format!("{} validated finding(s)", findings.len())).await;
+    // Grey-zone dedup via System One (TypeSafe or local Laya). The fixed 0.4
+    // Jaccard threshold cannot settle near-duplicates; when a decision backend
+    // is configured, a calibrated Noul judges each same-endpoint/CWE pair that
+    // scored in the 0.25..0.4 grey zone and merges the ones it calls the same
+    // bug. Deterministic behaviour is unchanged when no backend is set.
+    findings = merge_grey_zone_dupes(findings, &tx).await;
+    // Attribution: stamp provenance into each finding (report + json + copies).
+    stamp_attribution(&mut findings);
+    // Map findings to OWASP / MITRE / kill-chain stage for the attack graph.
+    crate::attack_graph::enrich(&mut findings);
+    // Chain them to each other. An agent sees one vulnerability and cannot link
+    // to findings it never saw, which is why `chains_from` came back empty on
+    // every finding of a real engagement; here the whole set is visible at once.
+    let chained = crate::chain::apply_links(&mut findings);
+    if chained > 0 {
+        let _ = tx.send(format!("attack paths: {chained} finding(s) linked to what enables them")).await;
+    }
+    // Then chain them ACROSS domains. The rules above are web-local by design
+    // and stop at the host boundary; an engagement's real path does not — it
+    // carries a hash off a hypervisor into a directory, a share password into
+    // a database, a token out of process memory into a cloud tenant. This pass
+    // links on what each step produces and the next one consumes, for every
+    // plane the agent library covers, and only where the material could
+    // actually have travelled that far.
+    {
+        let loot: Vec<String> = cfg
+            .workdir
+            .as_deref()
+            .and_then(|d| std::fs::read_to_string(Path::new(d).join("loot.json")).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        let crossed = crate::attack_path::apply(&mut findings);
+        let graph = crate::attack_path::build(&cfg.target, &findings, &loot);
+        let best = graph.paths(1);
+        if crossed > 0 || best.first().map(|p| p.steps >= 2).unwrap_or(false) {
+            let _ = tx.send(format!("⛓ attack path: {}", crate::attack_path::summary(&graph))).await;
+        }
+        if let Some(p) = best.first().filter(|p| p.steps >= 2) {
+            let _ = tx.send(format!("⛓ best path: {}", p.narrative)).await;
+        }
+    }
+    // Collect proof screenshots into evidence/<finding-id>-N.png so the report
+    // can embed each image beside its vulnerability.
+    if let Some(dir) = cfg.workdir.as_deref() {
+        let imgs = collect_evidence(&mut findings, Path::new(dir));
+        if imgs > 0 {
+            let _ = tx.send(format!("notify: 📸 {imgs} proof screenshot(s) collected → evidence/")).await;
+        }
+        // Synthesize a PoC + evidence file per finding from the structured
+        // evidence the harness already holds. On the API-key path the model
+        // only returns findings JSON and never runs tools to write PoC files,
+        // so pocs/ and evidence/ stayed empty (issue #44); this fills them from
+        // evidence_data / payload / endpoint. It never overwrites a richer
+        // artifact an agent already wrote.
+        let synth = synthesize_pocs_and_evidence(&mut findings, Path::new(dir));
+        if synth > 0 {
+            let _ = tx.send(format!("notify: 🧪 {synth} PoC/evidence file(s) synthesized from recorded evidence → pocs/ · evidence/")).await;
+        }
+    }
+
+    // RL update (robust reward shaping): an agent's reward per run =
+    //   + strong for each CONFIRMED finding (severity × confidence),
+    //   + small for a NEEDS-REVIEW finding (it surfaced a real lead worth a human),
+    //   − small decay for running but surfacing nothing (keeps noise agents down).
+    // Rewards accumulate per agent, capped to [-1, 1], so agents that reliably land
+    // confirmed high-severity bugs float to the top of selection on future runs.
+    let mut hit: std::collections::HashMap<&str, f64> = Default::default();
+    for f in &findings {
+        let base = severity_reward(&f.severity) * f.confidence.clamp(0.2, 1.0);
+        let r = if f.review_status == "needs-review" { 0.15 } else { base };
+        let e = hit.entry(f.agent.as_str()).or_insert(0.0);
+        *e = (*e + r).clamp(-1.0, 1.0);
+    }
+    for a in &selected {
+        let r = hit.get(a.name.as_str()).copied().unwrap_or(-0.05);
+        rl.update(&a.name, r);
+    }
+    rl.runs += 1;
+    if let Some(p) = &cfg.rl_path {
+        rl.save(Path::new(p));
+        let _ = tx.send("RL rewards updated".into()).await;
+    }
+
+    // This finalize path is shared by every mode, so it opens its own handle on
+    // the run's trail rather than borrowing one from a particular entry point.
+    let audit = audit_log(&cfg);
+    let cap_id = capability_id(&cfg);
+
+    // The prosecutor runs first: it shrinks each claim to what the ledger
+    // supports, so the adjudication below is deciding about a statement that is
+    // already honest rather than about a story.
+    findings = prosecute(findings, pool, &tx).await;
+
+    // Claim adjudication, before anything reads the prose. Findings that
+    // arrived with separable claims get their outcome from the decision table
+    // in `crate::claims` — and an overstated impact is rewritten down to what
+    // the ledger supports instead of deleting the observation underneath it.
+    {
+        let mut rewritten = 0usize;
+        let mut dropped: Vec<String> = Vec::new();
+        let mut kept: Vec<Finding> = Vec::new();
+        for mut f in std::mem::take(&mut findings) {
+            let Some(set) = f.claims.clone() else { kept.push(f); continue };
+            let decision = crate::claims::decide(&set);
+            if decision.discards() && !crate::claims::still_security_relevant(&set)
+                && crate::claims::cwe_severity_floor(&f.cwe) == "Info"
+            {
+                dropped.push(format!("{} ({})", f.title, decision.code()));
+                continue;
+            }
+            if decision.discards() {
+                // The narrative failed but the mechanic survives on its own —
+                // retain and rewrite rather than lose a real observation.
+                let salvage = crate::claims::Decision::DowngradeUnprovenImpact(decision.reason().to_string());
+                crate::claims::rewrite(&mut f, &set, &salvage);
+                rewritten += 1;
+            } else {
+                let before = f.title.clone();
+                crate::claims::rewrite(&mut f, &set, &decision);
+                if f.title != before {
+                    rewritten += 1;
+                }
+            }
+            kept.push(f);
+        }
+        findings = kept;
+        if rewritten > 0 || !dropped.is_empty() {
+            let _ = tx.send(format!(
+                "claim adjudication: {rewritten} finding(s) rewritten to what the evidence supports, {} dropped{}",
+                dropped.len(),
+                if dropped.is_empty() { String::new() } else { format!(" ({})", dropped.join("; ")) }
+            )).await;
+        }
+    }
+
+    // Uncertainty loop: before judging, ask whether the evidence is thin for a
+    // reason the harness can still fix. A `needs-review` verdict hands a human
+    // the same thin evidence and asks them to do the collecting — the wrong
+    // party, since the harness still has the target and the tooling.
+    // Wire binding: every claimed exchange is checked against recorded traffic
+    // and re-observed by the harness itself before anything is judged, so the
+    // validators below rule on what the wire showed, not on the agent's account.
+    findings = wire_pass(&cfg, findings, &tx).await;
+    findings = close_evidence_gaps(&cfg, findings, &tx).await;
+
+    // Deterministic validation. The votes above are models checking models; this
+    // pass asks whether the recorded artifacts actually demonstrate the class.
+    let vmode = crate::validation::Mode::from_env();
+    if vmode != crate::validation::Mode::Off {
+        let mut confirmed = 0usize;
+        let mut rejected: Vec<Finding> = Vec::new();
+        let mut kept: Vec<Finding> = Vec::new();
+        for mut f in findings.into_iter() {
+            match crate::validation::apply_mode(&mut f, vmode) {
+                Some(crate::validation::Verdict::Confirmed(_)) => {
+                    confirmed += 1;
+                    kept.push(f);
+                }
+                Some(crate::validation::Verdict::Rejected(r)) => {
+                    let _ = tx.send(format!("validator rejected '{}': {r}", f.title)).await;
+                    audit.append(
+                        crate::audit::AuditRecord::new("validation-engine", "reject-finding", &f.endpoint)
+                            .hypothesis(&f.id)
+                            .decision(&format!("deny: {r}"))
+                            .tool("validator")
+                            .capability(&cap_id)
+                            .evidence(f.evidence.as_bytes())
+                            .result(&format!("rejected '{}'", f.title)),
+                    );
+                    rejected.push(f);
+                }
+                _ => kept.push(f),
+            }
+        }
+        persist_rejected(cfg.workdir.as_deref(), &rejected);
+        findings = kept;
+        let _ = tx.send(format!(
+            "validation engine ({:?}): {confirmed} deterministically confirmed, {} rejected (saved to rejected.jsonl), {} kept",
+            vmode, rejected.len(), findings.len()
+        )).await;
+    }
+
+    // #9 — evidence integrity: reject fabricated or re-used proof (evidence from
+    // another target, one receipt backing two classes, a foreign OAST marker,
+    // a confirmed finding with no evidence). Strips the proof, never deletes.
+    {
+        let build = crate::provenance::Provenance::process().build.clone();
+        let audits = crate::integrity::audit_evidence(&findings, &build);
+        let bad = audits.iter().filter(|a| !a.clean()).count();
+        if bad > 0 {
+            let by_id: std::collections::HashMap<&str, &crate::integrity::Audit> = audits.iter().map(|a| (a.finding_id.as_str(), a)).collect();
+            for f in findings.iter_mut() {
+                if let Some(a) = by_id.get(f.id.as_str()) {
+                    if !a.clean() {
+                        crate::integrity::apply(f, a);
+                        audit.append(
+                            crate::audit::AuditRecord::new("integrity", "reject-evidence", &f.endpoint)
+                                .hypothesis(&f.id)
+                                .decision(&format!("deny: {}", a.violations.iter().map(|v| v.reason()).collect::<Vec<_>>().join("; ")))
+                                .tool("integrity")
+                                .capability(&cap_id)
+                                .result(&f.title),
+                        );
+                    }
+                }
+            }
+        }
+        let _ = tx.send(format!("notify: 🧾 {}", crate::integrity::summary(&audits))).await;
+    }
+
+    // TypeSafe System One adjudication (optional). When TYPESAFE_API_KEY is set,
+    // a calibrated Choice over {confirmed, needs-review, rejected} plus an
+    // "impact demonstrated" Noul is asked over each finding's EVIDENCE (never
+    // its prose). Additive: it never overrules a deterministic validator —
+    // evidence still rules — it only refines confidence and moves a borderline
+    // finding to needs-review. Off with NEUROSPLOIT_TYPESAFE=off.
+    if std::env::var("NEUROSPLOIT_TYPESAFE").unwrap_or_default().trim().to_lowercase() != "off" {
+        if let Some(ts) = crate::typesafe::TypeSafe::from_env() {
+            // Additional confirmation strategy: a code-owned loop where TypeSafe
+            // picks payloads and judges responses over the REAL replay engine.
+            // Applied to enumerable-class findings that are unconfirmed or in
+            // needs-review — the recall lever. A confirmation raises the
+            // finding to validated with a calibrated probability; it never
+            // downgrades (that is the deterministic layer's job).
+            let agent = crate::typesafe_agent::TypeSafeAgent::new(ts.clone(), crate::replay::ReplayEngine::new(effective_scope(&cfg)))
+                .with_oob(cfg.oob_domain.clone());
+            let mut confirmed_by_agent = 0usize;
+            for f in findings.iter_mut() {
+                let unconfirmed = !f.validated || f.review_status == "needs-review";
+                if unconfirmed && crate::typesafe_agent::handles(&f.cwe, &f.title) {
+                    if let Some(c) = agent.confirm(f).await {
+                        audit.append(
+                            crate::audit::AuditRecord::new("typesafe-agent", "confirmation-loop", &f.endpoint)
+                                .hypothesis(&f.id)
+                                .decision(&format!("{}: {}", if c.confirmed { "confirm" } else { "inconclusive" }, c.detail))
+                                .tool("typesafe:jev-latest")
+                                .capability(&cap_id)
+                                .result(&f.title),
+                        );
+                        if c.confirmed {
+                            f.validated = true;
+                            f.review_status = "confirmed".into();
+                            f.confidence = f.confidence.max(c.probability);
+                            if f.payload.trim().is_empty() { f.payload = c.payload.clone(); }
+                            f.review_reason = format!("TypeSafe confirmation loop: {}", c.detail);
+                            confirmed_by_agent += 1;
+                        }
+                    }
+                }
+            }
+            if confirmed_by_agent > 0 {
+                let _ = tx.send(format!("notify: 🧮 TypeSafe confirmation loop confirmed {confirmed_by_agent} finding(s) the LLM path left unconfirmed")).await;
+            }
+
+            let _ = tx.send(format!("notify: 🧮 System One adjudicating findings via {}…", ts.backend_label())).await;
+            let mut refined = 0usize;
+            for f in findings.iter_mut() {
+                let state = typesafe_state(f);
+                match ts.adjudicate(state).await {
+                    Ok(adj) => {
+                        // A deterministic rejection is final; TypeSafe can only
+                        // lower confidence or flag for review, never resurrect.
+                        if f.review_status != "rejected" {
+                            let cal = adj.calibrated_confidence();
+                            // Take the more conservative of the two confidences.
+                            f.confidence = f.confidence.min(cal.max(0.05));
+                            if adj.wants_review() && f.review_status.is_empty() {
+                                f.review_status = "needs-review".into();
+                                f.validated = false;
+                                f.review_reason = format!(
+                                    "TypeSafe: p(confirmed)={:.2}, impact={:.2} — below the bar for auto-confirm",
+                                    adj.p_confirmed, adj.impact_demonstrated
+                                );
+                            }
+                            // CVSS via System One: re-grade the vector using the
+                            // calibrated impact judgment as the impact receipt,
+                            // not just the deterministic rung. A finding TypeSafe
+                            // says shows no real impact loses its C/I/A the same
+                            // way an absent receipt would — the demonstrated
+                            // score follows the evidence, calibrated.
+                            // Data type is a guardrail against over-recalibration.
+                            // The impact is only stripped when BOTH the model was
+                            // unconvinced AND nothing sensitive was actually shown
+                            // (no credential/PII signature, and the calibrated
+                            // data-sensitivity is low). A demonstrated credential
+                            // or PII exposure keeps its severity even on a thin
+                            // receipt — the KIND of data is itself the impact.
+                            let dc = crate::attack_graph::data_class(f);
+                            let sensitive_shown = dc != crate::attack_graph::DataClass::None || adj.data_sensitivity >= 0.5;
+                            if adj.impact_demonstrated < 0.5 && !sensitive_shown {
+                                if let Some(g) = crate::attack_graph::cvss_graded(f) {
+                                    let dropped = crate::cvss::grade(g.potential, |_| false);
+                                    if dropped.demonstrated_score < g.demonstrated_score {
+                                        f.cvss = format!("{:.1} ({})", dropped.demonstrated_score, dropped.demonstrated.vector_string());
+                                    }
+                                }
+                            } else if sensitive_shown && f.cvss.is_empty() {
+                                // Sensitive data shown but no score yet: grade it
+                                // WITH the data-type receipt rather than leaving it blank.
+                                if let Some(g) = crate::attack_graph::cvss_graded(f) {
+                                    if g.demonstrated_score > 0.0 {
+                                        f.cvss = format!("{:.1} ({})", g.demonstrated_score, g.demonstrated.vector_string());
+                                    }
+                                }
+                            }
+                            refined += 1;
+                        }
+                        audit.append(
+                            crate::audit::AuditRecord::new("typesafe", "adjudicate-finding", &f.endpoint)
+                                .hypothesis(&f.id)
+                                .decision(&format!("{}: p_confirmed={:.2} impact={:.2} conf={:.2}", adj.verdict, adj.p_confirmed, adj.impact_demonstrated, adj.confidence))
+                                .tool("typesafe:jev-latest")
+                                .capability(&cap_id)
+                                .result(&f.title),
+                        );
+                    }
+                    Err(e) => {
+                        let _ = tx.send(format!("notify: ⚠ TypeSafe unavailable ({e}) — keeping deterministic verdicts")).await;
+                        break; // don't hammer a failing service
+                    }
+                }
+            }
+            if refined > 0 {
+                let _ = tx.send(format!("notify: 🧮 TypeSafe refined {refined} finding(s) with calibrated confidence")).await;
+            }
+        }
+    }
+
+    // PoC re-validation: re-run each finding's recorded proof and demote any
+    // that no longer reproduces. This is the harness checking its own work — a
+    // bug that was hotfixed between discovery and reporting, or a "proof" that
+    // was a fluke, is caught here rather than by the client.
+    if cfg.revalidate_poc {
+        let validator = crate::poc::PocValidator::new(effective_scope(&cfg));
+        let results = validator.validate_all(&findings).await;
+        let _ = tx.send(format!("notify: 🔁 {}", crate::poc::summary(&results))).await;
+        let by_id: std::collections::HashMap<&str, &crate::poc::PocResult> = results.iter().map(|r| (r.finding_id.as_str(), r)).collect();
+        for f in findings.iter_mut() {
+            if let Some(r) = by_id.get(f.id.as_str()) {
+                crate::poc::apply(f, r);
+                if r.reproduction.demotes() {
+                    audit.append(
+                        crate::audit::AuditRecord::new("poc-validator", "poc-revalidation", &f.endpoint)
+                            .hypothesis(&f.id)
+                            .decision(&format!("{}: {}", r.reproduction.as_str(), r.detail))
+                            .tool("poc-validator")
+                            .capability(&cap_id)
+                            .result(&f.title),
+                    );
+                }
+            }
+        }
+    }
+
+    // Scope audit: anything proven against a host outside the authorization
+    // boundary is quarantined, not shipped. A finding on an unauthorized asset
+    // is an incident to disclose, not a deliverable.
+    let policy = effective_scope(&cfg);
+    let (in_scope, out_of_scope) = policy.audit_findings(findings);
+    findings = in_scope;
+    if !out_of_scope.is_empty() {
+        for f in &out_of_scope {
+            // The record of a boundary violation is the point: this is the
+            // line an operator has to be able to show afterwards.
+            audit.append(
+                crate::audit::AuditRecord::new(&f.agent, "finding-out-of-scope", &f.endpoint)
+                    .hypothesis(&f.id)
+                    .decision("deny: proven against a host outside the authorized scope")
+                    .tool("scope-guard")
+                    .capability(&cap_id)
+                    .evidence(f.evidence.as_bytes())
+                    .result("withheld from the report"),
+            );
+        }
+        let _ = tx.send(format!(
+            "notify: ⚠ {} finding(s) were proven against hosts OUTSIDE the authorized scope and were withheld: {}",
+            out_of_scope.len(),
+            out_of_scope.iter().map(|f| crate::scope::host_of(&f.endpoint)).collect::<Vec<_>>().join(", ")
+        )).await;
+        if let Some(dir) = cfg.workdir.as_deref() {
+            let p = Path::new(dir).join("out-of-scope-findings.json");
+            let _ = std::fs::write(p, serde_json::to_string_pretty(&out_of_scope).unwrap_or_default());
+        }
+    }
+
+    // Every finding that survives to the report gets a record tying it to the
+    // evidence it was proven with — that hash is what links a claim in a PDF to
+    // the artifact behind it months later.
+    for f in &findings {
+        audit.append(
+            crate::audit::AuditRecord::new(&f.agent, "report-finding", &f.endpoint)
+                .hypothesis(&f.id)
+                .decision(&format!("allow: {}", if f.review_status.is_empty() { "reported" } else { &f.review_status }))
+                .tool("pipeline")
+                .capability(&cap_id)
+                .evidence(f.evidence.as_bytes())
+                .result(&format!("[{}] {}", f.severity, f.title)),
+        );
+    }
+    audit.append(
+        crate::audit::AuditRecord::new("harness", "engagement-end", &cfg.target)
+            .decision("allow")
+            .tool("neurosploit")
+            .capability(&cap_id)
+            .result(&format!("{} finding(s) reported", findings.len())),
+    );
+    // P4 — anchor the chain: a signed checkpoint of the head, written locally
+    // and (if NEUROSPLOIT_ANCHOR_DIR is set) to external append-only storage.
+    // This is what makes a later truncation or silent rebuild detectable.
+    let anchor_key = provenance_key().unwrap_or_else(|| crate::provenance::Provenance::build_fingerprint().into_bytes());
+    let anchor = audit.checkpoint(&anchor_key, "engagement-end");
+    let _ = tx.send(format!(
+        "notify: ⚓ audit anchored — {} record(s), head {}{}",
+        anchor.count,
+        anchor.chain_hash.chars().take(12).collect::<String>(),
+        if provenance_key().is_some() { " (signed)" } else { " (unsigned — set NEUROSPLOIT_PROVENANCE_KEY)" }
+    )).await;
+    match audit.verify() {
+        Ok(n) => {
+            let _ = tx.send(format!("audit trail: {n} record(s), hash chain intact → audit.jsonl")).await;
+        }
+        Err(e) => {
+            // Worth shouting about: the trail is the artifact that proves what
+            // was done, and a broken chain means it can no longer do that.
+            let _ = tx.send(format!("notify: ⚠ audit chain verification FAILED — {e}")).await;
+        }
+    }
+
+    // Durable knowledge. Everything above this point is about *this* run; these
+    // two stores are what makes the next one start from further along.
+    let notes = absorb(&cfg, &recon, &findings);
+    for n in notes {
+        let _ = tx.send(n).await;
+    }
+
+    // Coverage report: what was tested, how, and what was NOT —
+    // so a reader can see the engagement's reach, not just its findings.
+    write_coverage(&cfg, &selected, &findings);
+    let artifacts = persist(&cfg, &recon, &transcript, &findings);
+    if !artifacts.is_empty() {
+        let _ = tx.send(format!("notify: evidence saved → {}", cfg.workdir.clone().unwrap_or_default())).await;
+        let _ = tx.send(format!("artifacts saved: {}", artifacts.join(", "))).await;
+    }
+    // Provider-reported token usage per agent (observational; see `usage`).
+    {
+        let rep = crate::usage::report();
+        if !rep.is_empty() {
+            let _ = tx.send(rep).await;
+        }
+        if let Some(d) = cfg.workdir.as_deref() {
+            crate::usage::write_json(Path::new(d));
+        }
+    }
+    // Automatic partial summary (phase complete).
+    {
+        let mut by: std::collections::BTreeMap<&str, usize> = Default::default();
+        for f in &findings { *by.entry(f.severity.as_str()).or_insert(0) += 1; }
+        let sev = if by.is_empty() { "none".to_string() }
+                  else { by.iter().map(|(k, v)| format!("{k}:{v}")).collect::<Vec<_>>().join(" ") };
+        let _ = tx.send(format!("notify: phase complete — {} validated finding(s) [{}]", findings.len(), sev)).await;
+    }
+
+    // Tear the Kali sandbox down at the end of the engagement (spin up for the
+    // run, kill it after), unless the operator asked to keep it.
+    if cfg.sandbox.is_some() && !std::env::var("NEUROSPLOIT_KEEP_SANDBOX").map(|v| v == "1" || v == "true").unwrap_or(false) {
+        if let Some(sb) = engagement_sandbox(&cfg) {
+            sb.teardown().await;
+            let _ = tx.send("notify: 📦 Kali sandbox torn down".into()).await;
+        }
+    }
+
+    // The run is over: drop its live attack-graph context.
+    crate::graph_memory::clear_live(&run_id(&cfg));
+
+    RunOutput {
+        target: cfg.target.clone(),
+        workdir: cfg.workdir.clone().unwrap_or_default(),
+        candidates: findings.len(),
+        findings,
+        agents_ran: selected.iter().map(|a| a.name.clone()).collect(),
+        recon,
+        artifacts,
+        denied: None,
+    }
+}
+
+/// Fold a finished run into the attack knowledge graph and the layered memory.
+///
+/// Returns the lines to report to the operator. It is deliberately synchronous
+/// and returns its messages instead of sending them: the memory store is behind
+/// a `std::sync::Mutex`, and holding that guard across an `.await` would make
+/// the pipeline future non-`Send`.
+fn absorb(cfg: &RunConfig, recon: &str, findings: &[Finding]) -> Vec<String> {
+    let mut out = Vec::new();
+    let rid = run_id(cfg);
+    let store = proj_store(cfg);
+
+    // Graph: the project-wide one accumulates across runs, and each run keeps
+    // its own copy so the report and the web console can draw just this run.
+    let proj_graph = store.join("graph.json");
+    let mut kg = crate::knowledge_graph::KnowledgeGraph::load(&proj_graph);
+    kg.ingest(&cfg.target, &rid, findings);
+    kg.save(&proj_graph);
+    if let Some(dir) = cfg.workdir.as_deref() {
+        let mut run_kg = crate::knowledge_graph::KnowledgeGraph::new();
+        run_kg.ingest(&cfg.target, &rid, findings);
+        run_kg.save(Path::new(dir).join("graph.json"));
+    }
+    let paths = kg.paths(1);
+    let depth = paths.first().map(|(p, _)| p.len()).unwrap_or(0);
+    out.push(format!(
+        "knowledge graph: {} node(s), {} edge(s), longest attack path {} step(s) → graph.json",
+        kg.nodes.len(),
+        kg.edges.len(),
+        depth
+    ));
+
+    // Memory: what was proven is engagement knowledge immediately (a validated
+    // finding is evidence, not a guess); everything else has to earn promotion.
+    let key = crate::memory::engagement_key(&cfg.target);
+    let Ok(mut mem) = crate::memory::shared(store.join("memory")).lock() else { return out };
+
+    for f in findings {
+        let where_ = if f.endpoint.is_empty() { cfg.target.as_str() } else { f.endpoint.as_str() };
+        let text = format!("{} — {} on {} [{} · {}]", f.title, f.severity, where_, f.cwe, f.stage);
+        let mut tags: Vec<String> = vec![format!("agent:{}", f.agent)];
+        if !f.cwe.is_empty() {
+            tags.push(format!("cwe:{}", f.cwe));
+        }
+        if !f.mitre.is_empty() {
+            tags.push(format!("technique:{}", f.mitre));
+        }
+        if !f.stage.is_empty() {
+            tags.push(f.stage.clone());
+        }
+        let refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+        mem.remember(
+            crate::memory::Tier::Engagement,
+            &key,
+            &text,
+            &refs,
+            &cfg.target,
+            &rid,
+            f.confidence.clamp(0.4, 0.95),
+        );
+    }
+
+    // Recon facts go to working memory: one sighting of an endpoint is a lead,
+    // and only a repeat earns a place in the engagement's knowledge.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(recon) {
+        for k in ["endpoints", "apis", "hosts", "subdomains"] {
+            if let Some(arr) = v.get(k).and_then(|x| x.as_array()) {
+                for item in arr.iter().take(25) {
+                    let s = item.as_str().map(|s| s.to_string()).unwrap_or_else(|| item.to_string());
+                    let s = s.trim_matches('"').trim();
+                    if s.len() > 2 {
+                        mem.note(&cfg.target, &rid, &format!("{k}: {s}"), &["recon", k]);
+                    }
+                }
+            }
+        }
+        if let Some(tech) = v.get("tech").and_then(|x| x.as_array()) {
+            let list: Vec<String> = tech.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect();
+            if !list.is_empty() {
+                mem.note(&cfg.target, &rid, &format!("stack: {}", list.join(", ")), &["recon", "tech"]);
+            }
+        }
+    }
+
+    // Recall only earns credit when the run it informed actually found something.
+    if !findings.is_empty() {
+        mem.credit_recalled();
+    }
+    mem.decay(0.98);
+    let (e, t, r) = mem.consolidate(&cfg.target, &rid);
+    let (w, eng, tech, reuse) = mem.counts();
+    out.push(format!(
+        "memory: +{e} engagement, +{t} technique, +{r} reusable (now {w}/{eng}/{tech}/{reuse}) → memory/"
+    ));
+    out
+}
+
+/// Key used to sign the run manifest.
+///
+/// Separate from the capability key on purpose: one authorizes a run, the other
+/// attests to its output, and an operator who can start engagements should not
+/// thereby be able to sign reports as the engine.
+fn provenance_key() -> Option<Vec<u8>> {
+    std::env::var("NEUROSPLOIT_PROVENANCE_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.into_bytes())
+}
+
+/// Write recon/exploit/findings/report as json+md for downstream reuse.
+/// Write `coverage.md`: which agents ran (the tested surface), how many
+/// findings each produced, and which high-value classes were NOT covered by the
+/// selected agents. This is the "what did the pentest actually test" view.
+fn write_coverage(cfg: &RunConfig, selected: &[Agent], findings: &[Finding]) {
+    let Some(dir) = cfg.workdir.as_deref() else { return };
+    let mut per_agent: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for f in findings { *per_agent.entry(f.agent.as_str()).or_insert(0) += 1; }
+
+    let mut s = format!("# Coverage — {}\n\n", cfg.target);
+    s.push_str(&format!("{} agent(s) ran against the target. This is what was tested and what was not.\n\n", selected.len()));
+    s.push_str("## Tested\n\n| Agent | Class | Findings |\n|---|---|---|\n");
+    for a in selected {
+        let n = per_agent.get(a.name.as_str()).copied().unwrap_or(0);
+        s.push_str(&format!("| `{}` | {} | {} |\n", a.name, if a.cwe.is_empty() { a.title.as_str() } else { a.cwe.as_str() }, n));
+    }
+
+    // High-value classes a black-box web engagement should reach; flag any the
+    // selected agent names did not obviously cover, as an honest "not tested".
+    const EXPECTED: &[(&str, &[&str])] = &[
+        ("SQL injection", &["sqli"]),
+        ("Cross-site scripting", &["xss"]),
+        ("Access control / IDOR / BOLA", &["idor", "bola", "bfla", "access"]),
+        ("Authentication / session", &["auth", "jwt", "session", "login"]),
+        ("SSRF", &["ssrf"]),
+        ("Open redirect", &["redirect"]),
+        ("File upload / path traversal", &["upload", "lfi", "traversal", "path"]),
+        ("CSRF", &["csrf"]),
+        ("Injection (cmd/template/XXE)", &["command", "ssti", "template", "xxe", "injection"]),
+        ("Rate limiting", &["rate", "brute"]),
+        ("Security misconfig / headers", &["header", "cors", "misconfig", "clickjack"]),
+        ("Secrets / disclosure", &["secret", "disclosure", "exposure", "info"]),
+    ];
+    let names: String = selected.iter().map(|a| a.name.to_lowercase()).collect::<Vec<_>>().join(" ");
+    let mut not_tested = Vec::new();
+    for (label, kws) in EXPECTED {
+        if !kws.iter().any(|k| names.contains(k)) { not_tested.push(*label); }
+    }
+    s.push_str("\n## Not tested (no agent selected for these classes)\n\n");
+    if not_tested.is_empty() {
+        s.push_str("All high-value web classes had at least one agent selected.\n");
+    } else {
+        for c in &not_tested { s.push_str(&format!("- {c}\n")); }
+        s.push_str("\n> These were out of the selected agent set for this run (recon-driven or `--only`). Re-run without a narrow focus, or add the agents explicitly, to cover them.\n");
+    }
+    let _ = std::fs::write(std::path::Path::new(dir).join("coverage.md"), s);
+}
+
+fn persist(cfg: &RunConfig, recon: &str, transcript: &str, findings: &[Finding]) -> Vec<String> {
+    let Some(dir) = &cfg.workdir else { return vec![] };
+    let dir = PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return vec![];
+    }
+    let mut written = Vec::new();
+    let mut put = |name: &str, content: String| {
+        let p = dir.join(name);
+        if std::fs::write(&p, content).is_ok() {
+            written.push(p.display().to_string());
+        }
+    };
+    put("recon.json", recon.to_string());
+    put("recon.md", format!("# Recon — {}\n\n```json\n{}\n```\n", cfg.target, recon));
+    if !transcript.is_empty() {
+        put("exploitation.md", format!("# Agent transcript — {}\n\n{}", cfg.target, transcript));
+    }
+    // Provenance: every finding carries the build that produced it, and a
+    // signed manifest ships beside them so the set can be checked later
+    // without trusting the filename it arrived under.
+    let prov = crate::provenance::Provenance::process();
+    let findings_json = match serde_json::to_value(findings) {
+        Ok(serde_json::Value::Array(mut items)) => {
+            for item in items.iter_mut() {
+                prov.stamp(item);
+            }
+            serde_json::to_string_pretty(&serde_json::Value::Array(items)).unwrap_or_else(|_| "[]".into())
+        }
+        _ => serde_json::to_string_pretty(findings).unwrap_or_else(|_| "[]".into()),
+    };
+    put("findings.json", findings_json);
+    let manifest = prov.manifest(&cfg.target, findings);
+    let manifest = match provenance_key() {
+        Some(k) => manifest.sign(&k),
+        // No key is not a failure: the manifest still names the build, it just
+        // cannot prove it. Saying so beats a signature nobody can verify.
+        None => manifest,
+    };
+    put("provenance.json", serde_json::to_string_pretty(&manifest).unwrap_or_default());
+    // P5 — the assurance bundle: one manifest of every artifact + hashes,
+    // signed, so a reviewer can verify the whole run independently. Built last
+    // so it hashes the files just written above.
+    let bundle = crate::assurance::Bundle::build(&dir);
+    let bundle = match provenance_key() {
+        Some(k) => bundle.sign(&k),
+        None => bundle,
+    };
+    put("assurance.json", serde_json::to_string_pretty(&bundle).unwrap_or_default());
+    // Everything below is read by people: credentials become `$SECRET_n`.
+    let shown = crate::redact::for_people(findings);
+    let findings = &shown[..];
+    put("findings.md", findings_md(&cfg.target, findings));
+    // Compliance mapping, one file per requested framework. Confirmed findings
+    // only — a lead is not a control gap.
+    for fw_name in &cfg.compliance {
+        if let Some(fw) = crate::compliance::Framework::parse(fw_name) {
+            let report = crate::compliance::map_findings(findings, fw, true);
+            put(&format!("compliance-{}.md", fw.as_str()), report.to_markdown());
+        }
+    }
+    let meta = cfg.workdir.as_deref().map(|d| report::read_meta(Path::new(d))).unwrap_or_default();
+    let pocs: Vec<String> = std::fs::read_dir(dir.join("pocs"))
+        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
+        .unwrap_or_default();
+    let mut report_html = report::html_with_pocs(&cfg.target, findings, &meta, &pocs);
+    if !cfg.compliance.is_empty() {
+        report_html = report::with_compliance(report_html, findings, &cfg.compliance);
+    }
+    put("report.html", report_html);
+    written
+}
+
+fn findings_md(target: &str, findings: &[Finding]) -> String {
+    let mut s = format!("# NeuroSploit findings — {}\n\n{} validated finding(s).\n", target, findings.len());
+    for (i, f) in findings.iter().enumerate() {
+        s.push_str(&format!(
+            "\n## {}. [{}] {}\n- agent: `{}`  CWE: {}  CVSS: {}  votes: {}  confidence: {:.2}\n- endpoint: {}\n\n**Payload**\n```\n{}\n```\n\n**Evidence**\n{}\n\n**Impact:** {}\n\n**Remediation:** {}\n",
+            i + 1, f.severity, f.title, f.agent, f.cwe, f.cvss, f.votes, f.confidence, f.endpoint, f.payload, f.evidence, f.impact, f.remediation
+        ));
+    }
+    s
+}
+
+fn transcript_of(raw: &[(String, String, Vec<Finding>)]) -> String {
+    raw.iter().map(|(n, t, f)| format!("## {} ({} candidate)\n\n{}\n", n, f.len(), t)).collect::<Vec<_>>().join("\n")
+}
+
+/// Pull a JSON array (or object) of findings out of a model's reply.
+///
+/// Models are inconsistent about field types — e.g. `confidence` may be a number
+/// (0.9), a numeric string ("0.9"), or a word ("High"); `cvss` may be a number or
+/// a string. Strict typed deserialization fails the whole batch on any mismatch,
+/// so we parse leniently into `Value` and coerce every field.
+/// Did the agent explicitly report an empty result?
+///
+/// Accepts a bare `[]`, a fenced ```json block containing one, and an empty
+/// findings wrapper (`{"findings":[]}`, `{"vulnerabilities":[]}`, … — see
+/// [`FINDINGS_WRAPPER_KEYS`]) — all mean "I looked and found nothing".
+fn reported_nothing(text: &str) -> bool {
+    if text.trim() == "[]" {
+        return true;
+    }
+    // Same lenient extractor the finding parser uses, so "nothing found" and
+    // "here are the findings" are decided from the exact same value — they can
+    // never disagree about which region of the reply is the answer.
+    match crate::json_extract::parse_reply(text) {
+        Some(serde_json::Value::Array(a)) => a.is_empty(),
+        Some(serde_json::Value::Object(o)) => FINDINGS_WRAPPER_KEYS
+            .iter()
+            .find_map(|k| o.get(*k).and_then(|f| f.as_array()))
+            .map(|a| a.is_empty())
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// A model reply that is a REFUSAL / safety pushback rather than a result or a
+/// parse failure — the model declined to run the technique (often because it
+/// read the target as production, or the technique as out-of-scope). Surfacing
+/// this as its own state stops it being hidden under "0 parseable findings",
+/// and tells the operator the real reason an agent produced nothing.
+fn looks_like_refusal(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() || t.starts_with('[') || t.starts_with('{') { return false; }
+    let low = t.to_lowercase();
+    // Phrases that signal the model is declining / redirecting, not reporting.
+    const SIGNS: &[&str] = &[
+        "i can't", "i cannot", "i won't", "i will not", "i'm not able",
+        "i am not able", "i'm unable", "cannot help with", "can't help with",
+        "not comfortable", "i must decline", "i have to decline", "won't be able to",
+        "against a production", "at a production service", "disrupt real users",
+        "that doesn't make it safe", "isn't something i can", "is not something i can",
+        "without explicit authorization", "without proper authorization",
+        "spin up a local", "run this exact playbook against it instead",
+        "i'd recommend testing against", "recommend a local", "use a test environment",
+        "this would be", "não posso", "não vou", "não é algo que", "ambiente de teste",
+    ];
+    let hits = SIGNS.iter().filter(|s| low.contains(**s)).count();
+    // Prose (no JSON) that trips a refusal phrase and is short-ish reads as a
+    // decline. Require a clear phrase; two independent ones removes edge cases.
+    hits >= 1 && !reported_nothing(text)
+}
+
+/// Last `n` characters of `s`, on a char boundary (diagnostics only).
+fn tail(s: &str, n: usize) -> String {
+    let total = s.chars().count();
+    s.chars().skip(total.saturating_sub(n)).collect()
+}
+
+/// Keys a model wraps its findings array under when it ignores "reply with ONLY
+/// a JSON array" and returns an object instead — `{"findings":[…]}`,
+/// `{"vulnerabilities":[…]}`, etc. Seen most on black-box runs, where the reply
+/// follows a long tool-use turn and the model narrates into a report object. None
+/// of these names collide with a finding's own fields, so unwrapping is safe.
+const FINDINGS_WRAPPER_KEYS: &[&str] =
+    &["findings", "vulnerabilities", "vulns", "results", "issues"];
+
+/// Normalise a parsed reply into the list of candidate finding objects.
+///
+/// - An array *is* the list.
+/// - An object carrying a non-empty `title` is a single bare finding object.
+/// - Otherwise an object wrapping one of [`FINDINGS_WRAPPER_KEYS`] unwraps to that
+///   array — without this a real batch returned as `{"findings":[…]}` is treated
+///   as one title-less "finding", dropped, and surfaces to the operator as
+///   "returned text but 0 parseable findings" while the findings are lost.
+/// - Any other object is passed through as a single finding object (so a bare
+///   finding using a non-standard title key still reaches the field coercion).
+fn findings_items(val: serde_json::Value) -> Vec<serde_json::Value> {
+    match val {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Object(o) => {
+            let has_title = o
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
+            if !has_title {
+                for k in FINDINGS_WRAPPER_KEYS {
+                    if let Some(serde_json::Value::Array(a)) = o.get(*k) {
+                        return a.clone();
+                    }
+                }
+            }
+            vec![serde_json::Value::Object(o)]
+        }
+        _ => vec![],
+    }
+}
+
+/// Load confirmed findings from previous runs of the same target.
+/// Used to seed the current run with known vulnerabilities, avoiding re-testing.
+pub(crate) fn load_prior_findings(target: &str, runs_dir: &std::path::Path) -> Vec<Finding> {
+    let mut prior = Vec::new();
+    let normalized = target
+        .trim()
+        .trim_end_matches('/')
+        .to_lowercase()
+        .replace("https://", "")
+        .replace("http://", "");
+    let Ok(entries) = std::fs::read_dir(runs_dir) else {
+        return prior;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("ns-") {
+            continue;
+        }
+        let status_path = entry.path().join("status.json");
+        let findings_path = entry.path().join("findings.json");
+        if !findings_path.exists() {
+            continue;
+        }
+        if let Ok(status_text) = std::fs::read_to_string(&status_path) {
+            if let Ok(status) = serde_json::from_str::<serde_json::Value>(&status_text) {
+                let run_target = status["target"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .replace("https://", "")
+                    .replace("http://", "")
+                    .trim_end_matches('/')
+                    .to_string();
+                if run_target != normalized {
+                    continue;
+                }
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(&findings_path) {
+            if let Ok(findings) = serde_json::from_str::<Vec<Finding>>(&text) {
+                for f in findings {
+                    if f.review_status == "confirmed" || f.validated {
+                        prior.push(f);
+                    }
+                }
+            }
+        }
+    }
+    prior
+}
+
+/// Pull the findings array out of a model's reply.
+///
+/// Locating and parsing the JSON is delegated to [`crate::json_extract`], which
+/// is string-aware (prose brackets like `[low] …` no longer start the span),
+/// prefers the last fenced block, and tolerates the deviations that used to sink
+/// a whole batch — fenced/capitalised tags, trailing commas, comments, single
+/// quotes, and replies truncated by a token limit. The two failures seen on live
+/// runs (`JSON parse failed` and `no JSON array/object found`) now collapse into
+/// one honest outcome: either we recover a value, or the reply held no JSON.
+/// The recovered value's *shape* is then normalised by [`findings_items`].
+pub(crate) fn extract_findings(text: &str, agent: &str) -> Vec<Finding> {
+    let val = match crate::json_extract::parse_reply(text) {
+        Some(v) => v,
+        None => {
+            let t = text.trim();
+            if !t.is_empty() && t != "[]" {
+                if looks_like_refusal(text) {
+                    eprintln!("[extract_findings] agent {agent}: model DECLINED the technique (safety/RoE pushback, not a parse failure): {:?}", tail(text, 200));
+                } else {
+                    eprintln!(
+                        "[extract_findings] agent {agent}: no parseable JSON in model reply (len={}); raw tail: {:?}",
+                        text.len(),
+                        tail(text, 200)
+                    );
+                }
+            }
+            return vec![];
+        }
+    };
+    findings_items(val)
+        .into_iter()
+        .filter_map(|it| {
+            let o = it.as_object()?;
+            let title = s(o, "title");
+            if title.is_empty() {
+                return None;
+            }
+            Some(Finding {
+                id: {
+                    let id = s(o, "id");
+                    if id.is_empty() {
+                        format!("{}-{}", agent, title.chars().take(12).collect::<String>())
+                    } else {
+                        id
+                    }
+                },
+                agent: agent.to_string(),
+                title,
+                severity: norm_sev(&s(o, "severity")),
+                cwe: s(o, "cwe"),
+                cvss: s(o, "cvss"),
+                endpoint: s(o, "endpoint"),
+                payload: s(o, "payload"),
+                evidence: s(o, "evidence"),
+                location: s(o, "location"),
+                repro_steps: o.get("repro_steps").and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|t| t.to_string())).collect())
+                    .unwrap_or_default(),
+                // Structured artifacts for the deterministic validators. Without
+                // this the evidence contract in the prompt goes to an agent that
+                // dutifully fills it in and a parser that throws it away — the
+                // whole validation engine would sit idle on live runs.
+                evidence_data: o.get("evidence_data").and_then(|v| serde_json::from_value(v.clone()).ok()),
+                claims: parse_claims(o),
+                impact: s(o, "impact"),
+                remediation: s(o, "remediation"),
+                confidence: conf(o.get("confidence")),
+                validated: false,
+                votes: String::new(),
+                screenshots: screenshot_refs(o),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// Pull screenshot path(s) an agent referenced in its finding JSON. Accepts a
+/// single `screenshot` string or a `screenshots` array (any scalar coerced to
+/// string). These are raw refs (whatever the agent named/where it saved); the
+/// evidence-collection pass later resolves and renames them to stable,
+/// finding-correlated paths under the run's `evidence/` dir.
+fn screenshot_refs(o: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut out = Vec::new();
+    match o.get("screenshots") {
+        Some(serde_json::Value::Array(a)) => {
+            for v in a {
+                let p = match v {
+                    serde_json::Value::String(t) => t.trim().to_string(),
+                    _ => v.to_string(),
+                };
+                if !p.is_empty() { out.push(p); }
+            }
+        }
+        Some(serde_json::Value::String(t)) if !t.trim().is_empty() => out.push(t.trim().to_string()),
+        _ => {}
+    }
+    let one = s(o, "screenshot");
+    if !one.is_empty() && !out.contains(&one) { out.push(one); }
+    out
+}
+
+/// The convention prompt that tells agents WHERE to drop proof screenshots and
+/// HOW to reference them, so each image can be correlated back to its finding.
+/// `evidence_dir` is the absolute `<workdir>/evidence` path (already created).
+fn screenshot_doctrine(evidence_dir: &str) -> String {
+    format!(
+        "EVIDENCE SCREENSHOTS (correlate each image to its finding):\n\
+         - When you PROVE a finding visually (XSS firing, an admin panel reached, \
+           data exposed, a client-side auth bypass), capture a screenshot as proof.\n\
+         - Save every proof PNG into this exact directory: `{dir}` (it already exists). \
+           Name each file after the vulnerability using a short kebab-case slug, e.g. \
+           `{dir}/reflected-xss-search.png`, `{dir}/idor-order-42.png`.\n\
+         - In that finding's JSON, add a `screenshots` array listing the file paths you saved \
+           (absolute like `{dir}/idor-order-42.png`, or just the basename `idor-order-42.png`). \
+           One image per distinct proof; multiple allowed. Omit the field when you have no image.\n\
+         - The screenshot must belong to THAT finding — never reuse one image across unrelated findings.\n\n",
+        dir = evidence_dir,
+    )
+}
+
+/// Resolve, dedupe and copy each finding's referenced proof screenshots into
+/// `<workdir>/evidence/<finding-id>-<n>.png`, rewriting `Finding.screenshots` to
+/// those stable, run-relative paths. Unresolved refs are dropped (so the report
+/// never embeds a missing image). Returns the number of images collected.
+fn collect_evidence(findings: &mut [Finding], workdir: &Path) -> usize {
+    let evidence = workdir.join("evidence");
+    if std::fs::create_dir_all(&evidence).is_err() { return 0; }
+    let mut total = 0usize;
+    for f in findings.iter_mut() {
+        if f.screenshots.is_empty() { continue; }
+        let slug = slugify(if f.id.is_empty() { &f.title } else { &f.id });
+        let mut stable = Vec::new();
+        let mut n = 0usize;
+        for raw in f.screenshots.clone() {
+            let Some(src) = resolve_screenshot(&raw, workdir, &evidence) else { continue };
+            n += 1;
+            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
+            let fname = format!("{slug}-{n}.{ext}");
+            let dst = evidence.join(&fname);
+            // Copy unless the agent already wrote it exactly there.
+            let ok = src == dst || std::fs::copy(&src, &dst).is_ok();
+            if ok {
+                stable.push(format!("evidence/{fname}"));
+                total += 1;
+            }
+        }
+        stable.dedup();
+        f.screenshots = stable;
+    }
+    total
+}
+
+/// Render one recorded HTTP exchange as a readable request/response block.
+fn render_exchange(label: &str, ex: &crate::validation::Exchange) -> String {
+    let mut s = format!("### {label}\n{} {}\n", ex.method, ex.url);
+    for (k, v) in &ex.request_headers {
+        s.push_str(&format!("> {k}: {v}\n"));
+    }
+    if !ex.identity.is_empty() {
+        s.push_str(&format!("> (identity: {})\n", ex.identity));
+    }
+    s.push_str(&format!("\n<= HTTP {} ({} ms){}\n", ex.status, ex.elapsed_ms,
+        if ex.content_type.is_empty() { String::new() } else { format!(" · {}", ex.content_type) }));
+    for (k, v) in &ex.headers {
+        s.push_str(&format!("< {k}: {v}\n"));
+    }
+    let body: String = ex.body.chars().take(1200).collect();
+    if !body.trim().is_empty() {
+        s.push_str(&format!("\n{body}\n"));
+    }
+    s.push('\n');
+    s
+}
+
+/// Build a curl command that reproduces an exchange (best-effort, benign).
+fn curl_for(ex: &crate::validation::Exchange) -> String {
+    let mut c = format!("curl -i -s -X {} '{}'", ex.method, ex.url);
+    for (k, v) in &ex.request_headers {
+        c.push_str(&format!(" \\\n  -H '{k}: {v}'"));
+    }
+    c
+}
+
+/// Synthesize a PoC + evidence file per finding from the structured evidence the
+/// harness already holds — so `pocs/` and `evidence/` are populated even on the
+/// API-key path, where the model returns findings JSON but never runs a tool to
+/// write files (issue #44). Never overwrites a file an agent already wrote.
+/// Returns the number of files created.
+fn synthesize_pocs_and_evidence(findings: &mut [Finding], workdir: &Path) -> usize {
+    let pocs = workdir.join("pocs");
+    let evidence = workdir.join("evidence");
+    if std::fs::create_dir_all(&pocs).is_err() || std::fs::create_dir_all(&evidence).is_err() {
+        return 0;
+    }
+    let mut created = 0usize;
+    let mut used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for f in findings.iter_mut() {
+        let base = slugify(if f.title.is_empty() { &f.id } else { &f.title });
+        // De-dupe slugs across findings so two never clobber each other.
+        let slug = match used.get_mut(&base) {
+            Some(n) => { *n += 1; format!("{base}-{n}") }
+            None => { used.insert(base.clone(), 1); base }
+        };
+
+        // --- evidence/<slug>.md : the request/response proof, if structured. ---
+        let mut ev_body = String::new();
+        if let Some(ed) = &f.evidence_data {
+            if let Some(b) = &ed.baseline { ev_body.push_str(&render_exchange("Baseline (no payload)", b)); }
+            if let Some(a) = &ed.attack { ev_body.push_str(&render_exchange("Attack (with payload)", a)); }
+            if let Some(ia) = &ed.identity_a { ev_body.push_str(&render_exchange("As owner (identity A)", ia)); }
+            if let Some(ib) = &ed.identity_b { ev_body.push_str(&render_exchange("As other user (identity B)", ib)); }
+            for (i, r) in ed.repeats.iter().take(3).enumerate() {
+                ev_body.push_str(&render_exchange(&format!("Repeat #{}", i + 1), r));
+            }
+            if !ed.marker.is_empty() {
+                ev_body.push_str(&format!("Marker: `{}` — observed: {}\n", ed.marker, ed.marker_observed));
+            }
+            if ed.browser_executed { ev_body.push_str("Browser executed the payload (not a string match).\n"); }
+            if ed.callback_received { ev_body.push_str("Out-of-band callback carrying the marker was received.\n"); }
+            for n in &ed.notes { ev_body.push_str(&format!("- {n}\n")); }
+        }
+        if ev_body.trim().is_empty() {
+            // No structured evidence — fall back to the prose receipt we have.
+            if !f.evidence.trim().is_empty() {
+                ev_body.push_str(&format!("{}\n", f.evidence.trim()));
+            }
+        }
+        if !ev_body.trim().is_empty() {
+            let ev_path = evidence.join(format!("{slug}.md"));
+            if !ev_path.exists() {
+                let header = format!("# Evidence — {}\n\n- Severity: {}\n- CWE: {}\n- Endpoint: {}\n- Location: {}\n\n",
+                    f.title, f.severity, f.cwe, f.endpoint, if f.location.is_empty() { f.endpoint.clone() } else { f.location.clone() });
+                if std::fs::write(&ev_path, format!("{header}{ev_body}")).is_ok() {
+                    created += 1;
+                }
+            }
+        }
+
+        // --- pocs/<slug>.md : a runnable repro from the recorded request. ---
+        // Only when the agent did not already cite/write a PoC for this finding.
+        let already = f.payload.contains("pocs/") || f.evidence.contains("pocs/");
+        let poc_path = pocs.join(format!("{slug}.md"));
+        if !already && !poc_path.exists() {
+            let mut body = format!(
+                "# PoC — {}\n# Severity: {} · CWE: {}\n# Endpoint: {}\n# Synthesized by NeuroSploit from the recorded evidence (no live tool run on this path).\n# Reproduce with the request(s) below; confirm against the observed proof.\n\n",
+                f.title, f.severity, f.cwe, f.endpoint);
+            let mut have_cmd = false;
+            if let Some(ed) = &f.evidence_data {
+                if let Some(a) = &ed.attack {
+                    body.push_str("## Attack request\n```sh\n");
+                    body.push_str(&curl_for(a));
+                    body.push_str("\n```\n\n");
+                    have_cmd = true;
+                }
+                if let (Some(ia), Some(ib)) = (&ed.identity_a, &ed.identity_b) {
+                    body.push_str("## Cross-identity (BOLA/IDOR) — same resource, two identities\n```sh\n");
+                    body.push_str(&format!("# as owner:\n{}\n\n# as another user (should be denied):\n{}\n```\n\n", curl_for(ia), curl_for(ib)));
+                    have_cmd = true;
+                }
+                if !ed.marker.is_empty() {
+                    body.push_str(&format!("## Proof\nUnique marker `{}` — expected where it proves the class; observed: {}.\n\n", ed.marker, ed.marker_observed));
+                }
+            }
+            if !have_cmd {
+                // No structured exchange — assemble from endpoint + payload.
+                if !f.endpoint.is_empty() {
+                    body.push_str("## Request\n```sh\n");
+                    body.push_str(&format!("curl -i -s '{}'", f.endpoint));
+                    body.push_str("\n```\n\n");
+                }
+                if !f.payload.trim().is_empty() {
+                    body.push_str(&format!("## Payload\n```\n{}\n```\n\n", f.payload.trim()));
+                }
+            }
+            if !f.remediation.trim().is_empty() {
+                body.push_str(&format!("## Remediation\n{}\n", f.remediation.trim()));
+            }
+            // Only write a PoC if we actually have something actionable in it.
+            if have_cmd || !f.endpoint.is_empty() || !f.payload.trim().is_empty() {
+                if std::fs::write(&poc_path, body).is_ok() {
+                    created += 1;
+                    // Cite it so the report/UI links the PoC.
+                    if !f.evidence.contains("pocs/") {
+                        let cite = format!("PoC: pocs/{slug}.md");
+                        f.evidence = if f.evidence.trim().is_empty() { cite } else { format!("{}\n{cite}", f.evidence) };
+                    }
+                }
+            }
+        }
+    }
+    created
+}
+
+/// Find the actual file an agent referenced, trying the sensible locations a
+/// screenshot could have landed in: absolute, relative to the workdir, inside
+/// the evidence dir, or by basename in the evidence dir / `/tmp`.
+fn resolve_screenshot(raw: &str, workdir: &Path, evidence: &Path) -> Option<PathBuf> {
+    let is_img = |p: &Path| p.is_file()
+        && matches!(p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(),
+                    Some("png" | "jpg" | "jpeg" | "webp" | "gif"));
+    let base = Path::new(raw).file_name().map(PathBuf::from);
+    let mut cands: Vec<PathBuf> = vec![
+        PathBuf::from(raw),
+        workdir.join(raw),
+        evidence.join(raw),
+    ];
+    if let Some(b) = &base {
+        cands.push(evidence.join(b));
+        cands.push(workdir.join(b));
+        cands.push(Path::new("/tmp").join(b));
+    }
+    cands.into_iter().find(|p| is_img(p))
+}
+
+/// Filesystem-safe kebab slug for correlating an image filename to a finding.
+fn slugify(s: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    let slug: String = trimmed.chars().take(48).collect();
+    if slug.is_empty() { "finding".into() } else { slug }
+}
+
+/// Coerce any JSON scalar to a trimmed string.
+fn s(o: &serde_json::Map<String, serde_json::Value>, k: &str) -> String {
+    match o.get(k) {
+        Some(serde_json::Value::String(v)) => v.trim().to_string(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::Bool(b)) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Accept confidence as number, numeric string, or qualitative word.
+fn conf(v: Option<&serde_json::Value>) -> f64 {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+        Some(serde_json::Value::String(t)) => {
+            if let Ok(f) = t.trim().parse::<f64>() {
+                f
+            } else {
+                match t.to_lowercase().as_str() {
+                    s if s.contains("critical") || s.contains("very high") => 0.97,
+                    s if s.contains("high") => 0.9,
+                    s if s.contains("med") => 0.6,
+                    s if s.contains("low") => 0.3,
+                    _ => 0.0,
+                }
+            }
+        }
+        _ => 0.0,
+    }
+}
+
+/// Drop duplicate findings (same CWE + endpoint + lowercased title) that
+/// different agents/models may each report, keeping the highest-confidence one.
+/// Merge the same finding reported by several agents.
+///
+/// The old key was `cwe|endpoint|title[..40]`, and a live engagement showed why
+/// that fails: one cookie issue came back five times and one missing header
+/// four, because each agent writes the CWE as `CWE-614` or
+/// `CWE-614 (Sensitive Cookie in HTTPS Session Without Secure Attribute)`, and
+/// the endpoint as `https://host/` or `GET https://host/ (and /Account/Login)`.
+/// Worse, the severities disagreed — the same issue arrived as Low from one
+/// agent and Medium from another, which is indefensible in a report.
+///
+/// Grouping by `(cwe number, normalized endpoint)` alone would over-merge:
+/// missing `nosniff`, `Referrer-Policy` and `Permissions-Policy` are all
+/// CWE-693 on `/` and are three separate fixes. So within a group, entries
+/// merge only when their titles are actually about the same thing (token
+/// overlap), and the survivor keeps the HIGHEST severity with the fullest
+/// evidence — agreement between independent agents raises confidence, it does
+/// not lower severity.
+/// A calibrated second pass over the grey zone the fixed-threshold deduper
+/// leaves behind: same endpoint + CWE, title overlap in 0.25..0.40 (below the
+/// merge cutoff but not clearly distinct). Only runs when a System One backend
+/// (TypeSafe or Laya) is configured; otherwise the input is returned untouched.
+async fn merge_grey_zone_dupes(findings: Vec<Finding>, tx: &Sender<String>) -> Vec<Finding> {
+    if std::env::var("NEUROSPLOIT_TYPESAFE").unwrap_or_default().trim().to_lowercase() == "off" {
+        return findings;
+    }
+    let Some(ts) = crate::typesafe::TypeSafe::from_env() else { return findings };
+    if findings.len() < 2 {
+        return findings;
+    }
+    let mut kept: Vec<Finding> = Vec::new();
+    let mut merged_count = 0usize;
+    'outer: for f in findings {
+        for k in kept.iter_mut() {
+            if cwe_num(&k.cwe) != cwe_num(&f.cwe) || endpoint_key(&k.endpoint) != endpoint_key(&f.endpoint) {
+                continue;
+            }
+            let ov = title_overlap(&k.title, &f.title);
+            // < 0.25: clearly different, leave apart. >= 0.40: dedup already
+            // merged it. Only the grey band is worth a calibrated call.
+            if (0.25..0.40).contains(&ov) {
+                if let Ok(p) = ts.same_finding(&k.title, &k.evidence, &f.title, &f.evidence).await {
+                    if p >= 0.6 {
+                        if k.evidence.len() < f.evidence.len() { k.evidence = f.evidence.clone(); }
+                        if k.evidence_data.is_none() { k.evidence_data = f.evidence_data.clone(); }
+                        merged_count += 1;
+                        continue 'outer;
+                    }
+                }
+            }
+        }
+        kept.push(f);
+    }
+    if merged_count > 0 {
+        let _ = tx.send(format!("notify: 🧮 {} merged {merged_count} grey-zone duplicate(s)", ts.backend_label())).await;
+    }
+    kept
+}
+
+fn dedup_findings(mut v: Vec<Finding>) -> Vec<Finding> {
+    v.sort_by(|a, b| {
+        sev_rank(&b.severity)
+            .cmp(&sev_rank(&a.severity))
+            .then(b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+            .then(b.evidence.len().cmp(&a.evidence.len()))
+    });
+    let mut kept: Vec<Finding> = Vec::new();
+    let mut corroborators: Vec<Vec<String>> = Vec::new();
+    for f in v {
+        let mut merged = false;
+        for (i, k) in kept.iter_mut().enumerate() {
+            if cwe_num(&k.cwe) == cwe_num(&f.cwe)
+                && endpoint_key(&k.endpoint) == endpoint_key(&f.endpoint)
+                // 0.4, calibrated on real engagement output: two phrasings of
+                // the cookie issue score 0.44, while `Referrer-Policy` and
+                // `Permissions-Policy` (both CWE-693 on the same path, and
+                // genuinely different fixes) score 0.33 and stay apart.
+                && title_overlap(&k.title, &f.title) >= 0.4
+            {
+                // Keep whatever the duplicate knew that the survivor did not.
+                if k.evidence.len() < f.evidence.len() {
+                    k.evidence = f.evidence.clone();
+                }
+                if k.remediation.is_empty() {
+                    k.remediation = f.remediation.clone();
+                }
+                if k.repro_steps.is_empty() {
+                    k.repro_steps = f.repro_steps.clone();
+                }
+                if k.evidence_data.is_none() {
+                    k.evidence_data = f.evidence_data.clone();
+                }
+                if !f.agent.is_empty() && f.agent != k.agent && !corroborators[i].contains(&f.agent) {
+                    corroborators[i].push(f.agent.clone());
+                }
+                merged = true;
+                break;
+            }
+        }
+        if !merged {
+            kept.push(f);
+            corroborators.push(Vec::new());
+        }
+    }
+    for (f, also) in kept.iter_mut().zip(corroborators) {
+        if !also.is_empty() {
+            // Independent agreement is a confidence signal and belongs in the
+            // report, not on the cutting-room floor.
+            let note = format!("corroborated by {}", also.join(", "));
+            f.votes = if f.votes.is_empty() { note } else { format!("{} · {note}", f.votes) };
+            f.confidence = (f.confidence + 0.05 * also.len() as f64).min(0.99);
+        }
+    }
+    kept
+}
+
+/// Normalize a target for deduplication: lowercase, strip scheme and trailing slash.
+fn normalize_target(target: &str) -> String {
+    target.trim().trim_end_matches('/').to_lowercase()
+        .replace("https://", "").replace("http://", "")
+}
+
+/// Just the digits of a CWE id, so `CWE-614` and `CWE-614 (Sensitive Cookie…)`
+/// are the same weakness.
+fn cwe_num(cwe: &str) -> String {
+    cwe.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect()
+}
+
+/// Host + path of the first URL in an endpoint field, however the agent dressed
+/// it up (`GET https://h/p`, `https://h/p (and /other)`, `https://h/p?x=1`).
+fn endpoint_key(endpoint: &str) -> String {
+    let e = endpoint.trim();
+    let token = e
+        .split_whitespace()
+        .find(|t| t.contains("://") || t.starts_with('/'))
+        .unwrap_or(e)
+        .trim_matches(|c: char| c == ',' || c == '(' || c == ')');
+    let no_scheme = token.split_once("://").map(|(_, r)| r).unwrap_or(token);
+    let no_query = no_scheme.split(['?', '#']).next().unwrap_or(no_scheme);
+    no_query.trim_end_matches('/').trim_start_matches("www.").to_lowercase()
+}
+
+/// Jaccard overlap of the meaningful words in two titles. Two phrasings of the
+/// same issue share most of them; "missing nosniff" and "missing
+/// Referrer-Policy" do not.
+fn title_overlap(a: &str, b: &str) -> f64 {
+    const NOISE: &[&str] = &["the", "a", "an", "of", "on", "in", "at", "to", "and", "or", "for", "with", "without", "over", "set", "is", "are", "no", "not", "missing"];
+    let words = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric() && c != '-')
+            .filter(|w| w.len() > 2 && !NOISE.contains(w))
+            .map(|w| w.to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    let (x, y) = (words(a), words(b));
+    if x.is_empty() || y.is_empty() {
+        return 0.0;
+    }
+    let inter = x.iter().filter(|w| y.contains(*w)).count() as f64;
+    let union = (x.len() + y.len()) as f64 - inter;
+    if union == 0.0 { 0.0 } else { inter / union }
+}
+
+fn norm_sev(s: &str) -> String {
+    match s.to_lowercase().as_str() {
+        x if x.starts_with("crit") => "Critical",
+        x if x.starts_with("high") => "High",
+        x if x.starts_with("med") => "Medium",
+        x if x.starts_with("low") => "Low",
+        "" => "Info",
+        _ => "Info",
+    }
+    .to_string()
+}
+
+/// Concatenate source files under `root` into a bounded review context.
+fn collect_repo_context(root: &Path, max_files: usize, max_bytes: usize) -> String {
+    const EXTS: &[&str] = &[
+        "rs", "py", "js", "ts", "tsx", "jsx", "go", "java", "php", "rb", "c", "cc", "cpp", "h", "hpp",
+        "cs", "kt", "swift", "scala", "sh", "sql", "html", "vue", "yml", "yaml", "tf",
+    ];
+    let mut out = String::new();
+    let mut files = 0usize;
+    if !root.exists() {
+        return out;
+    }
+    for entry in walkdir::WalkDir::new(root).max_depth(8).into_iter().flatten() {
+        if files >= max_files || out.len() >= max_bytes {
+            break;
+        }
+        let path = entry.path();
+        let s = path.to_string_lossy();
+        if s.contains("/.git/") || s.contains("/node_modules/") || s.contains("/target/") || s.contains("/vendor/") {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !EXTS.contains(&ext) {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+            let budget = max_bytes.saturating_sub(out.len());
+            let take = content.len().min(budget).min(8_000);
+            // Char-safe slice: back off to the nearest char boundary so multibyte
+            // source files (UTF-8) never panic.
+            let mut end = take.min(content.len());
+            while end > 0 && !content.is_char_boundary(end) { end -= 1; }
+            out.push_str(&format!("\n// ===== file: {} =====\n{}\n", rel, &content[..end]));
+            files += 1;
+        }
+    }
+    out
+}
+
+const CONTAINER_RECON_SYS: &str = "You are a container security recon specialist on an AUTHORIZED assessment of an OCI container image (a registry ref like repo/name:tag, a local tar, or a Dockerfile). Identify the image, its base image and OS, the layer count, the package ecosystems present, the entrypoint/exposed ports, and whether it runs as root. Pull/inspect read-only (trivy/syft/crane/docker). Do not push, delete or modify anything. Reply with a compact JSON object (image, base, os, layers, ecosystems, runs_as_root, ports). No prose.";
+
+const CONTAINER_TOOLING: &str = "TOOLING (all read-only, provision on demand, time-box installs): `trivy image` (vuln/secret/misconfig scanners, JSON output), `grype` (vulns), `syft` (SBOM: SPDX + CycloneDX), `crane`/`skopeo` (inspect/export without a daemon), `docker save`/`docker history`, `trufflehog`/`gitleaks` (secrets in extracted layers), `hadolint` (Dockerfile). Write SBOMs into $NEUROSPLOIT_POCS/../sbom or the run's sbom/ folder. Never push/delete/modify a registry; redact secrets to a masked sample.\n\n";
+
+/// Container image engagement: scan an OCI image (or Dockerfile) for vulnerable
+/// packages, exposed secrets, misconfigurations, and produce an SBOM. Mirrors
+/// the host pipeline; the target is an image ref and the agent set is `container`.
+pub async fn run_container(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    // The SBOM lands next to the run's pocs.
+    if let Some(w) = cfg.workdir.as_deref() { let _ = std::fs::create_dir_all(std::path::Path::new(w).join("sbom")); }
+    let _ = tx.send(format!("CONTAINER - image: {} - {} container agents - models: {}", cfg.target, lib.container.len(),
+        pool.candidates.iter().map(|m| m.label()).collect::<Vec<_>>().join(", "))).await;
+
+    let recon = if cfg.offline {
+        "{}".to_string()
+    } else {
+        let user = format!("{}{}Image: {}", operator_directives(&cfg), CONTAINER_TOOLING, cfg.target);
+        match pool.complete_routed(Task::Recon, "recon", CONTAINER_RECON_SYS, &user).await {
+            Ok((m, t)) => { let _ = tx.send(format!("recon complete via {}", m.label())).await; t }
+            Err(e) => { let _ = tx.send(format!("recon failed ({e})")).await; "{}".to_string() }
+        }
+    };
+    // Graph checkpoint: seed the attack graph from recon.
+    let _ = graph_checkpoint(&cfg, &recon, &[], "recon", &[], &tx).await;
+
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+    let mut ranked: Vec<Agent> = lib.container.clone();
+    ranked.sort_by(|a, b| rl.weight(&b.name).partial_cmp(&rl.weight(&a.name)).unwrap_or(std::cmp::Ordering::Equal));
+    let cap = if cfg.max_agents > 0 { cfg.max_agents.min(ranked.len()) } else { ranked.len() };
+    let focus = cfg.instructions.clone().unwrap_or_default();
+
+    if cfg.offline {
+        let selected: Vec<Agent> = ranked.into_iter().take(cap).collect();
+        let _ = tx.send(format!("offline: selected {} container agent(s); no live scan", selected.len())).await;
+        let artifacts = persist(&cfg, &recon, "", &[]);
+        return RunOutput { target: cfg.target.clone(), workdir: cfg.workdir.clone().unwrap_or_default(), findings: vec![],
+            agents_ran: selected.iter().map(|a| a.name.clone()).collect(), candidates: 0, recon, artifacts, denied: None };
+    }
+
+    // Container agents are complementary (vuln/secret/misconfig/sbom) — run them
+    // all rather than a recon-based subset.
+    let selected: Vec<Agent> = ranked.into_iter().take(cap).collect();
+    let _ = tx.send(format!("running {} container agent(s): {}", selected.len(),
+        selected.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "))).await;
+
+    let target = cfg.target.clone();
+    let verbose = cfg.verbose;
+    let directives = operator_directives(&cfg);
+    let recon_ctx: String = recon.chars().take(3000).collect();
+    let ct_workdir = cfg.workdir.clone();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
+        .map(|ag| {
+            let target = target.clone();
+            let recon = recon_ctx.clone();
+            let directives = directives.clone();
+            let txc = tx.clone();
+            let wd = ct_workdir.clone();
+            async move {
+                if pool.stop_exploiting() { return (ag.name.clone(), String::new(), vec![]); }
+                if verbose { let _ = txc.send(format!("  launching agent: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await; }
+                let user = format!(
+                    "AUTHORIZED container scan of {target}. Proceed and PROVE each issue with the scanner's raw output.\n\n{directives}{tooling}{react}{safety}{body}\n\nReply ONLY a JSON array of confirmed findings (may be []): {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}.",
+                    target = target, directives = directives, tooling = CONTAINER_TOOLING, react = REACT_DOCTRINE, safety = SAFETY_DOCTRINE,
+                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
+                );
+                match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
+                    Ok((m, text)) => {
+                        let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("scan {} via {} -> {} finding(s)", ag.name, m.label(), f.len())).await;
+                        for c in &f { if let Ok(j) = serde_json::to_string(c) { let _ = txc.send(format!("finding_json: {j}")).await; } }
+                        (ag.name.clone(), text, f)
+                    }
+                    Err(e) => {
+                        let _ = txc.send(format!("scan {} failed: {e}", ag.name)).await;
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() {
+                            let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await;
+                        }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect::<Vec<_>>().await;
+
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = transcript_of(&raw);
+    let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    let _ = tx.send(format!("{} finding(s) (deduped) - validating", candidates.len())).await;
+    let findings = validate(candidates, pool, VOTE_SYS, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, recon, transcript, findings, selected, &mut rl, crate::grounding::GroundMode::Empirical, String::new(), tx).await
+}
+
+const MOBILE_RECON_SYS: &str = "You are a mobile/binary reverse-engineering recon specialist on an AUTHORIZED assessment of a LOCAL artifact (a binary, APK or IPA on disk). Identify format/arch, package metadata, entry points, protection layers (RASP/anti-tamper, root/JB and anti-debug detection, TLS pinning, obfuscation/packing), the attack surface (exported components, URL schemes, entitlements, linked frameworks) and hardcoded secrets/endpoints. Run everything HEADLESS (MobSF REST/Docker, Ghidra analyzeHeadless, apktool, jadx, otool/nm, r2). Do not ask permission; proceed. Reply with a compact JSON object (format, arch, package, protections, surface, secrets). No prose.";
+
+const MOBILE_TOOLING: &str = "TOOLING (all HEADLESS; provision on demand, time-box installs): APK/IPA static -> MobSF via its REST API (Docker image), `apktool`, `jadx`, `apkleaks`; binaries -> Ghidra `analyzeHeadless`, `radare2`/`rizin`, `binwalk`, `checksec`, `nm`/`otool`/`objdump`, `class-dump`; dynamic -> `frida`/`objection` for detection/pinning/anti-debug bypass; secrets -> `trufflehog`/`gitleaks`. Never require a GUI or an X display. Analyse and instrument non-destructively; never exfiltrate real user data.\n\
+         SAVE ARTIFACTS: write every Frida hook script, bypass script, patched-binary diff, decompiled-snippet PoC and          exploit you produce into $NEUROSPLOIT_POCS (e.g. `<slug>.frida.js`, `<slug>_bypass.js`, `<slug>.py`) with a          header comment saying what it proves and how to run it, and cite the path in the finding's `evidence`, so the          scripts can be retrieved and re-run after the engagement.\n\n";
+
+/// Mobile / binary engagement: analyse a LOCAL artifact (binary, APK or IPA) and
+/// run the mobile RE agents. Mirrors the host pipeline but the target is a file
+/// and the agent set is `mobile`.
+pub async fn run_mobile(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    let _ = tx.send(format!("MOBILE/BINARY - artifact: {} - {} mobile agents - models: {}", cfg.target, lib.mobile.len(),
+        pool.candidates.iter().map(|m| m.label()).collect::<Vec<_>>().join(", "))).await;
+
+    let recon = if cfg.offline {
+        "{}".to_string()
+    } else {
+        let user = format!("{}{}Artifact path: {}", operator_directives(&cfg), MOBILE_TOOLING, cfg.target);
+        match pool.complete_routed(Task::Recon, "recon", MOBILE_RECON_SYS, &user).await {
+            Ok((m, t)) => { let _ = tx.send(format!("recon complete via {}", m.label())).await; t }
+            Err(e) => { let _ = tx.send(format!("recon failed ({e})")).await; "{}".to_string() }
+        }
+    };
+    // Graph checkpoint: seed the attack graph from recon.
+    let _ = graph_checkpoint(&cfg, &recon, &[], "recon", &[], &tx).await;
+
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+    let mut ranked: Vec<Agent> = lib.mobile.clone();
+    ranked.sort_by(|a, b| rl.weight(&b.name).partial_cmp(&rl.weight(&a.name)).unwrap_or(std::cmp::Ordering::Equal));
+    let cap = if cfg.max_agents > 0 { cfg.max_agents.min(ranked.len()) } else { ranked.len() };
+    let focus = cfg.instructions.clone().unwrap_or_default();
+
+    if cfg.offline {
+        let selected: Vec<Agent> = ranked.into_iter().take(cap).collect();
+        let _ = tx.send(format!("offline: selected {} mobile agent(s); no live analysis", selected.len())).await;
+        let artifacts = persist(&cfg, &recon, "", &[]);
+        return RunOutput { target: cfg.target.clone(), workdir: cfg.workdir.clone().unwrap_or_default(), findings: vec![],
+            agents_ran: selected.iter().map(|a| a.name.clone()).collect(), candidates: 0, recon, artifacts, denied: None };
+    }
+
+    let chosen = select_agents(pool, &recon, &focus, &ranked, &tx).await;
+    let selected: Vec<Agent> = if !chosen.is_empty() {
+        let sel: Vec<Agent> = ranked.iter().filter(|a| chosen.iter().any(|c| c == &a.name)).cloned().collect();
+        if sel.is_empty() { ranked.iter().take(cap).cloned().collect() } else { sel.into_iter().take(cap).collect() }
+    } else {
+        ranked.iter().take(cap).cloned().collect()
+    };
+    let selected: Vec<Agent> = { let mut seen = std::collections::HashSet::new();
+        selected.into_iter().filter(|a| seen.insert(a.name.clone())).collect() };
+    let _ = tx.send(format!("selected {} mobile agent(s): {}", selected.len(),
+        selected.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "))).await;
+
+    let target = cfg.target.clone();
+    let verbose = cfg.verbose;
+    let directives = operator_directives(&cfg);
+    let recon_ctx: String = recon.chars().take(3000).collect();
+    let mob_workdir = cfg.workdir.clone();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
+        .map(|ag| {
+            let target = target.clone();
+            let recon = recon_ctx.clone();
+            let directives = directives.clone();
+            let txc = tx.clone();
+            let wd = mob_workdir.clone();
+            async move {
+                if pool.stop_exploiting() { return (ag.name.clone(), String::new(), vec![]); }
+                if verbose { let _ = txc.send(format!("  launching agent: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await; }
+                let user = format!(
+                    "AUTHORIZED mobile/binary assessment of {target}. Proceed and PROVE each issue from the artifact itself.\n\n{directives}{tooling}{react}{safety}{body}\n\nReply ONLY a JSON array of confirmed findings (may be []): {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}.",
+                    target = target, directives = directives, tooling = MOBILE_TOOLING, react = REACT_DOCTRINE, safety = SAFETY_DOCTRINE,
+                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
+                );
+                match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
+                    Ok((m, text)) => {
+                        let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("test {} via {} -> {} candidate(s)", ag.name, m.label(), f.len())).await;
+                        for c in &f { if let Ok(j) = serde_json::to_string(c) { let _ = txc.send(format!("finding_json: {j}")).await; } }
+                        (ag.name.clone(), text, f)
+                    }
+                    Err(e) => {
+                        let _ = txc.send(format!("test {} failed: {e}", ag.name)).await;
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() { let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await; }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect::<Vec<_>>().await;
+
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = transcript_of(&raw);
+    let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    let _ = tx.send(format!("{} candidate finding(s) (deduped) - validating", candidates.len())).await;
+    let findings = validate(candidates, pool, VOTE_SYS, effective_vote_n(&cfg), &tx).await;
+    let findings = refute_pass(findings, pool, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, recon, transcript, findings, selected, &mut rl, crate::grounding::GroundMode::Empirical, String::new(), tx).await
+}
+
+const HOST_RECON_SYS: &str = "You are an infrastructure recon specialist on an AUTHORIZED engagement against a HOST/IP. Actively scan with rustscan/nmap (and netexec/smbclient where relevant) to map open ports, services, versions and auth surfaces. Use any provided SSH/Windows credentials to enumerate from inside. Do not ask permission; proceed. Reply with a compact JSON object (host, os, ports, services, auth, ad). No prose.";
+
+const HOST_TOOLING: &str = "TOOLING (best on Kali): nmap/rustscan (ports), netexec/crackmapexec + smbclient (SMB/AD), ssh/sshpass + linpeas (Linux), evil-winrm + winPEAS + impacket (Windows), bloodhound-python/SharpHound (AD), hashcat (offline cracking). Use only supplied credentials; never brute force or run destructive/DoS actions.\n\n";
+
+/// Infrastructure engagement: scan/enumerate an IP/host and run Linux/Windows/AD
+/// agents. Mirrors the web pipeline but selects from the `infra` agent set.
+pub async fn run_host(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    let _ = tx.send(format!("HOST · target: {} · {} infra agents · models: {}", cfg.target, lib.infra.len(),
+        pool.candidates.iter().map(|m| m.label()).collect::<Vec<_>>().join(", "))).await;
+
+    let mut waf_challenge = false;
+    let recon = if cfg.offline {
+        "{}".to_string()
+    } else {
+        // Lightweight HTTP probe for WAF detection on infra targets with web interfaces.
+        if cfg.target.starts_with("http://") || cfg.target.starts_with("https://") {
+            let p = crate::probe::probe_in_scope(&cfg.target, &effective_scope(&cfg)).await;
+            waf_challenge = p.waf_challenge;
+        }
+        let user = format!("{}{}Target host: {}", operator_directives(&cfg), HOST_TOOLING, cfg.target);
+        match pool.complete_routed(Task::Recon, "recon", HOST_RECON_SYS, &user).await {
+            Ok((m, t)) => { let _ = tx.send(format!("recon complete via {}", m.label())).await; t }
+            Err(e) => { let _ = tx.send(format!("recon failed ({e})")).await; "{}".to_string() }
+        }
+    };
+
+    // CAG: pre-collect HTTP evidence for infra targets with web interfaces.
+    let cag_cache = if !cfg.offline && (cfg.target.starts_with("http://") || cfg.target.starts_with("https://")) {
+        cag_collect(&cfg.target, &recon, waf_challenge, &tx).await
+    } else {
+        CagCache::default()
+    };
+    let cag_context = cag_cache.to_context(8000);
+
+    // Graph checkpoint: seed the attack graph from recon.
+    let _ = graph_checkpoint(&cfg, &recon, &[], "recon", &[], &tx).await;
+
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+    let mut ranked: Vec<Agent> = lib.infra.clone();
+    ranked.sort_by(|a, b| rl.weight(&b.name).partial_cmp(&rl.weight(&a.name)).unwrap_or(std::cmp::Ordering::Equal));
+    let cap = if cfg.max_agents > 0 { cfg.max_agents.min(ranked.len()) } else { ranked.len() };
+    let focus = cfg.instructions.clone().unwrap_or_default();
+
+    if cfg.offline {
+        let selected: Vec<Agent> = ranked.into_iter().take(cap).collect();
+        let _ = tx.send(format!("offline: selected {} infra agent(s); no live testing", selected.len())).await;
+        let artifacts = persist(&cfg, &recon, "", &[]);
+        return RunOutput { target: cfg.target.clone(), workdir: cfg.workdir.clone().unwrap_or_default(), findings: vec![],
+            agents_ran: selected.iter().map(|a| a.name.clone()).collect(), candidates: 0, recon, artifacts, denied: None };
+    }
+
+    let chosen = select_agents(pool, &recon, &focus, &ranked, &tx).await;
+    let selected: Vec<Agent> = if !chosen.is_empty() {
+        let sel: Vec<Agent> = ranked.iter().filter(|a| chosen.iter().any(|c| c == &a.name)).cloned().collect();
+        if sel.is_empty() { ranked.iter().take(cap).cloned().collect() } else { sel.into_iter().take(cap).collect() }
+    } else {
+        ranked.iter().take(cap).cloned().collect()
+    };
+    let selected: Vec<Agent> = { let mut seen = std::collections::HashSet::new();
+        selected.into_iter().filter(|a| seen.insert(a.name.clone())).collect() };
+    let _ = tx.send(format!("selected {} infra agent(s): {}", selected.len(),
+        selected.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "))).await;
+
+    let target = cfg.target.clone();
+    let verbose = cfg.verbose;
+    let directives = operator_directives(&cfg);
+    let recon_ctx: String = if cag_context.is_empty() {
+        recon.chars().take(3000).collect()
+    } else {
+        let base: String = recon.chars().take(2000).collect();
+        format!("{base}{cag_context}")
+    };
+    let host_workdir = cfg.workdir.clone();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
+        .map(|ag| {
+            let target = target.clone();
+            let recon = recon_ctx.clone();
+            let directives = directives.clone();
+            let txc = tx.clone();
+            let wd = host_workdir.clone();
+            async move {
+                if pool.stop_exploiting() { return (ag.name.clone(), String::new(), vec![]); }
+                if verbose {
+                    let _ = txc.send(format!("  ▶ launching agent: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await;
+                }
+                let user = format!(
+                    "AUTHORIZED host engagement on {target}. Proceed and PROVE each issue with raw tool output.\n\n{directives}{tooling}{react}{safety}{body}\n\nReply ONLY a JSON array of confirmed findings (may be []): {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}.",
+                    target = target, directives = directives, tooling = HOST_TOOLING, react = REACT_DOCTRINE, safety = SAFETY_DOCTRINE,
+                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
+                );
+                match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
+                    Ok((m, text)) => {
+                        let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("test {} via {} → {} candidate(s)", ag.name, m.label(), f.len())).await;
+                        for c in &f {
+                            let _ = txc.send(format!("finding: [{}] {} @ {}", c.severity, c.title, c.endpoint)).await;
+                            if let Ok(j) = serde_json::to_string(c) { let _ = txc.send(format!("finding_json: {j}")).await; }
+                        }
+                        (ag.name.clone(), text, f)
+                    }
+                    Err(e) => {
+                        let _ = txc.send(format!("test {} failed: {e}", ag.name)).await;
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() { let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await; }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect::<Vec<_>>().await;
+
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = transcript_of(&raw);
+    let mut candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    // CAG grounding gate: cross-reference findings against pre-collected evidence.
+    if !cag_cache.is_empty() {
+        let cag_demoted = cag_grounding_gate(&mut candidates, &cag_cache, Some(&tx));
+        if cag_demoted > 0 {
+            let _ = tx.send(format!(
+                "🧠 CAG grounding: demoted {cag_demoted} finding(s) — pre-fetched evidence contradicts agent claims"
+            )).await;
+        }
+    }
+    let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
+    let mut findings = validate(candidates, pool, VOTE_SYS, effective_vote_n(&cfg), &tx).await;
+    let chained = attack_chain(pool, &cfg, &recon, &findings, &lib.chains, &tx).await;
+    findings.extend(chained);
+    findings = dedup_findings(findings);
+    let findings = refute_pass(findings, pool, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, recon, transcript, findings, selected, &mut rl, crate::grounding::GroundMode::Empirical, String::new(), tx).await
+}
+
+/// AI-red-team doctrine prepended to every AI/LLM/agent test prompt.
+const AI_DOCTRINE: &str = "AI RED-TEAM METHOD: this is an AI system (LLM app / AI agent / MCP server / Skill). \
+Interact with its chat/API endpoint(s); where reachable, gather its config, tools/MCP servers, system context and any \
+skill/plugin files. Be SYSTEMATIC — try multiple techniques per class (injection families, jailbreak families, \
+encodings, multi-turn/crescendo, indirect via retrieved/tool content). PROVE each issue with the EXACT prompt/request \
+and the model's own response. Map every finding to OWASP LLM Top 10 (2025) and, where relevant, MCP threats / OWASP AI \
+Exchange. NON-DESTRUCTIVE: never exfiltrate real user data or weaponise the model against third parties — a redacted, \
+minimal proof is enough. Chain findings (e.g. system-prompt leak → tailored injection → excessive-agency tool abuse).\n\n";
+
+/// LLM red-teaming loop (jailbreaks & prompt injection) — the attacker→judge
+/// method shared by the technique/scenario agents (AdvPrefix, PAIR, TAP,
+/// Crescendo, many-shot, persona, encoding, goal-hijacking, indirect injection…).
+const REDTEAM_DOCTRINE: &str = "LLM RED-TEAM LOOP: for each technique/scenario, (1) CAPTURE A BASELINE — the model's \
+normal answer AND its refusal on an out-of-policy ask, so you have a control; (2) APPLY THE TECHNIQUE across SEVERAL \
+scenarios/variants (not a single shot) — jailbreak families (AdvPrefix, PAIR, TAP, Crescendo, many-shot, persona/DAN, \
+encoding/obfuscation, refusal-suppression) and injection scenarios (direct, indirect via RAG/web/email/tool output, \
+goal hijacking, tool/function abuse, system-prompt extraction); (3) JUDGE the result with an explicit LLM-judge \
+criterion — a bypass is confirmed ONLY when the target produces content it should have refused (vs the baseline) or \
+takes an action it should not; a hedged/partial answer is NOT a full bypass. Keep every demonstration BENIGN and \
+redacted — a harmless-but-clearly-out-of-policy token proves the guardrail bypass without real harm.\n\n";
+
+/// Recon-phase directive by intensity — tells the agent HOW HARD to recon and
+/// to INSTALL the tools it needs (the user wants an intense, active recon, not a
+/// quick one-shot). Best on Kali; degrades to curl/nc if installs fail.
+fn recon_intensity_directive(level: usize) -> String {
+    let (label, rounds, extra) = match level {
+        0 | 1 => ("QUICK", "one focused pass", ""),
+        2 => ("STANDARD", "crawl + JS + params", ""),
+        3 => ("DEEP", "multi-angle active enumeration",
+            "Go WIDE and DEEP — do NOT stop after the homepage. This should take real effort."),
+        _ => ("EXHAUSTIVE", "leave no stone unturned",
+            "Be EXHAUSTIVE — this is a FULL spider/crawl engagement. Enumerate EVERY endpoint, form, parameter, \
+             and input field. Follow EVERY link recursively. Parse ALL JavaScript files for hidden API endpoints. \
+             Brute-force directories with wordlists. Discover ALL parameters with arjun/paramspider. \
+             Map the ENTIRE attack surface before stopping. The goal is a COMPLETE inventory of testable inputs — \
+             every URL, every parameter, every form action, every API endpoint, every hidden path."),
+    };
+    format!(
+        "RECON INTENSITY: {label} — {rounds}. {extra}\n\
+         INSTALL WHAT YOU NEED (authorized), BUT NEVER GET STUCK ON AN INSTALL: if a recon tool is missing, \
+         try to install it — but TIME-BOX every install and move on if it fails. Always wrap installs like \
+         `timeout 90 apt-get install -y <t> || timeout 90 go install <pkg>@latest || echo 'skip <t>'` and \
+         run them non-interactively (`DEBIAN_FRONTEND=noninteractive`, `-y`, no prompts). \
+         Try a given tool install AT MOST ONCE — if it errors, is not packaged, needs a different OS, \
+         has no network, or hangs past the timeout, SKIP IT immediately and use an already-installed \
+         alternative or plain `curl`/`nc`/`dig`/`openssl`/`python3`. Do not wait on, retry, or block the \
+         whole recon for any single tool download — a missing tool is never a reason to stall. \
+         Options — `pip install <t>`, `go install <pkg>@latest`, `npm i -g <t>`, or `cargo install <t>` (all time-boxed). \
+         Recommended arsenal: subfinder/amass/assetfinder (subdomains), httpx/httprobe (probe live), \
+         gau/waybackurls/katana/hakrawler/gospider (URL harvest & crawl), gf (pattern-filter urls), \
+         arjun/paramspider (params), ffuf/feroxbuster/dirsearch (content discovery), nuclei (targeted templates), \
+         nmap/rustscan/naabu (ports), dnsx (dns), subjs/linkfinder/getjs (JS endpoints), whatweb/wappalyzer (fingerprint), \
+         nikto (server issues), testssl.sh/sslscan (TLS). Chain them: subfinder→httpx→katana/gau→gf→ffuf.\n\
+         COVER, at this intensity: (1) subdomain & vhost enumeration + resolve live; (2) full crawl + historical \
+         URLs (wayback/gau) + JS analysis (endpoints, params, secrets, source maps); (3) content & parameter \
+         discovery with wordlists; (4) port/service scan; (5) tech + EXACT version fingerprinting; (6) auth/API \
+         (REST+GraphQL) mapping; (7) classic exposures (.git/.env/backups/swagger/actuator, dangling CNAMEs); \
+         (8) TLS/headers/cookies. Report counts (how many subdomains/urls/params/endpoints you actually found).\n\n")
+}
+
+/// Max wall-clock seconds for the ENTIRE recon phase (all rounds combined).
+/// Scales with intensity: quick scans get less recon, exhaustive gets more.
+/// Per-round cap = total / (rounds + 1) so later rounds get equal time.
+const RECON_TOTAL_BUDGET_SECS: u64 = 300; // base 5 minutes (level 1-3)
+
+fn recon_budget_secs(intensity: usize) -> u64 {
+    match intensity {
+        0 | 1 => 120,
+        2 => 240,
+        3 => RECON_TOTAL_BUDGET_SECS,
+        _ => 600, // exhaustive: 10 minutes
+    }
+}
+
+fn recon_cache_path(target: &str) -> std::path::PathBuf {
+    let host = target
+        .split("://").nth(1).unwrap_or(target)
+        .split('/').next().unwrap_or(target)
+        .split(':').next().unwrap_or(target)
+        .to_string();
+    let safe = if host.is_empty() { target.replace(['/', ':', '.'], "_") } else { host };
+    let dir = std::path::Path::new(".neurosploit").join("recon_cache");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("{safe}.json"))
+}
+
+fn save_recon_cache(target: &str, recon: &str, tool_recon: &str) {
+    let path = recon_cache_path(target);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let data = serde_json::json!({
+        "target": target,
+        "timestamp": ts,
+        "recon": recon,
+        "tool_recon": tool_recon,
+    });
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap_or_default());
+}
+
+fn load_recon_cache(target: &str) -> Option<(String, String, u64)> {
+    let path = recon_cache_path(target);
+    let content = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    Some((
+        v["recon"].as_str().unwrap_or("").to_string(),
+        v["tool_recon"].as_str().unwrap_or("").to_string(),
+        v["timestamp"].as_u64().unwrap_or(0),
+    ))
+}
+
+fn format_elapsed(epoch_secs: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let diff = now.saturating_sub(epoch_secs);
+    if diff < 60 { format!("{diff}s ago") }
+    else if diff < 3600 { format!("{}m ago", diff / 60) }
+    else if diff < 86400 { format!("{}h ago", diff / 3600) }
+    else { format!("{}d ago", diff / 86400) }
+}
+
+/// Intense, multi-round recon: an initial deep pass, then follow-up rounds that
+/// EXPAND the surface (chase discovered subdomains/endpoints/params, install
+/// Deterministic subdomain fan-out for a WILDCARD engagement (`*.domain` in
+/// scope). The model recon used to test only the seed host even when the scope
+/// authorized the whole domain — so a `*.nasa.gov` run touched `www` and nothing
+/// else. This enumerates the domain via crt.sh (just HTTP, always available),
+/// keeps only IN-SCOPE hosts, probes each for liveness, drops soft-404/parked
+/// catch-alls, and returns a ranked, test-ready list — 401/403 hosts flagged for
+/// a bypass attempt, interesting names (admin/api/dev/staging/internal) first.
+/// Scope-respecting: liveness probes are one lightweight GET per host, so it
+/// maps the surface without hammering it.
+/// Run a recon command either inside the Kali sandbox (when `--sandbox` is set,
+/// so the Kali toolbox powers recon) or on the host. Returns stdout, or None if
+/// the tool isn't available / failed. Short-timed so a missing tool is cheap.
+async fn recon_tool(cfg: &RunConfig, tool: &str, command: &str) -> Option<String> {
+    // Operator constraint (e.g. "no port scan") enforced in code, not by prompt.
+    if let Some(c) = operator_constraints(cfg).check_command(command) {
+        eprintln!("[constraint] skipped `{tool}`: {}", c.text);
+        return None;
+    }
+    if let Some(image) = cfg.sandbox.as_deref() {
+        let mut sc = crate::sandbox::SandboxConfig::default();
+        if !image.trim().is_empty() { sc = sc.with_image(image); }
+        let sb = crate::sandbox::Sandbox::new(sc).ok()?;
+        // The container was ensured up earlier in run(); install the tool on
+        // demand if it's missing (one-time, within the Kali image).
+        let out = sb.exec(command).await.ok()?;
+        if out.stdout.trim().is_empty() { None } else { Some(out.stdout) }
+    } else {
+        // Host: only if the tool binary is on PATH.
+        let exists = tokio::process::Command::new("which").arg(tool).output().await
+            .map(|o| o.status.success()).unwrap_or(false);
+        if !exists { return None; }
+        let out = tokio::time::timeout(std::time::Duration::from_secs(90),
+            tokio::process::Command::new("sh").arg("-c").arg(command).output()).await.ok()?.ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).to_string();
+        if s.trim().is_empty() { None } else { Some(s) }
+    }
+}
+
+/// A Sandbox handle for the engagement when `--sandbox` is set (the container
+/// was ensured up earlier in run()). None when not sandboxed.
+fn engagement_sandbox(cfg: &RunConfig) -> Option<crate::sandbox::Sandbox> {
+    let image = cfg.sandbox.as_deref()?;
+    let mut sc = crate::sandbox::SandboxConfig::default();
+    if !image.trim().is_empty() { sc = sc.with_image(image); }
+    crate::sandbox::Sandbox::new(sc).ok()
+}
+
+/// Install the recon toolbox in the Kali sandbox on demand (idempotent — skips
+/// anything already present). Runs once per engagement. Best-effort: a tool that
+/// fails to install just won't be used.
+async fn kali_provision_recon_tools(sb: &crate::sandbox::Sandbox, tx: &Sender<String>) {
+    // Which recon tools are missing?
+    let check = sb.exec("for t in subfinder httpx katana gau waybackurls nuclei naabu dnsx assetfinder gf qsreplace anew; do command -v $t >/dev/null 2>&1 || echo $t; done").await;
+    let missing: Vec<String> = check.map(|o| o.stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default();
+    if missing.is_empty() { return; }
+    let _ = tx.send(format!("📦 provisioning Kali recon tools: {}", missing.join(", "))).await;
+    // ProjectDiscovery + bug-bounty tools install via `go install`; a couple via apt.
+    // Install Go first if needed, then the PD suite in one shot.
+    let _ = sb.exec("command -v go >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq golang-go) ; true").await;
+    let go = |pkg: &str| format!("GOBIN=/usr/local/bin go install -v {pkg}@latest 2>/dev/null; true");
+    let pd: &[(&str, &str)] = &[
+        ("subfinder", "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"),
+        ("httpx", "github.com/projectdiscovery/httpx/cmd/httpx"),
+        ("katana", "github.com/projectdiscovery/katana/cmd/katana"),
+        ("nuclei", "github.com/projectdiscovery/nuclei/v3/cmd/nuclei"),
+        ("naabu", "github.com/projectdiscovery/naabu/v2/cmd/naabu"),
+        ("dnsx", "github.com/projectdiscovery/dnsx/cmd/dnsx"),
+        ("gau", "github.com/lc/gau/v2/cmd/gau"),
+        ("waybackurls", "github.com/tomnomnom/waybackurls"),
+        ("assetfinder", "github.com/tomnomnom/assetfinder"),
+        ("gf", "github.com/tomnomnom/gf"),
+        ("qsreplace", "github.com/tomnomnom/qsreplace"),
+        ("anew", "github.com/tomnomnom/anew"),
+    ];
+    for (bin, pkg) in pd {
+        if missing.iter().any(|m| m == bin) { let _ = sb.exec(&go(pkg)).await; }
+    }
+    // nuclei templates (quietly).
+    if missing.iter().any(|m| m == "nuclei") { let _ = sb.exec("nuclei -update-templates -silent 2>/dev/null; true").await; }
+}
+
+/// Deterministic TOOL-RECON phase: run the real bug-bounty recon pipeline inside
+/// the Kali sandbox (or on the host) against the live hosts, and return a
+/// structured block (URL harvest + targeted nuclei quick-wins + gf-flagged
+/// candidate URLs) to feed the LLM refine phase. This is the "recon by tools,
+/// then the LLM works on top of the output" the operator asked for.
+async fn kali_tool_recon(cfg: &RunConfig, hosts: &[String], tx: &Sender<String>) -> String {
+    let seed = crate::scope::host_of(&cfg.target);
+    let mut targets: Vec<String> = Vec::new();
+    if !seed.is_empty() { targets.push(seed); }
+    for h in hosts { if !targets.contains(h) { targets.push(h.clone()); } }
+    targets.truncate(12);
+    if targets.is_empty() { return String::new(); }
+
+    let intensity = cfg.recon_intensity.max(1);
+    let (crawl_depth, url_cap, gf_cap) = match intensity {
+        0 | 1 => (2, 400, 15),
+        2     => (3, 800, 25),
+        3     => (4, 1500, 40),
+        _     => (5, 3000, 60), // exhaustive
+    };
+
+    let _ = tx.send(format!("🛠 tool-recon over {} host(s) (depth {crawl_depth}, cap {url_cap} URLs)…", targets.len())).await;
+    let mut urls: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut nuclei_hits: Vec<String> = Vec::new();
+    let mut forms: Vec<String> = Vec::new();
+    let mut endpoints: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for host in &targets {
+        // 1. Deep crawl + historical URL harvest.
+        let harvest = format!(
+            "( echo {host} | gau --threads 20 2>/dev/null; \
+               echo {host} | waybackurls 2>/dev/null; \
+               katana -u https://{host} -d {crawl_depth} -jc -kf all -ef css,png,jpg,gif,svg,woff,woff2,ttf,ico -silent 2>/dev/null \
+             ) | sort -u | head -{url_cap}");
+        if let Some(out) = recon_tool(cfg, "gau", &harvest).await {
+            for l in out.lines() { let u = l.trim(); if u.starts_with("http") { urls.insert(u.to_string()); } }
+        }
+
+        // 2. Common endpoint discovery: robots.txt, sitemap.xml, well-known paths.
+        let common_paths = format!(
+            "for p in /robots.txt /sitemap.xml /sitemap_index.xml /.well-known/security.txt \
+             /wp-json/ /wp-json/wp/v2/posts /wp-json/wp/v2/users /xmlrpc.php \
+             /api /api/v1 /api/v2 /swagger.json /openapi.json /api-docs \
+             /graphql /.env /server-info /server-status /actuator /actuator/health \
+             /wp-login.php /wp-admin/ /administrator/ /admin/ /login /register /signup \
+             /feed /feed/atom /rss; do \
+               code=$(curl -s -o /dev/null -w '%{{http_code}}' -m 5 \"https://{host}$p\" 2>/dev/null); \
+               if [ \"$code\" != \"000\" ] && [ \"$code\" != \"404\" ]; then \
+                 echo \"$code $p\"; \
+               fi; \
+             done");
+        if let Some(out) = recon_tool(cfg, "curl", &common_paths).await {
+            for l in out.lines() {
+                let t = l.trim();
+                if !t.is_empty() { endpoints.insert(t.to_string()); }
+            }
+        }
+
+        // 3. Sitemap URL extraction (follow sitemap.xml for all listed URLs).
+        let sitemap = format!(
+            "curl -s -m 10 'https://{host}/sitemap.xml' 2>/dev/null | \
+             grep -oP '<loc>\\K[^<]+' | head -200");
+        if let Some(out) = recon_tool(cfg, "curl", &sitemap).await {
+            for l in out.lines() { let u = l.trim(); if u.starts_with("http") { urls.insert(u.to_string()); } }
+        }
+
+        // 4. JS endpoint extraction (linkfinder-style from inline and external JS).
+        let js_extract = format!(
+            "katana -u https://{host} -d 1 -jc -silent 2>/dev/null | grep -iE '\\.js(\\?|$)' | head -30 | \
+             while read js; do \
+               curl -s -m 8 \"$js\" 2>/dev/null | \
+               grep -oP '(?<=[\"\\x27])(/[a-zA-Z0-9_/\\-]+(?:\\?[a-zA-Z0-9_=&]+)?)(?=[\"\\x27])' | \
+               sed \"s|^|https://{host}|\" ; \
+             done | sort -u | head -100");
+        if let Some(out) = recon_tool(cfg, "katana", &js_extract).await {
+            for l in out.lines() { let u = l.trim(); if u.starts_with("http") { urls.insert(u.to_string()); } }
+        }
+
+        // 5. Form extraction (find all <form> actions + input names).
+        let form_extract = format!(
+            "curl -s -m 10 'https://{host}' 2>/dev/null | \
+             grep -ioP '<form[^>]*action=[\"\\x27]?([^\"\\x27\\s>]+)' | head -20; \
+             curl -s -m 10 'https://{host}' 2>/dev/null | \
+             grep -ioP '<input[^>]*name=[\"\\x27]([^\"\\x27]+)' | head -30");
+        if let Some(out) = recon_tool(cfg, "curl", &form_extract).await {
+            for l in out.lines() { let t = l.trim(); if !t.is_empty() { forms.push(t.to_string()); } }
+        }
+
+        // 6. Content discovery with ffuf/feroxbuster (high intensity only).
+        if intensity >= 3 {
+            let fuzz = format!(
+                "ffuf -u 'https://{host}/FUZZ' -w /usr/share/wordlists/dirb/common.txt \
+                 -mc 200,201,301,302,307,401,403,405 -t 20 -s 2>/dev/null | head -100 || \
+                 feroxbuster -u 'https://{host}' -w /usr/share/wordlists/dirb/common.txt \
+                 --no-recursion -t 20 -s 200,301,302,401,403 -q 2>/dev/null | head -100");
+            if let Some(out) = recon_tool(cfg, "ffuf", &fuzz).await {
+                for l in out.lines() {
+                    let u = l.trim();
+                    if !u.is_empty() && !u.starts_with('#') {
+                        let full = if u.starts_with("http") { u.to_string() } else { format!("https://{host}/{}", u.trim_start_matches('/')) };
+                        endpoints.insert(full);
+                    }
+                }
+            }
+        }
+
+        // 7. Parameter discovery with arjun (high intensity only).
+        if intensity >= 4 {
+            let param_disc = format!(
+                "arjun -u 'https://{host}' --stable -t 10 -q 2>/dev/null | head -30");
+            if let Some(out) = recon_tool(cfg, "arjun", &param_disc).await {
+                for l in out.lines() { let t = l.trim(); if !t.is_empty() { endpoints.insert(t.to_string()); } }
+            }
+        }
+
+        // 8. Targeted nuclei quick-wins (exposures/misconfig/takeover).
+        let nuc = format!("nuclei -u https://{host} -t exposures/,misconfiguration/,takeovers/ -severity critical,high,medium -silent -nc 2>/dev/null | head -40");
+        if let Some(out) = recon_tool(cfg, "nuclei", &nuc).await {
+            for l in out.lines() { let t = l.trim(); if !t.is_empty() { nuclei_hits.push(t.to_string()); } }
+        }
+    }
+
+    if urls.is_empty() && nuclei_hits.is_empty() && endpoints.is_empty() {
+        let _ = tx.send("🛠 tool-recon: no tools available or no output (LLM recon continues)".into()).await;
+        return String::new();
+    }
+
+    // gf-flag candidate URLs by class for the exploitation phase.
+    let url_list = urls.iter().cloned().collect::<Vec<_>>().join("\n");
+    let mut gf_block = String::new();
+    if !url_list.is_empty() {
+        for pat in ["sqli", "xss", "ssrf", "redirect", "lfi", "idor", "rce", "ssti"] {
+            let cmd = format!("printf '%s' {:?} | gf {pat} 2>/dev/null | head -{gf_cap}", url_list.chars().take(12000).collect::<String>());
+            if let Some(out) = recon_tool(cfg, "gf", &cmd).await {
+                let hits: Vec<&str> = out.lines().map(|l| l.trim()).filter(|l| l.starts_with("http")).collect();
+                if !hits.is_empty() { gf_block.push_str(&format!("  {pat}: {}\n", hits.join("  "))); }
+            }
+        }
+    }
+
+    let _ = tx.send(format!(
+        "🛠 tool-recon: {} URL(s), {} endpoint(s), {} form(s), {} nuclei hit(s){}",
+        urls.len(), endpoints.len(), forms.len(), nuclei_hits.len(),
+        if gf_block.is_empty() { String::new() } else { " · gf-flagged candidates added".into() }
+    )).await;
+
+    let mut block = String::from("\n\nTOOL-RECON OUTPUT (deterministic — work on top of this, verify each before reporting):\n");
+
+    // Discovered endpoints (common paths, content discovery).
+    if !endpoints.is_empty() {
+        block.push_str(&format!("Discovered endpoints ({}):\n", endpoints.len()));
+        for e in endpoints.iter().take(150) { block.push_str(&format!("- {e}\n")); }
+    }
+
+    // Forms and input fields.
+    if !forms.is_empty() {
+        block.push_str(&format!("Forms and inputs ({}):\n", forms.len()));
+        for f in forms.iter().take(50) { block.push_str(&format!("- {f}\n")); }
+    }
+
+    if !nuclei_hits.is_empty() {
+        block.push_str("Nuclei quick-wins (CONFIRM each with your own request — do not report a template name as a finding):\n");
+        for h in nuclei_hits.iter().take(40) { block.push_str(&format!("- {h}\n")); }
+    }
+    if !gf_block.is_empty() {
+        block.push_str("Candidate URLs by vuln class (gf-flagged — TEST these parameters):\n");
+        block.push_str(&gf_block);
+    }
+    if !urls.is_empty() {
+        block.push_str(&format!("Harvested URLs (sample of {}):\n", urls.len()));
+        for u in urls.iter().take(150) { block.push_str(&format!("- {u}\n")); }
+    }
+    block
+}
+
+const TOOLBOX_SYS: &str = "You are a tool-selection planner on an AUTHORIZED security engagement. \
+Given recon facts and a catalog of real security tools, choose a SMALL, TARGETED set of tools to run now. \
+Reply ONLY a JSON array of objects: [{\"tool\":\"<catalog id>\",\"args\":\"<flags / arguments>\",\"why\":\"<short reason>\"}]. \
+Rules: at most 6 entries; use only IDs from the catalog; stay in scope; no destructive, DoS, phishing or persistence actions; \
+do not repeat a scan whose result is already in RECON; prefer targeted flags over full-range scans; omit args to use the catalog default. \
+If no additional tool is useful, reply [].";
+
+/// Bounded, opt-in agent tool loop for the recon phase. The model only selects
+/// catalog IDs + flags; the runner enforces scope, constraints, timeouts and
+/// provisioning. Output is appended to the recon facts for downstream agents.
+async fn agent_tool_round(
+    cfg: &RunConfig,
+    pool: &ModelPool,
+    recon_facts: &str,
+    tx: &Sender<String>,
+) -> String {
+    let catalog = crate::toolbox::agent_catalog("run");
+    let recon_trim: String = recon_facts.chars().take(9000).collect();
+    let user = format!(
+        "TARGET: {}\n\n{}\n\nRECON FACTS (truncated):\n{}\n\nPick the next tools to run (JSON array only).",
+        cfg.target, catalog, recon_trim
+    );
+    let reply = match pool.complete_routed(Task::Recon, "toolbox", TOOLBOX_SYS, &user).await {
+        Ok((m, text)) => {
+            let _ = tx.send(format!("🧰 toolbox planner via {} — selecting real tools", m.label())).await;
+            text
+        }
+        Err(e) => {
+            let _ = tx.send(format!("🧰 toolbox planner unavailable: {e}")).await;
+            return String::new();
+        }
+    };
+    let Some(value) = crate::json_extract::parse_reply(&reply) else {
+        let _ = tx.send("🧰 toolbox planner returned no parseable plan — continuing without it".into()).await;
+        return String::new();
+    };
+    let entries = match value {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Object(mut o) => o
+            .remove("tool_calls")
+            .or_else(|| o.remove("plan"))
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    if entries.is_empty() {
+        let _ = tx.send("🧰 toolbox planner chose no additional tools".into()).await;
+        return String::new();
+    }
+    let run_cfg = crate::toolbox::ToolRunConfig {
+        sandbox: cfg.sandbox.clone(),
+        provision: std::env::var("NEUROSPLOIT_PROVISION").ok().as_deref() == Some("1"),
+        timeout_secs: Some(180),
+        audit_dir: cfg.workdir.as_ref().map(|w| std::path::PathBuf::from(w).join("toolbox")),
+        scope: Some(effective_scope(cfg)),
+        constraints: operator_constraints(cfg),
+    };
+    let mut block = String::from("\n\nAGENT TOOLBOX OUTPUT (real tools selected by the model; raw output):\n");
+    let mut ran = 0usize;
+    let mut seen = std::collections::BTreeSet::new();
+    for e in entries.into_iter().take(6) {
+        let (tool, args) = match e {
+            serde_json::Value::String(id) => (id, None),
+            serde_json::Value::Object(o) => {
+                let id = o.get("tool").or_else(|| o.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let args = o.get("args").and_then(|v| v.as_str()).map(|s| s.to_string());
+                (id, args)
+            }
+            _ => continue,
+        };
+        let tool = tool.trim().to_ascii_lowercase();
+        if tool.is_empty() || !seen.insert(tool.clone()) {
+            continue;
+        }
+        if crate::toolbox::find(&tool).is_none() {
+            let _ = tx.send(format!("🧰 toolbox: skipping unknown tool '{tool}'")).await;
+            continue;
+        }
+        let _ = tx.send(format!("🧰 running {}…", tool)).await;
+        match crate::toolbox::run(&tool, args.as_deref(), &cfg.target, &run_cfg).await {
+            Ok(run) => {
+                ran += 1;
+                let _ = tx.send(format!(
+                    "🧰 {} → exit {}{} ({} ms)",
+                    run.name, run.code,
+                    if run.timed_out { " · TIMED OUT" } else { "" },
+                    run.duration_ms
+                )).await;
+                block.push_str(&format!(
+                    "\n### {} [{}] `{}` → exit {}{}\n",
+                    run.name, run.tool, run.command, run.code,
+                    if run.timed_out { " (timed out)" } else { "" }
+                ));
+                let out = if run.stdout.trim().is_empty() { &run.stderr } else { &run.stdout };
+                let capped: String = out.chars().take(7000).collect();
+                block.push_str(&capped);
+                block.push('\n');
+            }
+            Err(e) => {
+                let _ = tx.send(format!("🧰 {tool} not run: {e}")).await;
+                block.push_str(&format!("\n### {tool} → NOT RUN: {e}\n"));
+            }
+        }
+    }
+    if ran == 0 {
+        return String::new();
+    }
+    let _ = tx.send(format!("🧰 toolbox: {} real tool run(s) added to recon facts", ran)).await;
+    block
+}
+
+async fn enumerate_subdomains(cfg: &RunConfig, tx: &Sender<String>) -> String {
+    // Which apex(es) are authorized domain-wide?
+    let apexes: Vec<String> = cfg.scope.hard.iter().filter_map(|p| {
+        let t = p.as_text();
+        t.strip_prefix("*.").map(|a| a.to_string())
+    }).collect();
+    if apexes.is_empty() { return String::new(); }
+
+    let scope = effective_scope(cfg);
+    let seed_host = crate::scope::host_of(&cfg.target);
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(30))
+        .default_headers(default_scan_headers())
+        .user_agent(cfg.user_agent.clone().unwrap_or_else(|| default_user_agent()))
+        .build().unwrap_or_default();
+
+    // 1) Enumerate via crt.sh (certificate transparency) — unauthenticated HTTP.
+    let mut candidates: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for apex in &apexes {
+        let _ = tx.send(format!("🔭 enumerating subdomains of *.{apex} (crt.sh + tools)…")).await;
+        // crt.sh (certificate transparency) — always available, no tool needed.
+        let url = format!("https://crt.sh/?q=%25.{apex}&output=json");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(text) = resp.text().await {
+                if let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(&text) {
+                    for row in rows {
+                        if let Some(nv) = row.get("name_value").and_then(|v| v.as_str()) {
+                            for name in nv.split('\n') {
+                                let h = name.trim().trim_start_matches("*.").to_lowercase();
+                                if h.ends_with(apex) && !h.is_empty() && !h.contains(' ') { candidates.insert(h); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Passive tooling when present (in the Kali sandbox or on the host):
+        // subfinder and amass find names CT logs miss. Passive only — no brute.
+        for (tool, cmd) in [
+            ("subfinder", format!("subfinder -silent -all -d {apex} 2>/dev/null")),
+            ("amass", format!("amass enum -passive -norecursive -d {apex} 2>/dev/null")),
+        ] {
+            if let Some(out) = recon_tool(cfg, tool, &cmd).await {
+                let mut n = 0;
+                for line in out.lines() {
+                    let h = line.trim().trim_start_matches("*.").to_lowercase();
+                    if h.ends_with(apex) && !h.is_empty() && !h.contains(' ') && candidates.insert(h) { n += 1; }
+                }
+                if n > 0 { let _ = tx.send(format!("🔭 {tool}: +{n} subdomain(s)")).await; }
+            }
+        }
+    }
+    // Keep only in-scope hosts; drop the seed (already probed).
+    let in_scope: Vec<String> = candidates.into_iter()
+        .filter(|h| h != &seed_host && scope.in_hard_scope(&format!("https://{h}")))
+        .collect();
+    if in_scope.is_empty() {
+        let _ = tx.send("🔭 no additional in-scope subdomains found via crt.sh".into()).await;
+        return String::new();
+    }
+    let _ = tx.send(format!("🔭 {} in-scope subdomain(s) from crt.sh — probing liveness…", in_scope.len())).await;
+
+    // 2) Liveness + soft-404 filter. One GET to root, one to a random path; if
+    //    the random path returns the SAME status/size as root with 200, the host
+    //    is a catch-all/soft-404 and is deprioritised. Cap the probe fan-out so a
+    //    huge CT list doesn't take forever, but keep it generous (the operator
+    //    asked that ~50 subdomains actually get tested).
+    const PROBE_CAP: usize = 80;
+    let rand = crate::validation::canary("sub");
+    let probe_one = |host: String| {
+        let client = client.clone();
+        let rand = rand.clone();
+        async move {
+            let root = client.get(format!("https://{host}/")).send().await;
+            let (status, len) = match root {
+                Ok(r) => { let s = r.status().as_u16(); let b = r.text().await.map(|t| t.len()).unwrap_or(0); (s, b) }
+                Err(_) => return None, // dead host
+            };
+            if status == 0 { return None; }
+            // soft-404: a random path answers 200 with ~same size as root.
+            let soft = if status == 200 {
+                match client.get(format!("https://{host}/{rand}")).send().await {
+                    Ok(r2) => { let s2 = r2.status().as_u16(); let l2 = r2.text().await.map(|t| t.len()).unwrap_or(0);
+                                s2 == 200 && (l2 as i64 - len as i64).abs() < 64 }
+                    Err(_) => false,
+                }
+            } else { false };
+            Some((host, status, len, soft))
+        }
+    };
+    let probed: Vec<(String, u16, usize, bool)> = stream::iter(in_scope.into_iter().take(PROBE_CAP))
+        .map(probe_one)
+        .buffer_unordered(16)
+        .filter_map(|x| async move { x })
+        .collect()
+        .await;
+
+    // 3) Rank: 401/403 first (auth surface → bypass), then interesting names,
+    //    then other live hosts; soft-404 catch-alls last (kept but flagged).
+    let interesting = |h: &str| ["admin","api","dev","staging","stage","test","internal","intranet","vpn","portal","auth","login","sso","oauth","account","dashboard","git","jenkins","grafana","kibana","jira","confluence","gateway","mail","secure","beta","uat","qa","backend","service"]
+        .iter().any(|k| h.contains(k));
+    let mut live: Vec<(String, u16, bool)> = probed.into_iter().map(|(h,s,_,soft)| (h,s,soft)).collect();
+    live.sort_by_key(|(h, s, soft)| {
+        let auth = matches!(*s, 401 | 403);
+        (*soft, !auth, !interesting(h), *s) // soft-404 last; auth first; interesting next
+    });
+
+    if live.is_empty() {
+        let _ = tx.send("🔭 enumerated subdomains but none answered — nothing to add".into()).await;
+        return String::new();
+    }
+    let auth_count = live.iter().filter(|(_, s, _)| matches!(*s, 401 | 403)).count();
+    let _ = tx.send(format!("🔭 {} live in-scope subdomain(s) ({} behind 401/403 — try bypass) → added to the test surface",
+        live.len(), auth_count)).await;
+
+    // 4) Build the block injected into recon + exploitation context.
+    let mut block = String::from("\n\nLIVE IN-SCOPE SUBDOMAINS (authorized — TEST THESE end-to-end, ranked; do NOT degrade the service — one request at a time, respect rate limits):\n");
+    for (h, s, soft) in live.iter().take(60) {
+        let tag = if matches!(*s, 401 | 403) { " [AUTH — try access-control bypass: verb/path/case/encoding, X-Original-URL/X-Forwarded-*, direct object/API]" }
+                  else if *soft { " [soft-404 catch-all — low priority]" }
+                  else { "" };
+        block.push_str(&format!("- https://{h}  (HTTP {s}){tag}\n"));
+    }
+    block.push_str("Run the full methodology against each live host (not just the seed): map routes/params from each, test every applicable class, and prioritise the ones with an auth surface or interesting name.\n");
+    block
+}
+
+/// tools, dig where the previous round found signal). Returns the merged recon
+/// text. Rounds scale with `recon_intensity` (2→1 extra, 3→2, 4→3).
+async fn deep_recon(cfg: &RunConfig, pool: &ModelPool, probe_facts: &str, tx: &Sender<String>) -> String {
+    let intensity = cfg.recon_intensity.max(1);
+    let extra_rounds = intensity.saturating_sub(1).min(3);
+    let doctrine = tool_doctrine(pool.mcp_config.is_some());
+    let intensity_dir = recon_intensity_directive(intensity);
+    let dir = operator_directives(cfg);
+    // #15 — the probe facts include content the TARGET controls (titles, body
+    // snippets, headers). Fence it as untrusted data before it enters the
+    // prompt, and flag any prompt-injection the target planted in it.
+    let fenced = crate::taint::sanitize(probe_facts, "http-probe");
+    if fenced.is_suspicious() {
+        // The keyword matcher flags anything mentioning "ignore instructions",
+        // which a legit page can do innocently. When TypeSafe is on, ask a
+        // calibrated Noul whether the content actually tries to steer the agent
+        // before shouting about it. Absent TypeSafe, keep the keyword verdict.
+        let confirmed = match crate::typesafe::TypeSafe::from_env() {
+            Some(ts) if std::env::var("NEUROSPLOIT_TYPESAFE").unwrap_or_default().trim().to_lowercase() != "off" => {
+                ts.is_prompt_injection(&fenced.cleaned, "http-probe").await.map(|p| p >= 0.5).unwrap_or(true)
+            }
+            _ => true,
+        };
+        if confirmed {
+            let _ = tx.send(format!(
+                "notify: 🛑 prompt-injection signal(s) in the target's response neutralised: {}",
+                fenced.signals.iter().map(|x| x.kind.as_str()).collect::<Vec<_>>().join(", ")
+            )).await;
+        }
+    }
+    let mut accum = crate::taint::fence(probe_facts, "http-probe");
+    let _ = &fenced;
+    let recon_start = std::time::Instant::now();
+    let total_rounds = 1 + extra_rounds;
+    let budget = recon_budget_secs(intensity);
+
+    // Time-budget directive: subscription CLIs run commands autonomously, so they
+    // need an explicit cap to avoid running 150+ commands in a single round.
+    let budget_dir = format!(
+        "TIME BUDGET: you have ~{budget_secs} seconds for THIS recon round. Be EFFICIENT: \
+         prioritise high-signal actions (JS analysis, API mapping, SQLi/auth probes) over \
+         exhaustive crawling. AIM for 30-50 commands max per round — enough to map the surface, \
+         not so many that exploitation never starts. STOP EARLY if you have enough intel to \
+         select agents. When done, EMIT YOUR RESULTS IMMEDIATELY — do not start another pass.\n\n",
+        budget_secs = budget / total_rounds as u64,
+    );
+
+    // Initial deep pass.
+    let user = format!("{dir}{budget_dir}{intensity_dir}{doctrine}OBSERVED HTTP PROBE (build on these, verify, go deeper):\n{probe_facts}\n\nTarget: {}", cfg.target);
+    let _ = tx.send(format!("recon: intensity {} — actively enumerating (budget {}s total, {} round(s))…", intensity, budget, total_rounds)).await;
+    match pool.complete_routed(Task::Recon, "recon", RECON_SYS, &user).await {
+        Ok((m, t)) => { let _ = tx.send(format!("recon round 1 complete via {}", m.label())).await; accum.push_str(&format!("\n\nMODEL RECON (round 1):\n{t}")); }
+        Err(e) => {
+            let is_auth = crate::pool::is_auth_failure(&e);
+            if is_auth {
+                let _ = tx.send(format!("recon round 1 auth failed ({e}) — continuing with probe facts; run will pause before exploit phase")).await;
+                accum.push_str(&format!("\n\nMODEL RECON (round 1):\n{e}"));
+            } else {
+                let _ = tx.send(format!("recon round 1 failed ({e}) — probe facts only")).await;
+            }
+            return accum;
+        }
+    }
+
+    // Follow-up expansion rounds — each digs further using what's known so far.
+    for r in 0..extra_rounds {
+        if pool.stop_exploiting() { break; }
+        // Time budget check: if recon has already consumed the total budget, stop
+        // and proceed to exploitation with whatever intelligence we gathered.
+        let elapsed = recon_start.elapsed().as_secs();
+        if elapsed >= budget {
+            let _ = tx.send(format!("recon: time budget exhausted ({elapsed}s/{budget}s) — proceeding to exploitation with current intel")).await;
+            break;
+        }
+        let remaining = RECON_TOTAL_BUDGET_SECS - elapsed;
+        let round = r + 2;
+        let known: String = accum.chars().rev().take(3000).collect::<String>().chars().rev().collect();
+        let follow = format!(
+            "{dir}TIME BUDGET: you have ~{remaining} seconds remaining for recon. Be CONCISE — focus only on the highest-value leads.\n\n\
+             {intensity_dir}{doctrine}CONTINUE the recon — this is round {round}. Here is what recon has found so far:\n{known}\n\n\
+             Now EXPAND: pick the most promising leads and go deeper — resolve & probe any NEW subdomains/hosts, crawl \
+             and harvest URLs for endpoints not yet mapped, run content/parameter discovery where you saw interesting \
+             paths, fingerprint exact versions of anything unclear, and enumerate the API/GraphQL further. Install any \
+             tool you still need. Report ONLY the NEW facts found this round as the same COMPACT JSON schema. No repetition of prior facts.",
+        );
+        match pool.complete_routed(Task::Recon, "recon", RECON_SYS, &follow).await {
+            Ok((m, t)) => {
+                let novel = t.trim();
+                if novel.len() > 20 { let _ = tx.send(format!("recon round {round} via {} — expanded surface", m.label())).await; accum.push_str(&format!("\n\nMODEL RECON (round {round}):\n{novel}")); }
+                else { let _ = tx.send(format!("recon round {round}: no new surface — recon converged")).await; break; }
+            }
+            Err(e) => {
+                let is_auth = crate::pool::is_auth_failure(&e);
+                let _ = tx.send(format!("recon round {round} {} ({e})", if is_auth { "auth failed" } else { "failed" })).await;
+                break;
+            }
+        }
+    }
+    accum
+}
+
+/// AI recon system prompt.
+const AI_RECON_SYS: &str = "You are an AI-security recon specialist on an AUTHORIZED engagement. Probe the AI endpoint: \
+identify the model/provider if leaked, the system/assistant behaviour, available tools/functions/MCP servers, RAG/retrieval, \
+input/output channels, auth, rate limits, and any exposed config/endpoints. Map the AI attack surface for OWASP LLM Top 10 \
++ MCP. Reply with a COMPACT JSON object {model, behaviour, tools, mcp, rag, endpoints, auth, limits, notes}. No prose.";
+
+/// AI/LLM/agent/MCP engagement: probe → run the AI agents against the live
+/// endpoint → validate → chain → report (OWASP LLM Top 10, MCP risks).
+pub async fn run_ai(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    // Live-endpoint AI agents (skill_* audit agents run in the white-box skills flow).
+    let agents: Vec<Agent> = lib.ai.iter().filter(|a| !a.name.starts_with("skill_") && !a.name.starts_with("n8n")).cloned().collect();
+    let _ = tx.send(format!("AI engagement · {} AI agent(s) (OWASP LLM Top 10 + MCP) · models: {} · vote_n={}",
+        agents.len(), pool.candidates.iter().map(|m| m.label()).collect::<Vec<_>>().join(", "), cfg.vote_n)).await;
+
+    // Recon the AI endpoint (probe + model recon).
+    let mut waf_challenge = false;
+    let recon = if cfg.offline { "{}".to_string() } else {
+        let p = crate::probe::probe_in_scope(&cfg.target, &effective_scope(&cfg)).await;
+        let _ = tx.send(crate::probe::probe_summary(&p)).await;
+        waf_challenge = p.waf_challenge;
+        let facts = crate::probe::probe_json(&p);
+        match pool.complete_routed(Task::Recon, "ai-recon", AI_RECON_SYS,
+            &format!("{}OBSERVED HTTP PROBE:\n{}\n\nAI target: {}", operator_directives(&cfg), facts, cfg.target)).await {
+            Ok((m, t)) => { let _ = tx.send(format!("ai-recon complete via {}", m.label())).await; format!("{facts}\n\nMODEL RECON:\n{t}") }
+            Err(e) => { let _ = tx.send(format!("ai-recon failed ({e}) — probe facts only")).await; facts }
+        }
+    };
+    // CAG: pre-collect HTTP evidence for AI endpoint.
+    let cag_cache = if !cfg.offline {
+        cag_collect(&cfg.target, &recon, waf_challenge, &tx).await
+    } else {
+        CagCache::default()
+    };
+    let cag_context = cag_cache.to_context(8000);
+    // Graph checkpoint: seed the attack graph from recon.
+    let _ = graph_checkpoint(&cfg, &recon, &[], "recon", &[], &tx).await;
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+    if cfg.offline {
+        let _ = tx.send("offline: no AI exploitation performed".into()).await;
+        return finish(cfg, lib, pool, recon, String::new(), vec![], agents, &mut rl, crate::grounding::GroundMode::Empirical, String::new(), tx).await;
+    }
+    let cap = if cfg.max_agents > 0 { cfg.max_agents.min(agents.len()) } else { agents.len() };
+    let selected: Vec<Agent> = agents.into_iter().take(cap).collect();
+    let _ = tx.send(format!("running {} AI agent(s): {}", selected.len(),
+        selected.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "))).await;
+
+    let target = cfg.target.clone();
+    let directives = operator_directives(&cfg);
+    let recon_ctx: String = if cag_context.is_empty() {
+        recon.chars().take(3500).collect()
+    } else {
+        let base: String = recon.chars().take(2500).collect();
+        format!("{base}{cag_context}")
+    };
+    let ai_workdir = cfg.workdir.clone();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
+        .map(|ag| {
+            let (target, recon, directives, txc) = (target.clone(), recon_ctx.clone(), directives.clone(), tx.clone());
+            let wd = ai_workdir.clone();
+            async move {
+                if pool.stop_exploiting() { return (ag.name.clone(), String::new(), vec![]); }
+                let _ = txc.send(format!("  ▶ AI test: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await;
+                let user = format!(
+                    "AUTHORIZED AI red-team of {target} — proceed and PROVE each issue.\n\n{directives}{react}{ai}{redteam}{safety}{body}\n\n\
+                     Reply ONLY a JSON array of confirmed findings (may be []): {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}. `evidence` = the exact prompt/request + the model's response.",
+                    react = REACT_DOCTRINE, ai = AI_DOCTRINE, redteam = REDTEAM_DOCTRINE, safety = SAFETY_DOCTRINE,
+                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon));
+                match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
+                    Ok((m, text)) => {
+                        let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("ai {} via {} → {} candidate(s)", ag.name, m.label(), f.len())).await;
+                        for c in &f {
+                            let _ = txc.send(format!("finding: [{}] {} @ {}", c.severity, c.title, c.endpoint)).await;
+                            if let Ok(j) = serde_json::to_string(c) { let _ = txc.send(format!("finding_json: {j}")).await; }
+                        }
+                        (ag.name.clone(), text, f)
+                    }
+                    Err(e) => {
+                        let _ = txc.send(format!("ai {} failed: {e}", ag.name)).await;
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() { let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await; }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect()
+        .await;
+
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = transcript_of(&raw);
+    let mut candidates: Vec<Finding> = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    // CAG grounding gate.
+    if !cag_cache.is_empty() {
+        let cag_demoted = cag_grounding_gate(&mut candidates, &cag_cache, Some(&tx));
+        if cag_demoted > 0 {
+            let _ = tx.send(format!("🧠 CAG grounding: demoted {cag_demoted} AI finding(s)")).await;
+        }
+    }
+    let _ = tx.send(format!("{} AI candidate(s) — validating", candidates.len())).await;
+    let mut findings = validate(candidates, pool, VOTE_SYS, effective_vote_n(&cfg), &tx).await;
+    let chained = attack_chain(pool, &cfg, &recon, &findings, &lib.chains, &tx).await;
+    findings.extend(chained);
+    findings = dedup_findings(findings);
+    let findings = refute_pass(findings, pool, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, recon, transcript, findings, selected, &mut rl, crate::grounding::GroundMode::Empirical, String::new(), tx).await
+}
+
+/// White-box Skills/plugin audit: read the skill .md file or a folder of them and
+/// audit with the skill/plugin agents (insecure design, injection surface, secrets).
+pub async fn run_skills_audit(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
+    pool.set_progress(tx.clone());
+    let agents: Vec<Agent> = lib.ai.iter().filter(|a| a.name.starts_with("skill_") || a.name.starts_with("n8n")).cloned().collect();
+    let path = Path::new(&cfg.target);
+    // A single .md file or a whole folder of skill files.
+    let context = if path.is_file() {
+        std::fs::read_to_string(path).unwrap_or_default()
+    } else {
+        collect_repo_context(path, 200, 90_000)
+    };
+    let _ = tx.send(format!("SKILLS AUDIT · {} skill agent(s) · {} bytes of skill/plugin definition(s)", agents.len(), context.len())).await;
+    let mut rl = cfg.rl_path.as_ref().map(|p| RlState::load(Path::new(p))).unwrap_or_default();
+    if cfg.offline || context.is_empty() {
+        let _ = tx.send("offline or empty skills input — nothing audited".into()).await;
+        return finish(cfg, lib, pool, "{}".into(), String::new(), vec![], agents, &mut rl, crate::grounding::GroundMode::Symbolic, String::new(), tx).await;
+    }
+    let directives = operator_directives(&cfg);
+    let sk_workdir = cfg.workdir.clone();
+    let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(agents.iter().cloned())
+        .map(|ag| {
+            let (ctx, dir, txc) = (context.clone(), directives.clone(), tx.clone());
+            let wd = sk_workdir.clone();
+            async move {
+                if pool.stop_exploiting() { return (ag.name.clone(), String::new(), vec![]); }
+                let _ = txc.send(format!("  ▶ skill audit: {}", ag.name)).await;
+                let user = format!(
+                    "{dir}{ai}AUDIT the following AI Skill/plugin definition(s) for insecure design & injection surface.\n\n\
+                     SKILL/PLUGIN:\n```\n{}\n```\n\n{body}\n\nReply ONLY a JSON array (may be []): \
+                     {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}} where endpoint is file:section.",
+                    ctx, ai = AI_DOCTRINE, body = ag.user.replace("{target}", "the Skill/plugin").replace("{recon_json}", "{}"));
+                match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
+                    Ok((m, text)) => {
+                        let f = extract_findings(&text, &ag.name);
+                        let _ = txc.send(format!("skill {} via {} → {} finding(s)", ag.name, m.label(), f.len())).await;
+                        for c in &f { if let Ok(j) = serde_json::to_string(c) { let _ = txc.send(format!("finding_json: {j}")).await; } }
+                        (ag.name.clone(), text, f)
+                    }
+                    Err(e) => {
+                        let _ = txc.send(format!("skill {} failed: {e}", ag.name)).await;
+                        let error_text = format!("ERROR: {e}");
+                        let salvaged = crate::resilience::salvage_findings(&ag.name, &error_text, wd.as_deref());
+                        if !salvaged.is_empty() { let _ = txc.send(format!("🔧 salvaged {} finding(s) from crashed agent {}", salvaged.len(), ag.name)).await; }
+                        (ag.name.clone(), error_text, salvaged)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(cfg.concurrency)
+        .collect()
+        .await;
+    crate::traces::record_all(cfg.workdir.as_deref(), &raw);
+    let transcript = transcript_of(&raw);
+    let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    let findings = validate(candidates, pool, CODE_VOTE_SYS, effective_vote_n(&cfg), &tx).await;
+    finish(cfg, lib, pool, "{}".into(), transcript, findings, agents, &mut rl, crate::grounding::GroundMode::Symbolic, context, tx).await
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+    use crate::types::Finding;
+
+    fn write_png(p: &Path) {
+        // Minimal valid 1x1 PNG.
+        const PNG: &[u8] = &[
+            0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x00,0x00,0x0d,0x49,0x48,0x44,0x52,
+            0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,0x08,0x02,0x00,0x00,0x00,0x90,0x77,0x53,
+            0xde,0x00,0x00,0x00,0x0c,0x49,0x44,0x41,0x54,0x08,0xd7,0x63,0xf8,0xcf,0xc0,0x00,
+            0x00,0x00,0x03,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x49,0x45,0x4e,
+            0x44,0xae,0x42,0x60,0x82,
+        ];
+        std::fs::write(p, PNG).unwrap();
+    }
+
+    #[test]
+    fn slugify_correlates_filename_to_finding() {
+        assert_eq!(slugify("Reflected XSS in /search?q="), "reflected-xss-in-search-q");
+        assert_eq!(slugify("IDOR \u{2014} order #42"), "idor-order-42");
+        assert_eq!(slugify("!!!"), "finding");
+    }
+
+    #[test]
+    fn collect_evidence_resolves_and_renames_by_finding_id() {
+        let base = std::env::temp_dir().join(format!("nrs-ev-{}", std::process::id()));
+        let wd = base.join("run");
+        let ev = wd.join("evidence");
+        std::fs::create_dir_all(&ev).unwrap();
+        write_png(&ev.join("whatever-agent-named-it.png"));
+        let mut fs = vec![Finding {
+            id: "xss-search".into(),
+            title: "Reflected XSS".into(),
+            screenshots: vec!["whatever-agent-named-it.png".into()],
+            ..Default::default()
+        }];
+        let n = collect_evidence(&mut fs, &wd);
+        assert_eq!(n, 1);
+        assert_eq!(fs[0].screenshots, vec!["evidence/xss-search-1.png".to_string()]);
+        assert!(wd.join("evidence/xss-search-1.png").is_file());
+        let mut miss = vec![Finding { id: "x".into(), title: "t".into(),
+            screenshots: vec!["nope.png".into()], ..Default::default() }];
+        assert_eq!(collect_evidence(&mut miss, &wd), 0);
+        assert!(miss[0].screenshots.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn synthesize_pocs_fills_empty_dirs_on_api_path() {
+        use crate::validation::{Evidence, Exchange};
+        let base = std::env::temp_dir().join(format!("nrs-synth-{}", std::process::id()));
+        let wd = base.join("run");
+        std::fs::create_dir_all(&wd).unwrap();
+        let attack = Exchange {
+            method: "GET".into(),
+            url: "https://app.example.com/api/orders/42".into(),
+            status: 200,
+            body: "{\"owner\":\"victim\",\"total\":99}".into(),
+            content_type: "application/json".into(),
+            elapsed_ms: 12,
+            identity: "attacker".into(),
+            ..Default::default()
+        };
+        let mut fs = vec![Finding {
+            id: "bola-order".into(),
+            title: "BOLA on /api/orders/{id}".into(),
+            severity: "Critical".into(),
+            cwe: "CWE-639".into(),
+            endpoint: "https://app.example.com/api/orders/42".into(),
+            evidence_data: Some(Evidence { attack: Some(attack), marker: "NSPLT_z9".into(), ..Default::default() }),
+            ..Default::default()
+        }];
+        let n = synthesize_pocs_and_evidence(&mut fs, &wd);
+        assert!(n >= 2, "a PoC and an evidence file should be written");
+        assert!(wd.join("pocs/bola-on-api-orders-id.md").is_file());
+        assert!(wd.join("evidence/bola-on-api-orders-id.md").is_file());
+        let poc = std::fs::read_to_string(wd.join("pocs/bola-on-api-orders-id.md")).unwrap();
+        assert!(poc.contains("curl") && poc.contains("/api/orders/42"));
+        assert!(fs[0].evidence.contains("pocs/bola-on-api-orders-id.md"), "the PoC path is cited back");
+
+        // Idempotent: a second run writes nothing new.
+        assert_eq!(synthesize_pocs_and_evidence(&mut fs, &wd), 0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod extraction_tests {
+    use super::*;
+
+    /// The reply that exposed the bug: prose starting with `[low] …`, then the
+    /// real findings in a fenced block. The naive first-`[`-to-last-`]` span
+    /// began inside the prose and the agent's findings were discarded.
+    #[test]
+    fn narration_before_the_answer_does_not_eat_the_findings() {
+        let text = "[low] Antiforgery cookie missing Secure flag\n\
+                    - Endpoint: https://t.test/Account/Login\n\n\
+                    Final findings:\n\n\
+                    ```json\n[{\"id\":\"c1\",\"title\":\"Cookie without Secure\",\"severity\":\"Low\",\"cwe\":\"CWE-614\"}]\n```\n";
+        let f = extract_findings(text, "oauth_misconfiguration");
+        assert_eq!(f.len(), 1, "the fenced block is the answer");
+        assert_eq!(f[0].title, "Cookie without Secure");
+    }
+
+    #[test]
+    fn a_bare_array_still_works() {
+        let f = extract_findings("[{\"title\":\"X\",\"severity\":\"High\"}]", "a");
+        assert_eq!(f.len(), 1);
+    }
+
+    #[test]
+    fn the_last_fenced_block_wins() {
+        let text = "```json\n[{\"title\":\"draft\"}]\n```\nOn reflection:\n```json\n[{\"title\":\"final\"}]\n```";
+        let f = extract_findings(text, "a");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "final");
+    }
+
+    #[test]
+    fn an_empty_result_is_a_result_not_a_parse_failure() {
+        for t in ["[]", "```json\n[]\n```", "I looked and found nothing.\n\n```json\n[]\n```", "{\"findings\": []}"] {
+            assert!(reported_nothing(t), "{t:?} means 'nothing found'");
+            assert!(extract_findings(t, "a").is_empty());
+        }
+        assert!(!reported_nothing("[{\"title\":\"real\"}]"));
+    }
+
+    #[test]
+    fn a_trailing_comma_is_still_salvaged() {
+        let f = extract_findings("```json\n[{\"title\":\"X\",\"severity\":\"Low\"},]\n```", "a");
+        assert_eq!(f.len(), 1);
+    }
+
+    /// `JSON parse failed` on a live run: single-quoted keys/values and a `//`
+    /// comment — none of which strict serde accepts, all of which json5 does.
+    #[test]
+    fn single_quotes_and_comments_are_recovered() {
+        let f = extract_findings("```json\n[ {'title': 'Reflected XSS', 'severity': 'High'} ] // done\n```", "a");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "Reflected XSS");
+    }
+
+    /// A capitalised fence tag used to fail the old `starts_with('[')` gate and
+    /// surface as `no JSON array/object found`.
+    #[test]
+    fn a_capitalised_fence_tag_is_handled() {
+        let f = extract_findings("```JSON\n[{\"title\":\"Open redirect\",\"severity\":\"Medium\"}]\n```", "a");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "Open redirect");
+    }
+
+    /// Token-limit truncation mid-way through the third finding: the two complete
+    /// ones must survive instead of the whole batch being discarded.
+    #[test]
+    fn a_truncated_array_keeps_the_complete_findings() {
+        let text = "[{\"title\":\"A\",\"severity\":\"Low\"},{\"title\":\"B\",\"severity\":\"Low\"},{\"title\":\"C";
+        let f = extract_findings(text, "a");
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[1].title, "B");
+    }
+
+    /// Pure prose (a refusal or narration with no JSON) is not a finding and not
+    /// a parse error — it yields nothing.
+    #[test]
+    fn pure_prose_yields_no_findings() {
+        assert!(extract_findings("I could not identify any injectable parameters.", "a").is_empty());
+    }
+
+    /// Black-box models often ignore "reply with ONLY a JSON array" and wrap the
+    /// batch in `{"findings":[…]}`. That object has no `title`, so the old
+    /// object-as-one-finding path dropped it and reported "0 parseable findings"
+    /// while real findings were lost. It must now unwrap to its array.
+    #[test]
+    fn a_findings_wrapper_object_is_unwrapped() {
+        let text = "```json\n{\"findings\":[{\"title\":\"IDOR on /orders\",\"severity\":\"High\"},{\"title\":\"Reflected XSS\",\"severity\":\"Medium\"}]}\n```";
+        let f = extract_findings(text, "a");
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0].title, "IDOR on /orders");
+    }
+
+    /// Alternate wrapper keys models use for the same shape.
+    #[test]
+    fn a_vulnerabilities_wrapper_object_is_unwrapped() {
+        let f = extract_findings("{\"vulnerabilities\":[{\"title\":\"SQLi\",\"severity\":\"Critical\"}]}", "a");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "SQLi");
+    }
+
+    /// A single bare finding object (with its own `title`) is still one finding —
+    /// unwrapping must not steal a nested array it happens to carry.
+    #[test]
+    fn a_bare_finding_object_stays_one_finding() {
+        let f = extract_findings("{\"title\":\"Open redirect\",\"severity\":\"Low\",\"repro_steps\":[\"curl …\"]}", "a");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "Open redirect");
+    }
+
+    /// An empty wrapper is an honest negative, not a malformed reply.
+    #[test]
+    fn an_empty_wrapper_is_reported_nothing_not_a_parse_failure() {
+        assert!(reported_nothing("{\"findings\":[]}"));
+        assert!(reported_nothing("```json\n{\"vulnerabilities\": []}\n```"));
+        assert!(extract_findings("{\"findings\":[]}", "a").is_empty());
+    }
+
+    #[test]
+    fn a_model_decline_is_detected_as_refusal_not_a_parse_error() {
+        // The exact shape seen on a live run: a prose reply declining the technique.
+        let decline = "I can't run mass account creation / credential-stuffing loads at a production service — that is state-changing and can disrupt real users. Want me to spin up a local Juice Shop and run this exact playbook against it instead?";
+        assert!(looks_like_refusal(decline));
+        // A real findings array is NOT a refusal.
+        assert!(!looks_like_refusal("[{\"title\":\"SQLi\",\"severity\":\"High\"}]"));
+        // An honest empty result is NOT a refusal.
+        assert!(!looks_like_refusal("[]"));
+        assert!(!looks_like_refusal("No vulnerabilities were found in the tested endpoints."));
+    }
+
+    #[test]
+    fn a_response_backed_finding_is_a_reproducible_receipt_and_never_dropped() {
+        // Missing HSTS: the proof is the response headers — reproducible with one
+        // request, must never be discarded by an opinion-vote.
+        let hsts = Finding {
+            title: "No Strict-Transport-Security header".into(),
+            severity: "Low".into(), cwe: "CWE-319".into(),
+            endpoint: "https://scapi.rockstargames.com/".into(),
+            evidence: "HTTP/2 200\nserver: cloudflare\n(no strict-transport-security header present)".into(),
+            ..Default::default()
+        };
+        assert!(has_http_receipt(&hsts), "a captured response IS a receipt");
+        // Insecure cookie flags — Set-Cookie in evidence.
+        let cookie = Finding {
+            title: "Cookie without Secure/HttpOnly".into(), severity: "Low".into(), cwe: "CWE-614".into(),
+            endpoint: "https://scapi.rockstargames.com/".into(),
+            evidence: "Set-Cookie: bal=1; path=/   (no Secure, no HttpOnly, no SameSite)".into(),
+            ..Default::default()
+        };
+        assert!(has_http_receipt(&cookie));
+        // Pure prose with no receipt is NOT a reproducible receipt.
+        let vague = Finding { title: "Maybe vulnerable".into(), evidence: "the app seems insecure".into(), ..Default::default() };
+        assert!(!has_http_receipt(&vague));
+        // A white-box file:line citation IS a receipt.
+        let wb = Finding { title: "SQLi".into(), endpoint: "src/db.py:42".into(), evidence: "query = f\"...{id}\"".into(), ..Default::default() };
+        assert!(has_http_receipt(&wb));
+    }
+
+    /// The bare-array happy path for agent selection.
+    #[test]
+    fn a_string_array_parses_plain() {
+        assert_eq!(parse_string_array("[\"sqli\",\"xss\"]"), vec!["sqli", "xss"]);
+    }
+
+    /// Same wrapper-object deviation as findings: `{"agents":[…]}` must not read as
+    /// an empty selection (which silently drops the model's choice to RL ranking).
+    #[test]
+    fn a_wrapped_string_array_is_unwrapped() {
+        assert_eq!(parse_string_array("{\"agents\":[\"sqli\",\"idor\"]}"), vec!["sqli", "idor"]);
+        assert_eq!(parse_string_array("```json\n{\"selected\": [\"ssrf\"]}\n```"), vec!["ssrf"]);
+    }
+
+    /// Models sometimes answer with objects per element instead of bare strings.
+    #[test]
+    fn array_elements_that_are_objects_yield_their_name() {
+        assert_eq!(
+            parse_string_array("[{\"name\":\"sqli\",\"why\":\"x\"},{\"agent\":\"xss\"}]"),
+            vec!["sqli", "xss"]
+        );
+    }
+
+    /// A chain reply wrapping findings under a non-`findings` key still yields both
+    /// the findings and the sibling loot.
+    #[test]
+    fn extract_chain_unwraps_any_findings_key_with_loot() {
+        let text = "{\"vulnerabilities\":[{\"title\":\"RCE\",\"severity\":\"Critical\"}],\"loot\":[\"root creds\"]}";
+        let (f, loot) = extract_chain(text, "chain");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "RCE");
+        assert_eq!(loot, vec!["root creds"]);
+    }
+}
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::*;
+
+    fn f(agent: &str, title: &str, cwe: &str, endpoint: &str, sev: &str) -> Finding {
+        Finding {
+            agent: agent.into(),
+            title: title.into(),
+            cwe: cwe.into(),
+            endpoint: endpoint.into(),
+            severity: sev.into(),
+            confidence: 0.8,
+            ..Default::default()
+        }
+    }
+
+    /// The five reports of one cookie issue from a live engagement — different
+    /// agents, different CWE spellings, different endpoint decorations,
+    /// different severities.
+    #[test]
+    fn one_issue_reported_by_five_agents_becomes_one_finding() {
+        let v = vec![
+            f("cleartext_transmission", "Antiforgery cookie set without Secure flag (transmittable over cleartext HTTP)", "CWE-614", "https://h.test/ (any page; e.g. /Account/Login, /Account/Register)", "Low"),
+            f("account_takeover_chain", "Antiforgery cookie set without Secure flag + no HSTS on identity flows", "CWE-614", "https://h.test/Account/Login", "Low"),
+            f("insecure_cookie_flags", "Antiforgery (CSRF-token) cookie set over HTTPS without the Secure flag", "CWE-614", "https://h.test/ (also /Account/Login, /Account/Register)", "Medium"),
+            f("account_registration_and_forms", "Antiforgery cookie set without Secure flag over HTTPS", "CWE-614 (Sensitive Cookie in HTTPS Session Without Secure Attribute)", "GET https://h.test/ (and /Account/Register, /Account/Login)", "Low"),
+        ];
+        let out = dedup_findings(v);
+        let cookie: Vec<&Finding> = out.iter().filter(|x| cwe_num(&x.cwe) == "614" && endpoint_key(&x.endpoint) == "h.test").collect();
+        assert_eq!(cookie.len(), 1, "got {:?}", out.iter().map(|x| (&x.agent, &x.title)).collect::<Vec<_>>());
+        // Severity must not drift down just because most agents said Low.
+        assert_eq!(cookie[0].severity, "Medium");
+        assert!(cookie[0].votes.contains("corroborated by"), "agreement belongs in the report: {:?}", cookie[0].votes);
+    }
+
+    /// Three different missing headers are all CWE-693 on `/` and are three
+    /// separate fixes — merging by (cwe, endpoint) alone would erase two.
+    #[test]
+    fn different_headers_under_one_cwe_stay_separate() {
+        let v = vec![
+            f("security_headers", "Missing X-Content-Type-Options: nosniff", "CWE-693", "https://h.test/", "Low"),
+            f("security_headers", "Missing Referrer-Policy header", "CWE-693", "https://h.test/", "Low"),
+            f("security_headers", "Missing Permissions-Policy header", "CWE-693", "https://h.test/", "Low"),
+            f("security_headers", "Weak Content-Security-Policy — only frame-ancestors defined, no script-src/default-src", "CWE-693", "https://h.test/", "Low"),
+        ];
+        assert_eq!(dedup_findings(v).len(), 4);
+    }
+
+    /// Same CWE, same host, different endpoints: three real findings with
+    /// different impact (login spraying vs reset-email flooding).
+    #[test]
+    fn the_same_weakness_on_different_endpoints_is_not_a_duplicate() {
+        let v = vec![
+            f("rate_limit_abuse", "Missing rate limiting & account lockout on login", "CWE-307", "https://h.test/Account/Login", "Medium"),
+            f("rate_limit_abuse", "Missing rate limiting on password-reset flow", "CWE-307", "https://h.test/Account/ForgotPassword", "Medium"),
+            f("rate_limit_abuse", "Missing rate limiting on resend-email-confirmation", "CWE-307", "https://h.test/Account/ResendEmailConfirmation", "Medium"),
+        ];
+        assert_eq!(dedup_findings(v).len(), 3);
+    }
+
+    #[test]
+    fn the_survivor_keeps_the_fullest_evidence_and_the_missing_pieces() {
+        let mut thin = f("a", "Missing HSTS header", "CWE-319", "https://h.test/", "Medium");
+        thin.evidence = "short".into();
+        let mut rich = f("b", "Missing HTTP Strict-Transport-Security (HSTS) header", "CWE-319", "https://h.test/", "Low");
+        rich.evidence = "a much longer evidence blob with the full header dump".into();
+        rich.remediation = "Add Strict-Transport-Security with max-age".into();
+        let out = dedup_findings(vec![thin, rich]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].severity, "Medium", "highest severity wins");
+        assert!(out[0].evidence.contains("full header dump"), "fullest evidence wins");
+        assert!(!out[0].remediation.is_empty(), "the duplicate's remediation is not lost");
+    }
+
+    #[test]
+    fn endpoint_and_cwe_are_normalized_the_same_however_they_were_written() {
+        assert_eq!(cwe_num("CWE-614 (Sensitive Cookie…)"), "614");
+        assert_eq!(cwe_num("CWE-204 (Observable Response Discrepancy) / CWE-200"), "204");
+        assert_eq!(endpoint_key("GET https://h.test/ (and /Account/Register)"), "h.test");
+        assert_eq!(endpoint_key("https://h.test/Account/Login?x=1"), "h.test/account/login");
+        assert_eq!(endpoint_key("https://www.h.test/a/"), "h.test/a");
+    }
+
+    /// The default UA is a plain token — no "authorized security assessment"
+    /// comment that WAFs/CDNs block or fingerprint. Attribution moves to the
+    /// X-NeuroSploit-Scan header, carried on every request.
+    #[test]
+    fn the_default_user_agent_is_a_plain_token() {
+        let ua = default_user_agent();
+        assert!(ua.starts_with("NeuroSploit/"), "{ua}");
+        assert!(!ua.contains("authorized"), "verbose comment causes WAF false negatives: {ua}");
+        assert!(!ua.contains('('), "no parenthetical comment in the UA: {ua}");
+    }
+
+    #[test]
+    fn every_request_carries_the_scan_attribution_header() {
+        let h = default_scan_headers();
+        assert_eq!(h.get("X-NeuroSploit-Scan").unwrap(), env!("CARGO_PKG_VERSION"));
+        assert_eq!(h.get(reqwest::header::ACCEPT).unwrap(), "*/*");
+    }
+}
+
+#[cfg(test)]
+mod ops_wiring_tests {
+    use super::*;
+
+    fn cfg(extra: serde_json::Value) -> RunConfig {
+        let mut base = serde_json::json!({"target": "app.example.com", "models": []});
+        base.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(base).expect("RunConfig from json")
+    }
+
+    #[test]
+    fn operator_constraint_reaches_prompt_and_blocks_scanners() {
+        let c = cfg(serde_json::json!({"instructions": "Focus on auth. No port scan please."}));
+        assert!(operator_directives(&c).contains("OPERATOR CONSTRAINTS"));
+        assert!(operator_constraints(&c).check_command("nmap -sV app.example.com").is_some());
+        assert!(operator_constraints(&c).check_command("curl https://app.example.com").is_none());
+    }
+
+    #[test]
+    fn no_constraint_text_means_no_block_and_nothing_blocked() {
+        let c = cfg(serde_json::json!({"instructions": "focus on injection"}));
+        assert!(!operator_directives(&c).contains("OPERATOR CONSTRAINTS"));
+        assert!(operator_constraints(&c).check_command("nmap x").is_none());
+    }
+
+    #[test]
+    fn graph_block_folds_settled_history_and_persists_state() {
+        use crate::exploration_graph::{DualGraph, ExplorationStatus};
+        let dir = std::env::temp_dir().join(format!("ns-digest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut dg = DualGraph::default();
+        let goal = dg.exploration.add_goal("test auth", "planner");
+        let intent = dg.exploration.add_intent("probe login", &goal, "planner");
+        for i in 0..8 { dg.exploration.add_negative(&format!("param {i} clean"), &intent, "w"); }
+        dg.exploration.set_status(&intent, ExplorationStatus::Completed);
+        // Each graph change ages the history by one round; fold after it settles.
+        let mut out = compact_graph_block(&dir, &dg);
+        for _ in 0..5 {
+            dg.exploration.add_hint("noise", &goal, "w");
+            out = compact_graph_block(&dir, &dg);
+        }
+        assert!(out.contains("digest-0"), "settled nodes should be folded: {out}");
+        assert!(dir.join("digest-state.json").exists());
+        // Corrupt state must not break prompt building.
+        std::fs::write(dir.join("digest-state.json"), "{not json").unwrap();
+        assert!(!compact_graph_block(&dir, &dg).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

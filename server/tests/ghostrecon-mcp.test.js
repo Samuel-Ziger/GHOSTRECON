@@ -257,6 +257,14 @@ test('MCP normaliza política AUTO sem confundir mode com perfil OPSEC', () => {
     () => normalizeAutoMcpOptions({ target: 'lab.example.test', includeVigolium: true }),
     /autonomia autorizada/,
   );
+  assert.throws(
+    () => normalizeAutoMcpOptions({ target: 'lab.example.test', commanders: ['codex'] }),
+    /AUTO_FIELDS_RETIRED: commanders/,
+  );
+  assert.throws(
+    () => normalizeAutoMcpOptions({ target: 'lab.example.test', openrouterModel: 'legacy' }),
+    /AUTO_FIELDS_RETIRED: openrouterModel/,
+  );
 });
 
 test('MCP run_auto envia motores opt-in e autonomia explicitamente ao backend', async () => {
@@ -279,7 +287,6 @@ test('MCP run_auto envia motores opt-in e autonomia explicitamente ao backend', 
   assert.deepEqual(captured[0], {
     domain: 'default.example.test',
     mode: 'deep',
-    commanders: [],
     modules: [],
     includeHexstrike: false,
     includeDeepPassive: true,
@@ -294,7 +301,6 @@ test('MCP run_auto envia motores opt-in e autonomia explicitamente ao backend', 
   await callTool('ghostrecon_run_auto', {
     target: 'authorized.example.test',
     mode: 'quick',
-    commanders: ['codex'],
     modules: ['headers', 'headers'],
     autonomyLevel: 'authorized_opsec',
     includeHexstrike: true,
@@ -304,13 +310,11 @@ test('MCP run_auto envia motores opt-in e autonomia explicitamente ao backend', 
     includeVigolium: true,
     vigoliumUseCodex: true,
     confirmActive: true,
-    openrouterModel: 'modelo-local',
     engagementId: 'eng-lab',
   }, { client });
   assert.deepEqual(captured[1], {
     domain: 'authorized.example.test',
     mode: 'quick',
-    commanders: ['codex'],
     modules: ['headers', 'headers'],
     includeHexstrike: true,
     includeDeepPassive: false,
@@ -320,7 +324,6 @@ test('MCP run_auto envia motores opt-in e autonomia explicitamente ao backend', 
     includeVigolium: true,
     vigoliumUseCodex: true,
     approvalMode: 'deny',
-    openrouterModel: 'modelo-local',
     engagementId: 'eng-lab',
   });
 });
@@ -398,9 +401,6 @@ test('MCP plan_auto aplica opt-ins ao catálogo e preserva a política de autono
     },
   };
   const planningModulesLoader = async () => ({
-    async detectAutoProviders({ selected }) {
-      return { providers: selected.map((id) => ({ id, selected: true })) };
-    },
     async buildAutoToolCatalog(options) {
       catalogCalls.push(options);
       return catalog;
@@ -414,7 +414,6 @@ test('MCP plan_auto aplica opt-ins ao catálogo e preserva a política de autono
       };
     },
   });
-  const ragContextLoader = async () => ({ dir: '', items: [] });
 
   const defaults = await callTool('ghostrecon_plan_auto', {
     target: 'default-plan.example.test',
@@ -422,7 +421,6 @@ test('MCP plan_auto aplica opt-ins ao catálogo e preserva a política de autono
   }, {
     client,
     planningModulesLoader,
-    ragContextLoader,
   });
   assert.equal(catalogCalls[0].includeHexstrike, false);
   assert.equal(catalogCalls[0].includeVigolium, false);
@@ -445,7 +443,6 @@ test('MCP plan_auto aplica opt-ins ao catálogo e preserva a política de autono
   }, {
     client,
     planningModulesLoader,
-    ragContextLoader,
   });
   assert.equal(catalogCalls[1].includeHexstrike, true);
   assert.equal(catalogCalls[1].includeVigolium, true);
@@ -463,7 +460,7 @@ test('MCP plan_auto aplica opt-ins ao catálogo e preserva a política de autono
   assert.equal(selectedPayload.plan.policy.opsecProfile, 'aggressive');
   assert.equal(selectedPayload.opsec.profile, 'aggressive');
   assert.equal(selectedPayload.previewOnly, true);
-  assert.equal(selectedPayload.exactRuntimePlan, false);
+  assert.equal(selectedPayload.exactRuntimePlan, true);
   assert.equal(selectedPayload.effectivePlan.requiresHumanApproval, true);
   assert.equal(selectedPayload.approval.planHash, selectedPayload.effectivePlan.hash);
 });

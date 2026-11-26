@@ -3,6 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { requireScope } from '../modules/auth.js';
 import { redactAutoText } from '../auto-agent/redaction.mjs';
+import { auditArtifactContent } from '../modules/artifact-safety-audit.mjs';
 import {
   redactFindingForPublic,
   redactLocalPathsForPublic,
@@ -67,6 +68,19 @@ function reportDir(root) {
 
 const MAX_REPORT_BYTES = 50 * 1024 * 1024;
 
+function insideRoot(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function assertReportArtifactSafe(value, artifact) {
+  const audit = auditArtifactContent(value, { artifact });
+  if (audit.publicationAllowed) return;
+  const error = new Error('report contem material sensivel residual');
+  error.code = 'VIGOLIUM_REPORT_UNSAFE';
+  throw error;
+}
+
 async function readSanitizedVigoliumReport(full, { root = null } = {}) {
   const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
   const handle = await fs.open(full, fsConstants.O_RDONLY | noFollow);
@@ -74,10 +88,12 @@ async function readSanitizedVigoliumReport(full, { root = null } = {}) {
     const stat = await handle.stat();
     if (!stat.isFile()) throw new Error('report informado nao e arquivo');
     if (stat.size > MAX_REPORT_BYTES) throw new Error('report maior que 50MB');
-    return redactLocalPathsForPublic(
+    const safe = redactLocalPathsForPublic(
       redactAutoText(await handle.readFile('utf8')),
       { paths: [root, full].filter(Boolean) },
     );
+    assertReportArtifactSafe(safe, full);
+    return safe;
   } finally {
     await handle.close();
   }
@@ -91,6 +107,7 @@ async function writeSanitizedVigoliumReport(dest, html, { root = null } = {}) {
   if (Buffer.byteLength(safe, 'utf8') > MAX_REPORT_BYTES) {
     throw new Error('report maior que 50MB');
   }
+  assertReportArtifactSafe(safe, dest);
   await fs.writeFile(dest, safe, {
     encoding: 'utf8',
     mode: 0o600,
@@ -153,7 +170,11 @@ async function importVigoliumReport(root, body = {}) {
   const dest = path.join(dir, `${stamp}-import-${requestedName}`);
 
   if (sourcePath) {
-    const src = path.resolve(root, sourcePath);
+    const [approvedRoot, src] = await Promise.all([
+      fs.realpath(root),
+      fs.realpath(path.resolve(root, sourcePath)),
+    ]);
+    if (!insideRoot(approvedRoot, src)) throw new Error('sourcePath fora da raiz aprovada');
     if (!/\.html?$/i.test(src)) throw new Error('report precisa ser .html/.htm');
     await writeSanitizedVigoliumReport(
       dest,

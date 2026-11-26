@@ -62,7 +62,6 @@ export const ROLE_SCOPES = Object.freeze({
     'evidence.capture',
     'cve.enrich',
     'ai.run',
-    'shannon.run',
     'project.write',
     'engagement.write',
     'team.lock',

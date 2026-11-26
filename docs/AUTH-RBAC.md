@@ -58,7 +58,7 @@ segredos.
 viewer    → recon.read
 operator  → viewer + [recon.run, brain.write, notes.write, validation.write,
                       evidence.capture, cve.enrich]
-red       → operator + [recon.intrusive, forge.review, ai.run, shannon.run,
+red       → operator + [recon.intrusive, forge.review, ai.run,
                         project.write, engagement.write, team.lock]
 admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujeitas
                   aos gates próprios e ao escopo autorizado)
@@ -74,14 +74,15 @@ admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujei
 | `recon.run`         | `/api/recon/preflight`, `/api/recon/stream`                                                 | POST   |
 | `recon.run` (Auto)  | `/api/recon/auto/stream`, cancelamento/aprovação da própria sessão Auto, aprovação FrameSeven e verdict Forge quando combinado com `forge.review` | POST |
 | `recon.intrusive`   | _Escala_ aplicada a `/api/recon/preflight` e `/api/recon/stream` sobre o plano expandido; `/api/recon/approval` sempre exige este scope. Inclui Kali, módulos intrusivos, Vigolium/DAST e FrameSeven `offensive_v1`; no RUN manual exige `confirmActive` e aprovação vinculada. Engagement é opcional e validado quando informado | POST |
-| `recon.intrusive` (Auto) | _Escala_ aplicada ao stream Auto nos níveis 3/4, Vigolium, FrameSeven autenticado ou plano intrusivo; também é exigida ao resolver aprovação Auto/FrameSeven marcada como intrusiva | POST |
+| `recon.intrusive` (Auto) | _Escala_ aplicada ao stream Auto nos níveis 3/4, Vigolium, NeuroSploit, FrameSeven autenticado ou plano intrusivo; também é exigida ao resolver aprovação Auto/FrameSeven marcada como intrusiva | POST |
 | `forge.review`      | Ler/comparar pacotes Forge; decidir aprovação/rejeição exige cumulativamente `recon.run`, CSRF e engagement formal válido para o canário | GET/POST |
 | `forge.manage`      | Promover, habilitar, desabilitar, definir canary e fazer rollback de pacote Forge global | POST |
 | `brain.write`       | `/api/brain/categories`, `/api/brain/categories/:id/description`, `/api/brain/link`         | POST   |
 | `notes.write`       | `/api/anotacao-handoff`, `/api/auto-rag/note`                                               | POST   |
 | `validation.write`  | `/api/manual-validations`                                                                   | POST   |
-| `ai.run`            | `/api/ai-reports`, `/api/manual-validations/ai-report`, `/api/manual-validations/annotations-ai`, `/api/pentestgpt-ping` | POST |
-| `shannon.run`       | `/api/shannon/prep`                                                                         | POST   |
+| `ai.run`            | `/api/ai-reports`, `/api/manual-validations/ai-report`, `/api/manual-validations/annotations-ai` | POST |
+| `ai.run` (NeuroSploit) | Status, jobs próprios, controles e artefatos em `/api/neurosploit/*`; iniciar/retomar acumula `recon.run`, e modos de rede acumulam `recon.intrusive` | GET/POST |
+| `ai.manage`         | Configuração global do Artex/GhostIA: MCP, perfis LLM e conexão ChatGPT Plan (admin via `*`) | POST |
 | `evidence.capture`  | `/api/evidence/capture/:runId`                                                              | POST   |
 | `cve.enrich`        | `/api/cve/enrich`                                                                           | POST   |
 | `project.write`     | `/api/projects`                                                                             | POST   |
@@ -97,6 +98,23 @@ admin     → '*'  (inclui forge.manage; operações destrutivas continuam sujei
 > vinculada ao hash. No RUN manual, Engagement ID é opcional; quando informado,
 > deve estar ativo, com ROE assinado, alvo dentro do escopo/janela e fora das
 > exclusões. `aggressive` não substitui esses controles.
+
+### NeuroSploit
+
+Criar um job NeuroSploit exige `ai.run`, `recon.run` e CSRF. Nos modos de rede
+(`run`, `greybox`, `host` e `aitest`), exige também `recon.intrusive`, confirmação
+e referência de autorização, engagement formal ativo, ROE, janela e alvo em
+escopo. Listagem, detalhe, controle e download são owner-bound; admin conserva
+acesso operacional global.
+
+O perfil LLM é resolvido no Artex. Perfis de API sem credencial e perfis
+ChatGPT Plan/Codex desconectados falham antes do spawn. A sessão interna usada
+pelo processo não entra em argv nem no snapshot durável. Caminhos locais e
+artefatos são contidos nas raízes permitidas e os downloads usam allowlist.
+
+Quando incluído no stream Auto, o NeuroSploit conserva os mesmos requisitos e
+passa a integrar o plano hashado e a aprovação da sessão; não usa as antigas
+rotas de tarefa `/api/artex/auto/*`.
 
 ## Aprovação vinculada do RUN manual
 

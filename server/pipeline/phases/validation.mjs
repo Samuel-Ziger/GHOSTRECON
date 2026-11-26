@@ -132,7 +132,6 @@ export async function runValidationPhase(s) {
     profile,
     outOfScopeClientRaw,
     projectNameRaw,
-    shannonGithubRepos,
     identityCtrl,
     navegation,
     navigatorMode,
@@ -165,6 +164,8 @@ export async function runValidationPhase(s) {
 
     // ── VERIFY (evidence-guided) ─────────────────
     const runImplicitVerification = pipelineCapabilityAllowed(s, 'evidence_verification');
+    await dispatchRegistryModule(s, 'jwt_claim_authz_diff');
+    await dispatchRegistryModule(s, 'authz_object_matrix_v2');
     const runDeepSqliVerification = pipelineCapabilityAllowed(s, 'verify_sqli_deep');
     const runAnyVerification = runImplicitVerification || runDeepSqliVerification;
     pipe('verify', runAnyVerification ? 'active' : 'skip');
@@ -245,8 +246,10 @@ export async function runValidationPhase(s) {
         }
         try {
           const hl = hostLiteralForUrl(domain);
-          for (const scheme of ['https', 'http']) {
-            const o = `${scheme}://${hl}/`;
+          const fallbackOrigins = s.targetUrl
+            ? [s.targetUrl]
+            : [`https://${hl}/`, `http://${hl}/`];
+          for (const o of fallbackOrigins) {
             if (s.urlInScope(o) && !seenO.has(o) && origins.length < 12) {
               seenO.add(o);
               origins.push(o);
@@ -352,7 +355,7 @@ export async function runValidationPhase(s) {
       let curlFailed = false;
       try {
         const cp = await runCurlProbeModule({
-          target: domain,
+          target: s.targetUrl || domain,
           findings: findingsInScope(),
           auth,
           profile: runtimeProfile.name,
@@ -629,6 +632,10 @@ export async function runValidationPhase(s) {
     }
 
     await dispatchRegistryModule(s, 'hexstrike_orchestrator');
+    await dispatchRegistryModule(s, 'sqli_targeted_verify');
+    await dispatchRegistryModule(s, 'cloud_object_proxy_authz');
+    await dispatchRegistryModule(s, 'sensitive_payment_data');
+    await dispatchRegistryModule(s, 'financial_integrity_audit');
 
 
 }

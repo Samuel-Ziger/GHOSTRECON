@@ -175,7 +175,7 @@ const EXTERNAL_TOOL_PACKS = [
     pipelineStage: 'standalone',
     category: 'intel',
     intrusive: false,
-    entrypoint: 'standalone/news-verifier/index.html',
+    entrypoint: 'standalone/news-verifier/dist/index.html',
     language: 'html',
     outputs: ['artifact'],
   },

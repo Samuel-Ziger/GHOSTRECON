@@ -231,6 +231,41 @@ describe('vigolium report route', () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
+  it('recusa sourcePath fora da raiz e HTML com segredo em Base64', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-import-guard-'));
+    const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-outside-'));
+    const outside = path.join(outsideRoot, 'outside.html');
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.abcdefghijklmnopqrstuvwxyz123456';
+    const encoded = Buffer.from(`Authorization: Bearer ${jwt}`).toString('base64');
+    await fs.writeFile(outside, '<html>outside</html>');
+    const app = express();
+    app.use(express.json({ limit: '1mb' }));
+    app.use((req, _res, next) => {
+      req.principal = { role: 'admin', scopes: ['*'], _scopeSet: new Set(['*']) };
+      next();
+    });
+    registerVigoliumRoutes(app, { ROOT: root });
+    try {
+      await withExpressApp(app, async (baseUrl) => {
+        const outsideResponse = await fetch(`${baseUrl}/api/vigolium/reports/import`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sourcePath: outside }),
+        });
+        assert.equal(outsideResponse.status, 400);
+        const encodedResponse = await fetch(`${baseUrl}/api/vigolium/reports/import`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'unsafe.html', html: `<html>${encoded}</html>` }),
+        });
+        assert.equal(encodedResponse.status, 400);
+        const reportFiles = await fs.readdir(path.join(root, '.runtime', 'vigolium-reports'));
+        assert.equal(reportFiles.some((file) => file.endsWith('.html')), false);
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
   it('auth-config público omite segredos e caminhos; arquivo fica 0600 em diretório 0700', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-auth-route-'));
     const secret = 'opaque-route-auth-fixture';

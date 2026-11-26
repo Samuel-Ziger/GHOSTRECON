@@ -46,14 +46,14 @@ test('csrf audit ignora form POST com token', () => {
   assert.equal(auditCsrfHtml(html, { url: 'https://app.example.com/' }).length, 0);
 });
 
-test('jwks audit detecta kid duplicado e chave simetrica publica', () => {
+test('jwks audit detecta kid duplicado e chave simetrica publica', async () => {
   const jwks = {
     keys: [
       { kty: 'oct', kid: 'shared', alg: 'HS256', k: 'abc' },
       { kty: 'RSA', kid: 'shared', n: 'AQAB', e: 'AQAB' },
     ],
   };
-  const findings = auditJwks(jwks, { url: 'https://idp.example.com/jwks.json' });
+  const findings = await auditJwks(jwks, { url: 'https://idp.example.com/jwks.json' });
   assert.ok(findings.some((f) => /kid duplicado/.test(f.value)));
   assert.ok(findings.some((f) => /simetrica/.test(f.value)));
   assert.ok(findings.some((f) => /HS256/.test(f.value)));
@@ -102,22 +102,34 @@ test('module registry lista modulos passivos implementados', () => {
   const ids = listModuleManifests().map((m) => m.id).sort();
   assert.deepEqual(ids, [
     'api_contract_diff',
+    'api_excessive_data_audit',
+    'artifact_safety_audit',
+    'authz_object_matrix_v2',
+    'bounded_object_key_discovery',
+    'cloud_debug_env_audit',
+    'cloud_object_proxy_authz',
     'cookie_session_audit',
     'csrf_flow_audit',
     'cve_correlation',
+    'deterministic_voucher_audit',
     'dom_clobbering_audit',
     'email_security_deep',
+    'financial_integrity_audit',
     'hexstrike_orchestrator',
     'hpp_param_pollution',
     'http3_quic_surface',
+    'jwt_claim_authz_diff',
     'jwt_jwks_audit',
     'kali_xss_vibes',
     'nginx_http3_cve_2026_42530',
     'panel_exposure_audit',
     'pastebin',
     'risk_explainer',
+    'runtime_endpoint_pivot',
     'secrets_context_ranker',
+    'sensitive_payment_data',
     'service_worker_audit',
+    'sqli_targeted_verify',
     'verify_sqli_deep',
     'vigolium_audit',
     'vigolium_dast',

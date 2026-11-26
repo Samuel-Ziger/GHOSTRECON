@@ -62,11 +62,8 @@ async function makeApprovedForge(root, {
         proposedId: id,
         gap: 'análise local sem rede',
         intrusive: false,
-        approvals: ['reviewer'],
       },
-      council: {},
     },
-    council: {},
     authorOverride: 'codex',
   });
   await Promise.all([
@@ -96,14 +93,6 @@ async function makeApprovedForge(root, {
         ok: true,
         artifactIntegrity,
         isolation: storedTestAttestation(id),
-      },
-      aiReview: {
-        approved: true,
-        authorExcluded: true,
-        quorumMet: true,
-        minimumQuorum: 2,
-        independentVotes: 2,
-        artifactIntegrity,
       },
       policy: { pipelineEnabled: false, operatorApprovalRequired: true },
     })),

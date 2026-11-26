@@ -196,7 +196,7 @@ flowchart LR
     I --> K[GhostTrace / GhostMap]
     I --> L[Reports / Webhooks]
     E -. opcional .-> M[Vigolium + FrameSeven + Kali]
-    E -. opcional .-> N[AI Council + RAG]
+    E -. persistência .-> N[RAG + checkpoints]
 ```
 
 O endpoint principal é `POST /api/recon/stream`. Ele produz NDJSON para que qualquer cliente acompanhe o pipeline sem esperar o término completo da execução.
@@ -333,8 +333,8 @@ A CLI também oferece `projects`, `engagement`, `narrative`, `purple`, `team`, `
 
 ## Modo Auto
 
-O Modo Auto é um orquestrador **supervisionado**. Seu contrato exige que as IAs
-selecionadas proponham um plano e que o GHOSTRECON expanda, gateie e execute
+O Modo Auto é um orquestrador **supervisionado e determinístico**. O operador
+escolhe perfil, módulos e motores; o GHOSTRECON expande, gateia e executa
 exatamente o objeto congelado. A implementação cobre o plano externo, mas ainda
 não satisfaz essa invariante para a expansão interna do Vigolium nem para a
 política de rede dentro de todos os engines.
@@ -347,13 +347,11 @@ política de rede dentro de todos os engines.
 > desabilitados por política enquanto os P0 permanecerem abertos.
 
 ```text
-CONTEXTO REDIGIDO + CATÁLOGO + RAG
+TARGET + PERFIL + MÓDULOS + CATÁLOGO
                   ↓
-             CONSELHO DE IAs
+       PLANO DETERMINÍSTICO VALIDADO
                   ↓
-          DECISÃO JSON VALIDADA
-                  ↓
-        CHECKPOINT V2 + CLAIM ÚNICO
+      CHECKPOINT VERSIONADO + CLAIM ÚNICO
                   ↓
  PLANO EXTERNO EXPANDIDO + HASH
  (VIGOLIUM INTERNO AINDA PENDENTE)
@@ -362,9 +360,9 @@ CONTEXTO REDIGIDO + CATÁLOGO + RAG
                   ↓
           APROVAÇÃO HUMANA 2–4
                   ↓
- GHOSTRECON → Vigolium → FrameSeven
+ GHOSTRECON → Vigolium → FrameSeven → NeuroSploit
                   ↓
-       AVALIAÇÃO + RAG + HANDOFF
+       AVALIAÇÃO + RAG + RELATÓRIO
 ```
 
 O catálogo do Auto combina manifests, fases legadas, módulos Forge ativos e
@@ -394,11 +392,14 @@ engagement/ROE ou autoriza uma classe de risco.
 | 3 | `authorized` | Pode propor módulos intrusivos autorizados; exige `recon.intrusive`, engagement/ROE aplicável e confirmação |
 | 4 | `authorized_opsec` | Mesmo limite de risco do nível 3, com perfil OPSEC `aggressive`; não autoriza ações destrutivas |
 
-HexStrike, Vigolium e FrameSeven aparecem no catálogo somente quando seus
+HexStrike, Vigolium, FrameSeven e NeuroSploit aparecem no catálogo somente quando seus
 respectivos toggles são ativados. O modo autenticado do FrameSeven exige opt-in
 adicional e confirmação própria; segredos e cookies não entram em argv, RAG ou
 logs. Quando mais de um motor é selecionado, a ordem é
-**GHOSTRECON → Vigolium → FrameSeven**.
+**GHOSTRECON → Vigolium → FrameSeven → NeuroSploit**. O NeuroSploit exige
+nível 3/4, engagement formal, perfil API/Codex pronto e aprovação do plano.
+Ele recebe um JSON redigido com os resultados já coletados, valida as lacunas e
+devolve findings para a mesma avaliação e para o Cortex.
 
 As identidades dos executáveis FrameSeven e Vigolium são calculadas durante o
 catálogo/preflight, seladas no plano efetivo e revalidadas imediatamente antes
@@ -470,10 +471,8 @@ Painéis/MySQL são inventário; leitura pública Firebase e correlação DOM n�
 comprovam vulnerabilidade. `webshell_probe` não envia comandos. Falha/timeout de
 ffuf/dirsearch não aparece como busca concluída sem resultados. O Swarm está
 indisponível até haver enforcement do plano no motor; Autopilot é apenas prévia
-`dry-run`, sem importar exemplos como findings. Shannon solicita cancelamento
-Temporal, mas não atesta término remoto; `cleanup.confirmed=false` não deve ser
-interpretado como limpeza comprovada. Esta rodada foi verificada com fixtures,
-não com scanners em alvos externos.
+`dry-run`, sem importar exemplos como findings. Esta rodada foi verificada
+com fixtures, não com scanners em alvos externos.
 
 Pesquisa GitHub não transforma resultado de busca em segredo: o conteúdo é
 baixado com limite e precisa conter relação com o alvo e padrão de segredo. O
@@ -546,14 +545,13 @@ o root local é substituído e caminhos absolutos de artefatos são omitidos. Es
 fronteira não substitui o teste ponta a ponta de artefatos produzidos por
 ferramentas externas.
 
-Provedores contemplados pelo contrato incluem Codex, Claude Code, Cursor,
-OpenRouter, GHOST/modelo local e endpoints OpenAI-compatible. A disponibilidade
-depende da instalação e configuração local. Quando todos os selecionados estão
-indisponíveis, o backend ainda pode usar baseline determinístico sem um estado
-degradado explícito. O RAG ainda não é particionado por principal/engagement, e
-consentimento, custo e política para providers externos precisam ser
-verificáveis antes de evidência autenticada. O endpoint principal é
-`POST /api/recon/auto/stream`.
+O Modo Auto usa planejamento determinístico local: não seleciona comandantes e
+não consulta providers de IA para montar o plano. Quando o operador ativa o
+NeuroSploit, a etapa final multiagente usa explicitamente o perfil API/Codex
+selecionado para analisar o contexto redigido e aprovado. O
+RAG e os snapshots são particionados por principal, engagement e alvo; memórias
+históricas do antigo planejador não entram no plano atual. O endpoint principal
+é `POST /api/recon/auto/stream`.
 
 > [!IMPORTANT]
 > Autonomia é uma política de seleção, nunca autorização do alvo. Níveis 3/4
@@ -601,6 +599,7 @@ com o mesmo principal, e então repetir a tool com
 | Serviço | Endereço padrão | Papel |
 | --- | --- | --- |
 | GHOSTRECON | `http://127.0.0.1:3847/` | Cockpit e API principal |
+| GhostIA | `http://127.0.0.1:3847/ghostia.html` | Chat Artex, multiagentes HackBot e NeuroSploit |
 | Reporte | `http://127.0.0.1:3847/reporte.html` | Validação manual e handoff |
 | Cortex | `http://127.0.0.1:3847/cortex.html` | Conhecimento e contexto |
 | History | `http://127.0.0.1:3847/vigolium-workbench.html` | HTTP history e workbench |
@@ -620,14 +619,15 @@ GHOSTRECON/
 │   ├── routes/              endpoints HTTP
 │   ├── pipeline/            dispatcher, estado e fases do recon
 │   ├── modules/             módulos, storage, auth e integrações
-│   ├── auto-agent/          conselho, providers, RAG e Module Forge
-│   ├── integrations/        FrameSeven e HexStrike
+│   ├── auto-agent/          planejamento determinístico, RAG e Module Forge
+│   ├── integrations/        Artex, NeuroSploit, FrameSeven e HexStrike
 │   └── tests/               testes Node
-├── public/                  cockpit e painéis HTML
+├── frontend/                host React/TypeScript e templates de paridade
+├── public/                  shells e bundles compilados da UI React
 ├── bin/                     CLI v1
 ├── mcp/                     servidor MCP
 ├── bridge/                  bridge e catálogo Vigolium
-├── engines/                 binários locais opcionais
+├── engines/                 Vigolium e backend NeuroSploit
 ├── playbooks/               estratégias reproduzíveis
 ├── GhostTrace/              anotações e relatórios
 ├── ghostmap/                visualização e captura
@@ -656,6 +656,27 @@ npm run engine:install
 npm run engine:build
 npm run cli -- scan -t example.com --engine both --strategy lite
 ```
+
+### GhostIA e NeuroSploit
+
+A tela GhostIA combina o chat Artex, o painel multiagente HackBot e o motor
+NeuroSploit. O NeuroSploit usa os mesmos perfis já cadastrados no GhostIA:
+chaves de API permanecem no cofre do Artex e a opção ChatGPT Plan reutiliza a
+conexão Codex existente. Ao marcar **Codex CLI + MCP**, cada execução pode
+ativar Mind e outros MCPs do Codex sem copiar comandos ou credenciais para o
+GHOSTRECON. O HackBot oferece a mesma seleção separadamente por agente. Não há
+um segundo cadastro de credenciais.
+
+Cada engagement roda isolado, é vinculado ao operador e envia os findings
+normalizados ao Cortex. Modos de rede exigem `recon.intrusive`, engagement
+formal, ROE, escopo e confirmação explícita. Veja o
+[guia da integração NeuroSploit](docs/NEUROSPLOIT-INTEGRATION.md).
+
+No Modo Auto, o NeuroSploit substitui a antiga tarefa Auto do Artex. O Artex
+não planeja nem executa uma segunda sessão: permanece como gateway interno no
+caminho API e apenas resolve o perfil no caminho Codex CLI. Plano, allowlist
+MCP, cancelamento, outcomes, Cortex e relatório continuam pertencendo à sessão
+Auto do GHOSTRECON.
 
 ## Segurança por design
 
@@ -756,6 +777,7 @@ GHOSTRECON_STACK_GHOSTTRACE=1
 GHOSTRECON_STACK_GHOSTMAP=1
 GHOSTRECON_STACK_GHOSTDESK=1
 GHOSTRECON_STACK_HEXSTRIKE=1
+GHOSTRECON_STACK_NEUROSPLOIT=1
 ```
 
 Defina qualquer item como `0` para não iniciá-lo com `npm start`.
@@ -768,6 +790,11 @@ Defina qualquer item como `0` para não iniciá-lo com `npm start`.
 | `npm run start:minimal` | Inicia somente a API Node |
 | `npm run start:api` | Executa diretamente `server/index.js` |
 | `npm run dev` | API com watch mode |
+| `npm run ui:dev` | Cockpit React em modo desenvolvimento (`:5174`) |
+| `npm run ui:typecheck` | Valida os tipos da UI React |
+| `npm run ui:build` | Compila a UI React local em `public/assets/` |
+| `npm run test:ui` | Verifica contratos e paridade das páginas React |
+| `npm run ui:smoke` | Smoke Playwright contra uma API já iniciada |
 | `npm run cli -- --help` | Abre a CLI |
 | `npm test` | Executa a suíte Node |
 | `npm run test:cli` | Executa testes da CLI |
@@ -777,6 +804,8 @@ Defina qualquer item como `0` para não iniciá-lo com `npm start`.
 | `npm run start:ghostdesk` | Inicia o GhostDesk |
 | `npm run engine:install` | Instala o motor Vigolium |
 | `npm run engine:build` | Compila o motor Vigolium local |
+| `npm run neurosploit:build` | Compila o backend Rust do NeuroSploit |
+| `npm run neurosploit:test` | Executa os testes do backend NeuroSploit |
 
 ## Docker
 
@@ -809,6 +838,7 @@ Serviços auxiliares possuem requisitos próprios e não fazem parte dessa image
 | `POST` | `/api/ai-reports` | Relatório por IA |
 | `POST` | `/api/manual-validations` | Registro de validação manual |
 | `POST` | `/api/anotacao-handoff` | Handoff para GhostTrace |
+| `GET/POST` | `/api/neurosploit/*` | Engagements NeuroSploit pela GhostIA |
 | `GET` | `/api/tunnel/status` | Estado de proxy/Tor |
 
 Rotas privilegiadas exigem autenticação; rotas mutáveis também podem exigir `X-CSRF-Token`.
@@ -904,17 +934,22 @@ Verifique `GHOSTRECON_HEXSTRIKE_URL`, o ambiente Python e o health endpoint do s
 
 ## Documentação técnica
 
-- [Modo Auto e conselho de IAs](MODO-AUTO-GHOSTRECON.md)
 - [Status de finalização do Modo Auto](STATUS-FINALIZACAO-MODO-AUTO.md)
 - [Melhorias pendentes do Modo Auto](MELHORIAS-PENDENTES-MODO-AUTO.md)
 - [Autenticação, RBAC e scopes](docs/AUTH-RBAC.md)
 - [Tor strict e proteção anti-leak](docs/TOR.md)
 - [Contrato de módulos](docs/MODULE-CONTRACT.md)
+- [Integração NeuroSploit, API e Codex](docs/NEUROSPLOIT-INTEGRATION.md)
 - [Arquivo histórico de planos](docs/arquivo/README.md)
 
 ## Licenças e terceiros
 
-O repositório integra componentes com licenças próprias. O código do Vigolium permanece sob **AGPL-3.0**, incluindo as obrigações aplicáveis a modificações e operação em rede. Antes de redistribuir a stack, consulte [NOTICE](NOTICE), `vigolium/LICENSE`, `vigolium/THIRD_PARTY_NOTICES.md` e as licenças das demais dependências.
+O repositório integra componentes com licenças próprias. O código do
+Vigolium permanece sob **AGPL-3.0**, incluindo as obrigações aplicáveis a
+modificações e operação em rede. O backend NeuroSploit incorporado permanece
+sob **MIT**. Antes de redistribuir a stack, consulte [NOTICE](NOTICE),
+`vigolium/LICENSE`, `vigolium/THIRD_PARTY_NOTICES.md`,
+`engines/neurosploit/LICENSE` e as licenças das demais dependências.
 
 ---
 

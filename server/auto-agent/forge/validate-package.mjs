@@ -20,7 +20,7 @@ export async function validateAndTestForgePackage(pendingDir, opts = {}) {
   const gatesOk = validation.ok && tests.ok && artifactIntegrityMatches;
   const verdictPath = path.join(pendingDir, 'verdict.json');
   const verdict = await fs.readFile(verdictPath, 'utf8').then(JSON.parse).catch(() => ({}));
-  verdict.status = gatesOk ? 'pending_ai_code_review' : 'validation_failed';
+  verdict.status = gatesOk ? 'pending_operator_approval' : 'validation_failed';
   verdict.validation = {
     ok: validation.ok,
     errors: validation.errors,

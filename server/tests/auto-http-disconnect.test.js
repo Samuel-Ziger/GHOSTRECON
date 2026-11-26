@@ -32,16 +32,12 @@ test('desconexão HTTP aborta e captureEmit não segue com eventos não-terminai
         body: {
           domain: 'example.test',
           mode: 'balanced',
-          commanders: ['openrouter'],
           modules: ['rdap'],
           autonomyLevel: 'observation',
           approvalMode: 'deny',
-          cloudEvidenceConsent: true,
         },
         ROOT: root,
         env: {
-          OPENROUTER_API_KEY: 'test',
-          GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
           GHOSTRECON_AUTO_RAG_ENABLED: '0',
           GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
         },
@@ -52,13 +48,6 @@ test('desconexão HTTP aborta e captureEmit não segue com eventos não-terminai
           controller.abort(new Error('cliente desconectado'));
           await new Promise((resolve) => setTimeout(resolve, 20));
         },
-        fetchImpl: async () => ({
-          ok: true,
-          status: 200,
-          json: async () => ({
-            choices: [{ message: { content: JSON.stringify(finishDecision()) } }],
-          }),
-        }),
         emit: (event) => emitted.push(event),
       }),
       (error) => /desconect|abort|cancel/i.test(String(error?.message || error)),

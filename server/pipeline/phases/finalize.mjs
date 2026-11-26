@@ -14,8 +14,6 @@ import { runHighPrioHttpRecheck } from '../../modules/recheck-high.js';
 import { runOptionalPlaywrightXssProbe } from '../../modules/browser-xss-verify.js';
 import { getKaliCapabilities } from '../../modules/kali-scan.js';
 import { buildReconCoverageSnapshot } from '../../modules/recon-coverage.js';
-import { runShannonOnClone, shannonMaxClonesPerRun } from '../../modules/shannon-runner.js';
-import { runPentestGptValidation } from '../../modules/pentestgpt-local.js';
 import {
   runDualAiReports,
   aiKeysConfigured,
@@ -36,9 +34,10 @@ import {
 } from '../pipeline-helpers.mjs';
 import { pipelineCapabilityAllowed } from '../pipeline-state.mjs';
 import { dispatchRegistryModule } from '../dispatcher.mjs';
+import { auditArtifactContent } from '../../modules/artifact-safety-audit.mjs';
 
 /**
- * Priorização, correlação, Shannon, PentestGPT, persistência, IA automática e webhooks.
+ * Priorização, correlação, persistência, IA automática e webhooks.
  */
 export async function runFinalizePhase(ctx) {
   const {
@@ -58,22 +57,26 @@ export async function runFinalizePhase(ctx) {
     progress,
     subdomainsAlive,
     paramRows,
-    githubClonedItems,
     projectNameRaw,
     autoAiReports,
     aiProviderMode,
     aiUseOpenrouter,
     aiOpenrouterOnly,
     aiPrimaryCloud,
-    shannonSkipDepsVerify,
-    pentestgptUrlOverride,
     engagementIdRaw,
     engagementOperatorRaw,
-    ROOT,
   } = ctx;
 
   let reconCoverageSnapshot = ctx.reconCoverageSnapshot ?? null;
   let pipelineAiOut = ctx.pipelineAiOut ?? null;
+
+    // Audita artefatos explicitamente declarados antes de qualquer saída externa.
+    // Sem artifactPaths o runner encerra como skipped e não varre diretórios.
+    await dispatchRegistryModule(ctx, 'artifact_safety_audit');
+    let artifactPublicationBlocked = ctx.artifactPublicationAllowed === false;
+    if (artifactPublicationBlocked) {
+      log('Artifact safety: IA e webhooks externos bloqueados por material sensível residual', 'warn');
+    }
 
     // Correlação passiva de CVEs web (dataset local + NVD opt-in) antes do score.
     await dispatchRegistryModule(ctx, 'cve_correlation');
@@ -285,138 +288,9 @@ export async function runFinalizePhase(ctx) {
     pipe('score', 'done');
     progress(97);
 
-    // Shannon white-box: após priorização/correlação (payload PentestGPT inclui achados Shannon).
-    if (modules.includes('shannon_whitebox')) {
-      if (shannonSkipDepsVerify) {
-        log('Shannon white-box: verificação de dependências omitida pelo utilizador.', 'warn');
-      } else {
-        log('Shannon white-box: dependências já validadas no início do pedido HTTP.', 'info');
-      }
-      const autoOff = Boolean(String(process.env.GHOSTRECON_SHANNON_AUTO_RUN || '1').trim().match(/^(0|false|no)$/i));
-      if (autoOff) {
-        log('Shannon: GHOSTRECON_SHANNON_AUTO_RUN=0 — não executar ./shannon start (só diagnóstico / clone).', 'info');
-        emit({ type: 'pipe', name: 'shannon', state: 'skip' });
-      } else if (!githubClonedItems.length) {
-        log(
-          'Shannon: nenhum clone local neste run — activa o módulo GitHub + clone (GHOSTRECON_GITHUB_CLONE_ENABLED) para analisar código.',
-          'warn',
-        );
-        emit({ type: 'pipe', name: 'shannon', state: 'skip' });
-      } else {
-        pipe('shannon', 'active');
-        const max = shannonMaxClonesPerRun();
-        const slice = githubClonedItems.slice(0, max);
-        let shannonState = 'done';
-        log(`Shannon: a correr até ${slice.length} scan(s) (máx. por run = ${max})…`, 'info');
-        for (const item of slice) {
-          try {
-            const out = await runShannonOnClone({
-              ghostRoot: ROOT,
-              domain,
-              clonePath: item.local_path,
-              repoFullName: item.full_name,
-              log,
-              emit,
-              signal: ctx.signal,
-            });
-            if (out.ok && out.report?.ok) {
-              for (const finding of out.findings || []) addFinding(finding, null);
-              if (!(out.findings || []).length) {
-                addFinding({
-                  type: 'shannon_whitebox_summary',
-                  prio: 'info',
-                  score: 18,
-                  value: `Shannon white-box concluído sem achados estruturados: ${item.full_name}`,
-                  meta: {
-                    source: 'shannon_whitebox',
-                    evidenceStatus: 'report_only',
-                    workspaceId: out.workspaceId,
-                    reportPath: out.report.path,
-                  },
-                  url: `https://github.com/${item.full_name}`,
-                }, null);
-              }
-            } else {
-              shannonState = out.outcome === 'timeout' || out.exitCode === -2 ? 'timeout' : 'failed';
-              const hint = out.detail || out.logTail || out.note || JSON.stringify({ phase: out.phase, exitCode: out.exitCode });
-              log(`Shannon falhou (${item.full_name}): ${String(hint).slice(0, 600)}`, 'warn');
-              addFinding(
-                {
-                  type: 'module_status',
-                  prio: 'info',
-                  score: 0,
-                  value: `Shannon falhou: ${item.full_name}`,
-                  meta: `workspace=${out.workspaceId || '—'} • phase=${out.phase || '—'} • ${String(hint).slice(0, 400)}`,
-                  url: `https://github.com/${item.full_name}`,
-                },
-                null,
-              );
-              if (out.cleanup && !out.cleanup.confirmed) {
-                log('Shannon: término remoto não confirmado; nenhum outro clone será iniciado neste run', 'warn');
-                break;
-              }
-            }
-          } catch (e) {
-            if (ctx.signal?.aborted || e?.name === 'AbortError' || e?.code === 'PROCESS_ABORTED' || e?.code === 'PROCESS_UNTERMINATED' || e?.fatal) throw e;
-            shannonState = 'failed';
-            log(`Shannon: excepção (${item.full_name}): ${e.message}`, 'error');
-            break;
-          }
-        }
-        pipe('shannon', shannonState);
-        applyPrioritizationV2(findings, bountyCtx);
-      }
-    }
-
     const modulesForDb = kaliMode ? [...modules, '__kali_scan__'] : modules;
 
-    let pentestgptSummary = null;
     progress(98);
-    if (modules.includes('pentestgpt_validate')) {
-      pipe('pentestgpt', 'active');
-      try {
-        const pgPayload = buildPipelineExportPayloadForAi({
-          target: domain,
-          projectName: String(projectNameRaw || '').trim(),
-          stats,
-          findings,
-          correlation: corr,
-          reportTemplates,
-          runId: null,
-          storage: storageLabel(),
-          intelMerge: null,
-          kaliMode: Boolean(kaliMode),
-          modules: modulesForDb,
-          bountyContext: bountyCtx,
-          auth,
-        });
-        const pg = await runPentestGptValidation(pgPayload, {
-          log,
-          urlOverride: pentestgptUrlOverride,
-          signal: ctx.signal,
-        });
-        pentestgptSummary = pg.summary || null;
-        if (pg.findings?.length) {
-          for (const f of pg.findings) addFinding(f, null);
-        } else if (pg.summary && !pg.skipped) {
-          addFinding(
-            {
-              type: 'intel',
-              prio: 'med',
-              score: 44,
-              value: 'PentestGPT (resumo)',
-              meta: String(pg.summary).slice(0, 900),
-            },
-            null,
-          );
-        }
-      } catch (e) {
-        log(`PentestGPT: ${e.message}`, 'warn');
-      }
-      pipe('pentestgpt', 'done');
-    } else {
-      emit({ type: 'pipe', name: 'pentestgpt', state: 'skip' });
-    }
 
     progress(100);
     stats.high = findings.filter((f) => f.prio === 'high').length;
@@ -431,6 +305,19 @@ export async function runFinalizePhase(ctx) {
       pipe('risk_explainer', 'done');
     } else {
       emit({ type: 'pipe', name: 'risk_explainer', state: 'skip' });
+    }
+    const outboundAudit = auditArtifactContent(JSON.stringify({
+      target: domain,
+      stats,
+      findings,
+      reportTemplates,
+    }), { artifact: '[pipeline-outbound-payload]' });
+    if (!outboundAudit.publicationAllowed) {
+      artifactPublicationBlocked = true;
+      log(
+        `Artifact safety: saídas externas bloqueadas (${Object.keys(outboundAudit.classes).sort().join(',') || 'sensitive'})`,
+        'warn',
+      );
     }
     emit({ type: 'findings_rescore', findings: [...findings] });
     log('OWASP Top 10 (2025): etiquetas heurísticas aplicadas a cada achado', 'info');
@@ -575,7 +462,7 @@ export async function runFinalizePhase(ctx) {
       reconCoverage: reconCoverageSnapshot,
     });
 
-    if (autoAiReports && aiAutoReportsServerAllowed() && aiKeysConfigured().any) {
+    if (!artifactPublicationBlocked && autoAiReports && aiAutoReportsServerAllowed() && aiKeysConfigured().any) {
       emit({ type: 'ai_report', phase: 'start', target: domain });
       const pri =
         String(aiPrimaryCloud || '').toLowerCase() === 'openrouter' || normalizeOpenrouterOnlyFlag(aiOpenrouterOnly)
@@ -666,7 +553,7 @@ export async function runFinalizePhase(ctx) {
     }
 
     const whUrl = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
-    if (whUrl && runId != null) {
+    if (!artifactPublicationBlocked && whUrl && runId != null) {
       const findingsByType = {};
       for (const f of findings) {
         const t = f?.type || 'unknown';
@@ -690,13 +577,6 @@ export async function runFinalizePhase(ctx) {
           removedSample: d.removedSample || [],
         };
       }
-      const shannonSummary =
-        findings
-          .filter((f) => f?.type === 'intel' && /shannon/i.test(`${f.value || ''} ${f.meta || ''}`))
-          .map((f) => `${String(f.value || '').slice(0, 140)} — ${String(f.meta || '').slice(0, 120)}`)
-          .slice(0, 4)
-          .join(' | ') || null;
-
       void postReconWebhook(whUrl, {
         target: domain,
         runId,
@@ -711,13 +591,11 @@ export async function runFinalizePhase(ctx) {
           .slice(0, 8),
         findingsByType,
         runDiffSummary,
-        shannonSummary,
-        pentestgptSummary,
       });
     }
 
     const whAi = process.env.GHOSTRECON_WEBHOOK_URL?.trim();
-    if (whAi) {
+    if (!artifactPublicationBlocked && whAi) {
       const picked = pickAiReportForWebhook(pipelineAiOut);
       if (picked) {
         void postAiReportWebhook(whAi, {

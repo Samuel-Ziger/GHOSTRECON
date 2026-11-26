@@ -5,6 +5,7 @@ import { parseArgs, parseDuration, kvListToObject } from '../modules/cli/args.mj
 import {
   formatPlanSpecificApproval,
   requestPlanSpecificApproval,
+  resolveCliReconTarget,
 } from '../modules/cli/commands/run.mjs';
 
 test('parseArgs: string flag with --key value', () => {
@@ -99,6 +100,17 @@ test('kvListToObject: ignora entries inválidas', () => {
   assert.deepEqual(obj, { K: '' });
 });
 
+test('CLI RUN preserva URL explícita como alvo efetivo da requisição', () => {
+  const explicit = resolveCliReconTarget('http://147.135.87.82:30472/api?view=full');
+  assert.equal(explicit.ok, true);
+  assert.equal(explicit.target, '147.135.87.82');
+  assert.equal(explicit.requestTarget, 'http://147.135.87.82:30472/api?view=full');
+
+  const bare = resolveCliReconTarget('Example.COM');
+  assert.equal(bare.ok, true);
+  assert.equal(bare.requestTarget, 'example.com');
+});
+
 test('CLI RUN não herda confirmação global e usa aprovação vinculada ao plano', async () => {
   const source = await fs.readFile(
     new URL('../modules/cli/commands/run.mjs', import.meta.url),
@@ -174,4 +186,16 @@ test('CLI RUN exige prefixo do hash e exibe somente resumo seguro', async () => 
     }),
     /secret-cookie|secret-token/,
   );
+});
+
+test('CLI RUN redige token da query ao exibir o alvo do plano', () => {
+  const rendered = formatPlanSpecificApproval({
+    target: 'http://127.0.0.1:30472/lab?view=full&access_token=opaque-cli-token',
+    hash: 'c'.repeat(64),
+    intrusiveModules: ['sqli_targeted_verify'],
+  });
+  assert.match(rendered, /127\.0\.0\.1:30472\/lab/);
+  assert.match(rendered, /view=full/);
+  assert.match(rendered, /REDACTED/);
+  assert.doesNotMatch(rendered, /opaque-cli-token/);
 });

@@ -4,7 +4,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { runProcess } from '../server/modules/module-runner.mjs';
-import { parseVigoliumJsonl } from './findings-normalizer.mjs';
+import {
+  parseVigoliumJsonl,
+  redactVigoliumExternalValue,
+} from './findings-normalizer.mjs';
 import {
   ghostreconRoot,
   buildVigoliumChildEnv,
@@ -31,8 +34,12 @@ import {
 } from './vigolium-auth-transport.mjs';
 import { assertVigoliumBinaryIdentity } from './vigolium-binary-integrity.mjs';
 import { rethrowFatalVigoliumExecutionError } from './vigolium-errors.mjs';
-import { redactAutoText } from '../server/auto-agent/redaction.mjs';
-import { redactLocalPathsForPublic } from '../server/modules/finding-redaction.mjs';
+import { redactAutoText, redactPublicTarget } from '../server/auto-agent/redaction.mjs';
+import {
+  redactFindingForPublic,
+  redactLocalPathsForPublic,
+} from '../server/modules/finding-redaction.mjs';
+import { auditArtifactContent } from '../server/modules/artifact-safety-audit.mjs';
 import {
   appendVigoliumVpsScanFlags,
   buildVigoliumOutputBase,
@@ -141,6 +148,16 @@ function reportUrlForPath(reportPath) {
 
 const MAX_VIGOLIUM_REPORT_BYTES = 50 * 1024 * 1024;
 
+function assertArtifactSafe(content, artifact) {
+  const audit = auditArtifactContent(content, { artifact });
+  if (audit.publicationAllowed) return audit;
+  const classes = Object.keys(audit.classes || {}).sort().join(',') || 'unknown';
+  const error = new Error(`artefato Vigolium contém material sensível residual (${classes})`);
+  error.code = 'VIGOLIUM_ARTIFACT_UNSAFE';
+  error.audit = audit;
+  throw error;
+}
+
 /**
  * Remove credenciais conhecidas e padrões sensíveis do HTML antes de tornar o
  * artefato acessível pela API. A leitura/escrita usa o mesmo descritor e
@@ -167,6 +184,7 @@ export async function sanitizeVigoliumHtmlReport(reportPath, {
     );
     const buffer = Buffer.from(safe, 'utf8');
     if (buffer.length > maxBytes) throw new Error('Vigolium report sanitizado excede limite');
+    assertArtifactSafe(buffer, reportPath);
     await handle.truncate(0);
     let offset = 0;
     while (offset < buffer.length) {
@@ -183,6 +201,50 @@ export async function sanitizeVigoliumHtmlReport(reportPath, {
     await handle.chmod(0o600);
     await handle.sync();
     return { ok: true, bytes: buffer.length };
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Reescreve JSONL externo como registros públicos: valores exatos da sessão,
+ * campos HTTP brutos e demais segredos são removidos antes da persistência.
+ * Linhas inválidas são descartadas em vez de copiar texto externo opaco.
+ */
+export async function sanitizeVigoliumJsonlArtifact(jsonlPath, {
+  redact = (value) => String(value ?? ''),
+  maxBytes = MAX_VIGOLIUM_REPORT_BYTES,
+} = {}) {
+  const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await fs.open(jsonlPath, fsConstants.O_RDWR | noFollow);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('Vigolium JSONL não é arquivo regular');
+    if (stat.size > maxBytes) throw new Error('Vigolium JSONL excede limite de sanitização');
+    const raw = await handle.readFile('utf8');
+    const rows = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      const exact = redactVigoliumExternalValue(parsed, { redact });
+      const safe = redactFindingForPublic(exact);
+      if (safe) rows.push(JSON.stringify(safe));
+    }
+    const buffer = Buffer.from(rows.length ? `${rows.join('\n')}\n` : '', 'utf8');
+    if (buffer.length > maxBytes) throw new Error('Vigolium JSONL sanitizado excede limite');
+    assertArtifactSafe(buffer, jsonlPath);
+    await handle.truncate(0);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset, offset);
+      if (!bytesWritten) throw new Error('falha ao gravar JSONL Vigolium sanitizado');
+      offset += bytesWritten;
+    }
+    await handle.truncate(buffer.length);
+    await handle.chmod(0o600);
+    await handle.sync();
+    return { ok: true, records: rows.length, bytes: buffer.length };
   } finally {
     await handle.close();
   }
@@ -322,6 +384,8 @@ export async function runVigoliumScan(s, hooks = {}) {
   let tmpDir = null;
   let outBase = null;
   let artifacts = null;
+  let vpsJsonlSanitized = false;
+  let vpsHtmlSanitized = false;
   if (vps) {
     const target = resolveVigoliumTarget(s);
     outBase = buildVigoliumOutputBase(root, target);
@@ -363,7 +427,7 @@ export async function runVigoliumScan(s, hooks = {}) {
         : 'perfil legado';
     const codexLabel = shouldUseVigoliumCodex(s) ? 'codex=sim' : 'codex=não';
     log(
-      `Vigolium scan [${profileLabel}, ${codexLabel}]: ${target} (strategy=${strategy}, source=${source || 'auto'})`,
+      `Vigolium scan [${profileLabel}, ${codexLabel}]: ${redactPublicTarget(target)} (strategy=${strategy}, source=${source || 'auto'})`,
       'info',
     );
     log(`Vigolium cmd: ${path.basename(bin)} ${vigoliumArgsForLog(args).join(' ')}`, 'info');
@@ -386,7 +450,7 @@ export async function runVigoliumScan(s, hooks = {}) {
         skipped: false,
         reason: publicError(e),
         findings: [],
-        target,
+        target: redactPublicTarget(target),
         strategy,
         vpsProfile: vps,
       };
@@ -421,6 +485,26 @@ export async function runVigoliumScan(s, hooks = {}) {
     }
   }
 
+  if (vps) {
+    if (artifacts.jsonl) {
+      try {
+        await sanitizeVigoliumJsonlArtifact(artifacts.jsonl, { redact: redactExternalText });
+        vpsJsonlSanitized = true;
+      } catch (error) {
+        await rm(artifacts.jsonl, { force: true }).catch(() => {});
+        artifacts.jsonl = null;
+        log(`Vigolium: JSONL persistente recusado pela sanitização (${publicError(error)})`, 'warn');
+      }
+    }
+    // O SQLite contém HTTP records e evidência bruta que não podem ser
+    // reescritos com segurança pelo bridge. Ele serve apenas para importação
+    // local durante o run e é destruído antes de qualquer publicação.
+    if (artifacts.sqlite) {
+      await rm(artifacts.sqlite, { force: true }).catch(() => {});
+      artifacts.sqlite = null;
+    }
+  }
+
   const scanOk = result.code === 0 || findings.length > 0;
   let htmlReport = null;
 
@@ -433,8 +517,10 @@ export async function runVigoliumScan(s, hooks = {}) {
         paths: [root, outBase],
       });
       htmlOk = true;
+      vpsHtmlSanitized = true;
     } catch (error) {
       htmlOk = false;
+      await rm(artifacts.html, { force: true }).catch(() => {});
       log(`Vigolium: HTML inline recusado na sanitização (${publicError(error)})`, 'warn');
     }
     htmlReport = {
@@ -498,7 +584,9 @@ export async function runVigoliumScan(s, hooks = {}) {
         log('Vigolium HTML report sanitizado e disponível pela rota protegida', 'info');
         emitOpenVigoliumReport(s, hooks, htmlReport, log);
       }
+      if (!htmlReport.ok) await rm(reportPath, { force: true }).catch(() => {});
     } catch (e) {
+      await rm(reportPath, { force: true }).catch(() => {});
       rethrowFatalVigoliumExecutionError(e, s.signal, publicError(e));
       htmlReport = {
         ok: false,
@@ -525,7 +613,7 @@ export async function runVigoliumScan(s, hooks = {}) {
       ok: scanOk,
       skipped: false,
       findings,
-      target,
+      target: redactPublicTarget(target),
       strategy,
       exitCode: result.code,
       timedOut: result.timedOut,
@@ -552,6 +640,13 @@ export async function runVigoliumScan(s, hooks = {}) {
     };
   } finally {
     await authTransport?.cleanup?.();
+    if (vps && outBase) {
+      const persistent = vigoliumArtifactPaths(outBase);
+      // SQLite sempre contém requests/evidência bruta e nunca é publicável.
+      await rm(persistent.sqlite, { force: true }).catch(() => {});
+      if (!vpsJsonlSanitized) await rm(persistent.jsonl, { force: true }).catch(() => {});
+      if (!vpsHtmlSanitized) await rm(persistent.html, { force: true }).catch(() => {});
+    }
     if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }

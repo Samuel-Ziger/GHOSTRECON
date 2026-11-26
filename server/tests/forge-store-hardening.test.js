@@ -18,10 +18,9 @@ test('Forge store rejeita author path traversal e cria dirs 0700', async () => {
           forgeRequest: {
             proposedId: 'safe_module',
             intrusive: false,
-            author: '../escape',
-            approvals: [],
           },
         },
+        authorOverride: '../escape',
       }),
       /path inválido|fora do store/i,
     );
@@ -34,10 +33,9 @@ test('Forge store rejeita author path traversal e cria dirs 0700', async () => {
         forgeRequest: {
           proposedId: 'safe_module',
           intrusive: false,
-          author: 'council',
-          approvals: [],
         },
       },
+      authorOverride: 'operator',
     });
     assert.ok(pending.dir.startsWith(resolveForgeRoot(root)));
     const st = await fs.stat(pending.dir);

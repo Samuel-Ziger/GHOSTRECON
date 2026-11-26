@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   hostInReconScope,
   parseOutOfScopeEnv,
@@ -8,7 +9,7 @@ import {
   validateEngagementScopePolicy,
 } from '../modules/scope.js';
 import { resolveReconProfile } from '../modules/runtime-profile.js';
-import { targetIsIp } from '../modules/recon-target.js';
+import { parseReconTarget, targetIsIp } from '../modules/recon-target.js';
 import {
   MANUAL_IMPLICIT_CAPABILITIES,
   MANUAL_INTRUSIVE_IMPLICIT_CAPABILITIES,
@@ -73,6 +74,7 @@ export function pipelineCapabilityAllowed(state, capabilityId) {
 export function createPipelineState(ctx) {
   const {
     domain,
+    targetUrl: targetUrlRaw = null,
     exactMatch,
     modules,
     emit,
@@ -87,10 +89,7 @@ export function createPipelineState(ctx) {
     aiUseOpenrouter = true,
     aiOpenrouterOnly = false,
     aiPrimaryCloud = null,
-    shannonPrecheck = true,
-    shannonSkipDepsVerify = false,
-    shannonGithubRepos = null,
-    pentestgptUrl: pentestgptUrlOverride = null,
+    githubManualRepos = null,
     bountyContext: bountyContextBody = null,
     engagementId: engagementIdRaw = null,
     engagementOperator: engagementOperatorRaw = null,
@@ -129,8 +128,28 @@ export function createPipelineState(ctx) {
     forgeSandboxRunner = null,
     forgeCanaryId = null,
     fetchImpl: injectedFetchImpl = null,
+    jwtClaimAuthzConfig = null,
+    authzObjectMatrixConfig = null,
+    sqliTargetedConfig = null,
+    cloudObjectProxyAuthzConfig = null,
+    financialIntegrityConfig = null,
+    sensitivePaymentObservations = null,
+    apiResponseObservations = null,
+    knownObjectKeys = null,
+    objectKeyDiscoveryBudget = null,
+    artifactPaths = null,
+    artifactRoot = null,
+    sensitiveEvidenceVault = null,
   } = ctx;
 
+  const parsedTarget = parseReconTarget(targetUrlRaw || domain);
+  if (!parsedTarget.ok || parsedTarget.target !== String(domain || '').trim().toLowerCase()) {
+    throw new Error('targetUrl não corresponde ao hostname canónico do pipeline');
+  }
+  const targetUrl = parsedTarget.targetUrl;
+  const targetOrigin = parsedTarget.origin;
+  const targetPathname = parsedTarget.pathname || '/';
+  const targetBasePath = parsedTarget.basePath || targetPathname;
   const apexHostIsIp = targetIsIp(domain);
   const frozenVigoliumCandidate = vigoliumRuntimeConfig
     && typeof vigoliumRuntimeConfig === 'object'
@@ -174,6 +193,38 @@ export function createPipelineState(ctx) {
     captureTokenFindings: captureTokenFindings === true,
     tokenCaptureOptions,
   });
+  const sensitiveEvidenceIndex = new Map();
+  const storeSensitiveEvidence = async ({ value, kind = 'sensitive_evidence' } = {}) => {
+    const bytes = Buffer.from(value || '');
+    if (!bytes.length) throw new Error('sensitive_evidence_empty');
+    try {
+      if (sensitiveEvidenceVault && typeof sensitiveEvidenceVault.put === 'function') {
+        const stored = await sensitiveEvidenceVault.put(bytes, { kind });
+        sensitiveEvidenceIndex.set(stored.secretRef, { vault: true, stored });
+        return { secretRef: stored.secretRef, fingerprint: stored.fingerprint };
+      }
+      const fingerprint = createHash('sha256').update(bytes).digest('hex');
+      const secretRef = `memory:sha256:${fingerprint}`;
+      const previous = sensitiveEvidenceIndex.get(secretRef)?.value;
+      if (Buffer.isBuffer(previous)) previous.fill(0);
+      sensitiveEvidenceIndex.set(secretRef, { vault: false, value: Buffer.from(bytes), kind: String(kind) });
+      return { secretRef, fingerprint };
+    } finally {
+      bytes.fill(0);
+    }
+  };
+  const resolveSensitiveEvidence = async (secretRef) => {
+    const entry = sensitiveEvidenceIndex.get(String(secretRef || ''));
+    if (!entry) return null;
+    if (entry.vault) return sensitiveEvidenceVault.get(entry.stored);
+    return Buffer.from(entry.value);
+  };
+  const disposeSensitiveEvidence = () => {
+    for (const entry of sensitiveEvidenceIndex.values()) {
+      if (Buffer.isBuffer(entry?.value)) entry.value.fill(0);
+    }
+    sensitiveEvidenceIndex.clear();
+  };
 
   const outOfScopeFromEnv = outOfScopeFrozen
     ? []
@@ -198,6 +249,11 @@ export function createPipelineState(ctx) {
 
   return {
     domain,
+    targetUrl,
+    targetOrigin,
+    targetPathname,
+    targetBasePath,
+    targetExplicitUrl: parsedTarget.explicitUrl === true,
     exactMatch,
     modules,
     emit,
@@ -211,10 +267,7 @@ export function createPipelineState(ctx) {
     aiUseOpenrouter,
     aiOpenrouterOnly,
     aiPrimaryCloud,
-    shannonPrecheck,
-    shannonSkipDepsVerify,
-    shannonGithubRepos,
-    pentestgptUrlOverride,
+    githubManualRepos,
     bountyContextBody,
     engagementIdRaw,
     engagementOperatorRaw,
@@ -349,6 +402,27 @@ export function createPipelineState(ctx) {
     // nunca serializadas em checkpoints ou eventos.
     forgeSandboxRunner,
     forgeCanaryId: forgeCanaryId ? String(forgeCanaryId) : null,
+    jwtClaimAuthzConfig: jwtClaimAuthzConfig && typeof jwtClaimAuthzConfig === 'object'
+      ? jwtClaimAuthzConfig : null,
+    authzObjectMatrixConfig: authzObjectMatrixConfig && typeof authzObjectMatrixConfig === 'object'
+      ? authzObjectMatrixConfig : null,
+    sqliTargetedConfig: sqliTargetedConfig && typeof sqliTargetedConfig === 'object'
+      ? sqliTargetedConfig : null,
+    cloudObjectProxyAuthzConfig: cloudObjectProxyAuthzConfig && typeof cloudObjectProxyAuthzConfig === 'object'
+      ? cloudObjectProxyAuthzConfig : null,
+    financialIntegrityConfig: financialIntegrityConfig && typeof financialIntegrityConfig === 'object'
+      ? financialIntegrityConfig : null,
+    sensitivePaymentObservations: Array.isArray(sensitivePaymentObservations)
+      ? [...sensitivePaymentObservations] : [],
+    apiResponseObservations: Array.isArray(apiResponseObservations) ? [...apiResponseObservations] : [],
+    knownObjectKeys: Array.isArray(knownObjectKeys) ? [...knownObjectKeys] : [],
+    objectKeyDiscoveryBudget,
+    artifactPaths: Array.isArray(artifactPaths) ? [...artifactPaths] : [],
+    artifactRoot: typeof artifactRoot === 'string' ? artifactRoot : null,
+    storeSensitiveEvidence,
+    resolveSensitiveEvidence,
+    disposeSensitiveEvidence,
+    latestJwtSecretRef: null,
     allowsPipelineCapability(capabilityId) {
       return pipelineCapabilityAllowed(this, capabilityId);
     },
@@ -365,7 +439,19 @@ export function createPipelineState(ctx) {
       ).eligible;
     },
     urlInScope(url) {
-      return urlInReconScope(url, domain, outOfScopeList, scopePolicy);
+      if (!urlInReconScope(url, domain, outOfScopeList, scopePolicy)) return false;
+      if (!targetOrigin) return true;
+      try {
+        const candidate = new URL(url);
+        // Uma URL explicitamente fornecida sela scheme+porta para o host raiz.
+        // Subdomínios descobertos continuam sujeitos à política de hostname.
+        if (candidate.hostname.toLowerCase() === String(domain).toLowerCase()) {
+          return candidate.origin.toLowerCase() === targetOrigin.toLowerCase();
+        }
+        return true;
+      } catch {
+        return false;
+      }
     },
     throwIfAborted() {
       if (signal?.aborted) throw signal.reason || new Error('pipeline cancelado');

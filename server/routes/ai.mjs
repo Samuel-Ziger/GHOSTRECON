@@ -6,96 +6,10 @@ import {
   probeLmStudioConnection,
   normalizeOpenrouterOnlyFlag,
 } from '../modules/ai-dual-report.js';
-import { getShannonCapabilities, shannonPullUpstreamWorkerImage } from '../modules/shannon-capabilities.js';
-import { pentestGptHealthUrl, resolvePentestGptUrl } from '../modules/pentestgpt-local.js';
 import { postAiReportWebhook, postReconDeltaFullWebhook } from '../modules/webhook-notify.js';
 import { requireScope } from '../modules/auth.js';
 
-export function registerAiRoutes(app, { validateCsrfToken, ROOT }) {
-  app.post('/api/pentestgpt-ping', requireScope('ai.run'), async (req, res) => {
-  if (!validateCsrfToken(req)) {
-    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
-    return;
-  }
-  const raw = req.body?.pentestgptUrl != null ? String(req.body.pentestgptUrl).trim() : '';
-  const url = resolvePentestGptUrl(raw || null);
-  if (!url) {
-    res.status(400).json({
-      ok: false,
-      error: 'Sem URL de validação: define GHOSTRECON_PENTESTGPT_URL no .env ou envia pentestgptUrl no corpo.',
-    });
-    return;
-  }
-  const health = pentestGptHealthUrl(url);
-  if (!health) {
-    res.status(400).json({ ok: false, error: 'URL inválida (só http/https).' });
-    return;
-  }
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 8000);
-  try {
-    const fr = await fetch(health, { method: 'GET', signal: ac.signal, redirect: 'manual' });
-    const text = await fr.text();
-    let parsed = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      /* texto plano */
-    }
-    res.json({
-      ok: fr.ok,
-      healthUrl: health,
-      validateUrlPreview: url.slice(0, 120),
-      status: fr.status,
-      body: parsed ?? text.slice(0, 400),
-    });
-  } catch (e) {
-    res.json({
-      ok: false,
-      healthUrl: health,
-      validateUrlPreview: url.slice(0, 120),
-      error: e?.name === 'AbortError' ? 'Timeout ao contactar /health' : e?.message || String(e),
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-});
-
-  app.post('/api/shannon/prep', requireScope('shannon.run'), async (req, res) => {
-  if (!validateCsrfToken(req)) {
-    res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });
-    return;
-  }
-  const pullUpstream = Boolean(req.body?.pullUpstream);
-  if (!pullUpstream) {
-    res.status(400).json({
-      ok: false,
-      error: 'Define pullUpstream: true para puxar keygraph/shannon:latest (opcional; modo local usa shannon-worker).',
-    });
-    return;
-  }
-  try {
-    const out = await shannonPullUpstreamWorkerImage();
-    if (!out.ok) {
-      res.status(500).json({
-        ok: false,
-        error: out.note || 'docker pull falhou',
-        dockerPullLog: out.dockerPullLog,
-      });
-      return;
-    }
-    const shannon = await getShannonCapabilities({ ghostRoot: ROOT });
-    res.json({
-      ok: true,
-      note: out.note,
-      dockerPullLog: out.dockerPullLog,
-      shannon,
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
-
+export function registerAiRoutes(app, { validateCsrfToken }) {
   app.post('/api/ai-reports', requireScope('ai.run'), async (req, res) => {
   if (!validateCsrfToken(req)) {
     res.status(403).json({ ok: false, error: 'CSRF token inválido ou ausente' });

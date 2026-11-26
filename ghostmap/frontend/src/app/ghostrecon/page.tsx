@@ -1,14 +1,6 @@
-'use client';
+import { MitreLivePage } from '@/features/ghostrecon/MitreLivePage';
 
-/** Hub MITRE ao vivo (HTML legado embutido). */
+/** Hub MITRE ao vivo canônico, renderizado nativamente por React/Next. */
 export default function GhostreconMitrePage() {
-  const src =
-    (process.env.NEXT_PUBLIC_BASE_PATH || '') + '/mitre-live.html';
-  return (
-    <iframe
-      title="GHOSTRECON MITRE Map"
-      src={src}
-      className="w-full h-full border-0 bg-[#080c10]"
-    />
-  );
+  return <MitreLivePage />;
 }

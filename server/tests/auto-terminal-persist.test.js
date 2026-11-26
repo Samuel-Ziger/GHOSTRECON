@@ -17,7 +17,6 @@ test('falha de persistência do snapshot impede auto_session completed', async (
       runAutoRecon({
         body: {
           domain: 'example.test',
-          commanders: [],
           modules: [],
           autonomyLevel: 'observation',
           approvalMode: 'deny',

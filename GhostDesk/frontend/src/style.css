@@ -487,3 +487,44 @@ h3::after {
 
 /* Utilitário */
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Utilitários introduzidos pela implementação React. */
+.severity-count {
+  min-width: 2.2rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  font-size: .8rem;
+}
+.source-badges {
+  margin-top: .55rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+}
+.detail-count {
+  color: var(--text-bright);
+  font-family: var(--display);
+  font-size: .85rem;
+}
+.small-spinner {
+  width: .9rem;
+  height: .9rem;
+  border-width: 1px;
+  vertical-align: middle;
+}
+.inline-error { margin: .5rem 0 0; }
+.intel-summary { margin-top: -.3rem; margin-bottom: .75rem; }
+
+@media (max-width: 1050px) {
+  .grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 720px) {
+  .layout { display: block; }
+  .sidebar { width: 100%; min-height: auto; }
+  .content { padding: 1rem; }
+  .grid.cols-4 { grid-template-columns: minmax(0, 1fr); }
+  table { display: block; overflow-x: auto; }
+}

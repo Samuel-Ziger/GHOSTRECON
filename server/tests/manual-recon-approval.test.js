@@ -114,6 +114,66 @@ test('plano manual é determinístico, não contém segredo/path e muda com bind
   }).hash, plan.hash);
 });
 
+test('plano manual publica alvo redigido mas sela a query bruta no hash', () => {
+  const first = makePlan({
+    target: 'https://lab.example.test:30472/api?view=full&access_token=opaque-first-token',
+  });
+  const second = makePlan({
+    target: 'https://lab.example.test:30472/api?view=full&access_token=opaque-second-token',
+  });
+  assert.match(first.target, /^https:\/\/lab\.example\.test:30472\/api\?/);
+  assert.match(first.target, /view=full/);
+  assert.match(first.target, /access_token=.*REDACTED/i);
+  assert.doesNotMatch(JSON.stringify(first), /opaque-first-token/);
+  assert.notEqual(first.hash, second.hash);
+
+  const store = createManualReconApprovalStore({ randomId: () => 'redacted-target' });
+  const pending = store.issue({ plan: first, ownerSub: 'operator-a' });
+  store.decide({
+    approvalId: pending.approvalId,
+    ownerSub: 'operator-a',
+    planHash: first.hash,
+    approved: true,
+  });
+  const consumed = store.consume({
+    approvalId: pending.approvalId,
+    ownerSub: 'operator-a',
+    planHash: first.hash,
+    target: first.target,
+    engagementBinding: first.engagement.authorizationBinding,
+  });
+  assert.equal(consumed.approved, true);
+});
+
+test('plano normaliza somente o host e preserva case de path/query no binding', () => {
+  const upper = makePlan({
+    target: 'HTTP://LAB.EXAMPLE.TEST:30472/Orders/ABC?View=Full',
+  });
+  const lower = makePlan({
+    target: 'http://lab.example.test:30472/orders/abc?view=full',
+  });
+
+  assert.equal(upper.target, 'http://lab.example.test:30472/Orders/ABC?View=Full');
+  assert.equal(lower.target, 'http://lab.example.test:30472/orders/abc?view=full');
+  assert.notEqual(upper.hash, lower.hash);
+
+  const store = createManualReconApprovalStore({ randomId: () => 'case-sensitive-target' });
+  const pending = store.issue({ plan: upper, ownerSub: 'operator-a' });
+  store.decide({
+    approvalId: pending.approvalId,
+    ownerSub: 'operator-a',
+    planHash: upper.hash,
+    approved: true,
+  });
+  assert.throws(() => store.consume({
+    approvalId: pending.approvalId,
+    ownerSub: 'operator-a',
+    planHash: upper.hash,
+    target: lower.target,
+    engagementBinding: upper.engagement.authorizationBinding,
+  }), (error) => error?.code === 'MANUAL_RECON_APPROVAL_TARGET_MISMATCH');
+});
+
 test('plano expõe somente resumo de autenticação e nunca material sensível', () => {
   const body = {
     auth: {

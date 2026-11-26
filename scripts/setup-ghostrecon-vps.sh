@@ -204,6 +204,24 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
       log "dry-run: npm ci"
     fi
   fi
+  log "compilando interface React..."
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    (cd "$ROOT" && "$NPM_BIN" run ui:build)
+  else
+    log "dry-run: npm run ui:build"
+  fi
+  NEWS_VERIFIER_DIR="$ROOT/server/modules/external-tools/standalone/news-verifier"
+  if [[ -f "$NEWS_VERIFIER_DIR/package.json" ]]; then
+    log "compilando News Verifier React..."
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      if [[ ! -d "$NEWS_VERIFIER_DIR/node_modules" && "$SKIP_NPM_CI" -eq 0 ]]; then
+        "$NPM_BIN" --prefix "$NEWS_VERIFIER_DIR" ci
+      fi
+      "$NPM_BIN" --prefix "$NEWS_VERIFIER_DIR" run build
+    else
+      log "dry-run: npm --prefix $NEWS_VERIFIER_DIR ci && npm --prefix $NEWS_VERIFIER_DIR run build"
+    fi
+  fi
   if [[ -d /usr/local/bin && "$DRY_RUN" -eq 0 ]]; then
     "${SUDO[@]}" ln -sf "$ROOT/bin/ghostrecon.mjs" /usr/local/bin/ghostrecon
     "${SUDO[@]}" chmod +x "$ROOT/bin/ghostrecon.mjs"
@@ -260,8 +278,6 @@ set_env_value "GHOSTRECON_TOR_REQUIRED" "0"
 set_env_value "GHOSTRECON_TOR_STRICT" "0"
 append_env_if_missing "GHOSTRECON_SERVER" "$SERVER_URL"
 append_env_if_missing "PORT" "3847"
-append_env_if_missing "GHOSTRECON_CODEX_APP_SERVER" "1"
-
 if [[ "$DRY_RUN" -eq 0 ]]; then
   chmod 600 "$ENV_FILE" || true
   log ".env perms -> 600"

@@ -6,7 +6,22 @@ import { readResponseSnippet } from './module-runner.mjs';
 
 const XSS_PARAM_RE = /^(q|query|search|s|keyword|term|message|comment|title|name)$/i;
 export const SQLI_PARAM_RE =
-  /^(id|ids|user|user_id|uid|account|order|order_id|page|sort|filter|where|username|email|passwd|pwd|login)$/i;
+  /^(id|ids|name|q|query|search|term|keyword|product|product_id|category|sku|user|user_id|uid|account|account_id|order|order_id|page|sort|filter|where|username|email|passwd|pwd|login)$/i;
+const SQLI_UNSAFE_CONTROL_PARAM_RE = /^(?:csrf|xsrf|nonce|signature|sig|password|passwd|pwd|token|access_token|refresh_token|id_token|api_key|apikey|session|session_id)$/i;
+
+/**
+ * Um nome conhecido aumenta prioridade, mas nunca é requisito para query
+ * observada. Apenas controles de sessão/assinatura ficam fora do mutator.
+ */
+export function isSqliParameterCandidate(name) {
+  const value = String(name || '').trim();
+  return /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(value)
+    && !SQLI_UNSAFE_CONTROL_PARAM_RE.test(value);
+}
+
+export function sqliParameterPriority(name) {
+  return SQLI_PARAM_RE.test(String(name || '')) ? 100 : 10;
+}
 /** Paths típicos de formulário de login (prova OR 1=1 só aqui, com verify_sqli_deep). */
 const LOGIN_PATH_RE = /(\/|^)(login|sign-in|signin|auth)(\/|$)/i;
 const AUTH_SQLI_PARAM_RE = /^(user(name)?|email|pass(word)?|login|pwd)$/i;
@@ -538,7 +553,7 @@ function collectEndpointUrlsForVerify(findings, maxEndpoints) {
     const m = String(f.value || '').match(/^\?([a-zA-Z_][a-zA-Z0-9_]{0,64})=\s*$/);
     if (!m) continue;
     const pName = m[1];
-    if (!SQLI_PARAM_RE.test(pName) && !LFI_PARAM_RE.test(pName)) continue;
+    if (!isSqliParameterCandidate(pName) && !LFI_PARAM_RE.test(pName)) continue;
     try {
       const u = new URL(f.url);
       if (u.searchParams.has(pName)) urls.add(f.url);
@@ -742,7 +757,7 @@ export async function runEvidenceVerification({
         }
       }
 
-      if (enabledChecks.has('sqli') && SQLI_PARAM_RE.test(param)) {
+      if (enabledChecks.has('sqli') && isSqliParameterCandidate(param)) {
         const b = new URL(u.href);
         const t = new URL(u.href);
         const rawVal = u.searchParams.get(p);

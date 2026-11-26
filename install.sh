@@ -6,8 +6,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IAS_DIR="$ROOT_DIR/IAs"
 XSS_DIR="$ROOT_DIR/Xss/xss_vibes"
 PROFILE="full"
-INSTALL_SHANNON=1
-INSTALL_PENTESTGPT=1
 INSTALL_HEXSTRIKE=1
 INSTALL_PLAYWRIGHT=1
 INSTALL_DOCKER=1
@@ -15,8 +13,6 @@ INSTALL_SUPABASE=1
 INSTALL_GHOST_LOCAL=1
 # 1 = valor definido na linha de comando; nao perguntar no modo interativo
 CLI_DOCKER=0
-CLI_SHANNON=0
-CLI_PENTESTGPT=0
 CLI_HEXSTRIKE=0
 ASSUME_DEFAULTS=0
 
@@ -64,26 +60,6 @@ prompt_optional_installs() {
     fi
   fi
 
-  local sh_def="y" pt_def="y"
-  case "$PROFILE" in minimal|passive) sh_def="n"; pt_def="n" ;; esac
-
-  if [ "${CLI_SHANNON:-0}" -eq 0 ]; then
-    if prompt_yes_no "Clonar e preparar Shannon (IAs/shannon)? (perfil: ${PROFILE})" "$sh_def"; then
-      INSTALL_SHANNON=1
-    else
-      INSTALL_SHANNON=0
-      log "Shannon: pulado por escolha."
-    fi
-  fi
-  if [ "${CLI_PENTESTGPT:-0}" -eq 0 ]; then
-    if prompt_yes_no "Clonar e preparar PentestGPT (IAs/PentestGPT)? (perfil: ${PROFILE})" "$pt_def"; then
-      INSTALL_PENTESTGPT=1
-    else
-      INSTALL_PENTESTGPT=0
-      log "PentestGPT: pulado por escolha."
-    fi
-  fi
-
   local hx_def="y"
   case "$PROFILE" in minimal) hx_def="n" ;; esac
   if [ "${CLI_HEXSTRIKE:-0}" -eq 0 ]; then
@@ -104,12 +80,10 @@ Uso:
 Perfis:
   --profile minimal   Instala Node, deps npm e base do projeto
   --profile passive   Minimal + ferramentas passivas/auxiliares
-  --profile full      Passive + modo Kali + Playwright + IAs opcionais
+  --profile full      Passive + modo Kali + Playwright + integrações opcionais
 
 Opcoes:
-  --skip-ias          Nao clona/prepara Shannon nem PentestGPT (sem perguntar)
-  --skip-shannon      Nao prepara Shannon (sem perguntar)
-  --skip-pentestgpt   Nao prepara PentestGPT (sem perguntar)
+  --skip-ias          Nao prepara a integração HexStrike AI
   --skip-hexstrike    Nao prepara HexStrike AI (venv/MCP)
   --skip-playwright   Nao instala Chromium do Playwright
   --skip-docker       Nao instala Docker (sem perguntar)
@@ -119,9 +93,8 @@ Opcoes:
   -h, --help          Mostra esta ajuda
 
 Interativo:
-  Em terminal (stdin TTY), pergunta por Docker, Shannon e PentestGPT em qualquer
-  perfil — salvo -y/--yes ou --skip-* correspondente. Sem TTY, perfis minimal/passive
-  nao incluem Shannon/Pentest por padrao; perfil full mantem inclusao por padrao.
+  Em terminal (stdin TTY), pergunta por Docker e HexStrike. Use -y/--yes para
+  aceitar os padroes atuais ou --skip-* para desativar uma integração.
 EOF
 }
 
@@ -129,14 +102,9 @@ EOF
 apply_profile_ia_defaults() {
   case "$PROFILE" in
     minimal)
-      [ "${CLI_SHANNON:-0}" -eq 0 ] && INSTALL_SHANNON=0
-      [ "${CLI_PENTESTGPT:-0}" -eq 0 ] && INSTALL_PENTESTGPT=0
       [ "${CLI_HEXSTRIKE:-0}" -eq 0 ] && INSTALL_HEXSTRIKE=0
       ;;
-    passive)
-      [ "${CLI_SHANNON:-0}" -eq 0 ] && INSTALL_SHANNON=0
-      [ "${CLI_PENTESTGPT:-0}" -eq 0 ] && INSTALL_PENTESTGPT=0
-      ;;
+    passive) ;;
   esac
 }
 
@@ -373,6 +341,18 @@ install_project_npm() {
   log "Instalando dependencias npm do projeto"
   cd "$ROOT_DIR"
   npm install
+  log "Compilando interface React do GHOSTRECON"
+  npm run ui:build
+  if [ -f "$ROOT_DIR/server/modules/external-tools/standalone/news-verifier/package.json" ]; then
+    log "Instalando e compilando interface React do News Verifier"
+    npm --prefix "$ROOT_DIR/server/modules/external-tools/standalone/news-verifier" install
+    npm --prefix "$ROOT_DIR/server/modules/external-tools/standalone/news-verifier" run build
+  fi
+  if [ "$PROFILE" = "full" ] && [ "$INSTALL_GHOST_LOCAL" -eq 1 ] && [ -f "$ROOT_DIR/ghost-local-v5/ghost-local/frontend/package.json" ]; then
+    log "Instalando e compilando interface React do GHOST local"
+    npm --prefix "$ROOT_DIR/ghost-local-v5/ghost-local/frontend" install
+    npm --prefix "$ROOT_DIR/ghost-local-v5/ghost-local/frontend" run build
+  fi
 }
 
 setup_env_file() {
@@ -427,49 +407,6 @@ install_playwright() {
   cd "$ROOT_DIR"
   npm install playwright
   npx playwright install chromium
-}
-
-clone_if_missing() {
-  local repo_url="$1"
-  local target_dir="$2"
-  if [ -d "$target_dir/.git" ] || [ -d "$target_dir" ]; then
-    log "Diretorio ja existe: $target_dir"
-    return
-  fi
-  mkdir -p "$(dirname "$target_dir")"
-  git clone --recurse-submodules "$repo_url" "$target_dir"
-}
-
-prepare_shannon() {
-  if [ "${INSTALL_SHANNON:-0}" -ne 1 ]; then
-    return
-  fi
-  local shannon_dir="$IAS_DIR/shannon"
-  clone_if_missing "https://github.com/keygraph/shannon.git" "$shannon_dir"
-  if [ -d "$shannon_dir" ]; then
-    log "Preparando Shannon"
-    (
-      cd "$shannon_dir"
-      pnpm install
-      pnpm build
-      ./shannon build || warn "Falhou ./shannon build; revise Docker/credenciais depois"
-    )
-  fi
-}
-
-prepare_pentestgpt() {
-  if [ "${INSTALL_PENTESTGPT:-0}" -ne 1 ]; then
-    return
-  fi
-  local pentest_dir="$IAS_DIR/PentestGPT"
-  clone_if_missing "https://github.com/GreyDGL/PentestGPT.git" "$pentest_dir"
-  if [ -d "$pentest_dir" ]; then
-    log "Preparando PentestGPT"
-    (
-      cd "$pentest_dir"
-      make install || warn "Falhou make install em PentestGPT"
-    )
-  fi
 }
 
 hexstrike_venv_python() {
@@ -644,20 +581,8 @@ while [ $# -gt 0 ]; do
       [ -n "$PROFILE" ] || die "Faltou valor para --profile"
       ;;
     --skip-ias)
-      INSTALL_SHANNON=0
-      INSTALL_PENTESTGPT=0
       INSTALL_HEXSTRIKE=0
-      CLI_SHANNON=1
-      CLI_PENTESTGPT=1
       CLI_HEXSTRIKE=1
-      ;;
-    --skip-shannon)
-      INSTALL_SHANNON=0
-      CLI_SHANNON=1
-      ;;
-    --skip-pentestgpt)
-      INSTALL_PENTESTGPT=0
-      CLI_PENTESTGPT=1
       ;;
     --skip-hexstrike)
       INSTALL_HEXSTRIKE=0
@@ -718,8 +643,6 @@ if [ "$PROFILE" = "passive" ] || [ "$PROFILE" = "full" ]; then
   install_go_security_tools
 fi
 
-prepare_shannon
-prepare_pentestgpt
 prepare_hexstrike
 
 if [ "$PROFILE" = "full" ]; then
@@ -739,10 +662,9 @@ Notas:
   - Se o Docker foi instalado agora, talvez precise relogar para o grupo docker surtir efeito.
   - O arquivo .env foi copiado do exemplo se nao existia; preencha as chaves/API keys antes de usar tudo.
   - GITHUB_TOKEN (PAT): perguntado no install interativo; necessario para git clone sem prompt e GitHub Code Search.
-  - PentestGPT e Shannon podem exigir configuracoes adicionais e credenciais proprias.
   - HexStrike: venv em IAs/hexstrike-ai/hexstrike-env; .cursor/mcp.json aponta para o Python do venv.
   - Servidor HexStrike (opcional): cd IAs/hexstrike-ai && ./hexstrike-env/bin/python3 hexstrike_server.py --port 8888
-  - Modo interativo: em TTY pergunta por Docker, Shannon, PentestGPT e HexStrike; use -y para pular perguntas.
+  - Modo interativo: em TTY pergunta por Docker e HexStrike; use -y para pular perguntas.
 
 Comandos uteis:
   npm start

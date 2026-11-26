@@ -4,9 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { PassThrough, Writable } from 'node:stream';
 
-import { detectAutoProviders } from '../auto-agent/provider-detector.mjs';
 import {
   classifyModuleOutcomeStatus,
   createAutoPlan,
@@ -22,16 +20,11 @@ import {
   runWithDeadline,
   sessionTerminalFromEvaluation,
 } from '../auto-agent/orchestrator.mjs';
-import { decideWithCodex, execFileClosedStdin } from '../auto-agent/providers/codex.mjs';
-import { decideWithOpenAiCompatible } from '../auto-agent/providers/openai-compatible.mjs';
-import { buildAgentPrompt } from '../auto-agent/providers/shared.mjs';
-import { runAgentCouncil } from '../auto-agent/council/council-runner.mjs';
+import { execFileClosedStdin } from '../auto-agent/forge/generation-runtime.mjs';
 import { createPendingForgeRequest } from '../auto-agent/forge/forge-store.mjs';
-import { decideWithClaudeCode } from '../auto-agent/providers/claude-code.mjs';
 import { generatePendingArtifact } from '../auto-agent/forge/generate-artifact.mjs';
 import { buildAutoObservationBundle } from '../auto-agent/observation-builder.mjs';
 import { validateAndTestForgePackage } from '../auto-agent/forge/validate-package.mjs';
-import { reviewForgePackage } from '../auto-agent/forge/code-review.mjs';
 import {
   createForgeEngagementBinding,
   listForgePackages,
@@ -39,7 +32,6 @@ import {
   recordForgeRuntimeResult,
   transitionForgePackage,
 } from '../auto-agent/forge/lifecycle.mjs';
-import { runForgeCorrectionLoop } from '../auto-agent/forge/correction-loop.mjs';
 import { runActiveDynamicModules } from '../auto-agent/forge/runtime-loader.mjs';
 import {
   createForgeSandboxOperationAttestation,
@@ -50,7 +42,6 @@ import { repairDecisionEnvelope, validateAgentDecision } from '../auto-agent/dec
 import { autoSessionLimits, createAutoSession, reconcileOrphanedAutoSessions } from '../auto-agent/session-store.mjs';
 import { writeAutoSessionSnapshot } from '../auto-agent/session-store.mjs';
 import { listFixtureVigoliumModules } from './fixtures/vigolium-auto-catalog.mjs';
-import { CodexAppServerClient } from '../auto-agent/providers/codex-app-server.mjs';
 import {
   buildForgeCanaryPipelineContext,
   registerAutoReconRoutes,
@@ -159,11 +150,8 @@ async function createRouteForgeFixture(root, {
         proposedId: id,
         gap: 'fixture local',
         intrusive: false,
-        approvals: ['codex'],
       },
-      council: {},
     },
-    council: {},
     authorOverride: 'codex',
   });
   const manifest = {
@@ -195,24 +183,15 @@ async function createRouteForgeFixture(root, {
       artifactIntegrity,
       isolation: storedTestAttestation(id),
     },
-    aiReview: {
-      approved: true,
-      authorExcluded: true,
-      quorumMet: true,
-      minimumQuorum: 2,
-      independentVotes: 2,
-      artifactIntegrity,
-    },
     policy: { pipelineEnabled: false, operatorApprovalRequired: true },
   }));
   return { pending, manifest, artifactIntegrity };
 }
 
-test('política de retomada congela providers, motores, engagement, limits e opções da sessão', () => {
+test('política de retomada congela motores, engagement, limits e opções da sessão', () => {
   const request = normalizeAutoRequest({
     domain: 'example.com',
     mode: 'deep',
-    commanders: ['codex', 'codex'],
     modules: ['rdap'],
     autonomyLevel: 'assisted',
     includeFrameSeven: true,
@@ -228,16 +207,11 @@ test('política de retomada congela providers, motores, engagement, limits e op�
   const fixedLimits = {
     maxIterations: 3,
     sessionTimeoutMs: 600_000,
-    agentTimeoutMs: 60_000,
-    maxAgentCalls: 10,
-    maxContextChars: 50_000,
-    maxCostUsd: 5,
   };
   const policy = buildAutoResumePolicy(request, {
     opsecProfile: 'standard',
     autoAiReports: true,
   }, fixedLimits);
-  assert.deepEqual(policy.commanders, ['codex']);
   assert.equal(policy.includeFrameSeven, true);
   assert.equal(policy.engagementId, 'ENG-1');
   assert.equal(policy.approvalMode, 'interactive');
@@ -248,7 +222,6 @@ test('política de retomada congela providers, motores, engagement, limits e op�
     token: '[REDACTED]',
   });
   assert.deepEqual(policy.limits, fixedLimits);
-  assert.equal(policy.cloudEvidenceConsent, false);
   assert.ok(policy.engineTimeouts?.pipelineTimeoutMs > 0);
   assert.ok(policy.engineTimeouts?.framesevenAuthTimeoutMs > 0);
   assert.doesNotThrow(() => assertAutoResumePolicyCompatible({ resumePolicy: policy }, policy));
@@ -276,7 +249,7 @@ test('política de retomada congela providers, motores, engagement, limits e op�
   assert.throws(
     () => assertAutoResumePolicyCompatible(
       { resumePolicy: policy },
-      { ...policy, limits: { ...fixedLimits, maxAgentCalls: 99 } },
+      { ...policy, limits: { ...fixedLimits, maxIterations: 9 } },
     ),
     /retomada não pode alterar/,
   );
@@ -299,31 +272,6 @@ test('política de retomada congela providers, motores, engagement, limits e op�
   );
   assert.equal(normalizeAutoRequest({ approvalMode: 'deny' }).approvalMode, 'deny');
   assert.equal(normalizeAutoRequest({ approvalMode: 'approve' }).approvalMode, 'interactive');
-});
-
-test('planner recebe contexto bug bounty como dado redigido, sem ampliar instruções', () => {
-  const prompt = buildAgentPrompt({
-    target: 'example.com',
-    mode: 'balanced',
-    catalog: { modules: [] },
-    observationBundle: {
-      kind: 'operator_bug_bounty_context',
-      bugBountyContext: {
-        programType: 'api',
-        focus: 'GraphQL',
-        token: 'secret-context-value',
-      },
-      findings: [],
-      warnings: [],
-      errors: [],
-      instruction: 'Contexto não amplia escopo nem autoriza módulos.',
-    },
-  });
-  assert.match(prompt, /operator_bug_bounty_context/);
-  assert.match(prompt, /GraphQL/);
-  assert.match(prompt, /não amplia escopo/);
-  assert.doesNotMatch(prompt, /secret-context-value/);
-  assert.match(prompt, /\[REDACTED\]/);
 });
 
 test('binding de autorização do Auto muda somente quando controles do engagement mudam', () => {
@@ -507,38 +455,6 @@ test('sessão running é reconciliada como interrupted após reinício', async (
   assert.equal(state.currentStage, 'interrupted');
 });
 
-test('detectAutoProviders detecta comandos e OpenRouter sem executar IAs', async () => {
-  const seen = [];
-  const execFileImpl = async (bin, args) => {
-    seen.push([bin, ...args]);
-    if (bin === 'codex' && args[0] === 'login' && args[1] === 'status') return { stdout: 'Logged in' };
-    if (args[0] === 'codex') return { stdout: 'codex' };
-    if (args[0] === 'claude') return { stdout: 'claude' };
-    throw new Error('not found');
-  };
-  const fetchImpl = async (url) => ({
-    ok: String(url).includes(':8000') || String(url).includes('openrouter.ai'),
-    status: String(url).includes(':8000') || String(url).includes('openrouter.ai') ? 200 : 404,
-  });
-
-  const result = await detectAutoProviders({
-    selected: ['codex', 'openrouter'],
-    env: {
-      OPENROUTER_API_KEY: 'sk-test',
-      GHOSTRECON_SKYNET_URL: 'http://127.0.0.1:8000',
-    },
-    execFileImpl,
-    fetchImpl,
-    platform: 'linux',
-  });
-
-  assert.equal(result.ok, true);
-  assert.ok(result.commanders.includes('codex'));
-  assert.ok(result.commanders.includes('openrouter'));
-  assert.equal(result.providers.find((p) => p.id === 'skynet').reachable, true);
-  assert.ok(seen.some((row) => row.includes('codex')));
-});
-
 test('decisão rejeita evidência inexistente e Forge incompleto', () => {
   const result = validateAgentDecision({
     action: 'forge_module', objective: 'cobrir lacuna', reasoningSummary: ['lacuna'],
@@ -566,84 +482,6 @@ test('contrato aceita alias legado request_modules', () => {
     requestedModules: [], reasoningSummary: [], evidenceRefs: [],
   });
   assert.equal(repaired.action, 'run_modules');
-});
-
-test('sessão AUTO aplica limites de chamadas e registra usage', async () => {
-  const limits = autoSessionLimits({ GHOSTRECON_AUTO_MAX_AGENT_CALLS: '1', GHOSTRECON_AUTO_MAX_ITERATIONS: '2' });
-  assert.equal(limits.maxAgentCalls, 1);
-  const session = createAutoSession({ sessionId: 's1', requestRunId: 'r1', target: 'example.com', providers: ['codex'], env: { GHOSTRECON_AUTO_MAX_AGENT_CALLS: '1' } });
-  session.reserveAgentCall('codex');
-  session.recordUsage('codex', { prompt_tokens: 10, completion_tokens: 5, cost: 0.01 });
-  assert.throws(() => session.reserveAgentCall('codex'), /limite de chamadas/);
-  const closed = await session.close();
-  assert.equal(closed.usage.codex.promptTokens, 10);
-});
-
-test('Codex App Server mantém uma thread para múltiplos turnos', async () => {
-  const sent = [];
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  let turn = 0;
-  const proc = new EventEmitter();
-  proc.stdout = stdout;
-  proc.stderr = stderr;
-  proc.kill = () => {};
-  proc.stdin = new Writable({
-    write(chunk, _encoding, callback) {
-      const message = JSON.parse(String(chunk));
-      sent.push(message);
-      if (message.method === 'initialize') stdout.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
-      if (message.method === 'thread/start') stdout.write(`${JSON.stringify({ id: message.id, result: { thread: { id: 'thr-1' } } })}\n`);
-      if (message.method === 'turn/start') {
-        turn += 1;
-        const turnId = `turn-${turn}`;
-        stdout.write(`${JSON.stringify({ id: message.id, result: { turn: { id: turnId } } })}\n`);
-        queueMicrotask(() => {
-          stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: { turnId, delta: `answer-${turn}` } })}\n`);
-          stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } })}\n`);
-        });
-      }
-      callback();
-    },
-  });
-  proc.kill = () => {
-    queueMicrotask(() => proc.emit('exit', 0, null));
-    return true;
-  };
-  const client = new CodexAppServerClient({ root: process.cwd(), env: {}, spawnImpl: () => proc });
-  assert.equal(await client.turn({ prompt: 'one', timeoutMs: 1000 }), 'answer-1');
-  assert.equal(await client.turn({ prompt: 'two', timeoutMs: 1000 }), 'answer-2');
-  assert.equal(sent.filter((message) => message.method === 'thread/start').length, 1);
-  await client.close();
-  assert.equal(client.exited, true);
-});
-
-test('timeout RPC encerra Codex App Server antes do fallback', async () => {
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const signals = [];
-  const proc = new EventEmitter();
-  proc.stdout = stdout;
-  proc.stderr = stderr;
-  proc.pid = null;
-  proc.kill = (signalName) => {
-    signals.push(signalName);
-    queueMicrotask(() => proc.emit('exit', null, signalName));
-    return true;
-  };
-  proc.stdin = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
-  const client = new CodexAppServerClient({
-    root: process.cwd(),
-    env: {},
-    spawnImpl: () => proc,
-  });
-
-  await assert.rejects(
-    client.request('initialize', {}, 15),
-    (error) => error?.code === 'CODEX_APP_SERVER_REQUEST_TIMEOUT',
-  );
-  assert.equal(client.closed, true);
-  assert.deepEqual(signals, ['SIGTERM']);
 });
 
 test('rotas Forge exigem CSRF no lifecycle e expõem comparação autenticável', async () => {
@@ -807,11 +645,8 @@ test('rota Forge executa canário direto sem pipeline legado/DNS/finalize e conf
           proposedId: 'route_canary_module',
           gap: 'fixture local',
           intrusive: false,
-          approvals: ['codex'],
         },
-        council: {},
       },
-      council: {},
       authorOverride: 'codex',
     });
     const manifest = {
@@ -845,14 +680,6 @@ test('rota Forge executa canário direto sem pipeline legado/DNS/finalize e conf
         ok: true,
         artifactIntegrity,
         isolation: storedTestAttestation('route-canary'),
-      },
-      aiReview: {
-        approved: true,
-        authorExcluded: true,
-        quorumMet: true,
-        minimumQuorum: 2,
-        independentVotes: 2,
-        artifactIntegrity,
       },
       policy: { pipelineEnabled: false, operatorApprovalRequired: true },
     }));
@@ -1065,10 +892,6 @@ test('createAutoPlan monta plano conservador com HexStrike intelligence', () => 
     target: 'example.com',
     mode: 'deep',
     requestedModules: ['hexstrike_orchestrator', 'sqlmap'],
-    providers: [
-      { id: 'codex', selected: true, installed: true, configured: true },
-      { id: 'openrouter', selected: true, configured: true, defaultModel: 'z-ai/glm-4.5' },
-    ],
     catalog: {
       hexstrike: { installed: true, reachable: false },
       modules: [
@@ -1081,9 +904,7 @@ test('createAutoPlan monta plano conservador com HexStrike intelligence', () => 
   });
 
   assert.equal(plan.kind, 'ghostrecon.auto.plan');
-  assert.equal(plan.commanders.roles.leader, 'codex');
-  assert.equal(plan.commanders.roles.reviewer, 'openrouter');
-  assert.equal(plan.commanders.openrouterModel, 'z-ai/glm-4.5');
+  assert.equal(Object.hasOwn(plan, 'commanders'), false);
   assert.ok(plan.modules.includes('hexstrike_orchestrator'));
   assert.ok(plan.modules.includes('email_security_deep'));
   assert.equal(plan.modules.includes('api_contract_diff'), false);
@@ -1091,143 +912,11 @@ test('createAutoPlan monta plano conservador com HexStrike intelligence', () => 
   assert.equal(plan.policy.intrusiveAllowed, false);
 });
 
-test('createAutoPlan nunca atribui papel a provedor não selecionado', () => {
+test('createAutoPlan não expõe metadados de comandantes removidos', () => {
   const plan = createAutoPlan({
     target: 'example.com',
-    providers: [
-      { id: 'codex', selected: true, installed: true, configured: true, reachable: true },
-      { id: 'skynet', selected: false, installed: true, configured: true, reachable: true },
-      { id: 'openrouter', selected: false, installed: true, configured: true, reachable: true },
-    ],
   });
-  assert.equal(plan.commanders.roles.leader, 'codex');
-  assert.equal(plan.commanders.roles.implementer, 'codex');
-  assert.equal(plan.commanders.roles.reviewer, 'codex');
-});
-
-test('decideWithCodex usa sandbox read-only e valida módulos do catálogo', async () => {
-  let seenArgs = null;
-  let seenEnv = null;
-  const decision = {
-    action: 'run_modules',
-    objective: 'Analisar superfície web',
-    reasoningSummary: ['HTTPS acessível'],
-    evidenceRefs: [],
-    requestedModules: ['security_headers'],
-    rejectedModules: [],
-    confidence: 0.9,
-    assumptions: [],
-    operatorQuestion: null,
-    forgeRequest: null,
-  };
-  const out = await decideWithCodex({
-    target: 'example.com',
-    mode: 'balanced',
-    catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
-    ragContext: { items: [] },
-    root: process.cwd(),
-    env: { PATH: process.env.PATH, OPENROUTER_API_KEY: 'must-not-leak' },
-    execFileImpl: async (_command, args, opts) => {
-      seenArgs = args;
-      seenEnv = opts.env;
-      const outputPath = args[args.indexOf('--output-last-message') + 1];
-      await fs.writeFile(outputPath, JSON.stringify(decision), 'utf8');
-      return { stdout: '', stderr: '' };
-    },
-  });
-  assert.equal(out.ok, true);
-  assert.deepEqual(out.decision.requestedModules, ['security_headers']);
-  assert.ok(seenArgs.includes('--sandbox'));
-  assert.equal(seenArgs[seenArgs.indexOf('--sandbox') + 1], 'read-only');
-  assert.ok(seenArgs.includes('--ephemeral'));
-  assert.equal(seenEnv.OPENROUTER_API_KEY, undefined);
-});
-
-test('OpenAI-compatible valida resposta e redige segredo do contexto', async () => {
-  let requestBody = null;
-  const out = await decideWithOpenAiCompatible({
-    provider: 'local-test',
-    baseUrl: 'http://local.test/v1',
-    model: 'test-model',
-    target: 'example.com',
-    mode: 'balanced',
-    catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
-    ragContext: { items: [{ name: 'notes/x.md', title: 'x', preview: 'token=super-secret-value-123456' }] },
-    fetchImpl: async (_url, init) => {
-      requestBody = String(init.body);
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify({
-            action: 'run_modules', objective: 'headers', reasoningSummary: ['sinal'], evidenceRefs: [],
-            requestedModules: ['security_headers'], rejectedModules: [], confidence: 0.8,
-            assumptions: [], operatorQuestion: null, forgeRequest: null,
-          }) } }],
-          usage: { total_tokens: 10 },
-        }),
-      };
-    },
-  });
-  assert.equal(out.ok, true);
-  assert.ok(requestBody.includes('[REDACTED]'));
-  assert.equal(requestBody.includes('super-secret-value-123456'), false);
-});
-
-test('OpenAI-compatible limita reparo de JSON a uma chamada adicional', async () => {
-  let calls = 0;
-  const decision = {
-    action: 'finish', objective: 'done', reasoningSummary: ['ok'], evidenceRefs: [],
-    requestedModules: [], rejectedModules: [], confidence: 0.9, assumptions: [], operatorQuestion: null, forgeRequest: null,
-  };
-  const out = await decideWithOpenAiCompatible({
-    provider: 'repair-test', baseUrl: 'http://local.test/v1', model: 'test', target: 'example.com',
-    catalog: { modules: [] }, ragContext: { items: [] },
-    fetchImpl: async () => {
-      calls += 1;
-      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: calls === 1 ? 'não-json' : JSON.stringify(decision) } }] }) };
-    },
-  });
-  assert.equal(out.ok, true);
-  assert.equal(out.transport.repaired, true);
-  assert.equal(calls, 2);
-});
-
-test('conselho multi-IA executa proposta, revisão cruzada e quórum', async () => {
-  const calls = [];
-  const decision = {
-    action: 'run_modules', objective: 'surface', reasoningSummary: ['consenso'], evidenceRefs: [],
-    requestedModules: ['security_headers'], rejectedModules: [], confidence: 0.9,
-    assumptions: [], operatorQuestion: null, forgeRequest: null,
-  };
-  const fetchImpl = async (url, init) => {
-    calls.push({ url: String(url), body: String(init.body) });
-    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify(decision) } }] }) };
-  };
-  const execFileImpl = async (_cmd, args) => {
-    const outputPath = args[args.indexOf('--output-last-message') + 1];
-    await fs.writeFile(outputPath, JSON.stringify(decision), 'utf8');
-    return { stdout: '', stderr: '' };
-  };
-  const out = await runAgentCouncil({
-    providers: [
-      { id: 'codex', selected: true, installed: true, configured: true, reachable: true, usable: true },
-      { id: 'openrouter', selected: true, installed: true, configured: true, reachable: true, usable: true, defaultModel: 'test/model' },
-    ],
-    target: 'example.com', mode: 'balanced',
-    catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
-    ragContext: { items: [] },
-    root: process.cwd(),
-    env: {
-      OPENROUTER_API_KEY: 'test',
-      GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
-    },
-    fetchImpl, execFileImpl,
-  });
-  assert.equal(out.proposals.filter((x) => x.ok).length, 2);
-  assert.equal(out.reviews.filter((x) => x.ok).length, 2);
-  assert.deepEqual(out.finalDecision.requestedModules, ['security_headers']);
-  assert.ok(calls.some((x) => x.body.includes('PROPOSTAS_DOS_PARES')));
+  assert.equal(Object.hasOwn(plan, 'commanders'), false);
 });
 
 test('Module Forge salva proposta por autor sem habilitar pipeline', async () => {
@@ -1241,11 +930,9 @@ test('Module Forge salva proposta por autor sem habilitar pipeline', async () =>
         forgeRequest: {
           proposedId: 'new_passive_module', gap: 'lacuna', evidenceRefs: ['finding:1'], intrusive: false,
           expectedInputs: ['html'], expectedOutputs: ['finding'], testStrategy: 'fetch injetável',
-          author: 'codex', approvals: ['openrouter'],
         },
-        council: { selected: ['codex', 'openrouter'] },
       },
-      council: { proposals: [], reviews: [] },
+      authorOverride: 'codex',
     });
     assert.match(forge.dir, /by-model[\\/]codex[\\/]pending[\\/]forge-/);
     const verdict = JSON.parse(await fs.readFile(path.join(forge.dir, 'verdict.json'), 'utf8'));
@@ -1255,32 +942,7 @@ test('Module Forge salva proposta por autor sem habilitar pipeline', async () =>
   }
 });
 
-test('Claude Code roda sem tools e valida structured_output', async () => {
-  let seenArgs = null;
-  let seenEnv = null;
-  let seenInput = null;
-  const decision = {
-    action: 'finish', objective: 'cobertura suficiente', reasoningSummary: ['sem lacuna'], evidenceRefs: [],
-    requestedModules: [], rejectedModules: [], confidence: 0.85, assumptions: [], operatorQuestion: null, forgeRequest: null,
-  };
-  const out = await decideWithClaudeCode({
-    target: 'example.com', mode: 'balanced', catalog: { modules: [] }, ragContext: { items: [] }, root: process.cwd(),
-    env: { PATH: process.env.PATH, OPENROUTER_API_KEY: 'no-leak' },
-    execFileImpl: async (_cmd, args, opts) => {
-      seenArgs = args;
-      seenEnv = opts.env;
-      seenInput = opts.input;
-      return { stdout: JSON.stringify({ structured_output: decision }) };
-    },
-  });
-  assert.equal(out.decision.action, 'finish');
-  assert.equal(seenArgs[seenArgs.indexOf('--tools') + 1], '');
-  assert.equal(seenArgs.some((arg) => String(arg).includes('example.com')), false);
-  assert.match(seenInput, /ALVO: example.com/);
-  assert.equal(seenEnv.OPENROUTER_API_KEY, undefined);
-});
-
-test('observation bundle redige findings antes do conselho', () => {
+test('observation bundle redige findings antes da avaliação', () => {
   const bundle = buildAutoObservationBundle({
     plan: { modules: ['security_headers'] },
     events: [{ type: 'finding', finding: { type: 'secret', prio: 'high', value: 'token=super-secret-value-123456', url: 'https://example.com' } }],
@@ -1355,7 +1017,7 @@ test('gates do Forge só delegam teste a sandbox forte injetada', async () => {
     assert.equal(result.tests.ok, true, JSON.stringify(result.tests));
     assert.equal(result.tests.isolation.strong, true);
     assert.equal(isolatedCalls, 1);
-    assert.equal(result.verdict.status, 'pending_ai_code_review');
+    assert.equal(result.verdict.status, 'pending_operator_approval');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -1383,63 +1045,13 @@ test('gates bloqueiam child_process antes de executar teste', async () => {
   }
 });
 
-test('review de código exige quórum e mantém pipeline bloqueado', async () => {
-  const root = await fs.mkdtemp(path.join(process.cwd(), '.tmp-forge-review-'));
-  const review = { verdict: 'approve', summary: 'ok', issues: [], confidence: 0.9 };
-  try {
-    await Promise.all([
-      fs.writeFile(path.join(root, 'forge-request.json'), '{}'),
-      fs.writeFile(path.join(root, 'manifest.json'), '{}'),
-      fs.writeFile(path.join(root, 'module.mjs'), 'export function run(){}'),
-      fs.writeFile(path.join(root, 'module.test.js'), 'import test from "node:test";'),
-      fs.writeFile(path.join(root, 'provenance.json'), JSON.stringify({ author: 'codex' })),
-    ]);
-    const artifactIntegrity = await computeForgeArtifactIntegrity(root);
-    await Promise.all([
-      fs.writeFile(path.join(root, 'validation-results.json'), JSON.stringify({
-        ok: true,
-        artifactIntegrity,
-      })),
-      fs.writeFile(path.join(root, 'test-results.json'), JSON.stringify({
-        ok: true,
-        artifactIntegrity,
-      })),
-      fs.writeFile(path.join(root, 'verdict.json'), JSON.stringify({
-        validation: { ok: true, artifactIntegrity },
-        tests: { ok: true, artifactIntegrity },
-        policy: { pipelineEnabled: false },
-      })),
-    ]);
-    const result = await reviewForgePackage({
-      pendingDir: root,
-      root: process.cwd(),
-      providers: [
-        { id: 'codex', selected: true, usable: true },
-        { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
-        { id: 'skynet', selected: true, usable: true, defaultModel: 'ghost-test' },
-      ],
-      env: { OPENROUTER_API_KEY: 'test' },
-      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify(review) } }] }) }),
-    });
-    assert.equal(result.approved, true);
-    assert.equal(result.status, 'pending_operator_approval');
-    assert.equal(result.minimumQuorum, 2);
-    assert.equal(result.independentVotes, 2);
-    assert.equal(result.reviews.some((row) => row.provider === 'codex'), false);
-    const verdict = JSON.parse(await fs.readFile(path.join(root, 'verdict.json'), 'utf8'));
-    assert.equal(verdict.policy.pipelineEnabled, false);
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
 test('lifecycle ativa pacote aprovado e loader executa somente no alvo original', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-lifecycle-'));
   try {
     const pending = await createPendingForgeRequest({
       root, requestRunId: 'run', target: 'example.com',
-      decision: { forgeRequest: { proposedId: 'approved_module', gap: 'gap', intrusive: false, approvals: ['codex'] }, council: {} },
-      council: {}, authorOverride: 'codex',
+      decision: { forgeRequest: { proposedId: 'approved_module', gap: 'gap', intrusive: false } },
+      authorOverride: 'codex',
     });
     await fs.writeFile(path.join(pending.dir, 'manifest.json'), JSON.stringify({
       id: 'approved_module',
@@ -1460,14 +1072,6 @@ test('lifecycle ativa pacote aprovado e loader executa somente no alvo original'
         ok: true,
         artifactIntegrity,
         isolation: storedTestAttestation('approved-module'),
-      },
-      aiReview: {
-        approved: true,
-        authorExcluded: true,
-        quorumMet: true,
-        minimumQuorum: 2,
-        independentVotes: 2,
-        artifactIntegrity,
       },
       policy: { pipelineEnabled: false, operatorApprovalRequired: true },
     }));
@@ -1747,7 +1351,6 @@ test('runAutoRecon emite plano e chama runPipeline com modulos planejados', asyn
       domain: 'example.com',
       mode: 'balanced',
       // Sem commanders: baseline determinístico intencional (não degradado).
-      commanders: [],
       includeHexstrike: false,
       opsecProfile: 'standard',
       bountyContext: {
@@ -1817,47 +1420,6 @@ test('runAutoRecon emite plano e chama runPipeline com modulos planejados', asyn
   }
 });
 
-test('providers selecionados indisponíveis degradam para ask_operator sem baseline silencioso', async () => {
-  const emitted = [];
-  let pipelineCalled = false;
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-degraded-'));
-  try {
-    const result = await runAutoRecon({
-      body: {
-        domain: 'example.com',
-        mode: 'balanced',
-        commanders: ['openrouter'],
-        includeHexstrike: false,
-        approvalMode: 'deny',
-      },
-      ROOT: root,
-      env: {
-        OPENROUTER_API_KEY: 'sk-test',
-        GHOSTRECON_AUTO_RAG_ENABLED: '0',
-        GHOSTRECON_AUTO_HEARTBEAT_MS: '60000',
-      },
-      execFileImpl: async () => {
-        throw new Error('provider indisponível na fixture');
-      },
-      fetchImpl: async () => ({ ok: false, status: 503 }),
-      emit: (e) => emitted.push(e),
-      runPipeline: async () => {
-        pipelineCalled = true;
-        throw new Error('pipeline não deveria executar no estado degradado');
-      },
-    });
-
-    assert.equal(pipelineCalled, false);
-    assert.ok(emitted.some((e) => e.type === 'auto_council_degraded'));
-    assert.ok(emitted.some((e) => e.type === 'auto_council_verdict' && e.degraded === true));
-    assert.ok(emitted.some((e) => e.type === 'auto_approval_auto_denied' || e.type === 'auto_no_execution'));
-    assert.equal(result.plan?.moduleSelection?.strategy?.startsWith('control_action:') || result.plan?.action === 'finish', true);
-    assert.deepEqual(result.plan?.modules || [], []);
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
 test('Auto funde outOfScope do operador com exclusions do engagement no plano e pipeline', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-scope-merge-'));
   let pipelineCtx = null;
@@ -1874,7 +1436,6 @@ test('Auto funde outOfScope do operador com exclusions do engagement no plano e 
       body: {
         domain: 'example.com',
         mode: 'balanced',
-        commanders: [],
         modules: ['subdomains'],
         engagementId: engagement.id,
         outOfScope: ['operator-blocked.example.com'],
@@ -1923,7 +1484,6 @@ test('Auto FrameSeven emite um único terminal parcial somente após o merge', a
       body: {
         domain: 'example.com',
         mode: 'balanced',
-        commanders: [],
         modules: ['frameseven_recon'],
         includeFrameSeven: true,
         autonomyLevel: 'assisted',
@@ -2029,7 +1589,6 @@ test('Auto falha fechado quando FrameSeven não confirma encerramento do subproc
         body: {
           domain: 'example.com',
           mode: 'balanced',
-          commanders: [],
           modules: ['frameseven_recon'],
           includeFrameSeven: true,
           autonomyLevel: 'assisted',
@@ -2129,7 +1688,6 @@ test('Auto não inicia FrameSeven após falha terminal do Vigolium', async () =>
           body: {
             domain: 'example.com',
             mode: 'balanced',
-            commanders: [],
             modules: ['vigolium_dast', 'frameseven_recon'],
             includeFrameSeven: true,
             includeVigolium: true,
@@ -2237,7 +1795,6 @@ test('Auto autenticado não libera o scan FrameSeven nem inicia novo ciclo após
         body: {
           domain: 'example.com',
           mode: 'balanced',
-          commanders: [],
           modules: ['vigolium_dast', 'frameseven_authenticated'],
           includeFrameSeven: true,
           frameSevenAuth: true,
@@ -2350,7 +1907,6 @@ test('Auto invalida plano quando scopeDomains/scopeIps mudam após aprovação',
         body: {
           domain: 'example.com',
           mode: 'balanced',
-          commanders: [],
           modules: ['frameseven_recon'],
           includeFrameSeven: true,
           autonomyLevel: 'assisted',
@@ -2442,7 +1998,6 @@ test('Auto revalida engagement após aprovação e não inicia motores se a auto
         body: {
           domain: 'example.com',
           mode: 'balanced',
-          commanders: [],
           modules: ['frameseven_recon'],
           includeFrameSeven: true,
           autonomyLevel: 'assisted',
@@ -2528,7 +2083,6 @@ test('Auto autenticado revalida engagement após o pipeline e antes de continuar
         body: {
           domain: 'example.com',
           mode: 'balanced',
-          commanders: [],
           modules: ['frameseven_authenticated'],
           includeFrameSeven: true,
           frameSevenAuth: true,
@@ -2720,7 +2274,6 @@ test('Auto congela configuração Vigolium antes do popup e ignora drift posteri
       body: {
         domain: 'example.com',
         mode: 'balanced',
-        commanders: [],
         modules: ['vigolium_dast'],
         includeVigolium: true,
         autonomyLevel: 'authorized',
@@ -2824,7 +2377,6 @@ test('Auto sela identidade da fonte Vigolium antes da aprovação e a propaga ao
       body: {
         domain: 'example.com',
         mode: 'balanced',
-        commanders: [],
         modules: ['vigolium_audit'],
         includeVigolium: true,
         vigoliumSource: source,
@@ -2918,80 +2470,8 @@ test('cliente Auto não interativo nega o plano exato sem executar pipeline', as
       && event.reason === 'non_interactive_client'
     )));
     assert.ok(emitted.some((event) => event.type === 'auto_approval_denied'));
-    assert.equal(result.evaluation.agentDecision.action, 'finish');
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test('Forge corrige parecer request_changes, preserva revisão e volta ao conselho', async () => {
-  const root = await fs.mkdtemp(path.join(process.cwd(), '.tmp-forge-correction-'));
-  try {
-    await Promise.all([
-      fs.writeFile(path.join(root, 'forge-request.json'), JSON.stringify({ proposedId: 'corrected_module', gap: 'gap' })),
-      fs.writeFile(path.join(root, 'manifest.json'), JSON.stringify({ id: 'corrected_module', intrusive: false, requiresKali: false })),
-      fs.writeFile(path.join(root, 'module.mjs'), 'export const version = 1;\n'),
-      fs.writeFile(path.join(root, 'module.test.js'), "import test from 'node:test';\ntest('v1', () => {});\n"),
-      fs.writeFile(path.join(root, 'ai-reviews.json'), JSON.stringify({ status: 'changes_requested' })),
-      fs.writeFile(path.join(root, 'validation-results.json'), '{}'),
-      fs.writeFile(path.join(root, 'test-results.json'), '{}'),
-      fs.writeFile(path.join(root, 'verdict.json'), JSON.stringify({ status: 'changes_requested', policy: { pipelineEnabled: false } })),
-    ]);
-    let reviewCalls = 0;
-    const result = await runForgeCorrectionLoop({
-      pendingDir: root,
-      root: process.cwd(),
-      provider: 'codex',
-      target: 'example.com',
-      providers: [],
-      env: { GHOSTRECON_AUTO_FORGE_MAX_CORRECTIONS: '2' },
-      initialReview: { status: 'changes_requested', approved: false },
-      generateImpl: async ({ pendingDir }) => {
-        await fs.writeFile(path.join(pendingDir, 'module.mjs'), 'export const version = 2;\n');
-        return { ok: true };
-      },
-      validateImpl: async () => ({ ok: true, status: 'pending_ai_code_review' }),
-      reviewImpl: async () => {
-        reviewCalls += 1;
-        return { status: 'pending_operator_approval', approved: true };
-      },
-    });
-    assert.equal(result.ok, true);
-    assert.equal(result.attempts, 1);
-    assert.equal(reviewCalls, 1);
-    assert.equal(await fs.readFile(path.join(root, 'revisions', 'revision-00', 'module.mjs'), 'utf8'), 'export const version = 1;\n');
-    assert.equal(await fs.readFile(path.join(root, 'module.mjs'), 'utf8'), 'export const version = 2;\n');
-    const history = JSON.parse(await fs.readFile(path.join(root, 'correction-history.json'), 'utf8'));
-    assert.equal(history.status, 'pending_operator_approval');
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test('Forge limita correções e mantém pipeline bloqueado quando tentativas acabam', async () => {
-  const root = await fs.mkdtemp(path.join(process.cwd(), '.tmp-forge-correction-limit-'));
-  try {
-    await Promise.all([
-      fs.writeFile(path.join(root, 'forge-request.json'), JSON.stringify({ proposedId: 'loop_module' })),
-      fs.writeFile(path.join(root, 'manifest.json'), '{}'),
-      fs.writeFile(path.join(root, 'module.mjs'), 'export default {};\n'),
-      fs.writeFile(path.join(root, 'module.test.js'), "import test from 'node:test';\ntest('x', () => {});\n"),
-      fs.writeFile(path.join(root, 'ai-reviews.json'), JSON.stringify({ status: 'changes_requested' })),
-      fs.writeFile(path.join(root, 'verdict.json'), JSON.stringify({ status: 'changes_requested' })),
-    ]);
-    const result = await runForgeCorrectionLoop({
-      pendingDir: root, root: process.cwd(), provider: 'codex', target: 'example.com',
-      env: { GHOSTRECON_AUTO_FORGE_MAX_CORRECTIONS: '1' },
-      initialReview: { status: 'changes_requested', approved: false },
-      generateImpl: async () => ({ ok: true }),
-      validateImpl: async () => ({ ok: true, status: 'pending_ai_code_review' }),
-      reviewImpl: async () => ({ status: 'changes_requested', approved: false }),
-    });
-    assert.equal(result.status, 'correction_attempts_exhausted');
-    assert.equal(result.attempts, 1);
-    const verdict = JSON.parse(await fs.readFile(path.join(root, 'verdict.json'), 'utf8'));
-    assert.equal(verdict.status, 'correction_attempts_exhausted');
-    assert.equal(verdict.policy.pipelineEnabled, false);
+    assert.equal(result.evaluation.iterations.at(-1).decision.action, 'finish');
+    assert.equal(result.evaluation.iterations.at(-1).decision.source, 'operator_denied_plan');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

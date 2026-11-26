@@ -1,7 +1,13 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { SQLI_PARAM_RE, responseLooksLikeSqlError, evidenceHash } from './verify.js';
+import { createHash } from 'node:crypto';
+import {
+  evidenceHash,
+  isSqliParameterCandidate,
+  responseLooksLikeSqlError,
+  sqliParameterPriority,
+} from './verify.js';
 import { isStrict, wrapCommand as torStrictWrap } from './tor-strict.js';
 import { runProcess } from './module-runner.mjs';
 
@@ -90,6 +96,71 @@ export function sniffSqlmapHints(text) {
   }
   if (!dbms && /Unknown database/i.test(t)) dbms = 'MySQL';
   return { dbms, database };
+}
+
+function stableSqlmapBody(value, reflectedValues = []) {
+  let text = String(value || '').slice(0, 256_000);
+  for (const reflected of reflectedValues) {
+    if (!reflected) continue;
+    text = text.split(String(reflected)).join('<reflected>');
+  }
+  return text
+    .replace(/[a-f0-9]{8}-[a-f0-9-]{27,}/gi, '<uuid>')
+    .replace(/\b\d{10,13}\b/g, '<epoch>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function curlResponseFingerprint(response, reflectedValues = []) {
+  return createHash('sha256')
+    .update(`${Number(response?.code || 0)}\n${stableSqlmapBody(response?.body, reflectedValues)}`)
+    .digest('hex');
+}
+
+function booleanProbeValues(baseValue) {
+  const base = String(baseValue || '1');
+  if (/^-?\d+(?:\.\d+)?$/.test(base)) {
+    return { trueValue: `${base} AND 1=1`, falseValue: `${base} AND 1=2` };
+  }
+  return {
+    trueValue: `${base}' AND '1'='1`,
+    falseValue: `${base}' AND '1'='2`,
+  };
+}
+
+export function classifySqlmapPreflight({
+  baselineA,
+  baselineB,
+  quote,
+  booleanTrue,
+  booleanFalseA,
+  booleanFalseB,
+  baseValue = '',
+  trueValue = '',
+  falseValue = '',
+} = {}) {
+  const errBase = responseLooksLikeSqlError(baselineA?.body) || responseLooksLikeSqlError(baselineB?.body);
+  const errQuote = responseLooksLikeSqlError(quote?.body);
+  if (quote?.ok && !errBase && errQuote) {
+    return { interesting: true, kind: 'database_error_transition', errBase, errQuote };
+  }
+  const rows = [baselineA, baselineB, booleanTrue, booleanFalseA, booleanFalseB];
+  if (rows.some((row) => !row?.ok || Number(row.code) < 200 || Number(row.code) >= 300)) {
+    return { interesting: false, kind: 'inconclusive_http_control', errBase, errQuote };
+  }
+  const baselineFingerprint = curlResponseFingerprint(baselineA, [baseValue]);
+  const baselineStable = baselineFingerprint === curlResponseFingerprint(baselineB, [baseValue]);
+  const trueMatches = curlResponseFingerprint(booleanTrue, [trueValue]) === baselineFingerprint;
+  const falseFingerprint = curlResponseFingerprint(booleanFalseA, [falseValue]);
+  const falseStable = falseFingerprint === curlResponseFingerprint(booleanFalseB, [falseValue]);
+  const falseDiffers = falseFingerprint !== baselineFingerprint;
+  const interesting = baselineStable && trueMatches && falseStable && falseDiffers;
+  return {
+    interesting,
+    kind: interesting ? 'stable_boolean_differential' : 'no_repeatable_signal',
+    errBase,
+    errQuote,
+  };
 }
 
 function resolveCurlProfile(profile = 'standard') {
@@ -224,7 +295,7 @@ function collectSqliTargets(findings, maxTargets) {
   const seen = new Set();
 
   const tryAdd = (urlStr, paramName, baseVal) => {
-    if (!urlStr || !paramName || !SQLI_PARAM_RE.test(String(paramName).toLowerCase())) return;
+    if (!urlStr || !paramName || !isSqliParameterCandidate(paramName)) return;
     try {
       const u = new URL(urlStr);
       if (!u.searchParams.has(paramName)) return;
@@ -255,7 +326,10 @@ function collectSqliTargets(findings, maxTargets) {
     if (!f.value.includes('?')) continue;
     try {
       const u = new URL(f.value);
-      for (const k of u.searchParams.keys()) {
+      const keys = [...u.searchParams.keys()]
+        .filter((key) => isSqliParameterCandidate(key))
+        .sort((left, right) => sqliParameterPriority(right) - sqliParameterPriority(left));
+      for (const k of keys) {
         if (out.length >= cap) break;
         tryAdd(f.value, k);
       }
@@ -469,11 +543,34 @@ export async function runSqlmapModule({
       logFn(`sqlmap: nome de BD/schema na resposta → ${hintsTick.database}`, 'info');
     }
 
-    const interesting = (errTick && !errBase) || (hintsTick.dbms && errTick) || (hintsTick.database && errTick);
-    if (!interesting) {
-      logFn(`sqlmap: sem sinal forte (erro SQL com ' vs baseline) — sqlmap não invocado para este alvo.`, 'info');
+    let preflight = classifySqlmapPreflight({ baselineA: c0, quote: c1 });
+    let booleanControls = null;
+    if (!preflight.interesting && c0.ok && c1.ok) {
+      const values = booleanProbeValues(t.baseVal);
+      const baselineB = await curlGet(baseUrl, auth, { profile, identityCtrl, signal });
+      const trueUrl = setSearchParam(t.url, t.param, values.trueValue);
+      const falseUrl = setSearchParam(t.url, t.param, values.falseValue);
+      const booleanTrue = await curlGet(trueUrl, auth, { profile, identityCtrl, signal });
+      const booleanFalseA = await curlGet(falseUrl, auth, { profile, identityCtrl, signal });
+      const booleanFalseB = await curlGet(falseUrl, auth, { profile, identityCtrl, signal });
+      booleanControls = { baselineB, booleanTrue, booleanFalseA, booleanFalseB };
+      preflight = classifySqlmapPreflight({
+        baselineA: c0,
+        baselineB,
+        quote: c1,
+        booleanTrue,
+        booleanFalseA,
+        booleanFalseB,
+        baseValue: t.baseVal,
+        trueValue: values.trueValue,
+        falseValue: values.falseValue,
+      });
+    }
+    if (!preflight.interesting) {
+      logFn(`sqlmap: sem sinal repetível (erro DB novo ou diferencial booleano estável) — sqlmap não invocado para este alvo.`, 'info');
       continue;
     }
+    logFn(`sqlmap: preflight=${preflight.kind}; sqlmap será usado apenas como confirmador.`, 'info');
 
     const hints = {
       dbms: hintsTick.dbms || hintsBase.dbms || null,
@@ -510,7 +607,7 @@ export async function runSqlmapModule({
         prio: inj ? 'high' : 'med',
         score: inj ? 99 : 78,
         value: `SQLmap (${inj ? 'possível injeção' : 'inconclusivo'}) @ ?${t.param}=`,
-        meta: `tool=sqlmap • param=${t.param} • dbms=${hints.dbms || 'n/a'} • D=${hints.database || 'n/a'} • curl_sql_tick=${errTick ? 'yes' : 'no'}`,
+        meta: `tool=sqlmap • param=${t.param} • dbms=${hints.dbms || 'n/a'} • D=${hints.database || 'n/a'} • preflight=${preflight.kind} • curl_sql_tick=${errTick ? 'yes' : 'no'}`,
         url: tickUrl,
         verification: {
           classification: inj ? 'confirmed' : 'probable',
@@ -521,6 +618,12 @@ export async function runSqlmapModule({
               tick: c1.metrics,
               baselineStatus: c0.code,
               tickStatus: c1.code,
+              controlStatus: booleanControls ? {
+                baseline: booleanControls.baselineB.code,
+                true: booleanControls.booleanTrue.code,
+                falseA: booleanControls.booleanFalseA.code,
+                falseB: booleanControls.booleanFalseB.code,
+              } : undefined,
               proxy: c1.proxyUsed || null,
             },
             evidenceHash: evidenceHash(evidence),

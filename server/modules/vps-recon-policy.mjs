@@ -1,4 +1,5 @@
 import { resolvePlaybook } from './playbooks/loader.mjs';
+import { assertNoRetiredModules } from './retired-modules.mjs';
 
 export const VPS_FORBIDDEN_MODULES = new Set([
   'navegation',
@@ -8,10 +9,6 @@ export const VPS_FORBIDDEN_MODULES = new Set([
   'tor-strict',
   'kali_proxychains',
   'proxychains',
-  'shannon_whitebox',
-  'shannon-whitebox',
-  'pentestgpt_validate',
-  'pentestgpt-validate',
   'vigolium_audit',
   'vigolium-audit',
   'vigolium_swarm',
@@ -25,6 +22,7 @@ export const VPS_FORBIDDEN_MODULES = new Set([
 ]);
 
 export function sanitizeVpsReconModules(modules = []) {
+  assertNoRetiredModules(modules);
   const seen = new Set();
   const out = [];
   for (const item of modules || []) {

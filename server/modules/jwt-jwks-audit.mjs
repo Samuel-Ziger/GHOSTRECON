@@ -3,6 +3,7 @@ import { limits } from '../config.js';
 import { pickStealthUserAgent, stealthPause } from './request-policy.js';
 import { readResponseSnippet } from './module-runner.mjs';
 import { fetchScoped, urlAllowedOrSameOrigin } from './scoped-fetch.mjs';
+import { combineAbortSignals } from './http-utils.js';
 
 export const moduleManifest = {
   id: 'jwt_jwks_audit',
@@ -43,7 +44,7 @@ function metaText(meta) {
     .join(' - ');
 }
 
-function makeFinding({ issue, score, url, meta = {} }) {
+function makeFinding({ issue, score, url, meta = {}, ...extra }) {
   return {
     type: 'jwt_jwks',
     prio: prioFor(score),
@@ -53,6 +54,15 @@ function makeFinding({ issue, score, url, meta = {} }) {
     url,
     owasp: 'A02:2021',
     mitre: 'T1606',
+    ...extra,
+  };
+}
+
+function symmetricSecretRef(value) {
+  const fingerprint = createHash('sha256').update(value).digest('hex');
+  return {
+    fingerprint,
+    secretRef: `secret:jwt_hs:${fingerprint}`,
   };
 }
 
@@ -70,7 +80,13 @@ export function jwksFingerprint(jwks) {
   return createHash('sha256').update(JSON.stringify(slim)).digest('hex');
 }
 
-export function auditJwks(jwks, { url = '', issuer = '' } = {}) {
+export async function auditJwks(jwks, {
+  url = '',
+  issuer = '',
+  // Optional in-memory sink. The caller owns lifecycle and must never persist
+  // `value`; public findings receive only secretRef + fingerprint.
+  onSecret = null,
+} = {}) {
   const findings = [];
   const keys = Array.isArray(jwks?.keys) ? jwks.keys : [];
   if (!keys.length) {
@@ -98,7 +114,7 @@ export function auditJwks(jwks, { url = '', issuer = '' } = {}) {
     }
   }
 
-  keys.slice(0, 40).forEach((key, idx) => {
+  for (const [idx, key] of keys.slice(0, 40).entries()) {
     const kid = String(key?.kid || '').trim();
     const kty = String(key?.kty || '').toUpperCase();
     const alg = String(key?.alg || '').toUpperCase();
@@ -113,12 +129,48 @@ export function auditJwks(jwks, { url = '', issuer = '' } = {}) {
         meta: { ...keyMeta, reason: 'missing_kid' },
       }));
     }
-    if (kty === 'OCT') {
+    if (kty === 'OCT' && key?.k) {
+      const value = b64urlBytes(key.k);
+      const { fingerprint, secretRef: suggestedSecretRef } = symmetricSecretRef(value);
+      let storedSecretRef = null;
+      if (value.length > 0 && typeof onSecret === 'function') {
+        const sinkValue = Buffer.from(value);
+        try {
+          const stored = await onSecret({
+            suggestedSecretRef,
+            fingerprint,
+            value: sinkValue,
+            kind: 'jwt_hmac_signing_key',
+            provenance: { url, issuer, kid: kid || `index:${idx}` },
+          });
+          if (stored && typeof stored.secretRef === 'string') storedSecretRef = stored.secretRef;
+        } finally {
+          sinkValue.fill(0);
+        }
+      }
       findings.push(makeFinding({
         issue: 'JWKS expoe chave simetrica (kty=oct)',
         score: 92,
         url,
-        meta: { ...keyMeta, reason: 'public_symmetric_key' },
+        meta: {
+          ...keyMeta,
+          reason: value.length > 0 ? 'public_symmetric_key' : 'invalid_symmetric_key',
+          key_bytes: value.length,
+          fingerprint,
+        },
+        state: value.length > 0 ? 'confirmed' : 'candidate',
+        confidence: value.length > 0 ? 'high' : 'low',
+        ...(storedSecretRef ? { secretRef: storedSecretRef } : {}),
+      }));
+      value.fill(0);
+    } else if (kty === 'OCT') {
+      findings.push(makeFinding({
+        issue: 'JWKS declara chave simetrica sem material recuperavel',
+        score: 58,
+        url,
+        meta: { ...keyMeta, reason: 'symmetric_key_without_k' },
+        state: 'candidate',
+        confidence: 'low',
       }));
     }
     if (/^HS\d+$/i.test(alg) || alg === 'NONE') {
@@ -156,7 +208,7 @@ export function auditJwks(jwks, { url = '', issuer = '' } = {}) {
         meta: keyMeta,
       }));
     }
-  });
+  }
 
   if (keys.length > 20) {
     findings.push(makeFinding({
@@ -174,12 +226,13 @@ async function fetchJsonWithHeaders(url, {
   timeoutMs = 8_000,
   headers = {},
   urlAllowed = null,
+  signal = null,
 } = {}) {
   const res = await fetchScoped(url, {
     fetchImpl,
     method: 'GET',
     urlAllowed: urlAllowedOrSameOrigin(url, urlAllowed),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: combineAbortSignals(signal, timeoutMs),
     headers: {
       Accept: 'application/json,*/*;q=0.8',
       ...headers,
@@ -215,6 +268,8 @@ export async function runJwtJwksAudit({
   log = () => {},
   fetchImpl = fetch,
   urlAllowed = null,
+  onSecret = null,
+  signal = null,
 } = {}) {
   const findings = [];
   const seenUrls = new Set();
@@ -223,11 +278,13 @@ export async function runJwtJwksAudit({
   const candidates = [];
 
   for (const origin of origins.slice(0, Math.max(1, limits.wellKnownMaxHosts || 8))) {
+    if (signal?.aborted) throw signal.reason || new DOMException('cancelled', 'AbortError');
     for (const c of await discoverJwksFromOidc(origin, {
       fetchImpl,
       timeoutMs,
       urlAllowed,
       headers: { 'User-Agent': ua },
+      signal,
     })) {
       candidates.push(c);
     }
@@ -237,17 +294,23 @@ export async function runJwtJwksAudit({
   }
 
   for (const candidate of candidates) {
+    if (signal?.aborted) throw signal.reason || new DOMException('cancelled', 'AbortError');
     if (!candidate?.url || seenUrls.has(candidate.url)) continue;
     seenUrls.add(candidate.url);
-    await stealthPause(modules);
+    await stealthPause(modules, signal);
     const fetched = await fetchJsonWithHeaders(candidate.url, {
       fetchImpl,
       timeoutMs,
       urlAllowed,
       headers: { 'User-Agent': ua },
+      signal,
     }).catch(() => null);
     if (!fetched?.json?.keys) continue;
-    const rows = auditJwks(fetched.json, { url: fetched.url, issuer: candidate.issuer });
+    const rows = await auditJwks(fetched.json, {
+      url: fetched.url,
+      issuer: candidate.issuer,
+      onSecret,
+    });
     findings.push(...rows);
     if (rows.length) log(`JWKS audit: ${rows.length} achado(s) em ${fetched.url}`, 'warn');
     else log(`JWKS audit: ${fetched.url} sem alerta`, 'info');

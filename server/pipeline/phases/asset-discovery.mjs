@@ -129,7 +129,6 @@ export async function runAssetDiscoveryPhase(s) {
     profile,
     outOfScopeClientRaw,
     projectNameRaw,
-    shannonGithubRepos,
     identityCtrl,
     navegation,
     navigatorMode,
@@ -178,7 +177,9 @@ export async function runAssetDiscoveryPhase(s) {
             let body = '';
             try {
               const hl = hostLiteralForUrl(h);
-              const targetUrl = `https://${hl}/`;
+              const targetUrl = h === domain && s.targetUrl
+                ? s.targetUrl
+                : `https://${hl}/`;
               if (!s.urlInScope(targetUrl)) continue;
               const res = await fetch(targetUrl, {
                 redirect: 'manual',

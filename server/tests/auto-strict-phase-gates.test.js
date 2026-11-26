@@ -65,6 +65,27 @@ test('catálogo classifica ações implícitas como capacidades ativas ou intrus
   }
 });
 
+test('módulos da auditoria da lab mantêm classe e fase coerentes com o dispatcher', () => {
+  const expected = new Map([
+    ['cloud_debug_env_audit', ['active', 'probe']],
+    ['runtime_endpoint_pivot', ['passive', 'probe']],
+    ['deterministic_voucher_audit', ['passive', 'content_discovery']],
+    ['api_excessive_data_audit', ['passive', 'content_discovery']],
+    ['bounded_object_key_discovery', ['passive', 'content_discovery']],
+    ['authz_object_matrix_v2', ['intrusive', 'validation']],
+    ['jwt_claim_authz_diff', ['intrusive', 'validation']],
+    ['sqli_targeted_verify', ['intrusive', 'validation']],
+    ['cloud_object_proxy_authz', ['intrusive', 'validation']],
+    ['sensitive_payment_data', ['passive', 'validation']],
+    ['financial_integrity_audit', ['intrusive', 'validation']],
+    ['artifact_safety_audit', ['passive', 'finalize']],
+  ]);
+  for (const [id, [riskClass, phase]] of expected) {
+    assert.equal(autoCapabilityClass(id), riskClass, id);
+    assert.equal(autoCapabilityPhase(id), phase, id);
+  }
+});
+
 test('gate manual exige plano efetivo para implícitas intrusivas e normaliza IDs no Auto', () => {
   for (const id of ['http_probe', 'asset_discovery', 'high_recheck']) {
     assert.equal(

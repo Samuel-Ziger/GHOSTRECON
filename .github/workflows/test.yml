@@ -16,6 +16,67 @@ on:
           - 'true'
 
 jobs:
+  frontends:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            GhostDesk/frontend/package-lock.json
+            GhostTrace/package-lock.json
+            ghost-local-v5/ghost-local/frontend/package-lock.json
+            ghostmap/frontend/package-lock.json
+            server/modules/external-tools/standalone/news-verifier/package-lock.json
+      - run: npm ci
+      - run: npm run ui:inventory
+      - run: git diff --exit-code -- frontend/contracts/ui-inventory.json
+      - run: npm run ui:typecheck
+      - run: npm run ui:build
+      - run: npm run test:ui
+      - name: Smoke das rotas React no servidor real
+        env:
+          AUTH_API_KEYS: ghostrecon-ci-react-smoke-key:admin:github-actions
+        run: |
+          npx playwright install --with-deps chromium
+          npm run start:minimal > /tmp/ghostrecon-ui-smoke.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3847/ >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat /tmp/ghostrecon-ui-smoke.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3847/ >/dev/null || {
+            cat /tmp/ghostrecon-ui-smoke.log
+            exit 1
+          }
+          npm run ui:smoke
+      - run: npm --prefix GhostDesk/frontend ci
+      - run: npm --prefix GhostDesk/frontend test
+      - run: npm --prefix GhostDesk/frontend run build
+      - run: npm --prefix GhostTrace ci
+      - run: npm --prefix GhostTrace run type-check
+      - run: npm --prefix GhostTrace run build
+      - run: npm --prefix ghost-local-v5/ghost-local/frontend ci
+      - run: npm --prefix ghost-local-v5/ghost-local/frontend test
+      - run: npm --prefix ghost-local-v5/ghost-local/frontend run build
+      - run: npm --prefix ghostmap/frontend ci
+      - run: npm --prefix ghostmap/frontend test
+      - run: npm --prefix ghostmap/frontend run typecheck
+      - run: npm --prefix ghostmap/frontend run build
+      - run: npm --prefix server/modules/external-tools/standalone/news-verifier ci
+      - run: npm --prefix server/modules/external-tools/standalone/news-verifier test
+      - run: npm --prefix server/modules/external-tools/standalone/news-verifier run build
+
   core:
     runs-on: ubuntu-latest
     steps:

@@ -1,4 +1,7 @@
 node_modules/
+ghost-local-v5/ghost-local/frontend/dist/
+GhostDesk/frontend/dist/
+server/modules/external-tools/standalone/news-verifier/dist/
 
 # Artefatos locais/gerados
 *.log
@@ -51,6 +54,7 @@ data/cve/
 
 # Relatórios IA sem pasta de projeto
 data/ai_reports/
+data/auto-rag/tenants/
 
 # Relatórios de execução (incluindo HTML integrado do FrameSeven)
 /reports/
@@ -71,10 +75,7 @@ domains.txt
 brute.py
 gerado.py
 notes.txt
-
-# Clones locais em IAs/ (instruções em IAs/README.md)
-IAs/shannon/
-IAs/PentestGPT/
+/jaah.png
 
 .env
 .env.local
@@ -90,6 +91,20 @@ ghost-local-v5/ghost-local/ghost.log
 ghost-local-v5/hexstrike-ai/hexstrike.log
 IAs/hexstrike-ai/hexstrike-env/
 IAs/hexstrike-ai/hexstrike-server.log
+
+# Artex/GhostIA — credenciais, binário e estado local do sidecar
+IAs/artex/.env
+IAs/artex/artex
+IAs/artex/artex.before-*
+IAs/artex/artex.log
+IAs/artex/chatgpt-plan-auth.json
+IAs/artex/config.json
+IAs/artex/jwt.key
+IAs/artex/data/
+
+# NeuroSploit — build Rust e estado operacional ficam locais
+engines/neurosploit/neurosploit-rs/target/
+engines/neurosploit/neurosploit-rs/.neurosploit/
 
 # Vigolium — fonte temporária (apagar após build → engines/vigolium)
 /vigolium/

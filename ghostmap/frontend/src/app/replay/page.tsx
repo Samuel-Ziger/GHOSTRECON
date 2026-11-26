@@ -1,9 +1,9 @@
 "use client";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 
-export default function ReplayPage() {
+function ReplayContent() {
   const params = useSearchParams();
   const requestId = params.get("req") ?? "";
   const [reqId, setReqId] = useState(requestId);
@@ -50,5 +50,13 @@ export default function ReplayPage() {
         </pre>
       )}
     </div>
+  );
+}
+
+export default function ReplayPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-sm text-mute">carregando replay...</div>}>
+      <ReplayContent />
+    </Suspense>
   );
 }

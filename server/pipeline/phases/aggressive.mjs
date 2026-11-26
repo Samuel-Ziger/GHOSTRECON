@@ -132,7 +132,6 @@ export async function runAggressivePhase(s) {
     profile,
     outOfScopeClientRaw,
     projectNameRaw,
-    shannonGithubRepos,
     identityCtrl,
     navegation,
     navigatorMode,
@@ -192,7 +191,8 @@ export async function runAggressivePhase(s) {
         const wordpressTargets = [...wpHosts]
           .slice(0, 10)
           .map((h) => {
-            const origin = s.originByHost.get(h)?.origin;
+            const origin = [...s.originByHost.values()]
+              .find((entry) => entry?.hostname === h)?.origin;
             if (origin) return origin;
             const hl = hostLiteralForUrl(h);
             return [`https://${hl}/`, `http://${hl}/`];
@@ -245,6 +245,7 @@ export async function runAggressivePhase(s) {
         try {
           await runKaliAggressiveScan({
             domain,
+            targetUrl: s.targetUrl,
             subdomainsAlive,
             cap,
             log,
@@ -280,6 +281,7 @@ export async function runAggressivePhase(s) {
                 : false
             ),
             signal,
+            autoModeExecution,
           });
         } catch (error) {
           const code = String(error?.code || signal?.reason?.code || '');

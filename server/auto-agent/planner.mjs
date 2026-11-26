@@ -1,5 +1,5 @@
 import { AUTO_BASE_MODULES, AUTO_DEEP_PASSIVE_MODULES, AUTO_HEXSTRIKE_MODULES } from './tool-catalog.mjs';
-import { isCatalogModuleAllowed } from './providers/shared.mjs';
+import { isCatalogModuleAllowed } from './module-policy.mjs';
 import { normalizeModuleId } from '../modules/module-ids.mjs';
 
 function uniq(list) {
@@ -14,29 +14,6 @@ function normalizeMode(mode) {
   const m = String(mode || 'balanced').trim().toLowerCase();
   if (['quick', 'balanced', 'deep'].includes(m)) return m;
   return 'balanced';
-}
-
-function commanderRoles(providers = []) {
-  const selected = (providers || []).filter((p) => p.selected);
-  const active = selected.filter((p) => p.usable !== false && (p.reachable || p.configured || p.installed));
-  const has = (id) => active.some((p) => p.id === id);
-  const leader =
-    has('skynet') ? 'skynet'
-      : has('codex') ? 'codex'
-        : has('claude_code') ? 'claude_code'
-          : has('openrouter') ? 'openrouter'
-            : active[0]?.id || 'ghostrecon';
-  const implementer =
-    has('codex') ? 'codex'
-      : has('claude_code') ? 'claude_code'
-        : has('cursor') ? 'cursor'
-          : leader;
-  const reviewer =
-    has('openrouter') ? 'openrouter'
-      : has('claude_code') && implementer !== 'claude_code' ? 'claude_code'
-        : has('codex') && implementer !== 'codex' ? 'codex'
-          : leader;
-  return { leader, implementer, reviewer };
 }
 
 function shouldUseHexstrike({ requestedModules, catalog, mode }) {
@@ -77,9 +54,7 @@ export function createAutoPlan({
   target,
   mode = 'balanced',
   requestedModules = [],
-  providers = [],
   catalog = {},
-  openrouterModel = null,
   includeHexstrike = false,
   includeDeepPassive = null,
   ragContext = null,
@@ -126,9 +101,6 @@ export function createAutoPlan({
     modules.push(...baselineModules, ...operatorModules);
   }
 
-  const roles = commanderRoles(providers);
-  const openrouter = (providers || []).find((p) => p.id === 'openrouter');
-  const model = openrouterModel || openrouter?.defaultModel || null;
   const planAction = operatorOverridesTerminal
     ? 'run_modules'
     : agentAction || (modules.length ? 'run_modules' : 'finish');
@@ -140,12 +112,6 @@ export function createAutoPlan({
     mode: selectedMode,
     action: planAction,
     objective: 'authorized_bug_bounty_recon',
-    commanders: {
-      selected: (providers || []).filter((p) => p.selected).map((p) => p.id),
-      available: (providers || []).filter((p) => p.configured || p.reachable || p.installed).map((p) => p.id),
-      roles,
-      openrouterModel: model,
-    },
     steps: [
       {
         id: 'observe',

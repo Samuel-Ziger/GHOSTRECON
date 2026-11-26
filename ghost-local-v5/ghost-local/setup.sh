@@ -29,7 +29,7 @@ Uso:
   ./setup.sh [opcoes]
 
 Opcoes:
-  --deps-only      Instala apenas venv + dependencias Python do backend
+  --deps-only      Instala dependencias Python e compila o frontend React
   --skip-ollama    Nao instala/inicia Ollama
   --skip-models    Nao puxa nomic-embed-text nem modelos
   --skip-start     Nao inicia o backend uvicorn no final
@@ -83,6 +83,33 @@ ensure_python_venv() {
   ./venv/bin/pip install -U pip -q
   ./venv/bin/pip install -r requirements.txt -q
   echo -e "${GREEN}✓ Dependencias Python OK${NC}"
+}
+
+ensure_react_frontend() {
+  local frontend_dir="$SCRIPT_DIR/frontend"
+  local dist_index="$frontend_dir/dist/index.html"
+  local rebuild=0
+  if [ ! -f "$dist_index" ]; then
+    rebuild=1
+  elif find "$frontend_dir/src" "$frontend_dir/index.html" "$frontend_dir/package.json" \
+      -type f -newer "$dist_index" -print -quit 2>/dev/null | grep -q .; then
+    rebuild=1
+  fi
+  if [ "$rebuild" -eq 0 ]; then
+    echo -e "${GREEN}✓ Frontend React OK${NC}"
+    return
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo -e "${RED}npm ausente: nao foi possivel compilar o frontend React${NC}" >&2
+    return 1
+  fi
+  echo -e "${CYAN}[UI] Frontend React...${NC}"
+  (
+    cd "$frontend_dir"
+    npm ci
+    npm run build
+  )
+  echo -e "${GREEN}✓ Frontend React compilado${NC}"
 }
 
 ensure_ollama_ready() {
@@ -169,6 +196,7 @@ start_backend_if_enabled() {
 
 if [ "$DEPS_ONLY" -eq 1 ]; then
   ensure_python_venv
+  ensure_react_frontend
   echo -e "${GREEN}✓ Setup deps-only concluido${NC}"
   exit 0
 fi
@@ -178,6 +206,7 @@ ensure_ollama_ready
 pull_models_if_enabled
 echo -e "${CYAN}[4/5] Preparando backend Python...${NC}"
 ensure_python_venv
+ensure_react_frontend
 start_backend_if_enabled
 
 echo -e "\n${GREEN}════════════════════════════════════${NC}"

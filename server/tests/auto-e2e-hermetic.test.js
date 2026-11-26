@@ -33,7 +33,6 @@ test('E2E hermético: observation passivo completa sem engagement formal', async
       body: {
         domain: 'example.com',
         autonomyLevel: 'observation',
-        commanders: [],
         includeHexstrike: false,
       },
       ROOT: root,
@@ -66,7 +65,6 @@ test('E2E hermético: assisted deny não executa pipeline', async () => {
         autonomyLevel: 'assisted',
         approvalMode: 'deny',
         engagementId: eng.id,
-        commanders: [],
       },
       ROOT: root,
       env: { GHOSTRECON_AUTO_RAG_ENABLED: '0' },
@@ -98,7 +96,6 @@ test('E2E hermético: assisted approve corre pipeline e grava relatório', async
         autonomyLevel: 'assisted',
         approvalMode: 'interactive',
         engagementId: eng.id,
-        commanders: [],
         modules: ['rdap'],
       },
       ROOT: root,
@@ -214,7 +211,6 @@ test('E2E hermético: pipe terminal vira auto_module_outcome com source pipe', a
         autonomyLevel: 'assisted',
         approvalMode: 'interactive',
         engagementId: eng.id,
-        commanders: [],
         modules: ['rdap'],
       },
       ROOT: root,
@@ -248,40 +244,23 @@ test('E2E hermético: pipe terminal vira auto_module_outcome com source pipe', a
   }
 });
 
-test('E2E hermético: providers indisponíveis degradam sem baseline silencioso', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-e2e-deg-'));
-  const eng = engagement();
-  const emitted = [];
+test('E2E hermético: campos do Council foram aposentados explicitamente', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-e2e-retired-council-'));
   try {
-    await runAutoRecon({
-      body: {
-        domain: 'example.com',
-        autonomyLevel: 'assisted',
-        approvalMode: 'interactive',
-        engagementId: eng.id,
-        commanders: ['codex'],
-      },
-      ROOT: root,
-      env: { GHOSTRECON_AUTO_RAG_ENABLED: '0' },
-      getEngagementImpl: async () => eng,
-      runPipeline: async () => {},
-      emit: (event) => {
-        emitted.push(event);
-        if (event.type === 'auto_approval_required') {
-          getActiveAutoSession(event.sessionId)?.resolveApproval(
-            event.approval.approvalId,
-            true,
-            'e2e',
-          );
-        }
-      },
-      fetchImpl: async () => ({ ok: false, status: 503 }),
-      execFileImpl: async () => {
-        throw new Error('codex missing');
-      },
-    });
-    assert.ok(
-      emitted.some((e) => e.type === 'auto_council_degraded' || e.type === 'auto_approval_required'),
+    await assert.rejects(
+      runAutoRecon({
+        body: {
+          domain: 'example.com',
+          autonomyLevel: 'observation',
+          commanders: ['codex'],
+        },
+        ROOT: root,
+        env: { GHOSTRECON_AUTO_RAG_ENABLED: '0' },
+        runPipeline: async () => {
+          throw new Error('pipeline não deve iniciar');
+        },
+      }),
+      (error) => error?.code === 'AUTO_AI_COUNCIL_RETIRED',
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

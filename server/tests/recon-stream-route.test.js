@@ -218,6 +218,37 @@ function passiveLookingBody(overrides = {}) {
   };
 }
 
+test('preflight rejeita módulo removido com 410 MODULE_RETIRED', async () => {
+  const routes = registerRouteHandlers();
+  const handler = routes.get('/api/recon/preflight');
+  const req = makeRequest(passiveLookingBody({ modules: ['shannon-whitebox'] }));
+  const res = makeJsonResponse();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 410);
+  assert.equal(res.body?.code, 'MODULE_RETIRED');
+  assert.deepEqual(res.body?.retiredModules, ['shannon_whitebox']);
+});
+
+test('stream rejeita módulo removido antes de executar pipeline', async () => {
+  let pipelineCalls = 0;
+  const handler = registerHandler({
+    runPipeline: async () => { pipelineCalls += 1; },
+  });
+  const req = makeRequest(passiveLookingBody({ modules: ['pentestgpt-validate'] }));
+  const res = makeResponse();
+
+  await handler(req, res);
+
+  assert.equal(pipelineCalls, 0);
+  assert.ok(eventsFrom(res).some((event) => (
+    event.type === 'error'
+    && event.code === 'MODULE_RETIRED'
+    && event.retiredModules?.includes('pentestgpt_validate')
+  )));
+});
+
 test('RBAC considera somente capacidades intrusivas explícitas, não o toggle Kali', () => {
   const routes = registerRouteHandlers({}, { includeMiddleware: true });
   const [scopeMiddleware] = routes.get('/api/recon/stream');
@@ -302,6 +333,94 @@ test('RUN conservador mantém implícitas intrusivas desligadas sem confirmaçã
   const plan = eventsFrom(res).find((event) => event.type === 'manual_effective_plan')?.plan;
   assert.ok(plan);
   assert.equal(plan.requiresHumanApproval, false);
+});
+
+test('rota transporta configurações privadas dos módulos da lab até o pipeline', async () => {
+  let pipelineArgs = null;
+  const configs = {
+    jwtClaimAuthzConfig: { url: 'https://lab.acme.test/me', token: 'fixture-private-token' },
+    authzObjectMatrixConfig: { cases: [{ id: 'orders' }] },
+    sqliTargetedConfig: { parameter: 'name', requestSpec: { url: 'https://lab.acme.test/?name=x' } },
+    cloudObjectProxyAuthzConfig: { cases: [{ id: 'objects' }] },
+    financialIntegrityConfig: { url: 'https://lab.acme.test/purchase', confirmedPlan: true },
+    knownObjectKeys: ['orders/fixture.json'],
+    objectKeyDiscoveryBudget: 3,
+  };
+  const handler = registerHandler({ runPipeline: async (args) => { pipelineArgs = args; } });
+  const res = makeResponse();
+  await handler(makeRequest(passiveLookingBody({
+    ...configs,
+    confirmActive: false,
+    engagementId: '',
+  })), res);
+  assert.ok(pipelineArgs);
+  for (const key of [
+    'jwtClaimAuthzConfig', 'authzObjectMatrixConfig', 'sqliTargetedConfig',
+    'cloudObjectProxyAuthzConfig', 'financialIntegrityConfig',
+  ]) assert.deepEqual(pipelineArgs[key], configs[key], key);
+  assert.deepEqual(pipelineArgs.knownObjectKeys, configs.knownObjectKeys);
+  assert.equal(pipelineArgs.objectKeyDiscoveryBudget, 3);
+  assert.equal(JSON.stringify(eventsFrom(res)).includes('fixture-private-token'), false);
+});
+
+test('RUN preserva origem, porta e base path explícitos no plano e no pipeline', async () => {
+  const targetUrl = 'http://lab.acme.test:30472/base/api?view=full';
+  let pipelineArgs = null;
+  const routes = registerRouteHandlers({
+    runPipeline: async (args) => {
+      pipelineArgs = args;
+    },
+  });
+  const body = passiveLookingBody({
+    domain: targetUrl,
+    confirmActive: false,
+    engagementId: '',
+  });
+
+  const preflightRes = makeJsonResponse();
+  await routes.get('/api/recon/preflight')(makeRequest(body), preflightRes);
+  assert.equal(preflightRes.statusCode, 200);
+  assert.equal(preflightRes.body.plan.target, targetUrl);
+
+  const streamRes = makeResponse();
+  await routes.get('/api/recon/stream')(makeRequest(body), streamRes);
+  assert.ok(pipelineArgs);
+  assert.equal(pipelineArgs.domain, 'lab.acme.test');
+  assert.equal(pipelineArgs.targetUrl, targetUrl);
+  assert.equal(
+    eventsFrom(streamRes).find((event) => event.type === 'manual_effective_plan')?.plan?.target,
+    targetUrl,
+  );
+});
+
+test('RUN conserva query sensível apenas no runtime e publica o alvo redigido', async () => {
+  const secret = 'opaque-route-access-token';
+  const targetUrl = `http://lab.acme.test:30472/base/api?view=full&access_token=${secret}`;
+  let pipelineArgs = null;
+  const routes = registerRouteHandlers({
+    runPipeline: async (args) => {
+      pipelineArgs = args;
+    },
+  });
+  const body = passiveLookingBody({
+    domain: targetUrl,
+    confirmActive: false,
+    engagementId: '',
+  });
+
+  const preflightRes = makeJsonResponse();
+  await routes.get('/api/recon/preflight')(makeRequest(body), preflightRes);
+  assert.equal(preflightRes.statusCode, 200);
+  assert.match(preflightRes.body.plan.target, /view=full/);
+  assert.match(preflightRes.body.plan.target, /REDACTED/i);
+  assert.doesNotMatch(JSON.stringify(preflightRes.body), new RegExp(secret));
+
+  const streamRes = makeResponse();
+  await routes.get('/api/recon/stream')(makeRequest(body), streamRes);
+  assert.equal(pipelineArgs.targetUrl, targetUrl);
+  const streamBody = streamRes.chunks.join('');
+  assert.doesNotMatch(streamBody, new RegExp(secret));
+  assert.match(streamBody, /REDACTED/i);
 });
 
 test('Confirmar ativo não injeta capacidades intrusivas ocultas no RUN', async () => {
@@ -695,10 +814,6 @@ test('RUN manual valida janela, escopo e ROE quando um engagement é informado',
       preflightSignals.push(signal);
       return activeEngagement();
     },
-    getShannonCapabilitiesImpl: async ({ signal }) => {
-      preflightSignals.push(signal);
-      return { ok: true };
-    },
     quickValidateTorImpl: async ({ signal }) => {
       preflightSignals.push(signal);
       return {
@@ -724,7 +839,7 @@ test('RUN manual valida janela, escopo e ROE quando um engagement é informado',
     },
   });
   const req = makeRequest(frameSevenBody({
-    modules: ['shannon_whitebox'],
+    modules: ['security_headers'],
     tor: { required: true, newnymBeforeRun: true },
   }));
   const res = makeResponse();
@@ -738,7 +853,7 @@ test('RUN manual valida janela, escopo e ROE quando um engagement é informado',
   assert.equal(integratedArgs.tools, FRAMESEVEN_OFFENSIVE_TOOLS_V1);
   assert.equal(integratedArgs.offensiveApproved, true);
   assert.equal(integratedArgs.signal.aborted, false);
-  assert.equal(preflightSignals.length, 6);
+  assert.equal(preflightSignals.length, 5);
   for (const signal of preflightSignals) {
     assert.strictEqual(signal, integratedArgs.signal);
   }

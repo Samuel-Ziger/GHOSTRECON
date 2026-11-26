@@ -18,6 +18,7 @@ import { summarizeDiff, shouldAlert } from '../../diff-engine.mjs';
 import { postAlert } from '../../alerting.mjs';
 import { parseReconTarget } from '../../recon-target.js';
 import { ensureCveWebDb } from '../../../../scripts/ensure-cve-web-db.mjs';
+import { assertNoRetiredModules } from '../../retired-modules.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -867,6 +868,7 @@ async function resolveRunConfig({ cfg, opts, baseline, client }) {
 }
 
 export function sanitizeGhostwatchModules(modules) {
+  assertNoRetiredModules(modules);
   return unique(modules).filter((m) => {
     const id = String(m || '').trim().toLowerCase();
     return id && !FORBIDDEN_MODULES.has(id);

@@ -15,6 +15,9 @@ import { registerHandoffRoutes } from '../routes/handoff.mjs';
 import { registerValidationsRoutes } from '../routes/validations.mjs';
 import { registerVigoliumRoutes } from '../routes/vigolium.mjs';
 import { registerGhostCommandRoutes } from '../routes/ghostcommand.mjs';
+import { registerArtexRoutes } from '../routes/artex.mjs';
+import { registerHackbotRoutes } from '../routes/hackbot.mjs';
+import { registerNeuroSploitRoutes } from '../routes/neurosploit.mjs';
 import { registerStaticRoutes } from '../routes/static.mjs';
 
 /**
@@ -67,6 +70,9 @@ export function registerAllRoutes(app, deps) {
   registerValidationsRoutes(app, { validateCsrfToken });
   registerVigoliumRoutes(app, { ROOT, validateCsrfToken });
   registerGhostCommandRoutes(app, { runPipeline });
+  registerArtexRoutes(app, { ROOT, validateCsrfToken });
+  registerHackbotRoutes(app, { ROOT, validateCsrfToken });
+  registerNeuroSploitRoutes(app, { ROOT, validateCsrfToken });
 
   registerInboundWebhooks(app);
   registerNewApiRoutes(app, { validateCsrfToken, requireCsrf });

@@ -40,10 +40,14 @@ export async function runPipeline(ctx) {
   const s = createPipelineState(ctx);
   s.ROOT = ROOT;
 
-  await runPipelinePhases(s, PIPELINE_PHASES, {
-    enabled: ctx.continueOnPhaseError === true || ctx.enablePhaseTimeouts === true,
-    continueOnPhaseError: ctx.continueOnPhaseError === true,
-    phaseTimeouts: ctx.phaseTimeoutsMs ?? ctx.phaseTimeouts ?? null,
-    phaseSettleGraceMs: ctx.phaseSettleGraceMs,
-  });
+  try {
+    await runPipelinePhases(s, PIPELINE_PHASES, {
+      enabled: ctx.continueOnPhaseError === true || ctx.enablePhaseTimeouts === true,
+      continueOnPhaseError: ctx.continueOnPhaseError === true,
+      phaseTimeouts: ctx.phaseTimeoutsMs ?? ctx.phaseTimeouts ?? null,
+      phaseSettleGraceMs: ctx.phaseSettleGraceMs,
+    });
+  } finally {
+    s.disposeSensitiveEvidence?.();
+  }
 }

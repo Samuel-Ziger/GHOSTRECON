@@ -27,11 +27,6 @@ import {
   validateInfoDisclosureJson,
 } from '../modules/kali-scan.js';
 import { buildMysql3306IntelFindings } from '../modules/mysql-nmap-intel.js';
-import {
-  cancelShannonWorkflow,
-  extractShannonFindings,
-  extractTemporalWorkflowId,
-} from '../modules/shannon-runner.js';
 import { runWebshellHeuristicProbe } from '../modules/webshell-probe.js';
 import { buildVigoliumAgentArgs } from '../../bridge/agent-bridge.mjs';
 
@@ -211,25 +206,6 @@ test('mysql 3306 é inventário estruturado e nunca prova vulnerabilidade', () =
   assert.equal(finding.prio, 'info');
   assert.equal(finding.meta.evidenceStatus, 'inventory_confirmed_by_nmap_service');
   assert.doesNotMatch(JSON.stringify(finding), /sqlmap|empty-password|-u root/);
-});
-
-test('Shannon extrai candidatos e distingue pedido de cancelamento de término', async () => {
-  const findings = extractShannonFindings(`
-## [HIGH] SQL injection em consulta
-Severity: HIGH
-File: src/db.js
-Entrada concatenada na consulta.
-  `, { repoFullName: 'acme/app', workspaceId: 'ws-1', reportPath: '/tmp/report.md' });
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].type, 'shannon_whitebox');
-  assert.equal(findings[0].meta.evidenceStatus, 'candidate_ai_report');
-  assert.equal(extractTemporalWorkflowId('http://localhost:8233/namespaces/default/workflows/wf-123'), 'wf-123');
-  const cancelled = await cancelShannonWorkflow({
-    workflowId: 'wf-123',
-    processRunner: async (cmd, args) => ({ code: cmd === 'temporal' && args.includes('wf-123') ? 0 : 1 }),
-  });
-  assert.equal(cancelled.requested, true);
-  assert.equal(cancelled.confirmed, false);
 });
 
 test('webshell usa fetch injetado, escopo e signal pai', async () => {

@@ -4,8 +4,7 @@ Atualizado em: 2026-08-10
 
 Este arquivo é o backlog executável e contém somente trabalho aberto. O estado
 de liberação e a Definition of Done estão em
-`STATUS-FINALIZACAO-MODO-AUTO.md`; o comportamento operacional atual está em
-`MODO-AUTO-GHOSTRECON.md`.
+`STATUS-FINALIZACAO-MODO-AUTO.md`.
 
 ## Regras do backlog
 
@@ -117,45 +116,29 @@ Arquivos-alvo:
 
 ### Implementação
 
-- [x] Repropagar aborts no conselho em vez de convertê-los em turno
-      `ok:false` (council-runner + openai-compatible não mascara cancel como timeout).
 - [x] Repropagar abort no dispatcher (não emite `done` após AbortError;
       emite `cancelled`/`failed`).
 - [x] Não emitir `done` depois de exceção no dispatcher de registry.
-- [x] Verificar a sessão (`assertActive`) após providers, conselho, aprovação,
+- [x] Verificar a sessão (`assertActive`) após planejamento, aprovação,
       pipeline e antes do terminal.
-- [x] Impedir fallback determinístico e nova iteração depois de cancelamento
-      no conselho (AbortError repropagado; sem turno `ok:false`).
-- [x] Passar o `AbortSignal` também à detecção de providers.
-- [x] Watchdog por turno: `activeAgentTurns` + idle no turno mais antigo;
-      deadline por provider via `combineTurnSignal` /
-      `AUTO_PROVIDER_TURN_TIMEOUT` (council-runner).
+- [x] Impedir nova iteração depois de cancelamento do plano determinístico.
 - [x] Limpar `currentStage` ao final de step/turno/close.
 
 ### Evidência exigida
 
-- [x] Cancelamento durante proposal do conselho termina com AbortError
-      repropagado, sem turno `ok:false` (teste em auto-planner-contract).
-- [x] Cancelamento durante review repropaga AbortError sem fallback
-      (`auto-planner-contract`).
-- [x] Abort no conselho pós-pipeline sem `heuristic_evaluation`
-      (`auto-post-pipeline-council-abort`).
-- [x] Timeout isolado por turno de provider (`auto-provider-turn-timeout`;
-      stall paralelo em `auto-agent-turn-stall`).
+- [x] Cancelamento durante planejamento determinístico termina sem executar
+      pipeline nem avaliação posterior.
 - [x] Módulo registry com `PROCESS_UNTERMINATED` não emite `done`
       (`dispatcher-unterminated`); AbortError/timeout do dispatcher já cobertos.
 - [x] Desconexão HTTP: `captureEmit`/NDJSON gate pós-abort; teste
       `auto-http-disconnect` (efeito residual de engines externos ainda aberto).
-- [x] Provider que ignora abort: App Server `close` await exit
-      (`CODEX_APP_SERVER_UNTERMINATED`); `execFileClosedStdin` →
+- [x] Processo externo que ignora abort: `execFileClosedStdin` →
       `PROCESS_UNTERMINATED`; `session.close` fail-closed em cleanup.
 
 Arquivos-alvo:
 
-- `server/auto-agent/council/council-runner.mjs`;
 - `server/auto-agent/orchestrator.mjs`;
 - `server/auto-agent/session-store.mjs`;
-- `server/auto-agent/provider-detector.mjs`;
 - `server/pipeline/dispatcher.mjs`.
 
 ## P0.4 — terminal, outcomes e UI
@@ -194,7 +177,8 @@ Arquivos-alvo:
 - `server/auto-agent/planner.mjs`;
 - `server/auto-agent/orchestrator.mjs`;
 - `server/pipeline/dispatcher.mjs`;
-- `public/index.html`.
+- `frontend/src/` e, enquanto existir o adapter de paridade,
+  `frontend/templates/index.html`.
 
 ## P0.5 — retomada, orçamento e cleanup
 
@@ -235,10 +219,9 @@ Arquivos-alvo:
 
 - `server/auto-agent/session-store.mjs`;
 - `server/auto-agent/orchestrator.mjs`;
-- `server/auto-agent/providers/codex-app-server.mjs`;
 - `server/routes/auto-recon.mjs`.
 
-## P0.6 — isolamento de dados e providers
+## P0.6 — isolamento de dados do Auto
 
 ### Implementação
 
@@ -251,15 +234,10 @@ Arquivos-alvo:
 - [x] Definir TTL de listagem RAG (`GHOSTRECON_AUTO_RAG_TTL_DAYS`, default 30).
 - [x] Prune físico `pruneExpiredAutoRagMarkdown`; leitura/listagem/contexto
       falham fechado para memória expirada.
-- [x] Exigir confirmação explícita para provider cloud
-      (`cloudEvidenceConsent` + `assertCloudEvidenceConsent`; openrouter
-      `dataPlane:cloud`).
 - [x] Política de redação configurável `GHOSTRECON_AUTO_REDACT_EXTRA`
       consumida em `redactAutoText` + anunciada no `auto_session.started`.
-- [x] Orçamento: `budgetVerifiable=false` quando usage sem `cost` reportado.
-- [x] Substituir fallback silencioso por estado `degraded`/`ask_operator`
-      quando commanders foram selecionados e o conselho não decide
-      (`auto_council_degraded`; baseline só com commanders vazio).
+- [x] Planejamento Auto determinístico, sem chamadas, custo ou fallback de
+      provider.
 - [x] Binding persistente exigível via
       `GHOSTRECON_AUTO_REQUIRE_PERSISTENT_BINDING=1`.
 
@@ -269,17 +247,15 @@ Arquivos-alvo:
       (`auto-rag-partition-routes.test.js`).
 - [x] Engagement/alvo entram na chave de partição das APIs RAG.
 - [x] Memória expirada não é listada/lida/carregada (`auto-rag-ttl.test.js`).
-- [x] Provider selecionado indisponível não inicia pipeline fingindo decisão
-      de IA (teste degradado em auto-agent.test.js).
-- [x] Prompt cloud sem consentimento falha fechado / redige evidência
-      (`auto-cloud-consent.test.js`); registro de versão de política ainda
-      aberto.
+- [x] O planejamento determinístico não chama provider, não envia evidência a
+      modelo externo e não possui fallback de IA.
+- [x] Campos legados de comandantes/providers falham explicitamente, em vez de
+      serem ignorados.
 
 Arquivos-alvo:
 
 - `server/auto-agent/rag-memory.mjs`;
-- `server/auto-agent/providers/`;
-- `server/auto-agent/provider-detector.mjs`;
+- `server/auto-agent/redaction.mjs`;
 - `server/auto-agent/planner.mjs`;
 - `server/modules/auth.js`;
 - `server/routes/auto-recon.mjs`.
@@ -330,7 +306,7 @@ Arquivos-alvo:
       enforcement inicial de `scopePolicy` no CLI Go; SOCKS completo ainda
       não implementado (documentado).
 - [x] Listagem/seleção de sessões retomáveis na UI (`?resumable=1`).
-- [x] Expor claramente fallback/degradado (`auto_council_degraded` na UI).
+- [x] Expor claramente estados de fallback/degradação na UI.
 - [x] Comando `ghostrecon auto` na CLI.
 - [x] Aprovação interativa Auto no MCP (`ghostrecon_auto_approve` /
       `ghostrecon_auto_deny`; `run_auto` default deny).
@@ -357,13 +333,12 @@ Arquivos-alvo:
 | módulo interno de escrita/credencial | ausente do plano e zero execução |
 | redirect/JWKS fora do escopo | nenhuma segunda request |
 | engine sem suporte à `scopePolicy` | bloqueado antes do spawn |
-| cancelamento durante conselho | terminal `cancelled`, zero fallback |
+| cancelamento durante planejamento | terminal `cancelled`, zero execução |
 | erro fatal no dispatcher | `failed`, nunca `done` |
 | erro recuperável | stream continua e terminal `partial` |
 | resume perto do deadline | somente saldo restante |
 | crash com aprovação pendente | reconciliação sem execução |
 | principal/engagement diferente | RAG e snapshot invisíveis |
-| provider selecionado indisponível | erro/degradação explícita |
 | finalização | relatório consolidado e zero resíduos |
 
 ## Checks locais pendentes

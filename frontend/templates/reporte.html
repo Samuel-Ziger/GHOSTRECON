@@ -1,0 +1,2170 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GHOSTRECON — Reporte (validação manual)</title>
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --bg2: #121a24;
+      --border: #2a3848;
+      --text: #c8d0dc;
+      --dim: #7a8a9e;
+      --accent: #00d4ff;
+      --ok: #00ff88;
+      --err: #ff6688;
+      --mono: ui-monospace, 'Cascadia Code', monospace;
+      --sans: system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    header.reporte-hd {
+      position: relative;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+      overflow: hidden;
+    }
+    .reporte-ghost-bg {
+      position: absolute;
+      right: 4%;
+      top: 50%;
+      transform: translateY(-50%);
+      width: min(160px, 32vw);
+      max-height: 100px;
+      opacity: 0.1;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .reporte-ghost-bg svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      filter: drop-shadow(0 0 20px rgba(0, 212, 255, 0.35));
+    }
+    .reporte-hd-inner {
+      position: relative;
+      z-index: 1;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .reporte-ghost-bg .ghost-anim-reporte,
+      .reporte-ghost-bg .ghost-eye-reporte {
+        animation: none !important;
+      }
+    }
+    .reporte-ghost-bg .ghost-anim-reporte {
+      transform-origin: 24px 26px;
+      animation: reporte-ghost-sway 3s ease-in-out infinite;
+    }
+    .reporte-ghost-bg .ghost-eye-reporte {
+      transform-origin: center;
+      transform-box: fill-box;
+      animation: reporte-ghost-blink 5s ease-in-out infinite;
+    }
+    .reporte-ghost-bg .ghost-eye-reporte-r {
+      animation-delay: 0.06s;
+    }
+    @keyframes reporte-ghost-sway {
+      0%,
+      100% {
+        transform: rotate(-3deg);
+      }
+      50% {
+        transform: rotate(3deg);
+      }
+    }
+    @keyframes reporte-ghost-blink {
+      0%,
+      47%,
+      53%,
+      100% {
+        transform: scaleY(1);
+      }
+      50% {
+        transform: scaleY(0.12);
+      }
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .sub {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--dim);
+    }
+    main { padding: 16px 20px 120px; max-width: 960px; margin: 0 auto; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    button, .btn {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary {
+      border-color: rgba(0, 212, 255, 0.55);
+      color: var(--accent);
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 72px;
+      gap: 10px 14px;
+      align-items: start;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      margin-bottom: 8px;
+      background: rgba(18, 26, 36, 0.65);
+    }
+    .row.validated { border-color: rgba(0, 255, 136, 0.35); }
+    .val-toggle {
+      margin-top: 2px;
+      width: 64px;
+      height: 24px;
+      padding: 2px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--dim);
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-start;
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      user-select: none;
+      border-radius: 999px;
+      position: relative;
+      justify-self: end;
+    }
+    .val-toggle::before {
+      content: '';
+      width: 18px;
+      height: 18px;
+      border: 1px solid var(--border);
+      background: rgba(122, 138, 158, 0.2);
+      display: inline-block;
+      border-radius: 50%;
+      transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+    }
+    .val-toggle::after {
+      content: attr(data-state);
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: inherit;
+    }
+    .val-toggle:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .val-toggle.is-on {
+      border-color: rgba(0, 255, 136, 0.65);
+      color: var(--ok);
+      background: rgba(0, 255, 136, 0.07);
+    }
+    .val-toggle.is-on::before {
+      border-color: var(--ok);
+      background: linear-gradient(180deg, rgba(0, 255, 136, 0.28), rgba(0, 255, 136, 0.1));
+      box-shadow: inset 0 0 0 2px rgba(10, 14, 20, 0.9);
+      transform: translateX(39px);
+    }
+    .val-toggle.is-on::after {
+      left: 8px;
+      right: auto;
+    }
+    .val-toggle:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    .meta {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--dim);
+      margin-bottom: 4px;
+    }
+    .val { font-size: 12px; word-break: break-word; margin-bottom: 6px; }
+    .url {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid rgba(0, 212, 255, 0.35);
+      border-radius: 4px;
+      padding: 3px 7px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      z-index: 5;
+      pointer-events: auto;
+    }
+    .url:hover {
+      border-color: var(--accent);
+      color: #a7ecff;
+    }
+    .taxo-tags {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .taxo-tag {
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg3);
+      color: var(--text2);
+    }
+    .taxo-tag.owasp { border-color: rgba(251, 191, 36, 0.45); color: var(--yellow); }
+    .taxo-tag.mitre { border-color: rgba(139, 92, 246, 0.45); color: var(--accent); }
+    .notes-in {
+      width: 100%;
+      margin-top: 6px;
+      padding: 6px 8px;
+      font-family: var(--mono);
+      font-size: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    .log {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      margin-top: 8px;
+      white-space: pre-wrap;
+    }
+    .log.err { color: var(--err); }
+    .log.ok { color: var(--ok); }
+    .reporte-banner-warn {
+      display: none;
+      margin-top: 10px;
+      padding: 8px 10px;
+      border: 1px solid rgba(255, 191, 0, 0.45);
+      background: rgba(255, 191, 0, 0.08);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.45;
+      color: #ffd88a;
+    }
+    footer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      background: rgba(10, 14, 20, 0.96);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .empty { text-align: center; padding: 40px 20px; color: var(--dim); font-family: var(--mono); font-size: 11px; }
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      background: rgba(0, 0, 0, 0.72);
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-overlay.is-open {
+      display: flex;
+    }
+    .modal-box {
+      width: 100%;
+      max-width: 440px;
+      max-height: 90vh;
+      overflow: auto;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      padding: 16px 18px;
+    }
+    .modal-head {
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+    .modal-p {
+      margin: 0 0 12px;
+      line-height: 1.5;
+      color: var(--text);
+    }
+    .modal-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .brain-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .brain-chip {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .brain-chip:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .brain-chip.is-sel {
+      border-color: var(--ok);
+      color: var(--ok);
+    }
+    .brain-chip-new {
+      border-style: dashed;
+    }
+    .brain-badge {
+      margin-top: 8px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--ok);
+    }
+    .brain-add-btn {
+      margin-top: 8px;
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 6px 10px;
+      border: 1px dashed var(--border);
+      background: transparent;
+      color: var(--dim);
+      cursor: pointer;
+    }
+    .brain-add-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* JSON dock (estilo ramificação / Ghostmap) */
+    .report-json-dock-wrap {
+      position: fixed;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 60;
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      max-height: 85vh;
+    }
+    .report-json-dock-tab {
+      flex-shrink: 0;
+      width: 38px;
+      min-height: 120px;
+      margin: 0;
+      padding: 12px 0;
+      border: 1px solid var(--border);
+      border-left: none;
+      border-radius: 0 8px 8px 0;
+      background: rgba(18, 26, 36, 0.96);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      cursor: pointer;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 4px 0 20px rgba(0, 0, 0, 0.4);
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+      position: relative;
+      z-index: 2;
+    }
+    .report-json-dock-tab:hover {
+      background: rgba(24, 34, 48, 0.98);
+      border-color: rgba(0, 212, 255, 0.35);
+      color: #e8fbff;
+    }
+    .report-json-dock-wrap.is-open .report-json-dock-tab {
+      border-color: rgba(0, 212, 255, 0.28);
+      background: rgba(14, 22, 34, 0.98);
+    }
+    .report-json-dock-panel {
+      width: min(340px, calc(100vw - 44px));
+      max-height: 85vh;
+      overflow-y: auto;
+      padding: 12px 14px 14px;
+      margin: 0;
+      background: rgba(18, 26, 36, 0.98);
+      border: 1px solid var(--border);
+      border-left: none;
+      border-radius: 0 8px 8px 0;
+      font-size: 10px;
+      color: var(--dim);
+      line-height: 1.45;
+      box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+      transform: translateX(-100%);
+      opacity: 0;
+      visibility: hidden;
+      transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease, visibility 0.22s;
+      pointer-events: none;
+      position: relative;
+      z-index: 1;
+    }
+    .report-json-dock-wrap.is-open .report-json-dock-panel {
+      transform: translateX(0);
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    .report-json-dock-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 0 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .report-json-dock-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 0;
+    }
+    .report-json-dock-close {
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--dim);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .report-json-dock-close:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .report-json-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--dim);
+    }
+    .report-json-toggle-row label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .report-json-toggle-row input {
+      accent-color: var(--accent);
+    }
+    .report-json-import-bar {
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px dashed rgba(0, 212, 255, 0.28);
+      border-radius: 4px;
+      background: rgba(10, 16, 24, 0.65);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .report-json-import-bar > label {
+      font-size: 9px;
+      line-height: 1.45;
+      color: var(--dim);
+    }
+    .report-json-import-bar textarea {
+      width: 100%;
+      min-height: 100px;
+      resize: vertical;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.4;
+      padding: 8px 10px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    .report-json-import-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .report-json-import-actions button {
+      font-family: var(--mono);
+      font-size: 9px;
+      padding: 6px 10px;
+      border-radius: 2px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .report-json-import-actions button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .report-json-import-actions input[type='file'] {
+      font-family: var(--mono);
+      font-size: 9px;
+      max-width: 100%;
+    }
+    .report-json-hint {
+      font-size: 9px;
+      color: var(--dim);
+      margin: 0;
+    }
+    .reporte-live-pill {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 4px 9px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 255, 136, 0.45);
+      color: var(--ok);
+      background: rgba(0, 255, 136, 0.08);
+    }
+    .reporte-live-pill[hidden] {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <header class="reporte-hd">
+    <div class="reporte-ghost-bg" aria-hidden="true">
+      <svg viewBox="0 0 48 52" xmlns="http://www.w3.org/2000/svg" width="100" height="108" focusable="false">
+        <defs>
+          <linearGradient id="reporteBgGhostGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e8fbff" />
+            <stop offset="45%" stop-color="#5ee0ff" />
+            <stop offset="100%" stop-color="#00a8d4" />
+          </linearGradient>
+          <linearGradient id="reporteBgGhostSheen" x1="15%" y1="0%" x2="75%" y2="85%">
+            <stop offset="0%" stop-color="rgba(255,255,255,0.35)" />
+            <stop offset="45%" stop-color="rgba(255,255,255,0)" />
+            <stop offset="100%" stop-color="rgba(0,45,70,0.22)" />
+          </linearGradient>
+        </defs>
+        <g class="ghost-anim-reporte">
+          <path
+            fill="url(#reporteBgGhostGrad)"
+            stroke="rgba(0,212,255,0.45)"
+            stroke-width="0.55"
+            d="M 24 5 C 13 5 5 13.5 5 24.5 V 40 Q 8.5 36.5 12 40 Q 15.5 36.5 19 40 Q 22.5 36.5 26 40 Q 29.5 36.5 33 40 Q 36.5 36.5 40 40 Q 43.5 36.5 43 40 V 24.5 C 43 13.5 35 5 24 5 Z"
+          />
+          <path
+            fill="url(#reporteBgGhostSheen)"
+            d="M 24 8 C 15 8 9 15 9 23.5 V 33 Q 16 28 24 32 Q 32 28 39 33 V 23.5 C 39 15 33 8 24 8 Z"
+            opacity="0.88"
+          />
+          <ellipse class="ghost-eye-reporte" cx="17" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+          <ellipse class="ghost-eye-reporte ghost-eye-reporte-r" cx="31" cy="22" rx="3.2" ry="4.2" fill="#050709" />
+        </g>
+      </svg>
+    </div>
+    <div class="reporte-hd-inner">
+      <h1>Reporte — checklist manual</h1>
+      <div class="sub" id="headLine">A carregar…</div>
+      <div id="targetMismatchBanner" class="reporte-banner-warn" role="status" aria-live="polite"></div>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <button type="button" id="btnReload">Recarregar da base</button>
+      <button type="button" class="btn-primary" id="btnAi" disabled>Gerar relatório IA (validados)</button>
+      <button type="button" id="btnToggleDorks" title="Mostrar/ocultar achados de dorks na checklist">Mostrar dorks</button>
+      <button
+        type="button"
+        class="btn-primary"
+        id="btnAnotacao"
+        title="Abre anotações noutra aba. O preenchimento automático das secções usa só achados que estiverem validados (toggle ON) nesta checklist."
+      >
+        ANOTAÇÃO
+      </button>
+      <span class="sub" id="countLine"></span>
+      <span
+        class="reporte-live-pill"
+        id="reporteLivePill"
+        hidden
+        title="Recebes achados em tempo real pelo mesmo BroadcastChannel que o Ghostmap enquanto o recon corre no GHOSTRECON (mesmo browser, sessão ghostrecon_mitre_live_session_id)."
+        >Ao vivo</span>
+    </div>
+    <div id="list"></div>
+    <div class="log" id="msg"></div>
+  </main>
+
+  <div id="reportJsonDockWrap" class="report-json-dock-wrap">
+    <button
+      type="button"
+      id="reportJsonDockTab"
+      class="report-json-dock-tab"
+      aria-expanded="false"
+      aria-controls="reportJsonDockPanel"
+      title="Importar JSON para o checklist (ficheiro ou colar payload com target + findings)"
+    >
+      Importar
+    </button>
+    <aside
+      id="reportJsonDockPanel"
+      class="report-json-dock-panel"
+      aria-label="Importar JSON no checklist"
+      aria-hidden="true"
+    >
+      <div class="report-json-dock-head">
+        <h2 class="report-json-dock-title">Importar JSON</h2>
+        <button type="button" class="report-json-dock-close" id="reportJsonDockClose" aria-label="Fechar painel de importação">×</button>
+      </div>
+      <div class="report-json-toggle-row">
+        <label for="reportJsonPanelToggle"
+          ><input type="checkbox" id="reportJsonPanelToggle" checked /> Mostrar campo importar</label
+        >
+      </div>
+      <div id="reportJsonPanelWrap" style="display: none">
+        <div class="report-json-import-bar">
+          <label for="reportImportJson"
+            >Cola ou escolhe um ficheiro <code>.json</code> com <code>target</code> e <code>findings</code> (por exemplo payload vindo do recon ou de cópia manual). Atualiza o checklist nesta página e grava em
+            <code>sessionStorage</code> nesta aba.</label
+          >
+          <textarea
+            id="reportImportJson"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder='{ "target": "exemplo.com", "findings": [ { "fingerprint": "64 hex…", "type": "…", "prio": "high", "value": "…", "url": "" } ] }'
+          ></textarea>
+          <div class="report-json-import-actions">
+            <input type="file" id="reportImportFile" accept=".json,application/json" />
+            <button type="button" id="reportImportApply">Aplicar checklist</button>
+            <button type="button" id="reportImportClearField">Limpar campo</button>
+          </div>
+          <p class="report-json-hint">
+            «Aplicar» substitui <code>target</code> e <code>findings</code> em memória, sincroniza com SQLite se o alvo for válido, e actualiza a sessão. Linhas sem fingerprint SHA-256 válido não aparecem na checklist. Máx. 6000 achados por importação.
+          </p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="brainModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="brainModalHead">
+      <div class="modal-head" id="brainModalHead">Modo cérebro</div>
+      <div id="brainModalBody"></div>
+      <div class="modal-actions" id="brainModalActions"></div>
+    </div>
+  </div>
+  <footer>
+    <span class="sub" id="footHint"
+      >Marca apenas o que testaste manualmente. Com o recon activo no GHOSTRECON, o badge <strong>Ao vivo</strong> indica que esta aba recebe achados pelo BroadcastChannel (o mesmo canal que o Ghostmap). Opcional: após validar, podes ligar ao <strong>cérebro</strong> (SQLite) por tipo de vulnerabilidade. O botão <strong>ANOTAÇÃO</strong> acima abre o modelo de campo + IA noutra aba. Os fingerprints coincidem com recons futuros no mesmo alvo.</span>
+  </footer>
+  <script>
+    const REPORTE_PAYLOAD_KEY = 'ghostrecon_reporte_payload';
+    const REPORTE_PAYLOAD_SHARED_KEY = 'ghostrecon_reporte_payload_shared';
+    const ANOTACAO_PAYLOAD_KEY = 'ghostrecon_anotacao_payload';
+    /** Nova aba não vê o sessionStorage do Reporte — o handoff tem de ir para localStorage. */
+    const ANOTACAO_HANDOFF_LS_KEY = 'ghostrecon_anotacao_handoff_v1';
+    const MITRE_LIVE_SESSION_STORAGE_KEY = 'ghostrecon_mitre_live_session_id';
+
+    function getApiBase() {
+      try {
+        const proto = window.location.protocol;
+        if (proto === 'file:' || proto === 'blob:') {
+          const saved = localStorage.getItem('ghostrecon_api_base');
+          return (saved || 'http://127.0.0.1:3847').replace(/\/+$/, '');
+        }
+      } catch (_) {}
+      return '';
+    }
+    function apiUrl(p) {
+      const path = p.startsWith('/') ? p : '/' + p;
+      const base = getApiBase();
+      return base ? base + path : path;
+    }
+
+    let csrf = '';
+    let target = '';
+    let findings = [];
+    const validatedFp = new Set();
+    let serverItems = [];
+    let aiUseOpenrouter = false;
+    let packSubsetFilter = null;
+    let showDorksInList = false;
+    let reporteLiveBc = null;
+    let reporteLiveApplySeq = 0;
+
+    function authHeaders(extra) {
+      const h = Object.assign({}, extra || {});
+      try {
+        const raw = localStorage.getItem('ghostrecon_auth_json');
+        if (raw) {
+          const cfg = JSON.parse(raw);
+          if (cfg && cfg.ghostreconApiKey) h['X-API-Key'] = cfg.ghostreconApiKey;
+        }
+      } catch (_) {}
+      return h;
+    }
+
+    const FP_URL_NORMALIZE_TYPES = new Set([
+      'endpoint',
+      'param',
+      'js',
+      'security',
+      'tls',
+      'nuclei',
+      'xss',
+      'sqli',
+      'dalfox',
+      'wpscan',
+      'intel',
+    ]);
+
+    function normalizeTarget(raw) {
+      let s = String(raw || '')
+        .trim()
+        .toLowerCase();
+      if (!s) return '';
+      s = s.replace(/^\*\./, '');
+      if (/^[a-z][a-z0-9+.-]*:\/\//.test(s)) {
+        try {
+          s = String(new URL(s).hostname || '').toLowerCase();
+        } catch (_) {}
+      } else if (/[/?#]/.test(s)) {
+        s = s.split(/[/?#]/, 1)[0];
+      }
+      s = s.replace(/:\d+$/, '').replace(/\.$/, '');
+      return s;
+    }
+
+    function targetUsableForApi(t) {
+      const s = normalizeTarget(t);
+      return s && /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s);
+    }
+
+    function deriveTargetFromFindings(rows) {
+      for (const r of rows || []) {
+        const one = deriveTargetFromFinding(r);
+        if (one) return one;
+      }
+      return '';
+    }
+
+    function deriveTargetFromFinding(r) {
+      if (!r || typeof r !== 'object') return '';
+      const urlRaw = String(r.url || '').trim();
+      if (urlRaw) {
+        try {
+          const host = normalizeTarget(new URL(urlRaw).hostname || '');
+          if (targetUsableForApi(host)) return host;
+        } catch (_) {
+          const host = normalizeTarget(urlRaw);
+          if (targetUsableForApi(host)) return host;
+        }
+      }
+      const valueRaw = String(r.value || '').trim();
+      if (valueRaw) {
+        const direct = normalizeTarget(valueRaw);
+        if (targetUsableForApi(direct)) return direct;
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(valueRaw)) {
+          try {
+            const host = normalizeTarget(new URL(valueRaw).hostname || '');
+            if (targetUsableForApi(host)) return host;
+          } catch (_) {}
+        }
+      }
+      return '';
+    }
+
+    function resolveTargetForValidation(f) {
+      if (targetUsableForApi(target)) return normalizeTarget(target);
+      const fromFinding = deriveTargetFromFinding(f);
+      if (targetUsableForApi(fromFinding)) return fromFinding;
+      const fromList = deriveTargetFromFindings(findings);
+      if (targetUsableForApi(fromList)) return fromList;
+      return '';
+    }
+
+    function normSpace(s) {
+      return String(s == null ? '' : s)
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+    }
+
+    function normUrlForFingerprintBrowser(u) {
+      if (!u) return '';
+      try {
+        const x = new URL(String(u));
+        x.hash = '';
+        const keys = [...new Set([...x.searchParams.keys()])].sort();
+        const sp = new URLSearchParams();
+        for (const k of keys) {
+          for (const v of x.searchParams.getAll(k)) sp.append(k, v);
+        }
+        const q = sp.toString();
+        x.search = q ? '?' + q : '';
+        return x.href.toLowerCase();
+      } catch (_) {
+        return normSpace(u);
+      }
+    }
+
+    async function sha256Hex(text) {
+      if (!globalThis.crypto || !globalThis.crypto.subtle || typeof TextEncoder === 'undefined') {
+        throw new Error('SHA-256 indisponível neste browser');
+      }
+      const data = new TextEncoder().encode(String(text || ''));
+      const dig = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(dig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function ensureFindingFingerprint(targetRaw, finding) {
+      const f = finding && typeof finding === 'object' ? { ...finding } : {};
+      const fpIn = String(f.fingerprint || '').trim().toLowerCase();
+      if (/^[a-f0-9]{64}$/.test(fpIn)) {
+        f.fingerprint = fpIn;
+        return f;
+      }
+      const typeNorm = normSpace(f.type);
+      const urlPart = FP_URL_NORMALIZE_TYPES.has(typeNorm)
+        ? normUrlForFingerprintBrowser(f.url)
+        : normSpace(f.url);
+      const raw = normSpace(targetRaw) + '|' + typeNorm + '|' + normSpace(f.value) + '|' + urlPart;
+      try {
+        f.fingerprint = await sha256Hex(raw);
+      } catch (_) {
+        f.fingerprint = '';
+      }
+      return f;
+    }
+
+    async function hydrateFindingsFingerprints(rows, targetRaw) {
+      const out = [];
+      for (const row of rows || []) {
+        if (!row || typeof row !== 'object') continue;
+        out.push(await ensureFindingFingerprint(targetRaw, row));
+      }
+      return out;
+    }
+
+    async function fetchCsrf() {
+      const r = await fetch(apiUrl('/api/csrf-token'), { headers: authHeaders() });
+      const d = await r.json();
+      csrf = String(d.token || '');
+      if (!csrf) throw new Error('CSRF vazio');
+    }
+
+    async function loadServerState() {
+      if (!targetUsableForApi(target)) {
+        serverItems = [];
+        validatedFp.clear();
+        return;
+      }
+      let r;
+      try {
+        r = await fetch(apiUrl('/api/manual-validations/' + encodeURIComponent(target)), { headers: authHeaders() });
+      } catch (_) {
+        serverItems = [];
+        validatedFp.clear();
+        const err = new Error('REPORTE_OFFLINE');
+        err.reporteOffline = true;
+        throw err;
+      }
+      if (!r.ok) throw new Error('GET validações: ' + r.status);
+      const d = await r.json();
+      serverItems = Array.isArray(d.items) ? d.items : [];
+      validatedFp.clear();
+      for (const it of serverItems) {
+        if (it.fingerprint) validatedFp.add(String(it.fingerprint).toLowerCase());
+      }
+    }
+
+    function updateReporteLivePill(visible) {
+      const el = document.getElementById('reporteLivePill');
+      if (!el) return;
+      el.hidden = !visible;
+    }
+
+    function reporteApplySubsetFilter(rowsIn, subset) {
+      if (!subset) return rowsIn.map((x) => ({ ...x }));
+      const arr = rowsIn.map((x) => ({ ...x }));
+      if (subset === 'high') {
+        return arr.filter((f) => {
+          const p = String(f.prio != null ? f.prio : f.priority != null ? f.priority : '').toLowerCase();
+          return p === 'high' || p === 'critical';
+        });
+      }
+      if (subset === 'validated') {
+        return arr.filter((f) => {
+          const fp = String(f.fingerprint || '').trim().toLowerCase();
+          return fp && validatedFp.has(fp);
+        });
+      }
+      return arr;
+    }
+
+    async function applyReporteLivePayload(m) {
+      const seq = ++reporteLiveApplySeq;
+      updateReporteLivePill(true);
+      const newTarget = normalizeTarget(m.target || '');
+      target = newTarget;
+      try {
+        await loadServerState();
+      } catch (_) {
+        /* offline: mantém checklist com validações já em memória */
+      }
+      if (seq !== reporteLiveApplySeq) return;
+      const rowsIn = (Array.isArray(m.findings) ? m.findings : [])
+        .map(normalizeImportedFinding)
+        .filter(Boolean);
+      let rows = reporteApplySubsetFilter(rowsIn, packSubsetFilter);
+      if (rows.length > REPORT_IMPORT_MAX) rows = rows.slice(0, REPORT_IMPORT_MAX);
+      const hydrated = await hydrateFindingsFingerprints(rows, target);
+      if (seq !== reporteLiveApplySeq) return;
+      findings = hydrated;
+      try {
+        syncPayloadToSession();
+      } catch (_) {}
+      const ts = String(m.updatedAt || '').slice(0, 19).replace('T', ' ') || '?';
+      const elHd = document.getElementById('headLine');
+      if (elHd) {
+        elHd.textContent = targetUsableForApi(target)
+          ? 'Alvo: ' + target + ' · ao vivo · ' + ts
+          : 'Sem alvo válido · ao vivo · ' + ts;
+      }
+      updateTargetMismatchBanner();
+      if (seq !== reporteLiveApplySeq) return;
+      render();
+      try {
+        if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+      } catch (_) {}
+      setMsg('Actualização ao vivo do GHOSTRECON — ' + findings.length + ' achado(s) nesta vista.', 'ok');
+    }
+
+    function startReporteMitreBroadcastListener() {
+      if (typeof BroadcastChannel === 'undefined') return;
+      let id = '';
+      try {
+        id = localStorage.getItem(MITRE_LIVE_SESSION_STORAGE_KEY) || '';
+      } catch (_) {}
+      if (!id) return;
+      if (reporteLiveBc) {
+        try {
+          reporteLiveBc.close();
+        } catch (_) {}
+        reporteLiveBc = null;
+      }
+      try {
+        reporteLiveBc = new BroadcastChannel('ghostrecon-mitre-' + id);
+      } catch (_) {
+        return;
+      }
+      reporteLiveBc.onmessage = (ev) => {
+        const msg = ev.data || {};
+        if (msg.type !== 'reporte_payload' || !msg.live) return;
+        void applyReporteLivePayload(msg);
+      };
+    }
+
+    async function loadAiState() {
+      try {
+        const r = await fetch(apiUrl('/api/capabilities'), { headers: authHeaders() });
+        if (!r.ok) return;
+        const d = await r.json().catch(() => ({}));
+        aiUseOpenrouter = Boolean(d && d.ai && d.ai.openrouter);
+      } catch (_) {}
+    }
+
+    async function loadLatestRunIntoChecklist(preferredTargetRaw) {
+      const preferredTarget = normalizeTarget(preferredTargetRaw || target);
+      const rList = await fetch(apiUrl('/api/runs?limit=50'), { headers: authHeaders() });
+      if (!rList.ok) throw new Error('Não foi possível listar recons na base (' + rList.status + ').');
+      const dList = await rList.json().catch(() => ({}));
+      const runs = Array.isArray(dList.runs) ? dList.runs : [];
+      if (!runs.length) throw new Error('Ainda não há recons gravados na base.');
+      let chosen = null;
+      if (preferredTarget) {
+        chosen = runs.find((x) => normalizeTarget(x && x.target) === preferredTarget) || null;
+      }
+      if (!chosen) chosen = runs[0];
+      if (!chosen || !Number.isFinite(Number(chosen.id))) {
+        throw new Error('Recon inválido retornado pela API.');
+      }
+      const runId = Number(chosen.id);
+      const rRun = await fetch(apiUrl('/api/runs/' + runId), { headers: authHeaders() });
+      if (!rRun.ok) throw new Error('Não foi possível carregar run #' + String(runId) + ' (' + rRun.status + ').');
+      const run = await rRun.json().catch(() => ({}));
+      const rows0 = extractFindingsFromImportRoot(run)
+        .map(normalizeImportedFinding)
+        .filter(Boolean)
+        .slice(0, REPORT_IMPORT_MAX);
+      if (!rows0.length) throw new Error('Run #' + String(runId) + ' não contém achados utilizáveis.');
+      target = normalizeTarget((run && run.target) || preferredTarget || target);
+      findings = await hydrateFindingsFingerprints(rows0, target);
+      syncPayloadToSession();
+      updateHeadLineFromState();
+      return { runId, rows: findings };
+    }
+
+    function setMsg(t, cls) {
+      const el = document.getElementById('msg');
+      el.textContent = t || '';
+      el.className = 'log' + (cls ? ' ' + cls : '');
+    }
+
+    function snapshotFromFinding(f) {
+      const owasp = normalizeTaxonomyTags(f && f.owasp, /^A\d{2}$/i);
+      const mitre = normalizeTaxonomyTags(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
+      return {
+        type: f.type,
+        prio: f.prio,
+        value: f.value,
+        url: f.url || '',
+        meta: (f.meta || '').slice(0, 800),
+        owasp: owasp.length ? owasp : undefined,
+        mitre: mitre.length ? mitre : undefined,
+      };
+    }
+
+    const REPORT_IMPORT_MAX = 6000;
+
+    function normalizeImportedFinding(f) {
+      if (!f || typeof f !== 'object') return null;
+      const fp = String(f.fingerprint || '').trim().toLowerCase();
+      const prio = f.prio != null ? f.prio : f.priority != null ? f.priority : '';
+      const out = {
+        type: f.type != null ? String(f.type) : '',
+        prio: prio !== '' && prio != null ? String(prio) : '',
+        value: f.value != null ? String(f.value) : '',
+        url: f.url != null ? String(f.url) : '',
+        meta: f.meta != null ? String(f.meta) : '',
+      };
+      if (f.score != null) out.score = f.score;
+      if (Array.isArray(f.owasp)) out.owasp = f.owasp;
+      if (Array.isArray(f.mitre)) out.mitre = f.mitre;
+      if (/^[a-f0-9]{64}$/.test(fp)) out.fingerprint = fp;
+      return out;
+    }
+
+    function isDorkFinding(f) {
+      if (!f || typeof f !== 'object') return false;
+      const typ = String(f.type || '')
+        .trim()
+        .toLowerCase();
+      if (typ === 'dork' || typ === 'dorks') return true;
+      const meta = String(f.meta || '')
+        .trim()
+        .toLowerCase();
+      return /\bdork\b|google\s*dork|ghdb|search\s*dork/i.test(meta);
+    }
+
+    function normalizeTaxonomyTags(list, idRe) {
+      const out = [];
+      for (const t of list || []) {
+        const id = typeof t === 'string' ? t : t && t.id != null ? String(t.id) : '';
+        const clean = String(id || '').trim().toUpperCase();
+        if (!idRe.test(clean)) continue;
+        if (!out.some((x) => x.id === clean)) {
+          out.push({
+            id: clean,
+            title: t && t.title != null ? String(t.title) : undefined,
+            label: t && t.label != null ? String(t.label) : undefined,
+            url: t && t.url != null ? String(t.url) : undefined,
+          });
+        }
+      }
+      return out.slice(0, 12);
+    }
+
+    function taxonomyIds(list, idRe) {
+      return normalizeTaxonomyTags(list, idRe).map((x) => x.id);
+    }
+
+    function extractFindingsFromImportRoot(obj) {
+      if (Array.isArray(obj)) return obj;
+      if (obj && Array.isArray(obj.findings)) return obj.findings;
+      if (obj && Array.isArray(obj.items)) return obj.items;
+      return [];
+    }
+
+    function syncPayloadToSession() {
+      const payload = {
+        target,
+        updatedAt: new Date().toISOString(),
+        findings: findings.map((x) => ({ ...x })),
+      };
+      const raw = JSON.stringify(payload);
+      if (raw.length > 4_500_000) throw new Error('Pacote demasiado grande para sessionStorage (máx. ~4,5 MB).');
+      sessionStorage.setItem(REPORTE_PAYLOAD_KEY, raw);
+      try {
+        localStorage.setItem(REPORTE_PAYLOAD_SHARED_KEY, raw);
+      } catch (_) {}
+    }
+
+    function readPayloadRawFromStorage() {
+      try {
+        const raw = sessionStorage.getItem(REPORTE_PAYLOAD_KEY);
+        if (raw) {
+          // Consome uma vez: refresh da aba não deve reabrir payload antigo.
+          sessionStorage.removeItem(REPORTE_PAYLOAD_KEY);
+          return raw;
+        }
+      } catch (_) {}
+      try {
+        const raw = localStorage.getItem(REPORTE_PAYLOAD_SHARED_KEY) || '';
+        if (raw) {
+          // Evita reutilizar payload antigo quando o Reporte é aberto fora do fluxo atual.
+          localStorage.removeItem(REPORTE_PAYLOAD_SHARED_KEY);
+        }
+        return raw;
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function updateHeadLineFromState() {
+      const el = document.getElementById('headLine');
+      if (!el) return;
+      el.textContent = targetUsableForApi(target)
+        ? 'Alvo: ' + target + ' · checklist'
+        : 'Sem alvo válido — importa JSON com "target" ou indica o Target ($) no GHOSTRECON.';
+    }
+
+    function updateTargetMismatchBanner() {
+      const el = document.getElementById('targetMismatchBanner');
+      if (!el) return;
+      const inferred = deriveTargetFromFindings(findings);
+      const pkg = normalizeTarget(target);
+      if (targetUsableForApi(pkg) && targetUsableForApi(inferred) && inferred && pkg && inferred !== pkg) {
+        el.style.display = 'block';
+        el.textContent =
+          'Alvo do pacote: «' +
+          pkg +
+          '» — primeiro host inferido a partir dos achados: «' +
+          inferred +
+          '». As validações gravam-se em SQLite para o alvo do pacote; confirma se é o domínio correcto.';
+      } else {
+        el.style.display = 'none';
+        el.textContent = '';
+      }
+    }
+
+    async function applyReporteJsonImportText(raw) {
+      const trimmed = String(raw || '').trim();
+      if (!trimmed) throw new Error('Campo JSON vazio.');
+      let obj;
+      try {
+        obj = JSON.parse(trimmed);
+      } catch {
+        throw new Error('JSON inválido (parse).');
+      }
+      if (Array.isArray(obj)) obj = { target: '', findings: obj };
+      const newTarget = normalizeTarget(obj.target || '');
+      let rows = extractFindingsFromImportRoot(obj)
+        .map(normalizeImportedFinding)
+        .filter(Boolean);
+      if (rows.length > REPORT_IMPORT_MAX) rows = rows.slice(0, REPORT_IMPORT_MAX);
+      if (newTarget) target = newTarget;
+      if (!targetUsableForApi(target)) {
+        const inferredTarget = deriveTargetFromFindings(rows);
+        if (inferredTarget) target = inferredTarget;
+      }
+      findings = await hydrateFindingsFingerprints(rows, target);
+      syncPayloadToSession();
+      updateHeadLineFromState();
+      updateTargetMismatchBanner();
+      try {
+        await loadServerState();
+      } catch (e) {
+        if (e && e.reporteOffline) {
+          setMsg(
+            'Servidor ou API inacessível (rede, CORS ou `npm start`). Validações SQLite não lidas; a checklist usa só o pacote local.',
+            'err',
+          );
+        } else {
+          setMsg(String(e.message || e), 'err');
+        }
+      }
+      render();
+      try {
+        if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+      } catch (_) {}
+      const withFp = findings.filter((r) => /^[a-f0-9]{64}$/.test(String(r.fingerprint || ''))).length;
+      const targetMsg = targetUsableForApi(target)
+        ? ' alvo: ' + target + '.'
+        : ' sem alvo válido para gravação (inclui "target" no JSON ou URL completa num achado).';
+      setMsg(
+        'Checklist actualizado: ' + findings.length + ' registo(s), ' + withFp + ' com fingerprint válido para marcar;' + targetMsg,
+        'ok',
+      );
+    }
+
+    function setReportJsonDockOpen(on) {
+      const wrap = document.getElementById('reportJsonDockWrap');
+      const tab = document.getElementById('reportJsonDockTab');
+      const panel = document.getElementById('reportJsonDockPanel');
+      if (!wrap || !tab || !panel) return;
+      wrap.classList.toggle('is-open', on);
+      tab.setAttribute('aria-expanded', on ? 'true' : 'false');
+      panel.setAttribute('aria-hidden', on ? 'false' : 'true');
+    }
+
+    function syncReportJsonPanelVisibility() {
+      const on = Boolean(document.getElementById('reportJsonPanelToggle')?.checked);
+      const w = document.getElementById('reportJsonPanelWrap');
+      if (w) w.style.display = on ? 'block' : 'none';
+    }
+
+    function wireReportJsonDock() {
+      const wrap = document.getElementById('reportJsonDockWrap');
+      const tab = document.getElementById('reportJsonDockTab');
+      const panelClose = document.getElementById('reportJsonDockClose');
+      document.getElementById('reportJsonPanelToggle')?.addEventListener('change', syncReportJsonPanelVisibility);
+      syncReportJsonPanelVisibility();
+      tab?.addEventListener('click', (e) => {
+        e.preventDefault();
+        setReportJsonDockOpen(!wrap?.classList.contains('is-open'));
+      });
+      panelClose?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setReportJsonDockOpen(false);
+      });
+      document.getElementById('reportImportApply')?.addEventListener('click', async () => {
+        const ta = document.getElementById('reportImportJson');
+        try {
+          await applyReporteJsonImportText((ta?.value || '').trim());
+        } catch (e) {
+          setMsg(String(e.message || e), 'err');
+        }
+      });
+      document.getElementById('reportImportClearField')?.addEventListener('click', () => {
+        const ta = document.getElementById('reportImportJson');
+        if (ta) ta.value = '';
+        const fi = document.getElementById('reportImportFile');
+        if (fi) fi.value = '';
+      });
+      document.getElementById('reportImportFile')?.addEventListener('change', (ev) => {
+        const f = ev.target?.files?.[0];
+        if (!f) return;
+        const r = new FileReader();
+        r.onload = () => {
+          const ta = document.getElementById('reportImportJson');
+          if (ta) ta.value = String(r.result || '');
+        };
+        r.readAsText(f);
+      });
+    }
+
+    async function persistValidation(fp, on, f, notesText) {
+      const targetForSave = resolveTargetForValidation(f);
+      if (!targetUsableForApi(targetForSave)) {
+        throw new Error('Não foi possível inferir um domínio válido para gravar a validação. Inclui "target" no JSON importado ou URL completa no achado.');
+      }
+      target = targetForSave;
+      updateHeadLineFromState();
+      await fetchCsrf();
+      const body = {
+        target: targetForSave,
+        fingerprint: fp,
+        validated: on,
+        snapshot: on ? snapshotFromFinding(f) : undefined,
+        notes: on ? String(notesText || '').slice(0, 2000) : undefined,
+      };
+      const r = await fetch(apiUrl('/api/manual-validations'), {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || r.status);
+      try {
+        localStorage.setItem('ghostrecon_manual_val_bump', String(Date.now()));
+      } catch (_) {}
+    }
+
+    function closeBrainModal() {
+      const overlay = document.getElementById('brainModal');
+      if (!overlay) return;
+      overlay.classList.remove('is-open');
+      overlay.setAttribute('aria-hidden', 'true');
+      const bodyEl = document.getElementById('brainModalBody');
+      const actionsEl = document.getElementById('brainModalActions');
+      if (bodyEl) bodyEl.innerHTML = '';
+      if (actionsEl) actionsEl.innerHTML = '';
+    }
+
+    /**
+     * @param {string} fp
+     * @param {object} f finding
+     * @param {{ askFirst?: boolean }} opts askFirst=true após novo check; false no botão «+ Cérebro»
+     */
+    async function offerBrainModal(fp, f, opts) {
+      const askFirst = opts && opts.askFirst !== false;
+      const overlay = document.getElementById('brainModal');
+      const bodyEl = document.getElementById('brainModalBody');
+      const actionsEl = document.getElementById('brainModalActions');
+      if (!overlay || !bodyEl || !actionsEl) return;
+
+      overlay.classList.add('is-open');
+      overlay.setAttribute('aria-hidden', 'false');
+
+      const runPicker = async (preferredId) => {
+        let cats = [];
+        try {
+          const r = await fetch(apiUrl('/api/brain/categories'), { headers: authHeaders() });
+          const d = await r.json().catch(() => ({}));
+          cats = Array.isArray(d.items) ? d.items : [];
+        } catch (_) {}
+        let selectedId =
+          preferredId != null && Number.isFinite(Number(preferredId)) ? Number(preferredId) : null;
+        if (selectedId != null && !cats.some((c) => c.id === selectedId)) selectedId = null;
+        if (selectedId == null) selectedId = cats[0]?.id ?? null;
+
+        if (!cats.length) {
+          bodyEl.innerHTML =
+            '<p class="modal-p">Ainda não há categorias. Cria a primeira (título) — requer <strong>SQLite local</strong> no servidor.</p>' +
+            '<div id="brainNewWrap" style="margin-top:10px">' +
+            '<input type="text" id="brainNewTitle" class="notes-in" placeholder="Título (ex.: FTP anónimo)" maxlength="120" /> ' +
+            '<button type="button" id="brainNewCreate" class="btn">Criar categoria</button></div>';
+          document.getElementById('brainNewCreate')?.addEventListener('click', async () => {
+            const inp = document.getElementById('brainNewTitle');
+            const title = (inp && inp.value) ? inp.value.trim() : '';
+            if (!title) return;
+            try {
+              await fetchCsrf();
+              const r = await fetch(apiUrl('/api/brain/categories'), {
+                method: 'POST',
+                headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
+                body: JSON.stringify({ title }),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(d.error || String(r.status));
+              const newId = d.id != null ? Number(d.id) : null;
+              await runPicker(newId);
+            } catch (e) {
+              setMsg(String(e.message || e), 'err');
+            }
+          });
+        } else {
+          bodyEl.innerHTML =
+            '<p class="modal-p">Escolhe a vulnerabilidade no cérebro para ligar a este achado validado:</p>' +
+            '<div class="brain-chips" id="brainChipsHost"></div>' +
+            '<div id="brainNewWrap" style="display:none;margin-top:10px">' +
+            '<input type="text" id="brainNewTitle" class="notes-in" placeholder="Título (ex.: FTP anónimo)" maxlength="120" /> ' +
+            '<button type="button" id="brainNewCreate" class="btn">Criar categoria</button></div>';
+          const host = document.getElementById('brainChipsHost');
+          const mkChip = (c, sel) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'brain-chip' + (sel ? ' is-sel' : '');
+            b.textContent = c.title;
+            b.dataset.id = String(c.id);
+            b.addEventListener('click', () => {
+              selectedId = Number(c.id);
+              host.querySelectorAll('.brain-chip:not(.brain-chip-new)').forEach((x) => {
+                x.classList.toggle('is-sel', Number(x.dataset.id) === selectedId);
+              });
+            });
+            host.appendChild(b);
+          };
+          for (const c of cats) mkChip(c, selectedId === c.id);
+          const nb = document.createElement('button');
+          nb.type = 'button';
+          nb.className = 'brain-chip brain-chip-new';
+          nb.textContent = '+ Nova…';
+          nb.dataset.new = '1';
+          host.appendChild(nb);
+          const newWrap = document.getElementById('brainNewWrap');
+          nb.addEventListener('click', () => {
+            if (newWrap) newWrap.style.display = newWrap.style.display === 'none' ? 'block' : 'none';
+          });
+          document.getElementById('brainNewCreate')?.addEventListener('click', async () => {
+            const inp = document.getElementById('brainNewTitle');
+            const title = (inp && inp.value) ? inp.value.trim() : '';
+            if (!title) return;
+            try {
+              await fetchCsrf();
+              const r = await fetch(apiUrl('/api/brain/categories'), {
+                method: 'POST',
+                headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
+                body: JSON.stringify({ title }),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(d.error || String(r.status));
+              const newId = d.id != null ? Number(d.id) : null;
+              await runPicker(newId);
+            } catch (e) {
+              setMsg(String(e.message || e), 'err');
+            }
+          });
+        }
+
+        actionsEl.innerHTML =
+          '<button type="button" id="brainSave">Guardar no cérebro</button><button type="button" id="brainCancel">Cancelar</button>';
+        document.getElementById('brainCancel').onclick = () => closeBrainModal();
+        document.getElementById('brainSave').onclick = async () => {
+          if (!selectedId) {
+            setMsg('Selecciona ou cria uma categoria.', 'err');
+            return;
+          }
+          try {
+            await fetchCsrf();
+            const r = await fetch(apiUrl('/api/brain/link'), {
+              method: 'POST',
+              headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
+              body: JSON.stringify({ target, fingerprint: fp, categoryId: selectedId }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.error || String(r.status));
+            try {
+              await loadServerState();
+            } catch (e2) {
+              if (e2 && e2.reporteOffline) {
+                setMsg('Ligado ao cérebro, mas não foi possível reler validações (servidor offline). Recarrega quando a API voltar.', 'err');
+              } else {
+                throw e2;
+              }
+            }
+            render();
+            const label =
+              cats.find((c) => c.id === selectedId)?.title ||
+              document.querySelector('.brain-chip.is-sel')?.textContent ||
+              'OK';
+            setMsg('Ligado ao cérebro: ' + label, 'ok');
+            closeBrainModal();
+          } catch (e) {
+            setMsg(String(e.message || e), 'err');
+          }
+        };
+      };
+
+      if (askFirst) {
+        bodyEl.innerHTML =
+          '<p class="modal-p">Queres adicionar este achado confirmado ao <strong>modo cérebro</strong> (agregação por tipo de vulnerabilidade na base local)?</p>';
+        actionsEl.innerHTML =
+          '<button type="button" id="brainYes">Sim, escolher tipo</button><button type="button" id="brainNo">Não</button>';
+        document.getElementById('brainNo').onclick = () => closeBrainModal();
+        document.getElementById('brainYes').onclick = () => {
+          void runPicker(null);
+        };
+      } else {
+        await runPicker(null);
+      }
+    }
+
+    function render() {
+      const list = document.getElementById('list');
+      list.innerHTML = '';
+      if (!findings.length) {
+        list.innerHTML =
+          '<div class="empty">Sem achados neste pacote. Corre <strong>RUN RECON</strong> e volta a abrir o Reporte, ou usa <strong>Importar</strong> à esquerda para carregar um <code>.json</code> com <code>findings</code>.</div>';
+        document.getElementById('btnAi').disabled = true;
+        document.getElementById('countLine').textContent = '0 achados';
+        return;
+      }
+      let nVal = 0;
+      let nVis = 0;
+      let nDorksHidden = 0;
+      for (const f of findings) {
+        const fp = String(f.fingerprint || '').toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(fp)) continue;
+        if (!showDorksInList && isDorkFinding(f)) {
+          nDorksHidden++;
+          continue;
+        }
+        nVis++;
+        const on = validatedFp.has(fp);
+        if (on) nVal++;
+        const prev = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fp);
+        const brainTitle = prev && prev.brainCategoryTitle ? String(prev.brainCategoryTitle) : '';
+        const brainBadge = on && brainTitle
+          ? `<div class="brain-badge" title="Modo cérebro">🧠 ${escapeHtml(brainTitle)}</div>`
+          : '';
+        const brainBtn =
+          on && !brainTitle
+            ? `<button type="button" class="brain-add-btn" data-brain-fp="${escapeAttr(fp)}">+ Cérebro</button>`
+            : '';
+        const row = document.createElement('div');
+        row.className = 'row' + (on ? ' validated' : '');
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'val-toggle' + (on ? ' is-on' : '');
+        toggle.dataset.fp = fp;
+        setValidateToggleState(toggle, on);
+        toggle.addEventListener('click', async () => {
+          const nextOn = !validatedFp.has(fp);
+          toggle.disabled = true;
+          try {
+            const ta0 = row.querySelector('textarea');
+            const note0 = (ta0 && ta0.value) || '';
+            await persistValidation(fp, nextOn, f, note0);
+            if (nextOn) validatedFp.add(fp);
+            else validatedFp.delete(fp);
+            try {
+              let map = readAnnMap() || emptyAnnMap();
+              if (nextOn) map = mergeFindingIntoAnnMap(map, f, fp, note0, { full: true });
+              else map.s5 = removeFpSection(map.s5, fp);
+              writeAnnMap(map);
+            } catch (_) {}
+            row.classList.toggle('validated', nextOn);
+            setValidateToggleState(toggle, nextOn);
+            updateAiButton();
+            setMsg(nextOn ? 'Gravado como validado.' : 'Validação removida.', 'ok');
+            if (nextOn) void offerBrainModal(fp, f, { askFirst: true });
+          } catch (e) {
+            setValidateToggleState(toggle, validatedFp.has(fp));
+            setMsg(String(e.message || e), 'err');
+          }
+          toggle.disabled = false;
+        });
+        const body = document.createElement('div');
+        const extUrl = toExternalUrl(f.url) || toExternalUrl(f.value);
+        const owaspIds = taxonomyIds(f && f.owasp, /^A\d{2}$/i);
+        const mitreIds = taxonomyIds(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
+        const taxHtml =
+          owaspIds.length || mitreIds.length
+            ? `<div class="taxo-tags">` +
+              owaspIds.map((id) => `<span class="taxo-tag owasp" title="OWASP">${escapeHtml(id)}</span>`).join('') +
+              mitreIds.map((id) => `<span class="taxo-tag mitre" title="MITRE ATT&CK">${escapeHtml(id)}</span>`).join('') +
+              `</div>`
+            : '';
+        body.innerHTML =
+          `<div class="meta">${escapeHtml(String(f.type || ''))} · ${escapeHtml(String(f.prio || ''))} · <code>${fp.slice(0, 12)}…</code></div>` +
+          `<div class="val">${escapeHtml(String(f.value || ''))}</div>` +
+          (extUrl
+            ? `<div class="url report-open-url-hit" role="link" tabindex="0" aria-label="Abrir URL em nova aba" data-url="${escapeAttr(extUrl)}">↗ URL</div>`
+            : '') +
+          taxHtml +
+          `<textarea class="notes-in" data-fp="${fp}" rows="2" placeholder="Notas do teste manual (opcional)"></textarea>` +
+          brainBadge +
+          brainBtn;
+        row.appendChild(body);
+        row.appendChild(toggle);
+        const urlBtn = row.querySelector('.report-open-url-hit');
+        if (urlBtn) {
+          urlBtn.style.cursor = 'pointer';
+          urlBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            openExternalUrl(String(urlBtn.getAttribute('data-url') || ''));
+          });
+          urlBtn.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter' && ev.key !== ' ') return;
+            ev.preventDefault();
+            openExternalUrl(String(urlBtn.getAttribute('data-url') || ''));
+          });
+        }
+        const ta = row.querySelector('textarea');
+        if (ta) {
+          if (prev && prev.notes) ta.value = prev.notes;
+          ta.addEventListener('blur', async () => {
+            if (!validatedFp.has(fp)) return;
+            try {
+              await fetchCsrf();
+              await persistValidation(fp, true, f, ta.value);
+              try {
+                let map = readAnnMap() || emptyAnnMap();
+                map = mergeFindingIntoAnnMap(map, f, fp, ta.value, { full: false });
+                writeAnnMap(map);
+              } catch (_) {}
+              setMsg('Notas actualizadas.', 'ok');
+            } catch (e) {
+              setMsg(String(e.message || e), 'err');
+            }
+          });
+        }
+        list.appendChild(row);
+      }
+      if (findings.length && !nVis) {
+        const warn = document.createElement('div');
+        warn.className = 'reporte-banner-warn';
+        warn.setAttribute('role', 'status');
+        warn.textContent =
+          'Nenhum achado tem fingerprint SHA-256 válido neste pacote — a checklist fica vazia. Reimporta JSON do recon ou reabre o Reporte a partir do hub.';
+        list.insertBefore(warn, list.firstChild);
+      }
+      document.getElementById('countLine').textContent =
+        nVis +
+        ' na checklist (de ' +
+        findings.length +
+        ' no pacote) · ' +
+        validatedFp.size +
+        ' com validação na base (nesta vista)' +
+        (nDorksHidden ? ' · ' + nDorksHidden + ' dork(s) oculto(s)' : '');
+      const dorkBtn = document.getElementById('btnToggleDorks');
+      if (dorkBtn) {
+        dorkBtn.textContent = showDorksInList ? 'Ocultar dorks' : 'Mostrar dorks';
+      }
+      updateAiButton();
+    }
+
+    function updateAiButton() {
+      const btn = document.getElementById('btnAi');
+      let n = 0;
+      for (const f of findings) {
+        const fp = String(f.fingerprint || '').toLowerCase();
+        if (/^[a-f0-9]{64}$/.test(fp) && validatedFp.has(fp)) n++;
+      }
+      btn.disabled = n === 0;
+      btn.textContent = 'Gerar relatório IA (' + n + ' validados nesta lista)';
+    }
+
+    const ANN_KEYS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10'];
+
+    function annStorageKey() {
+      const t = normalizeTarget(target);
+      return 'ghostrecon_reporte_ann_v1:' + (t && targetUsableForApi(t) ? t : '_sem_alvo');
+    }
+
+    function emptyAnnMap() {
+      const o = {};
+      for (const k of ANN_KEYS) o[k] = '';
+      return o;
+    }
+
+    function readAnnMap() {
+      try {
+        const raw = localStorage.getItem(annStorageKey());
+        if (!raw) return null;
+        const o = JSON.parse(raw);
+        if (!o || typeof o !== 'object') return null;
+        const out = emptyAnnMap();
+        for (const k of ANN_KEYS) {
+          if (typeof o[k] === 'string') out[k] = o[k];
+        }
+        return out;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function writeAnnMap(map) {
+      const payload = { ...emptyAnnMap(), ...map, savedAt: new Date().toISOString() };
+      try {
+        localStorage.setItem(annStorageKey(), JSON.stringify(payload));
+      } catch (_) {}
+    }
+
+    function annFpMarker(fp) {
+      return '\n# --- ' + String(fp).toLowerCase() + ' ---\n';
+    }
+
+    function upsertFpSection(text, fp, body) {
+      const fpL = String(fp).toLowerCase();
+      const head = annFpMarker(fpL);
+      const re = new RegExp(
+        '\\n# --- ' + fpL + ' ---\\n[\\s\\S]*?(?=\\n# --- [a-f0-9]{64} ---|$)',
+      );
+      const base = String(text || '').replace(re, '');
+      return (base + head + String(body || '').trim() + '\n').trim();
+    }
+
+    function removeFpSection(text, fp) {
+      const fpL = String(fp).toLowerCase();
+      const re = new RegExp('\\n# --- ' + fpL + ' ---\\n[\\s\\S]*?(?=\\n# --- [a-f0-9]{64} ---|$)');
+      return String(text || '').replace(re, '').trim();
+    }
+
+    function appendDedupeLine(sectionText, line) {
+      const ln = String(line || '').trim();
+      if (!ln) return String(sectionText || '');
+      const cur = String(sectionText || '');
+      const lines = cur.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      const key = ln.toLowerCase();
+      for (const x of lines) {
+        if (x.toLowerCase() === key) return cur;
+      }
+      return cur ? cur + '\n' + ln : ln;
+    }
+
+    function defaultAnnSection1() {
+      const t = normalizeTarget(target);
+      const ts = new Date().toISOString();
+      return (
+        'Alvo: ' +
+        (targetUsableForApi(t) ? t : '(indica alvo no pacote)') +
+        '\nData/Hora: ' +
+        ts +
+        '\nFase: Recon — checklist Reporte (validação manual)'
+      );
+    }
+
+    function mergeFindingIntoAnnMap(map, f, fp, notes, opts) {
+      const full = !opts || opts.full !== false;
+      const fpL = String(fp).toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(fpL)) return map || emptyAnnMap();
+      const m = map || emptyAnnMap();
+      const typ = String(f.type || '').trim().toLowerCase();
+      const val = String(f.value || '').trim();
+      const url = String(f.url || '').trim();
+      const ow = taxonomyIds(f && f.owasp, /^A\d{2}$/i);
+      const mit = taxonomyIds(f && f.mitre, /^T\d{4}(?:\.\d{3})?$/i);
+
+      if (full && !String(m.s1 || '').trim()) m.s1 = defaultAnnSection1();
+
+      if (full) {
+        if (typ === 'nmap' || /\d+\/(tcp|udp)/i.test(val)) {
+          m.s2 = appendDedupeLine(m.s2, '- ' + (val || '(serviço sem descrição)'));
+        } else if (typ === 'security' || typ === 'nuclei') {
+          m.s2 = appendDedupeLine(m.s2, '- [' + typ + '] ' + (val || '—'));
+        }
+
+        if (typ === 'tech' || typ === 'wappalyzer' || typ === 'fingerprint' || typ === 'cms') {
+          m.s3 = appendDedupeLine(m.s3, '- [tech] ' + (val || typ));
+        } else if (typ === 'endpoint' || typ === 'url' || typ === 'path') {
+          const u = url || val;
+          m.s3 = appendDedupeLine(m.s3, '- [endpoint] ' + (u || val));
+        } else if (typ === 'param' || typ === 'parameter') {
+          m.s3 = appendDedupeLine(m.s3, '- [parâmetro] ' + val + (url ? ' @ ' + url : ''));
+        } else if (
+          typ === 'js' ||
+          typ === 'security' ||
+          typ === 'header' ||
+          typ === 'nuclei' ||
+          typ === 'tls' ||
+          typ === 'intel' ||
+          typ === 'dalfox' ||
+          typ === 'wpscan' ||
+          typ === 'xss' ||
+          typ === 'sqli'
+        ) {
+          m.s3 = appendDedupeLine(m.s3, '- [' + typ + '] ' + val + (url ? ' — ' + url : ''));
+        }
+
+        const prio = String(f.prio || '').toLowerCase();
+        const hi = prio === 'high' || prio === 'critical';
+        const vecLine =
+          '[ ] ' +
+          (hi ? '(prioridade alta) ' : '') +
+          typ +
+          ': ' +
+          (val || '(sem valor)') +
+          (url ? ' — ' + url : '');
+        m.s4 = appendDedupeLine(m.s4, vecLine);
+
+        for (const id of ow) m.s9 = appendDedupeLine(m.s9, '- OWASP: ' + id);
+        for (const id of mit) m.s9 = appendDedupeLine(m.s9, '- MITRE ATT&CK: ' + id);
+      }
+
+      const noteBlock =
+        'Tipo: ' +
+        typ +
+        '\nValor / contexto: ' +
+        (val || '—') +
+        (url ? '\nURL: ' + url : '') +
+        (String(notes || '').trim() ? '\nNotas (manual): ' + String(notes).trim() : '') +
+        '\nEstado: validado no checklist Reporte.';
+      m.s5 = upsertFpSection(m.s5, fpL, noteBlock);
+
+      return m;
+    }
+
+    function findingFromValidationSnapshot(fp, row) {
+      const fpL = String(fp).toLowerCase();
+      const snap = row && row.snapshot && typeof row.snapshot === 'object' ? row.snapshot : null;
+      if (!snap) return null;
+      return {
+        type: snap.type != null ? String(snap.type) : '',
+        prio: snap.prio != null ? String(snap.prio) : '',
+        value: snap.value != null ? String(snap.value) : '',
+        url: snap.url != null ? String(snap.url) : '',
+        meta: snap.meta != null ? String(snap.meta) : '',
+        owasp: snap.owasp,
+        mitre: snap.mitre,
+        fingerprint: fpL,
+      };
+    }
+
+    function resolveFindingForValidatedFp(fp) {
+      const fpL = String(fp).toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(fpL)) return null;
+      const fromList = findings.find((x) => String(x.fingerprint || '').toLowerCase() === fpL);
+      if (fromList) return fromList;
+      const row = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fpL);
+      return findingFromValidationSnapshot(fpL, row);
+    }
+
+    function resyncAllValidatedAnnotations() {
+      let map = readAnnMap() || emptyAnnMap();
+      if (!String(map.s1 || '').trim()) map.s1 = defaultAnnSection1();
+      for (const fp0 of validatedFp) {
+        const fp = String(fp0).toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(fp)) continue;
+        const f = resolveFindingForValidatedFp(fp);
+        if (!f) continue;
+        const prev = serverItems.find((x) => String(x.fingerprint || '').toLowerCase() === fp);
+        const notes = prev && prev.notes != null ? String(prev.notes) : '';
+        map = mergeFindingIntoAnnMap(map, f, fp, notes);
+      }
+      writeAnnMap(map);
+      return map;
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+    function escapeAttr(s) {
+      return escapeHtml(s).replace(/'/g, '&#39;');
+    }
+
+    function toExternalUrl(raw) {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      if (/^https?:\/\//i.test(s)) {
+        try { return new URL(s).href; } catch (_) { return encodeURI(s); }
+      }
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return '';
+      if (/^[a-z0-9][a-z0-9.-]*[a-z0-9](\/.*)?$/i.test(s)) {
+        const guess = 'https://' + s;
+        try { return new URL(guess).href; } catch (_) { return encodeURI(guess); }
+      }
+      return '';
+    }
+
+    function onListClick(ev) {
+      const a = ev.target.closest('.report-open-url-hit');
+      if (a) {
+        const raw = String(a.getAttribute('data-url') || '').trim();
+        openExternalUrl(raw);
+        return;
+      }
+      const b = ev.target.closest('.brain-add-btn');
+      if (!b) return;
+      const ffp = String(b.getAttribute('data-brain-fp') || '').toLowerCase();
+      const fx = findings.find((x) => String(x.fingerprint || '').toLowerCase() === ffp);
+      if (fx) void offerBrainModal(ffp, fx, { askFirst: false });
+    }
+
+    function openExternalUrl(raw) {
+      const url = toExternalUrl(raw);
+      if (!url) return;
+      const w = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!w) setMsg('Popup bloqueado ao abrir URL. Permite popups para esta página.', 'err');
+    }
+
+    function setValidateToggleState(btn, on) {
+      if (!btn) return;
+      const state = Boolean(on);
+      btn.classList.toggle('is-on', state);
+      btn.setAttribute('aria-pressed', state ? 'true' : 'false');
+      btn.setAttribute('aria-label', state ? 'Validado manualmente' : 'Marcar como validado');
+      btn.title = state ? 'Validado manualmente' : 'Marcar como validado';
+      btn.dataset.state = state ? 'ON' : 'OFF';
+    }
+
+    async function openAnotacaoFromReporte() {
+      /** Linhas vindas do GET SQLite (notas / snapshot). */
+      const fromServer = (Array.isArray(serverItems) ? serverItems : [])
+        .map((row) => {
+          if (!row || typeof row !== 'object') return null;
+          const fp = String(row.fingerprint || '').trim().toLowerCase();
+          if (!/^[a-f0-9]{64}$/.test(fp)) return null;
+          return {
+            fingerprint: fp,
+            notes: row.notes != null ? String(row.notes) : '',
+            snapshot: row.snapshot && typeof row.snapshot === 'object' ? row.snapshot : null,
+            validated_at: row.validated_at != null ? String(row.validated_at) : '',
+          };
+        })
+        .filter(Boolean);
+      const byFp = new Map(fromServer.map((row) => [row.fingerprint, row]));
+      /** Toggles em memória podem estar à frente do último GET — inclui todo o validatedFp. */
+      for (const f of findings) {
+        const fp = String(f.fingerprint || '').trim().toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(fp) || !validatedFp.has(fp)) continue;
+        if (!byFp.has(fp)) {
+          byFp.set(fp, {
+            fingerprint: fp,
+            notes: '',
+            snapshot: snapshotFromFinding(f),
+            validated_at: '',
+          });
+        }
+      }
+      const payloadValidations = [...byFp.values()];
+      const payload = {
+        target: normalizeTarget(target),
+        updatedAt: new Date().toISOString(),
+        findings: findings.map((x) => ({ ...x })),
+        manualValidations: payloadValidations,
+      };
+      let raw;
+      try {
+        raw = JSON.stringify(payload);
+        if (raw.length > 4_500_000) {
+          throw new Error('Pacote demasiado grande (máx. ~4,5 MB).');
+        }
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+        return;
+      }
+
+      const u = new URL('/anotacao/ghostrecon/import', window.location.origin);
+      try {
+        await fetchCsrf();
+        const r = await fetch(apiUrl('/api/anotacao-handoff'), {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
+          body: JSON.stringify({ payload }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'POST handoff: ' + r.status);
+        if (!d.ok || !d.id) throw new Error(d.error || 'Resposta do servidor sem id de handoff.');
+        u.searchParams.set('handoff', String(d.id));
+      } catch (e) {
+        setMsg('Aviso handoff: ' + (e.message || e) + ' (fallback: localStorage / sessão).', 'err');
+      }
+
+      try {
+        sessionStorage.setItem(ANOTACAO_PAYLOAD_KEY, raw);
+        sessionStorage.setItem(REPORTE_PAYLOAD_KEY, raw);
+        try {
+          localStorage.setItem(REPORTE_PAYLOAD_SHARED_KEY, raw);
+          localStorage.setItem(ANOTACAO_HANDOFF_LS_KEY, raw);
+        } catch (_) {}
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+        return;
+      }
+      const w = window.open(u.href, '_blank', 'noopener,noreferrer');
+      if (!w) setMsg('Popup bloqueado — permite popups para abrir Anotações.', 'err');
+      else setMsg('Aba «Anotações» aberta; esta checklist mantém-se.', 'ok');
+    }
+
+    document.getElementById('btnReload').addEventListener('click', async () => {
+      setMsg('A sincronizar…', '');
+      try {
+        if (!findings.length) {
+          const loaded = await loadLatestRunIntoChecklist(target);
+          setMsg('Checklist carregada do run #' + loaded.runId + '. A sincronizar validações…', '');
+        }
+        await loadServerState();
+        updateTargetMismatchBanner();
+        render();
+        try {
+          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+        } catch (_) {}
+        setMsg('Sincronizado com a base.', 'ok');
+      } catch (e) {
+        if (e && e.reporteOffline) {
+          setMsg('Servidor inacessível ao sincronizar validações. Verifica `npm start` e a rede.', 'err');
+        } else {
+          setMsg(String(e.message || e), 'err');
+        }
+      }
+    });
+
+    document.getElementById('btnAi').addEventListener('click', async () => {
+      const sel = findings.filter((f) => {
+        const fp = String(f.fingerprint || '').toLowerCase();
+        return /^[a-f0-9]{64}$/.test(fp) && validatedFp.has(fp);
+      });
+      if (!sel.length) return;
+      setMsg('A pedir relatório por IA… (pode demorar)', '');
+      document.getElementById('btnAi').disabled = true;
+      try {
+        await fetchCsrf();
+        const r = await fetch(apiUrl('/api/manual-validations/ai-report'), {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
+          body: JSON.stringify({
+            target,
+            findings: sel,
+            aiPrimaryCloud: 'openrouter',
+            aiUseOpenrouter,
+            stats: { subs: 0, endpoints: 0, params: 0, secrets: 0, dorks: 0, high: 0 },
+          }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || String(r.status));
+        const okG = d.gemini?.ok;
+        const okO = d.openrouter?.ok;
+        const okL = d.lmstudio?.ok;
+        const okC = d.claude?.ok;
+        const dir = d.outputDir || '';
+        setMsg(
+          'IA concluída. OpenRouter: ' +
+            (okO ? 'OK' : d.openrouter?.error || '—') +
+            ' · Gemini: ' +
+            (okG ? 'OK' : d.gemini?.error || '—') +
+            ' · LM: ' +
+            (okL ? 'OK' : d.lmstudio?.error || '—') +
+            ' · Claude: ' +
+            (okC ? 'OK' : d.claude?.error || '—') +
+            (dir ? '\nSaída: ' + dir : ''),
+          okG || okO || okL || okC ? 'ok' : 'err',
+        );
+      } catch (e) {
+        setMsg(String(e.message || e), 'err');
+      }
+      document.getElementById('btnAi').disabled = false;
+      updateAiButton();
+    });
+
+    document.getElementById('btnAnotacao').addEventListener('click', () => {
+      void openAnotacaoFromReporte();
+    });
+    document.getElementById('btnToggleDorks')?.addEventListener('click', () => {
+      showDorksInList = !showDorksInList;
+      render();
+    });
+
+    (async function init() {
+      try {
+      const raw = readPayloadRawFromStorage();
+      if (!raw) {
+        document.getElementById('headLine').textContent = 'Sem pacote — abre a partir do GHOSTRECON.';
+        findings = [];
+        target = '';
+        render();
+        setMsg(
+          'Sem pacote na sessão (sessionStorage vazio). No GHOSTRECON clica «Reporte» com achados na lista, ou usa «Recarregar da base» aqui para carregar um run da SQLite.',
+          'err',
+        );
+        return;
+      }
+      let pack;
+      try {
+        pack = JSON.parse(raw);
+      } catch {
+        setMsg('Pacote JSON inválido (parse). Cola um JSON com target + findings ou importa ficheiro.', 'err');
+        return;
+      }
+      packSubsetFilter =
+        pack.subsetFilter && pack.subsetFilter !== 'all'
+          ? String(pack.subsetFilter).toLowerCase()
+          : null;
+      target = normalizeTarget(pack.target || '');
+      findings = await hydrateFindingsFingerprints(
+        (Array.isArray(pack.findings) ? pack.findings : [])
+          .map(normalizeImportedFinding)
+          .filter(Boolean),
+        target,
+      );
+      const packTs = pack.updatedAt || pack.exportedAt || '?';
+      document.getElementById('headLine').textContent = targetUsableForApi(target)
+        ? 'Alvo: ' + target + ' · pacote: ' + packTs
+        : 'Sem alvo válido ainda · pacote: ' + packTs + ' — usa Target ($) no GHOSTRECON para sincronizar SQLite.';
+      updateTargetMismatchBanner();
+      if (!findings.length) {
+        setMsg(
+          'Pacote recebido mas sem achados na lista (findings vazio). Corre o recon no GHOSTRECON ou importa JSON com achados no painel à esquerda.',
+          'err',
+        );
+      }
+      try {
+        await loadAiState();
+        await loadServerState();
+        render();
+        try {
+          if (validatedFp.size > 0) resyncAllValidatedAnnotations();
+        } catch (_) {}
+        if (findings.length) {
+          setMsg(
+            targetUsableForApi(target)
+              ? 'Marca só o que testaste: o toggle grava na SQLite por alvo. «ANOTAÇÃO» abre outra aba — o preenchimento automático lá usa apenas linhas já validadas aqui.'
+              : 'Sem domínio válido: não há sincronização com a base. No GHOSTRECON, indica um alvo no Target ($) antes de gravar validações; podes importar JSON no painel à esquerda.',
+            targetUsableForApi(target) ? 'ok' : '',
+          );
+        }
+      } catch (e) {
+        render();
+        if (e && e.reporteOffline) {
+          setMsg(
+            'Servidor ou API inacessível (rede, CORS ou `npm start`). A checklist mostra o pacote local; validações SQLite não foram lidas.',
+            'err',
+          );
+        } else {
+          setMsg('Não foi possível ler a base (HTTP ou erro): ' + (e.message || e), 'err');
+        }
+      }
+
+      const bm = document.getElementById('brainModal');
+      bm?.addEventListener('click', (ev) => {
+        if (ev.target === bm) closeBrainModal();
+      });
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Escape') return;
+        const jw = document.getElementById('reportJsonDockWrap');
+        if (jw?.classList.contains('is-open')) {
+          setReportJsonDockOpen(false);
+          ev.preventDefault();
+          return;
+        }
+        if (document.getElementById('brainModal')?.classList.contains('is-open')) {
+          closeBrainModal();
+          ev.preventDefault();
+        }
+      });
+      } finally {
+        if (!window.__ghostreconReporteStorageWired) {
+          window.__ghostreconReporteStorageWired = true;
+          window.addEventListener('storage', (ev) => {
+            if (ev.key !== MITRE_LIVE_SESSION_STORAGE_KEY) return;
+            startReporteMitreBroadcastListener();
+          });
+        }
+        startReporteMitreBroadcastListener();
+      }
+    })();
+
+    document.getElementById('list')?.addEventListener('click', onListClick);
+    wireReportJsonDock();
+  </script>
+</body>
+</html>

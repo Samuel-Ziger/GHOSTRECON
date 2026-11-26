@@ -4,6 +4,8 @@ import {
   randomBytes,
   timingSafeEqual,
 } from 'node:crypto';
+import { redactPublicTarget } from '../auto-agent/redaction.mjs';
+import { parseReconTarget } from './recon-target.js';
 
 const DEFAULT_TTL_MS = 2 * 60_000;
 const DEFAULT_MAX_ENTRIES = 512;
@@ -311,15 +313,20 @@ export function buildManualReconPlan({
   frameSeven = {},
   vigolium = {},
 } = {}) {
-  const normalizedTarget = cleanString(target).toLowerCase();
-  if (!normalizedTarget) {
+  const targetInput = cleanString(target);
+  const parsedTarget = parseReconTarget(targetInput);
+  if (!targetInput || !parsedTarget.ok) {
     throw approvalError('MANUAL_RECON_PLAN_INVALID', 'alvo ausente no plano manual');
   }
+  // Host/scheme/porta são canonicalizados pelo parser; path e query mantêm
+  // o case exato porque podem ser semanticamente case-sensitive no servidor.
+  const privateTarget = parsedTarget.targetUrl || parsedTarget.target;
+  const publicTarget = redactPublicTarget(privateTarget);
 
   const canonical = {
     schemaVersion: 1,
     kind: 'ghostrecon.manual-recon.plan',
-    target: normalizedTarget,
+    target: publicTarget,
     engagement: {
       id: cleanString(engagementId) || null,
       authorizationBinding: cleanString(engagementBinding) || null,
@@ -334,7 +341,10 @@ export function buildManualReconPlan({
       vigolium: normalizeVigolium(vigolium),
     },
   };
-  const hash = hashCanonical(canonical);
+  // O hash continua vinculado ao alvo bruto exato (incluindo query) sem que o
+  // plano público devolva esse material. O store também sela o body bruto com
+  // HMAC process-local antes de permitir o consumo da aprovação.
+  const hash = hashCanonical({ ...canonical, privateTarget });
   return Object.freeze({
     ...canonical,
     hash,
@@ -428,7 +438,7 @@ export function createManualReconApprovalStore({
     if (!safeEqual(record.planHash, planHash)) {
       throw approvalError('MANUAL_RECON_APPROVAL_PLAN_MISMATCH', 'hash do plano aprovado não corresponde ao RUN');
     }
-    if (!safeEqual(record.target, cleanString(target).toLowerCase())) {
+    if (!safeEqual(record.target, cleanString(target))) {
       throw approvalError('MANUAL_RECON_APPROVAL_TARGET_MISMATCH', 'alvo do plano aprovado mudou');
     }
     if (!safeEqual(record.engagementBinding, cleanString(engagementBinding))) {

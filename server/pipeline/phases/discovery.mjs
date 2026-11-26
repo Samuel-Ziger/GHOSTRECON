@@ -139,7 +139,6 @@ export async function runDiscoveryPhase(s) {
     profile,
     outOfScopeClientRaw,
     projectNameRaw,
-    shannonGithubRepos,
     identityCtrl,
     navegation,
     navigatorMode,

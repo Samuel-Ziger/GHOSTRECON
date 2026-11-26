@@ -16,6 +16,13 @@
     "start:stack+anotacao": "npm start",
     "start:ghost": "bash ghost-local-v5/ghost-local/start.sh",
     "dev": "node --watch server/index.js",
+    "ui:dev": "vite --config frontend/vite.config.ts",
+    "ui:clean": "node scripts/clean-react-ui-assets.mjs",
+    "ui:build": "npm run ui:clean && vite build --config frontend/vite.config.ts",
+    "ui:typecheck": "tsc -p frontend/tsconfig.json --noEmit",
+    "ui:smoke": "node scripts/smoke-react-ui.mjs",
+    "ui:inventory": "node scripts/inventory-react-ui.mjs --output frontend/contracts/ui-inventory.json",
+    "test:ui": "node --test server/tests/react-ui-*.test.js",
     "test": "node scripts/run-server-tests.mjs",
     "test:core": "node scripts/run-server-tests.mjs --group=core",
     "test:integrations": "node scripts/run-server-tests.mjs --group=integrations",
@@ -26,8 +33,12 @@
     "test:mcp": "node --test server/tests/ghostrecon-mcp.test.js",
     "test:cli": "node --test server/tests/cli-*.test.js",
     "mitre:extract": "node server/scripts/extract-mitre-recon-bundle.mjs",
-    "pentestgpt-bridge": "node server/scripts/pentestgpt-ghost-bridge.mjs",
     "test:ai": "node server/scripts/test-ai-apis-smoke.js",
+    "hackbot:sync": "cd IAs/hackbot && uv sync --frozen",
+    "hackbot:test": "cd IAs/hackbot && .venv/bin/pytest -q",
+    "neurosploit:build": "cargo build --release --locked --manifest-path engines/neurosploit/neurosploit-rs/Cargo.toml",
+    "neurosploit:build:offline": "cargo build --release --locked --offline --manifest-path engines/neurosploit/neurosploit-rs/Cargo.toml",
+    "neurosploit:test": "cargo test --workspace --locked --manifest-path engines/neurosploit/neurosploit-rs/Cargo.toml",
     "cli": "node bin/ghostrecon.mjs",
     "cve:collect": "python coletor_cves_2026/coletar_cves_2026.py --fonte nvd --anos 2018-2026 --somente-web --excluir-rejeitadas --saida coletor_cves_2026/cves_web_saida",
     "cve:build": "node scripts/build-cve-web-db.mjs --input coletor_cves_2026/cves_web_saida/web-cves.jsonl --output data/cve/web-cves.db",
@@ -53,14 +64,21 @@
     "express": "^4.22.2",
     "playwright": "^1.61.1",
     "postgres": "^3.4.8",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "undici": "^7.25.0",
     "yaml": "2.9.0"
   },
   "devDependencies": {
-    "supabase": "^2.84.1"
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "supabase": "^2.84.1",
+    "typescript": "5.6.3",
+    "vite": "^6.0.7"
   },
   "overrides": {
     "path-to-regexp": "0.1.13",
+    "qs": "6.16.2",
     "ws": "8.21.0"
   }
 }

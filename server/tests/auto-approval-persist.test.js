@@ -34,7 +34,6 @@ test('aprovação pendente é persistida no snapshot antes da espera', async () 
       body: {
         domain: 'example.com',
         mode: 'balanced',
-        commanders: [],
         modules: ['frameseven_recon'],
         includeFrameSeven: true,
         autonomyLevel: 'assisted',

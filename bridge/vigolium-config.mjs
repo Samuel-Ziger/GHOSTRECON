@@ -465,10 +465,13 @@ export async function resolveVigoliumBinary(root = ghostreconRoot(), opts = {}) 
 
 /**
  * URL alvo para `vigolium scan -t`.
- * @param {{ domain: string, probeResults?: unknown[], urlCorpus?: string[], originByHost?: Map }} s
+ * @param {{ domain: string, targetUrl?: string|null, probeResults?: unknown[], urlCorpus?: string[], originByHost?: Map }} s
  */
 export function resolveVigoliumTarget(s) {
-  const { domain, probeResults, urlCorpus, originByHost } = s;
+  const { domain, targetUrl, probeResults, urlCorpus, originByHost } = s;
+  if (targetUrl && /^https?:\/\//i.test(String(targetUrl))) {
+    return String(targetUrl);
+  }
   if (originByHost && typeof originByHost.values === 'function') {
     for (const v of originByHost.values()) {
       const o = v?.origin;

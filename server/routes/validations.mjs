@@ -102,7 +102,11 @@ export function registerValidationsRoutes(app, { validateCsrfToken }) {
     return;
   }
   const known = new Set(
-    (await listManualValidationsForTarget(target)).map((x) => String(x.fingerprint || '').toLowerCase()),
+    (await listManualValidationsForTarget(target))
+      // Importações automáticas do Artex aparecem no Cortex para triagem, mas
+      // não se tornam evidência manualmente validada só por terem sido importadas.
+      .filter((x) => x?.snapshot?.humanValidated !== false)
+      .map((x) => String(x.fingerprint || '').toLowerCase()),
   );
   const findings = [];
   for (const f of findingsIn) {

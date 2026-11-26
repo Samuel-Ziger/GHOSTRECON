@@ -24,6 +24,26 @@ test('opsec: isIntrusive detecta módulos conhecidos', () => {
   assert.equal(isIntrusive('vigolium_dast'), true);
   assert.equal(isIntrusive('vigolium_swarm'), true);
   assert.equal(isIntrusive('vigolium_autopilot'), true);
+  for (const id of [
+    'authz_object_matrix_v2',
+    'jwt_claim_authz_diff',
+    'sqli_targeted_verify',
+    'cloud_object_proxy_authz',
+    'financial_integrity_audit',
+  ]) {
+    assert.equal(isIntrusive(id), true, id);
+  }
+  for (const id of [
+    'cloud_debug_env_audit',
+    'runtime_endpoint_pivot',
+    'deterministic_voucher_audit',
+    'api_excessive_data_audit',
+    'bounded_object_key_discovery',
+    'sensitive_payment_data',
+    'artifact_safety_audit',
+  ]) {
+    assert.equal(isIntrusive(id), false, id);
+  }
   assert.equal(isIntrusive('crtsh'), false);
   assert.equal(isIntrusive('http'), false);
 });

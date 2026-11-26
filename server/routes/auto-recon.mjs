@@ -2,7 +2,10 @@ import { parseReconTarget } from '../modules/recon-target.js';
 import { requireScope, reconBodyIsIntrusive, audit as auditAuth } from '../modules/auth.js';
 import { getEngagement, preRunChecklist } from '../modules/engagement.mjs';
 import { reconHttpContext } from '../lib/http-history.mjs';
-import { runAutoRecon } from '../auto-agent/orchestrator.mjs';
+import {
+  assertNoRetiredAutoAiFields,
+  runAutoRecon,
+} from '../auto-agent/orchestrator.mjs';
 import { assertAutoAutonomyAllowed } from '../auto-agent/effective-plan.mjs';
 import {
   listAutoRagMarkdown,
@@ -46,6 +49,8 @@ import {
 } from '../integrations/frameseven-runner.mjs';
 import { redactAutoValue } from '../auto-agent/redaction.mjs';
 import { createBubblewrapForgeSandboxRunner } from '../auto-agent/forge/bwrap-runner.mjs';
+import { assertNoRetiredModules } from '../modules/retired-modules.mjs';
+import { runAutoNeuroSploit } from '../integrations/neurosploit/auto-runner.mjs';
 
 const INTRUSIVE_AUTO_LEVELS = new Set(['authorized', 'authorized_opsec']);
 const DEFAULT_FORGE_CANARY_TIMEOUT_MS = 5 * 60_000;
@@ -251,6 +256,7 @@ export function autoReconRequestIsIntrusive(body = {}) {
   return INTRUSIVE_AUTO_LEVELS.has(String(body?.autonomyLevel || '').trim().toLowerCase())
     || body?.frameSevenAuth === true
     || body?.includeVigolium === true
+    || body?.includeNeuroSploit === true
     || reconBodyIsIntrusive(body);
 }
 
@@ -281,6 +287,7 @@ export function registerAutoReconRoutes(app, deps = {}) {
     forgeSandboxRunner: configuredForgeSandboxRunner = null,
     createForgeSandboxRunner = createBubblewrapForgeSandboxRunner,
     getEngagementImpl = getEngagement,
+    runNeuroSploitImpl = runAutoNeuroSploit,
   } = deps;
   let forgeSandboxRunnerPromise = null;
   const getForgeSandboxRunner = async () => {
@@ -898,7 +905,6 @@ export function registerAutoReconRoutes(app, deps = {}) {
           decision: body.decision,
           outcome: body.outcome,
           modules: Array.isArray(body.modules) ? body.modules : [],
-          commanders: body.commanders || null,
           confidence: body.confidence,
           tags: Array.isArray(body.tags) ? body.tags : [],
           metadata: body.metadata || null,
@@ -930,6 +936,19 @@ export function registerAutoReconRoutes(app, deps = {}) {
   app.post('/api/recon/auto/stream', requireScope('recon.run', {
     intrusiveCheck: (req) => autoReconRequestIsIntrusive(req.body),
   }), async (req, res) => {
+    try {
+      assertNoRetiredAutoAiFields(req.body || {});
+      assertNoRetiredModules(req.body?.modules);
+    } catch (error) {
+      res.status(Number(error?.status || error?.statusCode) || 410).json({
+        ok: false,
+        error: error?.message || String(error),
+        code: error?.code || 'MODULE_RETIRED',
+        fields: error?.fields || [],
+        retiredModules: error?.retiredModules || [],
+      });
+      return;
+    }
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -1029,7 +1048,7 @@ export function registerAutoReconRoutes(app, deps = {}) {
     auditEvent(req, req.principal, 'allow', {
       action: 'recon.auto.start',
       target: parsed.target,
-      commanders: Array.isArray(body.commanders) ? body.commanders : [],
+      planner: 'deterministic',
       mode: body.autoMode || body.mode || 'balanced',
       autonomyLevel: String(body.autonomyLevel || 'observation'),
       intrusive: autoReconRequestIsIntrusive(body),
@@ -1048,6 +1067,7 @@ export function registerAutoReconRoutes(app, deps = {}) {
           forgeSandboxRunner,
           signal: controller.signal,
           principal: req.principal,
+          runNeuroSploitImpl,
         });
       });
     } catch (e) {

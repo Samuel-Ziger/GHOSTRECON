@@ -115,6 +115,28 @@ test('pipeline emite failed/timeout reais e done apenas para saída válida', as
   }
 });
 
+test('target URL explícito preserva porta e base path no ffuf sem fallback para 80/443', async () => {
+  const targets = [];
+  await runKaliAggressiveScan({
+    domain: 'example.test',
+    targetUrl: 'http://example.test:30472/base/api?access_token=private',
+    subdomainsAlive: [],
+    cap: { tools: { ffuf: true } },
+    runFfuf: true,
+    log: () => {}, addFinding: () => {},
+    directoryDiscoveryDeps: {
+      findWordlist: () => '/fixture/wordlist',
+      executor: async (_cmd, args) => {
+        targets.push(args[args.indexOf('-u') + 1]);
+        return { code: 0 };
+      },
+      outputReader: async () => '{"results":[]}',
+    },
+  });
+  assert.deepEqual(targets, ['http://example.test:30472/base/api/FUZZ']);
+  assert.doesNotMatch(targets[0], /access_token|private/);
+});
+
 test('pipeline cancelado não emite done nem inicia a próxima ferramenta', async () => {
   const events = [];
   await assert.rejects(runKaliAggressiveScan({

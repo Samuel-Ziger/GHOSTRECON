@@ -1,5 +1,9 @@
 # Pendências de IA do Modo Auto
 
+> **ARQUIVO HISTÓRICO (2026-11-18):** a arquitetura multiagente descrita neste
+> plano foi retirada. O documento permanece apenas como registro e não é
+> backlog, contrato ou guia do Modo Auto atual.
+
 Atualizado em: 2026-07-30
 
 O plano histórico foi absorvido pelo código e pelos documentos operacionais.

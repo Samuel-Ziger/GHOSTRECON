@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto';
 import { resolveForgeRoot } from './forge-store.mjs';
 import { withProvenance } from '../../modules/finding-provenance.js';
 import { redactAutoText, redactAutoValue } from '../redaction.mjs';
-import { FORGE_MIN_INDEPENDENT_REVIEW_QUORUM } from './code-review.mjs';
 import {
   isStrongForgeSandboxAttestation,
   runStrongForgeSandboxOperation,
@@ -106,17 +105,11 @@ async function readSealedCandidate(dir, {
     || verdict?.validation?.ok !== true
     || verdict?.tests?.ok !== true
     || !isStrongForgeSandboxAttestation(verdict?.tests?.isolation)
-    || verdict?.aiReview?.approved !== true
-    || verdict?.aiReview?.authorExcluded !== true
-    || verdict?.aiReview?.quorumMet !== true
-    || verdict?.aiReview?.minimumQuorum !== FORGE_MIN_INDEPENDENT_REVIEW_QUORUM
-    || Number(verdict?.aiReview?.independentVotes) < FORGE_MIN_INDEPENDENT_REVIEW_QUORUM
     || !manifest?.id
     || manifest.intrusive !== false
     || manifest.requiresAuth !== false
     || !sameForgeArtifactIntegrity(verdict?.validation?.artifactIntegrity, artifactIntegrity)
     || !sameForgeArtifactIntegrity(verdict?.tests?.artifactIntegrity, artifactIntegrity)
-    || !sameForgeArtifactIntegrity(verdict?.aiReview?.artifactIntegrity, artifactIntegrity)
     || integrity?.algorithm !== 'sha256'
     || integrity.moduleSha256 !== sha256(moduleSource)
     || integrity.manifestSha256 !== sha256(manifestRaw)

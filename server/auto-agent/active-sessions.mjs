@@ -16,10 +16,14 @@ export function autoConcurrencyLimits(env = process.env) {
 
 function sessionEngines(session) {
   const state = sessionState(session);
-  const engines = state?.engines || state?.checkpoint?.activePlan?.engines || {};
+  const engines = state?.engines
+    || state?.currentEffectivePlan?.engines
+    || state?.checkpoint?.activePlan?.engines
+    || {};
   const ids = [];
   if (engines?.frameseven?.enabled) ids.push('frameseven');
   if (engines?.vigolium?.enabled) ids.push('vigolium');
+  if (engines?.neurosploit?.enabled) ids.push('neurosploit');
   if (engines?.ghostrecon?.enabled !== false) ids.push('ghostrecon');
   if (!ids.length) ids.push('ghostrecon');
   return ids;

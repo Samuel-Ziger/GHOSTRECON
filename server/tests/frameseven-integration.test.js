@@ -1425,7 +1425,8 @@ test('integrated FrameSeven fails closed when report merge cannot confirm subpro
 });
 
 test('cockpit approvals use the authenticated helper and Auto requires a terminal session event', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
+  const autoForge = await fs.readFile(new URL('../../frontend/src/features/auto-forge/service.ts', import.meta.url), 'utf8');
   const reconRoute = await fs.readFile(new URL('../routes/recon-stream.mjs', import.meta.url), 'utf8');
   assert.match(html, /onclick="handleAutoModeButton\(\)"/);
   assert.match(html, /id="includeFrameSevenToggle"/);
@@ -1436,9 +1437,10 @@ test('cockpit approvals use the authenticated helper and Auto requires a termina
   assert.doesNotMatch(html, /id="autoHexstrikeToggle"[^>]*\bchecked\b/);
   assert.match(html, /const frameSevenAuth = includeFrameSeven &&/);
   assert.match(html, /includeFrameSeven,\s*frameSevenAuth,\s*includeVigolium,\s*vigoliumUseCodex,/);
-  assert.match(html, /function postAutoApiJson\(pathname, body\)[\s\S]*autoApiHeaders\(true\)/);
-  assert.match(html, /postAutoApiJson\(`\/api\/recon\/auto\/\$\{encodeURIComponent\(ev\.sessionId\)\}\/approval`/);
-  assert.match(html, /postAutoApiJson\(`\/api\/recon\/frameseven\/\$\{encodeURIComponent\(ev\.approvalId\)\}\/approval`/);
+  assert.match(autoForge, /async function postJson\([\s\S]*const token = await csrf\(signal\)[\s\S]*headers: headers\(true, token\)/);
+  assert.match(autoForge, /async function respondApproval\([\s\S]*\/api\/recon\/auto\/\$\{encodeURIComponent\(session\)\}\/approval/);
+  assert.match(html, /autoForge\.respondApproval\([\s\S]*ev\.sessionId,[\s\S]*a\.approvalId/);
+  assert.match(html, /autoForge\.postJson\([\s\S]*`\/api\/recon\/frameseven\/\$\{encodeURIComponent\(ev\.approvalId\)\}\/approval`/);
   assert.match(html, /a\.limits\?\.modules/);
   assert.match(html, /Limites:\\n\$\{limitsText\}/);
   assert.match(html, /consumeReconStreamFromResponse\(res, 0, null, null, \{ requireAutoTerminal: true \}\)/);

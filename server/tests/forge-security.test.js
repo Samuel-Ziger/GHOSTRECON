@@ -6,7 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { generatePendingArtifact } from '../auto-agent/forge/generate-artifact.mjs';
-import { reviewForgePackage } from '../auto-agent/forge/code-review.mjs';
 import { validateAndTestForgePackage } from '../auto-agent/forge/validate-package.mjs';
 import { validateForgePackage } from '../auto-agent/forge/static-validator.mjs';
 import { runForgeCommand } from '../auto-agent/forge/process-runner.mjs';
@@ -140,11 +139,8 @@ async function createApprovableForge(t, {
         proposedId: id,
         gap: 'fixture local sem rede',
         intrusive: false,
-        approvals: ['reviewer-a', 'reviewer-b'],
       },
-      council: {},
     },
-    council: {},
     authorOverride: 'codex',
   });
   await Promise.all([
@@ -176,14 +172,6 @@ async function createApprovableForge(t, {
       ok: true,
       artifactIntegrity,
       isolation: storedTestAttestation(id),
-    },
-    aiReview: {
-      approved: true,
-      authorExcluded: true,
-      quorumMet: true,
-      minimumQuorum: 2,
-      independentVotes: 2,
-      artifactIntegrity,
     },
     policy: { pipelineEnabled: false, operatorApprovalRequired: true },
   }));
@@ -220,11 +208,8 @@ test('lifecycle recusa promoção baseada apenas em permissões do Node', async 
         proposedId: 'weak_sandbox_fixture',
         gap: 'fixture local',
         intrusive: false,
-        approvals: ['reviewer-a', 'reviewer-b'],
       },
-      council: {},
     },
-    council: {},
     authorOverride: 'codex',
   });
   await Promise.all([
@@ -261,14 +246,6 @@ test('lifecycle recusa promoção baseada apenas em permissões do Node', async 
           enforcement: 'node_permission_model',
           network: 'not_enforced',
         },
-      },
-      aiReview: {
-        approved: true,
-        authorExcluded: true,
-        quorumMet: true,
-        minimumQuorum: 2,
-        independentVotes: 2,
-        artifactIntegrity,
       },
       policy: { pipelineEnabled: false, operatorApprovalRequired: true },
     })),
@@ -574,87 +551,7 @@ test("validator bloqueia bypass globalThis['fetch'] antes de qualquer runner", a
   );
 });
 
-test('review exclui autor e falha com quorum independente insuficiente', async (t) => {
-  const dir = await tempDir(t);
-  await writeForgeFixture(dir, { author: 'codex' });
-  const review = {
-    verdict: 'approve',
-    summary: 'ok',
-    issues: [],
-    confidence: 0.95,
-  };
-  let fetchCalls = 0;
-
-  const result = await reviewForgePackage({
-    pendingDir: dir,
-    root: dir,
-    providers: [
-      { id: 'codex', selected: true, usable: true },
-      { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
-      { id: 'skynet', selected: true, usable: false },
-    ],
-    env: { OPENROUTER_API_KEY: 'fixture' },
-    fetchImpl: async () => {
-      fetchCalls += 1;
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify(review) } }],
-        }),
-      };
-    },
-  });
-
-  assert.equal(result.status, 'insufficient_review_quorum');
-  assert.equal(result.approved, false);
-  assert.equal(result.minimumQuorum, 2);
-  assert.equal(result.independentVotes, 1);
-  assert.equal(result.reviews.some((row) => row.provider === 'codex'), false);
-  assert.equal(fetchCalls, 1);
-});
-
-test('review não aprova quando o artefato muda durante os pareceres', async (t) => {
-  const dir = await tempDir(t, 'ghostrecon-forge-review-integrity-');
-  await writeForgeFixture(dir, { author: 'codex' });
-  const review = {
-    verdict: 'approve',
-    summary: 'ok',
-    issues: [],
-    confidence: 0.95,
-  };
-  let changed = false;
-  const result = await reviewForgePackage({
-    pendingDir: dir,
-    root: dir,
-    providers: [
-      { id: 'openrouter', selected: true, usable: true },
-      { id: 'skynet', selected: true, usable: true },
-    ],
-    env: { OPENROUTER_API_KEY: 'fixture' },
-    fetchImpl: async () => {
-      if (!changed) {
-        changed = true;
-        await fs.appendFile(path.join(dir, 'module.mjs'), '\n// alteração concorrente\n');
-      }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify(review) } }],
-        }),
-      };
-    },
-  });
-
-  assert.equal(result.approved, false);
-  assert.equal(result.status, 'artifact_changed_during_review');
-  assert.equal(result.artifactUnchanged, false);
-  const verdict = JSON.parse(await fs.readFile(path.join(dir, 'verdict.json'), 'utf8'));
-  assert.equal(verdict.policy.pipelineEnabled, false);
-});
-
-test('cancelamento da sessão interrompe geração, review HTTP e testes isolados', async (t) => {
+test('cancelamento da sessão interrompe geração e testes isolados', async (t) => {
   const generationDir = await tempDir(t, 'ghostrecon-forge-generation-');
   const generationController = new AbortController();
   let generationStarted;
@@ -680,35 +577,6 @@ test('cancelamento da sessão interrompe geração, review HTTP e testes isolado
   await assert.rejects(generation, (error) => error === generationReason);
   assert.equal(generationSignal.aborted, true);
 
-  const reviewDir = await tempDir(t, 'ghostrecon-forge-review-');
-  await writeForgeFixture(reviewDir, { author: 'codex' });
-  const reviewController = new AbortController();
-  let reviewStarted;
-  const reviewReady = new Promise((resolve) => {
-    reviewStarted = resolve;
-  });
-  const reviewing = reviewForgePackage({
-    pendingDir: reviewDir,
-    root: reviewDir,
-    providers: [{ id: 'openrouter', selected: true, usable: true }],
-    env: { OPENROUTER_API_KEY: 'fixture' },
-    signal: reviewController.signal,
-    fetchImpl: async (_url, options) => {
-      reviewStarted(options.signal);
-      return new Promise((_resolve, reject) => {
-        options.signal.addEventListener(
-          'abort',
-          () => reject(options.signal.reason),
-          { once: true },
-        );
-      });
-    },
-  });
-  const reviewSignal = await reviewReady;
-  const reviewReason = new Error('cancel review');
-  reviewController.abort(reviewReason);
-  await assert.rejects(reviewing, (error) => error === reviewReason);
-  assert.equal(reviewSignal.aborted, true);
 
   const testsDir = await tempDir(t, 'ghostrecon-forge-tests-');
   await writeForgeFixture(testsDir);

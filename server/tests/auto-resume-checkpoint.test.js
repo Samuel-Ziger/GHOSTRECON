@@ -25,12 +25,11 @@ import {
   writeAutoSessionSnapshot,
 } from '../auto-agent/session-store.mjs';
 
-const PROMPT_VERSION = 'auto-council-v4';
+const PROMPT_VERSION = 'auto-deterministic-v1';
 function requestBody(overrides = {}) {
   return {
     domain: 'example.com',
     autoMode: 'balanced',
-    commanders: [],
     modules: ['rdap'],
     includeDeepPassive: false,
     includeHexstrike: false,
@@ -60,7 +59,6 @@ async function makeCheckpointSession(root, {
     sessionId,
     requestRunId: `run-${sessionId}`,
     target: req.target,
-    providers: req.commanders,
   });
   Object.assign(session.state, {
     autonomyLevel: req.autonomyLevel,
@@ -122,7 +120,7 @@ test('checkpoint versionado faz round-trip atômico e valida vínculos de retoma
   try {
     const file = await writeAutoSessionSnapshot(root, session.state, env);
     const restored = await readAutoSessionSnapshot(root, session.state.sessionId, env);
-    assert.equal(restored.checkpoint.checkpointVersion, 2);
+    assert.equal(restored.checkpoint.checkpointVersion, 3);
     assert.equal(restored.checkpoint.status, 'ready_for_iteration');
     assert.equal(
       restored.checkpoint.checkpointHash,

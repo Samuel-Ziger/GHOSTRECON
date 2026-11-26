@@ -88,6 +88,11 @@ function cleanArray(value) {
 }
 
 export function normalizeAutoMcpOptions(args = {}) {
+  const retiredFields = ['commanders', 'providers', 'openrouterModel']
+    .filter((key) => Object.hasOwn(args, key));
+  if (retiredFields.length) {
+    throw new Error(`AUTO_FIELDS_RETIRED: ${retiredFields.join(', ')}`);
+  }
   const requestedAutonomy = String(args.autonomyLevel || '').trim().toLowerCase();
   const autonomyLevel = Object.hasOwn(AUTO_AUTONOMY_POLICIES, requestedAutonomy)
     ? requestedAutonomy
@@ -114,7 +119,6 @@ export function normalizeAutoMcpOptions(args = {}) {
   const body = {
     domain: String(args.target || '').trim(),
     mode: String(args.mode || 'balanced').trim().toLowerCase(),
-    commanders: cleanArray(args.commanders),
     modules: cleanArray(args.modules),
     includeHexstrike: args.includeHexstrike === true,
     includeDeepPassive: args.includeDeepPassive !== false,
@@ -129,7 +133,6 @@ export function normalizeAutoMcpOptions(args = {}) {
     // para um plano que ainda não existe.
     approvalMode: 'deny',
   };
-  if (args.openrouterModel) body.openrouterModel = String(args.openrouterModel).trim();
   if (args.engagementId) body.engagementId = String(args.engagementId).trim();
   return body;
 }
@@ -142,16 +145,13 @@ export function autoAutonomyToOpsecProfile(autonomyLevel) {
 
 async function loadAutoPlanningModules() {
   const [
-    providerDetector,
     toolCatalog,
     planner,
   ] = await Promise.all([
-    import('../server/auto-agent/provider-detector.mjs'),
     import('../server/auto-agent/tool-catalog.mjs'),
     import('../server/auto-agent/planner.mjs'),
   ]);
   return {
-    detectAutoProviders: providerDetector.detectAutoProviders,
     buildAutoToolCatalog: toolCatalog.buildAutoToolCatalog,
     createAutoPlan: planner.createAutoPlan,
   };
@@ -545,12 +545,7 @@ const tools = [
       type: 'object',
       properties: {
         target: { type: 'string' },
-        commanders: {
-          type: 'array',
-          items: { type: 'string', enum: ['codex', 'claude_code', 'cursor', 'openrouter', 'skynet', 'local_model'] },
-        },
         mode: { type: 'string', enum: ['quick', 'balanced', 'deep'], default: 'balanced' },
-        openrouterModel: { type: 'string' },
         modules: { type: 'array', items: { type: 'string' }, description: 'Modulos AUTO explicitamente solicitados.' },
         autonomyLevel: {
           type: 'string',
@@ -607,17 +602,12 @@ const tools = [
   },
   {
     name: 'ghostrecon_plan_auto',
-    description: 'Monta uma prévia determinística e seu plano efetivo expandido, sem executar conselho, pipeline ou aprovação humana.',
+    description: 'Monta uma prévia determinística e seu plano efetivo expandido, sem executar pipeline ou aprovação humana.',
     inputSchema: {
       type: 'object',
       properties: {
         target: { type: 'string' },
-        commanders: {
-          type: 'array',
-          items: { type: 'string', enum: ['codex', 'claude_code', 'cursor', 'openrouter', 'skynet', 'local_model'] },
-        },
         mode: { type: 'string', enum: ['quick', 'balanced', 'deep'], default: 'balanced' },
-        openrouterModel: { type: 'string' },
         autonomyLevel: {
           type: 'string',
           enum: ['observation', 'assisted', 'authorized', 'authorized_opsec'],
@@ -766,7 +756,6 @@ const tools = [
         decision: { type: 'string' },
         outcome: { type: 'string' },
         modules: { type: 'array', items: { type: 'string' } },
-        commanders: { type: 'object' },
         confidence: { type: 'string' },
         tags: { type: 'array', items: { type: 'string' } },
         metadata: { type: 'object' },
@@ -893,7 +882,6 @@ function getPrompt(name, args = {}) {
 export async function callTool(name, args = {}, {
   client = makeClient(),
   planningModulesLoader = loadAutoPlanningModules,
-  ragContextLoader = loadAutoRagContext,
 } = {}) {
 
   if (name === 'ghostrecon_auto_rag_list') {
@@ -947,7 +935,6 @@ export async function callTool(name, args = {}, {
         decision: args.decision,
         outcome: args.outcome || '',
         modules: cleanArray(args.modules),
-        commanders: args.commanders || null,
         confidence: args.confidence || '',
         tags: cleanArray(args.tags),
         metadata: args.metadata || null,
@@ -973,8 +960,6 @@ export async function callTool(name, args = {}, {
       externalTools: Array.isArray(cap.externalTools) ? cap.externalTools.length : 0,
       hexstrike: cap.hexstrike || null,
       vigolium: cap.vigolium || null,
-      shannon: cap.shannon || null,
-      pentestgpt: cap.pentestgpt || null,
     });
   }
 
@@ -1110,9 +1095,7 @@ export async function callTool(name, args = {}, {
   if (name === 'ghostrecon_plan_auto') {
     const autoRequest = normalizeAutoMcpOptions(args);
     if (!autoRequest.domain) return errorResult('target vazio');
-    const { detectAutoProviders, buildAutoToolCatalog, createAutoPlan } = await planningModulesLoader();
-    const providers = await detectAutoProviders({ selected: autoRequest.commanders });
-    const ragContext = await ragContextLoader({ root: ROOT, limit: 6 });
+    const { buildAutoToolCatalog, createAutoPlan } = await planningModulesLoader();
     const catalog = await buildAutoToolCatalog({
       includeHexstrike: autoRequest.includeHexstrike,
       includeDeepPassive: autoRequest.includeDeepPassive,
@@ -1133,12 +1116,9 @@ export async function callTool(name, args = {}, {
       target: autoRequest.domain,
       mode: autoRequest.mode,
       requestedModules: [...new Set(requestedModules)],
-      providers: providers.providers,
       catalog,
-      openrouterModel: autoRequest.openrouterModel || null,
       includeHexstrike: autoRequest.includeHexstrike,
       includeDeepPassive: autoRequest.includeDeepPassive,
-      ragContext,
       autonomyLevel: autoRequest.autonomyLevel,
     });
     plan.autonomyLevel = autoRequest.autonomyLevel;
@@ -1171,11 +1151,9 @@ export async function callTool(name, args = {}, {
     return toolResult({
       ok: true,
       previewOnly: true,
-      exactRuntimePlan: false,
-      runtimeMayDifferAfterCouncil: true,
+      exactRuntimePlan: true,
       executableWithoutInteractiveApproval: opsec.ok && !effectivePlan.requiresHumanApproval,
       target: autoRequest.domain,
-      providers,
       catalog: {
         modules: catalog.modules.map((m) => ({
           id: m.id,
@@ -1196,7 +1174,7 @@ export async function callTool(name, args = {}, {
         ? effectivePlanApprovalDetails(effectivePlan)
         : null,
       limitations: [
-        'A prévia usa a baseline determinística; o conselho de IA só decide dentro de uma sessão real.',
+        'A prévia usa o mesmo planejador determinístico do Modo Auto.',
         'Engagement, escopo, RBAC e aprovação final continuam sendo validados pelo backend antes da execução.',
       ],
     });

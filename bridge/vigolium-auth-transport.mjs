@@ -3,6 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { redactPublicTarget } from '../server/auto-agent/redaction.mjs';
 import {
   resolveVigoliumAuthEntries,
   resolveVigoliumAuthFiles,
@@ -639,6 +640,11 @@ export function vigoliumArgsForLog(args = []) {
       index += 1;
       continue;
     }
+    if (value === '-t' || value === '--target') {
+      output.push(value, redactPublicTarget(args[index + 1]));
+      index += 1;
+      continue;
+    }
     if (localPathFlags.has(value)) {
       output.push(value, '<local-path>');
       index += 1;
@@ -646,6 +652,10 @@ export function vigoliumArgsForLog(args = []) {
     }
     if (/^(?:--auth|--header|-H)=/i.test(value)) {
       output.push(`${value.slice(0, value.indexOf('='))}=<redacted>`);
+      continue;
+    }
+    if (/^--target=/i.test(value)) {
+      output.push(`--target=${redactPublicTarget(value.slice(value.indexOf('=') + 1))}`);
       continue;
     }
     output.push(value);

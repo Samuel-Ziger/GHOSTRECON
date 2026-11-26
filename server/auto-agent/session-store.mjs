@@ -37,8 +37,10 @@ const MODULE_OUTCOME_STATUSES = new Set([
   'timeout',
   'cancelled',
 ]);
-const LEGACY_AUTO_CHECKPOINT_VERSION = 1;
-export const AUTO_CHECKPOINT_VERSION = 2;
+const LEGACY_AUTO_CHECKPOINT_VERSIONS = new Set([1, 2]);
+// v3 marca o protocolo determinístico: checkpoints v1/v2 continuam legíveis
+// para auditoria, mas nunca são retomados pelo runtime atual.
+export const AUTO_CHECKPOINT_VERSION = 3;
 const AUTO_SESSION_STATUSES = new Set([
   'running',
   'completed',
@@ -59,18 +61,17 @@ function bounded(env, key, fallback, min, max) {
 export function autoSessionLimits(env = process.env) {
   return Object.freeze({
     maxIterations: bounded(env, 'GHOSTRECON_AUTO_MAX_ITERATIONS', 3, 1, 10),
-    sessionTimeoutMs: bounded(env, 'GHOSTRECON_AUTO_SESSION_TIMEOUT_MS', 1_800_000, 30_000, 7_200_000),
-    agentTimeoutMs: bounded(env, 'GHOSTRECON_AUTO_AGENT_TIMEOUT_MS', 180_000, 5_000, 900_000),
-    maxAgentCalls: bounded(env, 'GHOSTRECON_AUTO_MAX_AGENT_CALLS', 12, 1, 100),
-    maxContextChars: bounded(env, 'GHOSTRECON_AUTO_MAX_CONTEXT_CHARS', 120_000, 10_000, 1_000_000),
-    maxCostUsd: bounded(env, 'GHOSTRECON_AUTO_MAX_COST_USD', 10, 0, 10_000),
+    // Orçamento total: 30 min para o pipeline + 90 min para o NeuroSploit.
+    sessionTimeoutMs: bounded(env, 'GHOSTRECON_AUTO_SESSION_TIMEOUT_MS', 2 * 60 * 60_000, 30_000, 7_200_000),
   });
 }
 
 /** Timeouts de engines congelados na resumePolicy (não renovados no resume). */
 export function autoEngineTimeouts(env = process.env) {
   return Object.freeze({
-    pipelineTimeoutMs: bounded(env, 'GHOSTRECON_AUTO_PIPELINE_TIMEOUT_MS', 20 * 60_000, 30_000, 7_200_000),
+    // O GHOSTRECON recebe no máximo 30 min; o NeuroSploit possui o seu
+    // próprio limite de 90 min e é iniciado depois deste pipeline.
+    pipelineTimeoutMs: bounded(env, 'GHOSTRECON_AUTO_PIPELINE_TIMEOUT_MS', 30 * 60_000, 30_000, 7_200_000),
     engineSettleGraceMs: bounded(env, 'GHOSTRECON_AUTO_ENGINE_SETTLE_GRACE_MS', 7_500, 500, 30_000),
     phaseSettleGraceMs: bounded(env, 'GHOSTRECON_AUTO_PHASE_SETTLE_GRACE_MS', 2_000, 100, 30_000),
     framesevenAuthTimeoutMs: bounded(env, 'GHOSTRECON_FRAMESEVEN_AUTH_TIMEOUT_MS', 10 * 60_000, 5_000, 30 * 60_000),
@@ -96,22 +97,6 @@ export function intersectAutoSessionLimits(restoredLimits, envLimits) {
     sessionTimeoutMs: Math.min(
       Number(left.sessionTimeoutMs) || right.sessionTimeoutMs,
       right.sessionTimeoutMs,
-    ),
-    agentTimeoutMs: Math.min(
-      Number(left.agentTimeoutMs) || right.agentTimeoutMs,
-      right.agentTimeoutMs,
-    ),
-    maxAgentCalls: Math.min(
-      Number(left.maxAgentCalls) || right.maxAgentCalls,
-      right.maxAgentCalls,
-    ),
-    maxContextChars: Math.min(
-      Number(left.maxContextChars) || right.maxContextChars,
-      right.maxContextChars,
-    ),
-    maxCostUsd: Math.min(
-      Number(left.maxCostUsd) || right.maxCostUsd,
-      right.maxCostUsd,
     ),
   });
 }
@@ -199,7 +184,8 @@ export function validateAutoCheckpoint(checkpoint, {
 } = {}) {
   assertSnapshot(checkpoint && typeof checkpoint === 'object' && !Array.isArray(checkpoint), 'checkpoint');
   assertSnapshot(
-    [LEGACY_AUTO_CHECKPOINT_VERSION, AUTO_CHECKPOINT_VERSION].includes(checkpoint.checkpointVersion),
+    checkpoint.checkpointVersion === AUTO_CHECKPOINT_VERSION
+      || LEGACY_AUTO_CHECKPOINT_VERSIONS.has(checkpoint.checkpointVersion),
     'checkpointVersion não suportada',
   );
   const semanticCheckpoint = checkpoint.checkpointVersion === AUTO_CHECKPOINT_VERSION;
@@ -912,7 +898,6 @@ export function createAutoSession({
   sessionId,
   requestRunId,
   target,
-  providers = [],
   ownerPrincipal = null,
   env = process.env,
   restoredState = null,
@@ -937,17 +922,14 @@ export function createAutoSession({
   const remainingMs = Math.max(1_000, Date.parse(deadlineAt) - nowMs);
   const state = {
     schemaVersion: 1, sessionId, requestRunId, target, startedAt: new Date(startedAtMs).toISOString(),
-    status: 'running', iteration: 0, agentCalls: 0, usage: {}, costUsd: 0,
+    status: 'running', iteration: 0,
     lastActivityAt: new Date(nowMs).toISOString(), currentStage: 'starting', currentModule: null,
-    providers: providers.map((p) => typeof p === 'string' ? p : p?.id).filter(Boolean),
     owner: requestedOwner,
     limits,
     deadlineAt,
     ...(restoredState || {}),
-    // Identidade/status/deadline/limits congelados; counters (agentCalls/costUsd/usage/iteration)
-    // vêm do spread de restoredState e não são zerados aqui.
+    // Identidade/status/deadline/limits congelados; iteration vem do snapshot.
     sessionId, requestRunId, target, status: 'running', limits, deadlineAt,
-    budgetVerifiable: restoredState?.budgetVerifiable !== false,
     startedAt: Number.isFinite(restoredStartedMs)
       ? new Date(restoredStartedMs).toISOString()
       : (restoredState?.startedAt || new Date(startedAtMs).toISOString()),
@@ -956,12 +938,11 @@ export function createAutoSession({
   state.owner = requestedOwner || restoredOwner || null;
   state.deadlineAt = deadlineAt;
   state.limits = limits;
-  // Runtime-only: não vai ao snapshot. Turnos concorrentes não podem mascarar stall.
-  const activeAgentTurns = new Map();
-  const agentTurnKey = (event) => `${event?.provider || 'unknown'}:${event?.role || 'turn'}`;
-  const oldestAgentTurnMs = () => (activeAgentTurns.size
-    ? Math.min(...activeAgentTurns.values())
-    : null);
+  // Campos do antigo AI Council podem existir em snapshots históricos, mas
+  // não são reativados nem persistidos por uma sessão determinística.
+  for (const retiredField of ['providers', 'agentCalls', 'usage', 'costUsd', 'budgetVerifiable']) {
+    delete state[retiredField];
+  }
   if (restoredState) {
     expireOrphanedApproval(state, {
       now: nowMs,
@@ -1043,27 +1024,6 @@ export function createAutoSession({
     },
     touch(event = null) {
       if (event?.type === 'auto_heartbeat') return;
-      if (event?.type === 'auto_agent_turn_started') {
-        activeAgentTurns.set(agentTurnKey(event), Date.now());
-        state.currentStage = `agent:${event.provider || 'unknown'}:${event.role || 'turn'}`;
-        state.currentModule = null;
-        const oldest = oldestAgentTurnMs();
-        state.lastActivityAt = new Date(oldest || Date.now()).toISOString();
-        return;
-      }
-      if (event?.type === 'auto_agent_turn_completed' || event?.type === 'auto_agent_turn_failed') {
-        activeAgentTurns.delete(agentTurnKey(event));
-        if (activeAgentTurns.size === 0) {
-          state.currentStage = 'idle';
-          state.currentModule = null;
-          state.lastActivityAt = new Date().toISOString();
-        } else {
-          const [remaining] = activeAgentTurns.keys();
-          state.currentStage = `agent:${remaining}`;
-          state.lastActivityAt = new Date(oldestAgentTurnMs()).toISOString();
-        }
-        return;
-      }
       state.lastActivityAt = new Date().toISOString();
       if (event?.type === 'auto_step') {
         const stepStatus = String(event.status || 'running');
@@ -1083,13 +1043,8 @@ export function createAutoSession({
         state.currentModule = null;
       }
     },
-    /** Idle para stall: com turns paralelos, ancora no turno mais antigo. */
-    getAgentIdleMs(now = Date.now()) {
-      if (activeAgentTurns.size > 0) return now - oldestAgentTurnMs();
+    getIdleMs(now = Date.now()) {
       return now - Date.parse(state.lastActivityAt || state.startedAt);
-    },
-    hasActiveAgentTurns() {
-      return activeAgentTurns.size > 0;
     },
     assertActive() {
       if (controller.signal.aborted) throw controller.signal.reason || new Error('sessão AUTO cancelada');
@@ -1098,45 +1053,8 @@ export function createAutoSession({
         throw new Error('limite de tempo da sessão AUTO atingido');
       }
     },
-    reserveAgentCall(provider) {
-      this.assertActive();
-      const maxCalls = Number(state.limits?.maxAgentCalls ?? limits.maxAgentCalls);
-      if (state.agentCalls >= maxCalls) throw new Error('limite de chamadas de IA atingido');
-      state.agentCalls += 1;
-      state.usage[provider] ||= { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0 };
-      state.usage[provider].calls += 1;
-    },
-    recordUsage(provider, usage = {}) {
-      const u = usage && typeof usage === 'object' ? usage : {};
-      const row = state.usage[provider] ||= { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0 };
-      row.promptTokens += Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
-      row.completionTokens += Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0;
-      row.totalTokens += Number(u.total_tokens ?? 0) || 0;
-      const key = String(provider || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
-      const inputRate = Number(env[`GHOSTRECON_AUTO_${key}_INPUT_USD_PER_MILLION`] || 0);
-      const outputRate = Number(env[`GHOSTRECON_AUTO_${key}_OUTPUT_USD_PER_MILLION`] || 0);
-      const estimated = ((Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0) * inputRate
-        + (Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0) * outputRate) / 1_000_000;
-      const reported = Number(u.cost ?? u.cost_usd);
-      const cost = Number.isFinite(reported) ? reported : estimated;
-      row.costUsd += cost;
-      row.costEstimated = !Number.isFinite(reported);
-      if (!Number.isFinite(reported)) {
-        // Sem custo reportado pelo provider, o orçamento deixa de ser verificável.
-        state.budgetVerifiable = false;
-      }
-      state.costUsd += cost;
-      const maxCost = Number(state.limits?.maxCostUsd ?? limits.maxCostUsd);
-      if (maxCost > 0 && state.costUsd > maxCost) {
-        const reason = state.budgetVerifiable === false
-          ? 'budget de custo da sessão atingido (estimativa não verificável)'
-          : 'budget de custo da sessão atingido';
-        controller.abort(new Error(reason));
-      }
-    },
     async close(status = 'completed') {
       clearTimeout(timer);
-      activeAgentTurns.clear();
       state.currentStage = 'closing';
       state.currentModule = null;
       const pending = [...(this.resources || [])];

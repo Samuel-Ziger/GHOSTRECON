@@ -50,8 +50,6 @@ export function buildAutoRunReportSummary({
     approvalTransitions: approvals.slice(-40),
     startedAt: session?.startedAt || null,
     finishedAt: session?.finishedAt || null,
-    costUsd: Number(session?.costUsd || 0) || 0,
-    agentCalls: Number(session?.agentCalls || 0) || 0,
     createdAt: new Date().toISOString(),
   }, { preserveSensitiveKeys: new Set(['sessionId', 'runId']) });
 }
@@ -66,7 +64,6 @@ function summaryToMarkdown(summary) {
     `- Findings: ${summary.findings}`,
     `- Modules: ${(summary.moduleOutcomes || []).length}`,
     `- Approvals: ${(summary.approvalTransitions || []).length}`,
-    `- Cost USD: ${summary.costUsd}`,
     '',
   ];
   if ((summary.moduleFailures || []).length) {

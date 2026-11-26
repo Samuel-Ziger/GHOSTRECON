@@ -243,6 +243,47 @@ export function buildEffectiveAutoPlan({
     runTimeoutMs: null,
   };
 
+  const neuroSploitEnabled = body.includeNeuroSploit === true;
+  const neuroSploitProfileId = Number(body.neurosploit?.profileId || 0);
+  if (neuroSploitEnabled && !policy.allowIntrusive) {
+    throw new Error('NeuroSploit exige autonomia autorizada e recon.intrusive');
+  }
+  if (neuroSploitEnabled && (!Number.isSafeInteger(neuroSploitProfileId) || neuroSploitProfileId <= 0)) {
+    throw new Error('NeuroSploit no Auto exige um perfil API/Codex válido');
+  }
+  const neuroSploitCatalog = catalog?.engines?.neurosploit || null;
+  const neuroSploitIdentity = neuroSploitCatalog?.identity || null;
+  if (
+    neuroSploitEnabled
+    && (
+      neuroSploitCatalog?.available !== true
+      || neuroSploitIdentity?.algorithm !== 'sha256'
+      || !/^[a-f0-9]{64}$/i.test(String(neuroSploitIdentity?.sha256 || ''))
+      || !Number.isSafeInteger(Number(neuroSploitIdentity?.size))
+    )
+  ) {
+    throw new Error('NeuroSploit exige binário executável com identidade selada no catálogo Auto');
+  }
+  const neuroSploit = neuroSploitEnabled ? {
+    enabled: true,
+    identity: neuroSploitIdentity,
+    profileId: neuroSploitProfileId,
+    mode: 'run',
+    environment: String(body.neurosploit?.environment || 'production').slice(0, 40),
+    votes: boundedPositiveInteger(body.neurosploit?.votes, 2, 1, 5),
+    recon: boundedPositiveInteger(body.neurosploit?.recon, 1, 1, 4),
+    chainDepth: Math.max(0, Math.min(6, Math.floor(Number(body.neurosploit?.chainDepth) || 2))),
+    maxAgents: Math.max(0, Math.min(64, Math.floor(Number(body.neurosploit?.maxAgents) || 0))),
+    quick: body.neurosploit?.quick === true,
+    focus: String(body.neurosploit?.focus || '').slice(0, 2_000),
+    objective: String(body.neurosploit?.objective || '').slice(0, 2_000),
+    outOfScope: String(body.neurosploit?.outOfScope || '').slice(0, 2_000),
+    codexCli: body.neurosploit?.codexCli === true,
+    mcpServers: Array.isArray(body.neurosploit?.mcpServers) ? [...body.neurosploit.mcpServers] : [],
+    timeoutMs: boundedPositiveInteger(body.neurosploit?.timeoutMs, 90 * 60_000, 60_000, 2 * 60 * 60_000),
+    contextContract: 'ghostrecon.neurosploit-auto-context.v1',
+  } : null;
+
   const pipelineModules = selected.filter((id) => !FRAMESEVEN_IDS.has(id));
   const vigoliumDast = pipelineModules.includes('vigolium_dast');
   const vigoliumAgentModules = pipelineModules.filter((id) => VIGOLIUM_AGENT_BY_MODULE[id]);
@@ -278,8 +319,10 @@ export function buildEffectiveAutoPlan({
   const expandedModules = uniqueIds([
     ...expandIntrusiveRunModules({ modules: pipelineModules, engine, vigoliumAgent }),
     ...frameSevenSelected,
+    ...(neuroSploitEnabled ? ['neurosploit_auto'] : []),
   ]);
   const intrusiveModules = expandedModules.filter((id) => {
+    if (id === 'neurosploit_auto') return true;
     const item = byId.get(id);
     return moduleClass(item) === 'intrusive' || item?.manifest?.intrusive === true || isIntrusive(id);
   });
@@ -287,7 +330,7 @@ export function buildEffectiveAutoPlan({
     if (intrusiveModules.includes(id)) return false;
     return moduleClass(byId.get(id)) === 'active';
   });
-  const requiresFormalAuthorization = activeModules.length > 0 || intrusiveModules.length > 0;
+  const requiresFormalAuthorization = neuroSploitEnabled || activeModules.length > 0 || intrusiveModules.length > 0;
   const requiresKali = pipelineModules.some((id) => byId.get(id)?.manifest?.requiresKali === true
     || byId.get(id)?.requiresKali === true
     || id.startsWith('kali_'));
@@ -315,6 +358,16 @@ export function buildEffectiveAutoPlan({
       ),
     };
   });
+  if (neuroSploit) {
+    moduleLimits.push({
+      id: 'neurosploit_auto',
+      source: 'neurosploit',
+      class: 'intrusive',
+      phase: 'neurosploit',
+      timeoutMs: neuroSploit.timeoutMs,
+      concurrency: 1,
+    });
+  }
   const frameSevenTimeouts = moduleLimits
     .filter((limit) => limit.phase === 'frameseven')
     .map((limit) => limit.timeoutMs);
@@ -345,7 +398,7 @@ export function buildEffectiveAutoPlan({
     intrusiveModules,
     requiresFormalAuthorization,
     moduleLimits,
-    requiresHumanApproval: selected.length > 0
+    requiresHumanApproval: (selected.length > 0 || neuroSploitEnabled)
       && (policy.requirePlanApproval || intrusiveModules.length > 0),
     engines: {
       ghostrecon: { enabled: pipelineModules.length > 0 },
@@ -367,6 +420,7 @@ export function buildEffectiveAutoPlan({
         },
       },
       frameseven: frameSeven,
+      ...(neuroSploit ? { neurosploit: neuroSploit } : {}),
     },
     execution: {
       kaliMode: requiresKali,

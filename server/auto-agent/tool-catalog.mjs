@@ -17,6 +17,7 @@ import { resolveVigoliumBinary } from '../../bridge/vigolium-config.mjs';
 import { inspectVigoliumBinaryIdentity } from '../../bridge/vigolium-binary-integrity.mjs';
 import fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import path from 'node:path';
 
 export const AUTO_BASE_MODULES = Object.freeze([
   'subdomains',
@@ -168,6 +169,7 @@ export async function buildAutoToolCatalog({
   includeFrameSeven = false,
   frameSevenAuth = false,
   includeVigolium = false,
+  includeNeuroSploit = false,
   hexstrikeCapabilities = null,
   vigoliumCapabilities = null,
   vigoliumRuntimeBinding = null,
@@ -195,11 +197,27 @@ export async function buildAutoToolCatalog({
     : null;
   const vigoliumAvailable = Boolean(vigolium?.installed ?? vigolium?.bin ?? vigolium?.binary);
   const vigoliumBinary = vigolium?.binary || vigolium?.bin || null;
-  const [frameSevenIdentity, vigoliumIdentity] = await Promise.all([
+  const neuroSploitBinary = includeNeuroSploit && ghostRoot
+    ? path.join(
+        ghostRoot,
+        'engines',
+        'neurosploit',
+        'neurosploit-rs',
+        'target',
+        'release',
+        process.platform === 'win32' ? 'neurosploit.exe' : 'neurosploit',
+      )
+    : null;
+  const neuroSploitExecutableFound = neuroSploitBinary
+    ? await fs.access(neuroSploitBinary, fsConstants.X_OK).then(() => true).catch(() => false)
+    : false;
+  const [frameSevenIdentity, vigoliumIdentity, neuroSploitIdentity] = await Promise.all([
     frameSevenExecutableFound ? inspectFrameSevenBinaryIdentity(frameSevenBinary).catch(() => null) : null,
     vigoliumAvailable ? fingerprintAutoExecutable(vigoliumBinary) : null,
+    neuroSploitExecutableFound ? fingerprintAutoExecutable(neuroSploitBinary) : null,
   ]);
   const frameSevenAvailable = frameSevenExecutableFound && Boolean(frameSevenIdentity);
+  const neuroSploitAvailable = neuroSploitExecutableFound && Boolean(neuroSploitIdentity);
   const hexstrike = includeHexstrike
     ? (hexstrikeCapabilities || await getHexstrikeCapabilities({ ghostRoot }).catch((e) => ({ ok: false, message: e?.message || String(e) })))
     : null;
@@ -409,6 +427,14 @@ export async function buildAutoToolCatalog({
         identity: vigoliumIdentity,
         runtimeBinding: includeVigolium ? String(vigoliumRuntimeBinding || '') || null : null,
       },
+      ...(includeNeuroSploit ? {
+        neurosploit: {
+          available: neuroSploitAvailable,
+          binary: neuroSploitBinary,
+          identity: neuroSploitIdentity,
+          contextContract: 'ghostrecon.neurosploit-auto-context.v1',
+        },
+      } : {}),
       forge: {
         available: forgeRuntimeAvailable === true,
         runtime: 'strong_os_sandbox_required',

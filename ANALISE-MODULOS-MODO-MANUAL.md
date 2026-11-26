@@ -50,7 +50,6 @@ promovido a Excelente, e a faixa **ainda não está encerrada**.
 | `panel_exposure_audit` | Bom | Baseline por origem contra catch-all/SPA, assinatura de conteúdo, scope/sinal e painel como inventário. | Corpus de soft-404 dinâmico e política de acesso; login público não prova acesso indevido. |
 | `info_disclosure_errors` | Bom | Compara assinatura com baseline, entradas malformadas genéricas, corpo limitado e stream fechado mesmo em erro. Wrapper/pipeline distinguem falha, timeout e cancelamento de sucesso. | Corpus negativo mais amplo, orçamento global e E2E do wrapper. |
 | `mysql_3306_intel` | Ótimo | Inventário estruturado do Nmap, proveniência e candidato por porta; remove comandos de exploração sugeridos. | Corpus de banners/proxies; não verifica segurança da configuração ou backports. |
-| `shannon_whitebox` | Falta muito | Findings normalizados como candidatos IA, saída limitada/redigida e pedido de cancelamento pelo ID real, independente da UI. | Pedido aceito não atesta término das atividades Temporal: `cleanup.confirmed=false`; próximos clones não iniciam quando isso permanece incerto. |
 | `webshell_probe` | Bom | GET sem parâmetros, sem `cmd=id`; scope/sinal/corpo limitado. Resposta semelhante a identidade Unix é apenas candidato. | Corpus negativo e baseline; não testa execução de comandos nem confirma webshell. |
 | `kali_dirsearch` | Falta muito | Concorrência/profundidade menores, limite de saída, filtros de origem/status e outcomes reais de processo/parse. | Falta baseline própria de soft-404/catch-all e prova de escopo durante redirects/recursão do binário. |
 | `kali_ffuf` | Bom | Autocalibração, limites menores, metadados HTTP e 3xx/401/403 como inventário; falha não vira busca vazia concluída. | E2E com versão fixada e calibração contra respostas dinâmicas. |
@@ -133,7 +132,7 @@ sendo requisitos para 10/10.
 | Arquivos e OSINT | `gau`, `waybackurls`, `shodan`, `robots_sitemap`, `pastebin`, `github` | Saída e cardinalidade limitadas, escopo reaplicado, provenance/freshness explícitos e estados operacionais separados. URL histórica ou indexada continua corretamente como disponibilidade atual não verificada. |
 | Transporte e identidade | `navegation`, `identity_rotation`, `kali_proxychains` | Tor só passa com `IsTor=true` e IPs válidos/distintos; dispatchers são reutilizados/encerrados e Nmap sob proxy recusa UDP/raw/flags compactas incompatíveis. Não houve validação Tor/proxy real. |
 | HTTP, contratos e cliente | `api_contract_diff`, `cookie_session_audit`, `cors_audit`, `email_security_deep`, `graphql_probe`, `http3_quic_surface`, `lovable_fingerprint`, `nginx_http3_cve_2026_42530`, `security_headers`, `supabase_audit` | Baseline OpenAPI por URL exata, parsers/limites/deadlines, escopo por request e separação de inventário/candidato. Supabase anônimo aceita apenas `sb_publishable_*` ou JWT legado `role=anon`; credenciais privilegiadas/custom falham antes da rede e o `ref` legado precisa coincidir. Lovable usa o mesmo extrator, limita respostas/tabelas e persiste apenas claims allowlisted e snippets redigidos. Token de usuário explícito continua somente leitura e sem assinatura atestada. |
-| Validações limitadas | `curl_probe`, `micro_exploit`, `pentestgpt_validate`, `secret_validation`, `verify_sqli_deep` | Permanecem sem métodos mutáveis, payload executável ou uso de segredo descoberto; agora têm limites, cancelamento, redação e estados inconclusivos testados. |
+| Validações limitadas | `curl_probe`, `micro_exploit`, `secret_validation`, `verify_sqli_deep` | Permanecem sem métodos mutáveis, payload executável ou uso de segredo descoberto; agora têm limites, cancelamento, redação e estados inconclusivos testados. |
 | Serviços e Kali | `mysql_3306_intel`, `nmap_service_followups`, `kali_nmap`, `kali_wpscan`, `kali_xss_vibes` | Ingestão estruturada e limitada, escopo por host, exit/timeout reais, serviços como inventário e CVEs de versão como candidatas. Nmap TCP/UDP recusa scripts, alvos e saídas injetados; intensidade agressiva é separada, portas do base são limitadas e UDP usa lista validada de até 128 portas. Nenhum binário real foi executado. |
 | FTP com escrita | `ftp_write_probe` | Continua separado e exclusivo de laboratório descartável: opt-in, confirmação específica e allowlist. Desde o reply preliminar de `STOR`, estado remoto possível é registrado; timeout/falha tenta `DELE`+`SIZE` quando ainda há prazo. Cleanup incerto gera finding alto, outcome próprio `failed` e bloqueia writes seguintes, inclusive após cancelamento. |
 | FTP para bug bounty | `ftp_anonymous_audit` (novo, fora dos 30 originais) | Capacidade intrusiva explícita: inclui `kali_nmap` antes dos gates, usa/revalida o IP observado no XML, confere o peer, diferencia outcomes e testa somente `USER anonymous` com duas variantes públicas antes de `QUIT`. Não trata `ftp-data`/FTPS como controle plaintext, aguarda fechamento/cleanup atestado e não lista nem transfere arquivos; flood pós-login preserva evidência e degrada para parcial. |
@@ -172,7 +171,7 @@ o nível alcançado depois das correções:
 | `github` | Ótimo |
 | `navegation`, `kali_proxychains` | Ótimo |
 | `cors_audit`, `graphql_probe`, `lovable_fingerprint`, `supabase_audit`, `nginx_http3_cve_2026_42530` | Ótimo |
-| `secret_validation`, `pentestgpt_validate`, `nmap_service_followups`, `micro_exploit` | Ótimo |
+| `secret_validation`, `nmap_service_followups`, `micro_exploit` | Ótimo |
 
 Isso totaliza 15 opções em **Bom** e 12 em **Ótimo**. A mudança de faixa
 não significa Excelência: cada linha da análise ainda informa o que falta
@@ -270,9 +269,7 @@ faltam corpus de ground truth e E2E autorizado para atingir 10/10.
 | `nmap_backport_review` | Bom | 7/7/5/7 | Base de backports/distro e correlação por pacote, não apenas texto de contexto. |
 | `nmap_cve_match` | Bom | 7/7/5/7 | CPE/versionamento preciso, freshness e confirmação de backport. |
 | `nmap_service_followups` | Ótimo | 9/9/8/8 | Gate intrusivo, UI off, revalidação de host, evidência específica e Exploit-DB como candidato; falta E2E de ferramentas. |
-| `pentestgpt_validate` | Ótimo | 9/9/8/8 | Loopback/allowlist, consentimento remoto, signal, limites e saída IA sempre não verificada; falta schema assinado e benchmark. |
 | `secret_validation` | Ótimo | 9/9/9/8 | 403/429 inconclusivos, anon key pública, service-role não exercida e chaves genéricas não são enviadas; falta E2E provider. |
-| `shannon_whitebox` | Falta muito | 8/7/6/5 | Candidatos normalizados, limites/redação e pedido de cancelamento implementados; falta observar término Temporal e provar ausência de atividades órfãs. |
 | `sqlmap` | Bom | 8/7/7/6 | Scope em redirects, congelar `--dbs` antes do gate e parser estruturado sem substring ambígua. |
 | `verify_sqli_deep` | Ótimo | 9/9/8/9 | Calibrar contra ground truth de frameworks/DBs e adicionar confirmação separada aprovada; heurística permanece no máximo `probable`. |
 | `webshell_probe` | Bom | 7/7/6/7 | Sem comandos; somente indicador de conteúdo com escopo/sinal/limite. Falta corpus negativo e baseline; não é verificação de execução. |

@@ -53,16 +53,19 @@
     "github_clone",
     "google_cse",
     "pastebin",
-    "dorks",
-
     "secrets",
     "secret_validation",
-    "encoding_sniff",
     "lovable_fingerprint",
     "supabase_audit",
     "firebase_audit",
     "client_auth_audit",
     "client_surface_audit",
+    "jwt_jwks_audit",
+    "cloud_debug_env_audit",
+    "runtime_endpoint_pivot",
+    "deterministic_voucher_audit",
+    "api_excessive_data_audit",
+    "bounded_object_key_discovery",
 
     "param_discovery",
     "curl_probe",
@@ -70,6 +73,13 @@
     "webshell_probe",
     "sqlmap",
     "authz_matrix",
+    "authz_object_matrix_v2",
+    "jwt_claim_authz_diff",
+    "sqli_targeted_verify",
+    "cloud_object_proxy_authz",
+    "sensitive_payment_data",
+    "financial_integrity_audit",
+    "artifact_safety_audit",
     "jwt_lab",
     "dom_xss_verify",
     "payload_mutator",
@@ -89,13 +99,10 @@
     "wpscan",
     "xss_vibes",
 
-    "shannon_whitebox",
-    "pentestgpt_validate",
-
     "bounty_scope",
     "bounty_estimator"
   ],
   "limits": {
-    "notes": "Módulos que dependem de credenciais/configs externas (cred_spray, oob_collaborator, race_harness, sqlmap, pentestgpt_validate, shannon_whitebox) auto-pulam se faltarem variáveis. Para sqlmap completo, configure GHOSTRECON_SQLMAP_*; para OOB, GHOSTRECON_OOB_*; para shannon, GHOSTRECON_SHANNON_GITHUB_REPOS. Tempo por apex: 5-30 min (com nmap), depende de quantos subs forem encontrados."
+    "notes": "Módulos que dependem de credenciais/configs externas (cred_spray, oob_collaborator, race_harness, sqlmap) auto-pulam se faltarem variáveis. Para sqlmap completo, configure GHOSTRECON_SQLMAP_*; para OOB, GHOSTRECON_OOB_*. Tempo por apex: 5-30 min (com nmap), depende de quantos subs forem encontrados."
   }
 }

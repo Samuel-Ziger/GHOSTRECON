@@ -1,5 +1,9 @@
 # Análise geral do GHOSTRECON
 
+> **ARQUIVO HISTÓRICO (2026-11-18):** este diagnóstico retrata uma arquitetura
+> anterior. Referências às integrações de IA hoje retiradas não descrevem o
+> produto atual nem constituem instruções de instalação.
+
 Documento de referência com diagnóstico do projeto, pontos fortes, dívida técnica, roadmap de funcionalidades e recomendações priorizadas.
 
 **Gerado em:** 2026-06-17  

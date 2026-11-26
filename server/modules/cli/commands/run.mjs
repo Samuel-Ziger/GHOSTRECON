@@ -11,6 +11,7 @@ import { resolvePlaybook } from '../../playbooks/loader.mjs';
 import { getEngagement, preRunChecklist } from '../../engagement.mjs';
 import { gateModules, applyWatermarkHeaders, expandIntrusiveRunModules } from '../../opsec.mjs';
 import { parseReconTarget } from '../../recon-target.js';
+import { redactPublicTarget } from '../../../auto-agent/redaction.mjs';
 
 const SPEC = [
   ...GLOBAL_OPTS,
@@ -50,6 +51,16 @@ const SPEC = [
   { name: 'vigolium-audit-mode', type: 'string' },
 ];
 
+/** Normaliza o alvo sem perder a URL explícita que a API deve executar. */
+export function resolveCliReconTarget(rawTarget) {
+  const parsed = parseReconTarget(rawTarget);
+  if (!parsed.ok) return parsed;
+  return {
+    ...parsed,
+    requestTarget: parsed.targetUrl || parsed.target,
+  };
+}
+
 export async function runCommand(argv) {
   let opts;
   try {
@@ -64,12 +75,13 @@ export async function runCommand(argv) {
     return 0;
   }
 
-  const parsedTarget = parseReconTarget(opts.target);
+  const parsedTarget = resolveCliReconTarget(opts.target);
   if (!parsedTarget.ok) {
     process.stderr.write(`run: ${parsedTarget.message || 'target invalido'}\n`);
     return 2;
   }
   opts.target = parsedTarget.target;
+  opts.targetUrl = parsedTarget.targetUrl;
 
   const verbose = Boolean(opts.verbose);
   const quiet = Boolean(opts.quiet);
@@ -177,7 +189,9 @@ export async function runCommand(argv) {
     });
   }
   const body = {
-    domain: opts.target,
+    // A API continua derivando `domain` (hostname) no servidor, mas recebe a
+    // URL canónica quando ela foi explícita para não perder scheme/porta/path.
+    domain: parsedTarget.requestTarget,
     modules,
     exactMatch: opts['exact-match'],
     kaliMode: opts.kali,
@@ -245,7 +259,7 @@ export async function runCommand(argv) {
     }
   }
 
-  log(`[run] target=${opts.target} modules=${modules.length} profile=${opts.profile}`);
+  log(`[run] target=${redactPublicTarget(opts.targetUrl || opts.target)} modules=${modules.length} profile=${opts.profile}`);
   const collected = { events: [], runId: null, finalStats: null, errors: [] };
 
   const onEvent = (evt) => {
@@ -302,6 +316,7 @@ export async function runCommand(argv) {
   const output = {
     version: 1,
     target: opts.target,
+    targetUrl: opts.targetUrl ? redactPublicTarget(opts.targetUrl) : null,
     runId,
     playbook: playbookProfile ? { name: playbookProfile.name, modules: playbookProfile.modules } : null,
     modules,
@@ -341,7 +356,7 @@ function safePlanModuleList(value) {
 }
 
 export function formatPlanSpecificApproval(plan = {}) {
-  const target = safeTerminalText(plan?.target || '(alvo ausente)');
+  const target = safeTerminalText(redactPublicTarget(plan?.target || '(alvo ausente)'));
   const hash = safeTerminalText(plan?.hash, 64).toLowerCase();
   const intrusiveModules = safePlanModuleList(plan?.intrusiveModules);
   const frameSeven = plan?.engines?.frameseven?.enabled === true

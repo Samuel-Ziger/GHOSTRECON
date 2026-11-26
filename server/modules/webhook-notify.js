@@ -41,8 +41,6 @@ export function buildDiscordReconSummaryContent(payload = {}) {
     stats,
     highCount,
     highFindings = [],
-    shannonSummary,
-    pentestgptSummary,
   } = payload;
   const lines = [
     '**GHOSTRECON** — recon gravado',
@@ -69,14 +67,6 @@ export function buildDiscordReconSummaryContent(payload = {}) {
         .slice(0, 220);
       lines.push(`- **${priority}** ${value}`);
     }
-  }
-  if (shannonSummary) {
-    lines.push(`**Shannon:** ${String(shannonSummary).slice(0, 500)}${String(shannonSummary).length > 500 ? '…' : ''}`);
-  }
-  if (pentestgptSummary) {
-    lines.push(
-      `**PentestGPT:** ${String(pentestgptSummary).slice(0, 500)}${String(pentestgptSummary).length > 500 ? '…' : ''}`,
-    );
   }
   let content = lines.join('\n');
   if (content.length > 1900) content = `${content.slice(0, 1890)}…`;
@@ -334,8 +324,6 @@ export async function postReconWebhook(webhookUrl, payload) {
       stats: safePayload.stats,
       highCount: safePayload.highCount,
       highFindings: safePayload.highFindings,
-      shannonSummary: safePayload.shannonSummary,
-      pentestgptSummary: safePayload.pentestgptSummary,
     });
     return;
   }

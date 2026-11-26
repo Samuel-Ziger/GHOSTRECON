@@ -91,19 +91,30 @@ test('ghostwatch: alert payload is Discord-friendly markdown', () => {
   assert.match(payload.content, /Admin exposed/);
 });
 
-test('ghostwatch: sanitizeGhostwatchModules removes only Tor/Navigator/proxychains', () => {
+test('ghostwatch: IDs removidos falham em vez de virar execução vazia', () => {
+  assert.throws(
+    () => sanitizeGhostwatchModules(['subdomains', 'shannon_whitebox']),
+    (error) => error?.code === 'MODULE_RETIRED'
+      && error?.retiredModules?.includes('shannon_whitebox'),
+  );
+  assert.throws(
+    () => sanitizeGhostwatchModules(['pentestgpt_validate']),
+    (error) => error?.code === 'MODULE_RETIRED'
+      && error?.retiredModules?.includes('pentestgpt_validate'),
+  );
+});
+
+test('ghostwatch: sanitizeGhostwatchModules remove Tor/Navigator/proxychains', () => {
   assert.deepEqual(
     sanitizeGhostwatchModules([
       'subdomains',
       'kali_proxychains',
-      'shannon_whitebox',
-      'pentestgpt_validate',
       'vigolium_audit',
       'http',
       'navigator',
       'tor',
     ]),
-    ['subdomains', 'shannon_whitebox', 'pentestgpt_validate', 'vigolium_audit', 'http'],
+    ['subdomains', 'vigolium_audit', 'http'],
   );
 });
 

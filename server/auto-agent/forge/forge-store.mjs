@@ -25,11 +25,19 @@ async function writeForgeFile(filePath, contents) {
   await fs.chmod(filePath, 0o600).catch(() => {});
 }
 
-export async function createPendingForgeRequest({ root, requestRunId, target, decision, council, authorOverride = null, authorModelOverride = null, createdAt = new Date() } = {}) {
+export async function createPendingForgeRequest({
+  root,
+  requestRunId,
+  target,
+  decision,
+  authorOverride = null,
+  authorModelOverride = null,
+  createdAt = new Date(),
+} = {}) {
   const request = decision?.forgeRequest;
   if (!request) return null;
   if (request.intrusive) throw new Error('Module Forge intrusivo bloqueado');
-  const author = slug(authorOverride || request.author || 'council');
+  const author = slug(authorOverride || request.author || 'operator');
   const resolvedModel = authorModelOverride || request.authorModel || null;
   const model = resolvedModel ? slug(resolvedModel) : null;
   const ownerDir = model ? path.join(author, model) : author;
@@ -56,24 +64,14 @@ export async function createPendingForgeRequest({ root, requestRunId, target, de
   };
   const verdict = {
     schemaVersion: 1,
-    status: 'pending_council_and_operator_approval',
+    status: 'pending_validation',
     approvals: request.approvals || [],
-    council: decision?.council || null,
     policy: { intrusiveAllowed: false, operatorApprovalRequired: true, pipelineEnabled: false },
   };
-  const transcript = [
-    ...(council?.proposals || []).map((turn) => ({ phase: 'proposal', provider: turn.provider, role: turn.role, ok: turn.ok, decision: turn.decision || null, error: turn.error || null })),
-    ...(council?.reviews || []).map((turn) => ({ phase: 'review', provider: turn.provider, role: turn.role, ok: turn.ok, decision: turn.decision || null, error: turn.error || null })),
-  ];
   await Promise.all([
     writeForgeFile(path.join(dir, 'forge-request.json'), JSON.stringify(request, null, 2)),
     writeForgeFile(path.join(dir, 'provenance.json'), JSON.stringify(provenance, null, 2)),
     writeForgeFile(path.join(dir, 'verdict.json'), JSON.stringify(verdict, null, 2)),
-    writeForgeFile(path.join(dir, 'council-transcript.json'), JSON.stringify(council || null, null, 2)),
-    writeForgeFile(
-      path.join(dir, 'council-transcript.ndjson'),
-      transcript.map((row) => JSON.stringify(row)).join('\n') + (transcript.length ? '\n' : ''),
-    ),
     writeForgeFile(path.join(dir, 'package.json'), JSON.stringify({ private: true, type: 'module' }, null, 2)),
     writeForgeFile(path.join(dir, 'README.md'), [
       `# Pending Module Forge: ${request.proposedId}`,

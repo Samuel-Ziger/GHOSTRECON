@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
 test('RUN manual mantém engagement opcional e aprovação do plano, sem toggles OPSEC/bounty', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
+  const runForm = await fs.readFile(new URL('../../frontend/src/features/run-form/model.ts', import.meta.url), 'utf8');
+  const manualRecon = await fs.readFile(new URL('../../frontend/src/features/manual-recon/service.ts', import.meta.url), 'utf8');
   const api = await fs.readFile(new URL('../modules/api-extensions.js', import.meta.url), 'utf8');
 
   assert.doesNotMatch(html, /id="confirmActiveToggle"/);
@@ -11,9 +13,9 @@ test('RUN manual mantém engagement opcional e aprovação do plano, sem toggles
   assert.doesNotMatch(html, /id="bountyContextJsonInput"/);
   assert.match(html, /id="autoOpsecProfileSelect"/);
   assert.match(html, /id="autoBountyContextJsonInput"/);
-  assert.match(html, /opsecProfile: 'standard'/);
+  assert.match(runForm, /opsecProfile: 'standard'/);
   assert.match(html, /id="manualAuthorizationToggle"/);
-  assert.match(html, /\/api\/engagements\/manual-authorization/);
+  assert.match(manualRecon, /\/api\/engagements\/manual-authorization/);
   assert.doesNotMatch(html, /setInputChecked\(\s*['"]manualAuthorizationToggle['"]\s*,\s*true\s*\)/);
   assert.doesNotMatch(html, /id="manualAuthorizationToggle"[^>]*\bchecked\b/);
   assert.match(api, /app\.post\('\/api\/engagements\/manual-authorization', requireScope\('engagement\.write'\)/);
@@ -21,16 +23,17 @@ test('RUN manual mantém engagement opcional e aprovação do plano, sem toggles
   assert.match(html, /engagement opcional/i);
   assert.doesNotMatch(html, /const authorizeNow = window\.confirm\(/);
 
-  const autoApproval = html.indexOf('const approved = true;', html.indexOf('async function prepareManualReconApproval'));
-  const confirmed = html.indexOf('confirmActive: true', autoApproval);
+  const autoApproval = manualRecon.indexOf('approved: true');
+  const confirmed = manualRecon.indexOf('confirmActive: true', autoApproval);
   assert.notEqual(autoApproval, -1);
   assert.ok(confirmed > autoApproval, 'a seleção manual deve aprovar o plano exato antes do stream');
-  assert.doesNotMatch(html, /Plano manual recusado pelo operador/);
+  assert.doesNotMatch(manualRecon, /Plano manual recusado pelo operador/);
   assert.doesNotMatch(html, /return window\.confirm\(`Vigolium guardrail:/);
 });
 
 test('body do Auto não transporta auth e RUN manual usa preflight + aprovação automática vinculada', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
+  const manualRecon = await fs.readFile(new URL('../../frontend/src/features/manual-recon/service.ts', import.meta.url), 'utf8');
   const route = await fs.readFile(new URL('../routes/recon-stream.mjs', import.meta.url), 'utf8');
   const autoBodyStart = html.indexOf(
     'const body = {',
@@ -44,29 +47,30 @@ test('body do Auto não transporta auth e RUN manual usa preflight + aprovação
   assert.doesNotMatch(autoBody, /\bauth\s*:/);
   assert.match(route, /const confirmActive = Boolean\(req\.body\?\.confirmActive\);/);
   assert.doesNotMatch(route, /confirmActive[\s\S]{0,100}opsecProfile\s*===\s*['"]deep['"]/);
-  assert.match(html, /\/api\/recon\/preflight/);
-  assert.match(html, /\/api\/recon\/approval/);
-  assert.match(html, /Hash do plano:/);
-  assert.match(html, /Identidades seladas:/);
-  assert.match(html, /frameSeven\.identity\?\.sha256/);
-  assert.match(html, /vigolium\.identity\?\.sha256/);
+  assert.match(manualRecon, /\/api\/recon\/preflight/);
+  assert.match(manualRecon, /\/api\/recon\/approval/);
+  assert.match(manualRecon, /Hash do plano:/);
+  assert.match(manualRecon, /Identidades seladas:/);
+  assert.match(manualRecon, /frameSeven\.identity\?\.sha256/);
+  assert.match(manualRecon, /vigolium\.identity\?\.sha256/);
   assert.match(html, /getPipelineAuthConfig/);
-  assert.doesNotMatch(html, /delete preflightBody\.(?:auth|vigoliumAuth)/);
-  assert.match(html, /Autenticação pipeline:/);
-  assert.match(html, /Autenticação Vigolium:/);
+  assert.doesNotMatch(manualRecon, /delete preflightBody\.(?:auth|vigoliumAuth)/);
+  assert.match(manualRecon, /Autenticação pipeline:/);
+  assert.match(manualRecon, /Autenticação Vigolium:/);
   assert.match(route, /buildManualReconPrivateContext/);
   assert.match(route, /manualApprovalStore\.consume/);
   assert.match(route, /planHash:\s*manualReconPlan\.hash/);
 });
 
 test('UI diferencia lifecycle parcial e timeout de motores Auto', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
   assert.match(html, /ev\.type === 'engine_partial'/);
   assert.match(html, /ev\.type === 'engine_timeout'/);
 });
 
 test('UI separa FTP de bug bounty sem escrita do write probe de laboratório', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
+  const vigolium = await fs.readFile(new URL('../../frontend/src/features/vigolium/service.ts', import.meta.url), 'utf8');
   assert.match(html, /value="ftp_anonymous_audit"/);
   assert.match(html, /FTP anonymous audit \(sem escrita\)/);
   assert.match(html, /FTP anonymous audit \(sem escrita\)<\/span>\s*<span class="tag tag-high">INTRUSIVE<\/span>/);
@@ -74,13 +78,16 @@ test('UI separa FTP de bug bounty sem escrita do write probe de laboratório', a
   assert.match(html, /Follow-ups de serviço \(SMB \/ RPC \/ versões\)/);
   assert.match(html, /FTP não é executado por esta caixa/);
   assert.match(html, /value="ftp_write_probe"/);
-  const fullExclude = html.slice(html.indexOf('const FULL_MODULES_EXCLUDE'), html.indexOf('function applyFullModulesPresetFromUi'));
+  const fullExclude = vigolium.slice(
+    vigolium.indexOf('export const FULL_MODULES_EXCLUDE'),
+    vigolium.indexOf('export const VIGOLIUM_PROFILE_STORAGE_KEY'),
+  );
   assert.match(fullExclude, /ftp_write_probe/);
   assert.doesNotMatch(fullExclude, /ftp_anonymous_audit/);
 });
 
 test('UI descreve Supabase como leitura e não promete reutilizar token ou executar writes', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
   assert.match(html, /Supabase audit \(somente leitura\)/);
   assert.match(html, /Tokens do cliente nunca são reutilizados/);
   assert.match(html, /sb_publishable_/);
@@ -91,54 +98,46 @@ test('UI descreve Supabase como leitura e não promete reutilizar token ou execu
 });
 
 test('UI Auto continua em error recuperável e distingue AUTO PARCIAL de COMPLETO', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
-  assert.match(html, /AUTO PARCIAL/);
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
+  const autoForge = await fs.readFile(new URL('../../frontend/src/features/auto-forge/service.ts', import.meta.url), 'utf8');
+  assert.match(autoForge, /AUTO PARCIAL/);
   assert.match(html, /outcome\.status === 'partial'/);
   assert.match(html, /ev\.recoverable === true/);
   assert.match(html, /stream Auto continua/);
   assert.match(
-    html,
-    /\['completed',\s*'partial',\s*'cancelled',\s*'interrupted',\s*'failed',\s*'timed_out',\s*'stalled',\s*'budget_exceeded'\]/,
+    autoForge,
+    /'completed',[\s\S]*'partial',[\s\S]*'failed',[\s\S]*'cancelled',[\s\S]*'interrupted',[\s\S]*'timed_out',[\s\S]*'stalled',[\s\S]*'budget_exceeded'/,
   );
   const errorHandler = html.indexOf("if (ev.type === 'error')");
   assert.notEqual(errorHandler, -1);
   const errorBlock = html.slice(errorHandler, errorHandler + 450);
   assert.match(errorBlock, /recoverable === true/);
-  assert.match(errorBlock, /continue;/);
-  assert.match(errorBlock, /break outer;/);
+  assert.match(errorBlock, /return undefined;/);
+  assert.match(errorBlock, /return \{ failed: true, stop: true \};/);
   assert.ok(
-    errorBlock.indexOf('recoverable === true') < errorBlock.indexOf('break outer;'),
-    'erro recuperável deve ser tratado antes do break fatal',
+    errorBlock.indexOf('return undefined;') < errorBlock.indexOf('return { failed: true, stop: true };'),
+    'erro recuperável deve ser tratado antes do retorno fatal',
   );
 });
 
 test('UI Auto mapeia outcomes para estados de statusText (não só regex de rótulo)', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
-  assert.match(html, /function autoUiTerminalStatusText\(outcome\)/);
-  assert.match(html, /getElementById\('statusText'\)\.textContent = autoUiTerminalStatusText\(outcome\)/);
-  const start = html.indexOf('function autoUiTerminalStatusText(outcome)');
-  assert.notEqual(start, -1);
-  const end = html.indexOf('\nfunction markAutoAwaitingTerminal', start);
-  assert.notEqual(end, -1);
-  const fnSource = html.slice(start, end);
-  // eslint-disable-next-line no-new-func
-  const autoUiTerminalStatusText = new Function(`${fnSource}; return autoUiTerminalStatusText;`)();
-  assert.equal(autoUiTerminalStatusText('completed'), 'AUTO COMPLETO');
-  assert.equal(autoUiTerminalStatusText('partial'), 'AUTO PARCIAL');
-  assert.equal(autoUiTerminalStatusText('cancelled'), 'AUTO CANCELADO');
-  assert.equal(autoUiTerminalStatusText('interrupted'), 'AUTO CANCELADO');
-  assert.equal(autoUiTerminalStatusText('cancel_requested_unconfirmed'), 'AUTO CANCELADO');
-  assert.equal(autoUiTerminalStatusText('failed'), 'ERRO');
-  assert.equal(autoUiTerminalStatusText('timed_out'), 'ERRO');
-  assert.equal(autoUiTerminalStatusText('stalled'), 'ERRO');
-  assert.equal(autoUiTerminalStatusText('budget_exceeded'), 'ERRO');
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
+  const autoForge = await fs.readFile(new URL('../../frontend/src/features/auto-forge/service.ts', import.meta.url), 'utf8');
+  assert.match(autoForge, /export function autoUiTerminalStatusText\(outcome: unknown\): string/);
+  assert.match(html, /getElementById\('statusText'\)\.textContent = window\.__ghostreconNativeServices\.autoForge\.autoUiTerminalStatusText\(outcome\)/);
+  assert.match(autoForge, /outcome === 'completed'\) return 'AUTO COMPLETO'/);
+  assert.match(autoForge, /outcome === 'partial'\) return 'AUTO PARCIAL'/);
+  assert.match(autoForge, /\['cancelled', 'interrupted', 'cancel_requested_unconfirmed'\]/);
+  assert.match(autoForge, /return 'AUTO CANCELADO'/);
+  assert.match(autoForge, /return 'ERRO'/);
 });
 
 test('UI Auto aguarda terminal confirmado e mantém cancel disponível', async () => {
-  const html = await fs.readFile(new URL('../../public/index.html', import.meta.url), 'utf8');
-  assert.match(html, /async function waitForAutoSessionTerminal/);
+  const html = await fs.readFile(new URL('../../frontend/templates/index.html', import.meta.url), 'utf8');
+  const autoForge = await fs.readFile(new URL('../../frontend/src/features/auto-forge/service.ts', import.meta.url), 'utf8');
+  assert.match(autoForge, /async function waitForTerminal/);
   assert.match(html, /function markAutoAwaitingTerminal/);
-  assert.match(html, /\/api\/recon\/auto\/sessions\/\$\{encodeURIComponent\(id\)\}/);
+  assert.match(autoForge, /\/api\/recon\/auto\/sessions\/\$\{encodeURIComponent\(id\)\}/);
   assert.match(html, /cancel_requested_unconfirmed/);
   assert.match(html, /markAutoAwaitingTerminal/);
   assert.match(html, /AUTO AGUARDANDO TERMINAL/);

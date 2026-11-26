@@ -12,7 +12,8 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
-from pydantic import BaseModel, Field
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Any, Dict
 import httpx, json, sqlite3, os, asyncio, re
 from memory import GhostMemory
@@ -252,10 +253,10 @@ class HexstrikeRelayBody(BaseModel):
     timeout: float = Field(120.0, ge=5.0, le=600.0)
 
 class GhostReconAutoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     domain: str = Field(..., min_length=1, max_length=300)
     mode: str = Field("balanced", pattern="^(quick|balanced|deep)$")
-    commanders: List[str] = Field(default_factory=list)
-    openrouterModel: Optional[str] = None
     includeHexstrike: bool = True
     includeDeepPassive: Optional[bool] = None
     modules: List[str] = Field(default_factory=list)
@@ -365,6 +366,12 @@ def build_ghostrecon_ctx(gr_data: Optional[Dict]) -> str:
 #  SISTEMA / HEALTH
 # ─────────────────────────────────────────────────────
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_DIST = FRONTEND_DIR / "dist"
+app.mount(
+    "/gui/assets",
+    StaticFiles(directory=FRONTEND_DIST / "assets", check_dir=False),
+    name="ghost-react-assets",
+)
 
 @app.get("/")
 async def root():
@@ -1288,8 +1295,11 @@ Formato: relatório profissional em Markdown com:
 @app.get("/gui", include_in_schema=False)
 @app.get("/gui/", include_in_schema=False)
 async def ghost_web_ui():
-    """Interface web — abrir no browser (mesma origem que a API, evita NetworkError com file://)."""
-    index = FRONTEND_DIR / "index.html"
+    """Interface React — mesma origem que a API e assets locais em /gui/assets."""
+    index = FRONTEND_DIST / "index.html"
     if not index.is_file():
-        raise HTTPException(404, "frontend/index.html não encontrado")
+        raise HTTPException(
+            503,
+            "frontend React não compilado; execute npm --prefix frontend run build",
+        )
     return FileResponse(index, media_type="text/html; charset=utf-8")

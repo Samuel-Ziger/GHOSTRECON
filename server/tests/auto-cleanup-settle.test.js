@@ -1,11 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { PassThrough, Writable } from 'node:stream';
-
 import { createAutoSession } from '../auto-agent/session-store.mjs';
-import { CodexAppServerClient } from '../auto-agent/providers/codex-app-server.mjs';
-import { execFileClosedStdin } from '../auto-agent/providers/codex.mjs';
+import { execFileClosedStdin } from '../auto-agent/forge/generation-runtime.mjs';
 import { loadAutoRedactionPolicy, redactAutoText } from '../auto-agent/redaction.mjs';
 import { sessionTerminalFromEvaluation } from '../auto-agent/orchestrator.mjs';
 
@@ -26,33 +22,6 @@ test('session.close falha fechado quando resource não assenta', async () => {
   assert.equal(state.status, 'failed');
   assert.equal(state.cleanupFailed, true);
   assert.match(state.error || '', /cleanup_failed|resource_unterminated/);
-});
-
-test('Codex App Server close aguarda exit e falha se ignorar kill', async () => {
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const signals = [];
-  const proc = new EventEmitter();
-  proc.stdout = stdout;
-  proc.stderr = stderr;
-  proc.pid = 424242;
-  proc.stdin = new Writable({ write(_c, _e, cb) { cb(); } });
-  proc.kill = (signalName) => {
-    signals.push(signalName);
-    // Ignora TERM/KILL — simula provider zumbi.
-    return true;
-  };
-  const client = new CodexAppServerClient({
-    root: process.cwd(),
-    env: {},
-    spawnImpl: () => proc,
-  });
-  await assert.rejects(
-    client.close(new Error('cancel')),
-    (error) => error?.code === 'CODEX_APP_SERVER_UNTERMINATED',
-  );
-  assert.ok(signals.includes('SIGTERM'));
-  assert.ok(signals.includes('SIGKILL'));
 });
 
 test('execFileClosedStdin marca PROCESS_UNTERMINATED se close não chega', {
@@ -79,18 +48,6 @@ test('política de redação extra via env é consumida', () => {
   });
   assert.match(redacted, /\[REDACTED\]/);
   assert.doesNotMatch(redacted, /acme-lab-token/);
-});
-
-test('recordUsage sem cost marca budgetVerifiable=false', () => {
-  const session = createAutoSession({
-    sessionId: 'session-budget-verify01',
-    requestRunId: 'run-budget-verify01',
-    target: 'example.test',
-  });
-  assert.equal(session.state.budgetVerifiable, true);
-  session.recordUsage('openrouter', { prompt_tokens: 10, completion_tokens: 2 });
-  assert.equal(session.state.budgetVerifiable, false);
-  assert.equal(session.state.usage.openrouter.costEstimated, true);
 });
 
 test('sessionTerminalFromEvaluation mapeia failed/partial', () => {

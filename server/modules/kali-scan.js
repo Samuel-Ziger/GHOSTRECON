@@ -645,9 +645,10 @@ async function runNmapOnHosts(hosts, log, opts = {}) {
   const xmlPath = join(dir, 'nmap.xml');
   const args = [...extra, '-oX', xmlPath, ...hosts];
   log(`nmap ${args.slice(0, -hosts.length).join(' ')} [${hosts.length} hosts]`, 'info');
-  const timeoutMs = aggressive
-    ? Math.max(300_000, Number(process.env.GHOSTRECON_NMAP_AGGRESSIVE_TIMEOUT_MS || 7_200_000))
-    : 660_000;
+  const timeoutMs = resolveNmapTimeoutMs({
+    aggressive,
+    autoModeExecution: opts.autoModeExecution === true,
+  });
   try {
     const proc = await runProc('nmap', args, timeoutMs, {}, opts.execOpts || {});
     const processState = classifyNmapProcessResult(proc);
@@ -711,7 +712,10 @@ async function runNmapUdpOnHosts(hosts, log, opts = {}) {
   const pArg = `U:${portCsv}`;
   const args = [...extra, '-p', pArg, '-oX', xmlPath, ...hosts];
   log(`nmap ${args.slice(0, -hosts.length).join(' ')} [${hosts.length} hosts]`, 'info');
-  const timeoutMs = Math.max(120_000, Number(process.env.GHOSTRECON_NMAP_UDP_TIMEOUT_MS || 2_700_000));
+  const timeoutMs = resolveNmapTimeoutMs({
+    udp: true,
+    autoModeExecution: opts.autoModeExecution === true,
+  });
   try {
     const proc = await runProc('nmap', args, timeoutMs, {}, opts.execOpts || {});
     const processState = classifyNmapProcessResult(proc);
@@ -2032,6 +2036,32 @@ function clampInt(value, fallback, min, max) {
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
+/**
+ * A dedicated manual Nmap scan may legitimately be long-running. Inside AUTO,
+ * however, it receives a bounded slice of the pipeline budget so later tools
+ * and report finalization cannot be starved by a single full-port pass.
+ */
+export function resolveNmapTimeoutMs({
+  aggressive = false,
+  udp = false,
+  autoModeExecution = false,
+  env = process.env,
+} = {}) {
+  if (udp) {
+    if (autoModeExecution) {
+      return clampInt(env.GHOSTRECON_AUTO_NMAP_UDP_TIMEOUT_MS, 180_000, 60_000, 600_000);
+    }
+    return Math.max(120_000, Number(env.GHOSTRECON_NMAP_UDP_TIMEOUT_MS || 2_700_000));
+  }
+  if (aggressive) {
+    if (autoModeExecution) {
+      return clampInt(env.GHOSTRECON_AUTO_NMAP_AGGRESSIVE_TIMEOUT_MS, 300_000, 60_000, 900_000);
+    }
+    return Math.max(300_000, Number(env.GHOSTRECON_NMAP_AGGRESSIVE_TIMEOUT_MS || 7_200_000));
+  }
+  return 660_000;
+}
+
 function clipText(value, max = 260) {
   const s = String(value || '').replace(/\s+/g, ' ').trim();
   if (s.length <= max) return s;
@@ -2206,6 +2236,7 @@ export async function executeInfoDisclosureHunter({ targetUrl, cap, log, include
 
 export async function runKaliAggressiveScan({
   domain,
+  targetUrl = null,
   subdomainsAlive,
   cap,
   log,
@@ -2259,6 +2290,8 @@ export async function runKaliAggressiveScan({
   /** Revalida o endereço DNS pinado imediatamente antes do socket FTP. */
   ftpAddressAllowed = () => true,
   signal = null,
+  /** AUTO limits heavy Nmap passes so later modules retain execution time. */
+  autoModeExecution = false,
   /** Dependências restritas à descoberta, para fixtures sem executar scanners. */
   directoryDiscoveryDeps = {},
 }) {
@@ -2345,7 +2378,24 @@ export async function runKaliAggressiveScan({
   if (runNmapBase) log(`Alvos nmap (${hosts.length}): ${hosts.join(', ')}`, 'info');
 
   const apexLit = hostLiteralForUrl(domain);
-  const baseUrlsForFfuf = [`https://${apexLit}/`, `http://${apexLit}/`];
+  const explicitBase = (() => {
+    if (!targetUrl) return null;
+    try {
+      const parsed = new URL(String(targetUrl));
+      if (parsed.hostname.toLowerCase() !== String(domain).toLowerCase()) return null;
+      parsed.username = '';
+      parsed.password = '';
+      parsed.search = '';
+      parsed.hash = '';
+      if (!parsed.pathname.endsWith('/')) parsed.pathname = `${parsed.pathname}/`;
+      return parsed.href;
+    } catch { return null; }
+  })();
+  // Um alvo URL explícito sela scheme+porta+base path. Não inventar
+  // http/https na porta default para scanners de diretório/nuclei.
+  const baseUrlsForFfuf = explicitBase
+    ? [explicitBase]
+    : [`https://${apexLit}/`, `http://${apexLit}/`];
   const seenQueries = new Set();
   const seenExploitGoogle = new Set();
   const exploitGoogleMax = Math.max(
@@ -2473,6 +2523,7 @@ export async function runKaliAggressiveScan({
     try {
       tcpNmapRows = await nmapRunner(hosts, log, {
         aggressive: runNmapAggressive,
+        autoModeExecution,
         // A capability FTP nunca herda scripts/flags arbitrárias do ambiente.
         forceSafeProfile: allowFtpAnonymousAudit && !runNmapAggressive,
         execOpts,
@@ -2605,7 +2656,7 @@ export async function runKaliAggressiveScan({
           `nmap UDP (módulo kali_nmap_udp): -sU -A em portas sensíveis — ${hostsUdp.length} host(s) (máx. ${maxUdpHosts}). Portas: env GHOSTRECON_NMAP_UDP_PORTS ou lista por defeito.`,
           'info',
         );
-        const udpRows = await runNmapUdpOnHosts(hostsUdp, log, { execOpts });
+        const udpRows = await runNmapUdpOnHosts(hostsUdp, log, { execOpts, autoModeExecution });
         await ingestNmapScanRows(udpRows, {
           log,
           addFinding,

@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolveForgeRoot } from './forge-store.mjs';
-import { FORGE_MIN_INDEPENDENT_REVIEW_QUORUM } from './code-review.mjs';
 import { isStrongForgeSandboxAttestation } from './sandbox-policy.mjs';
 import {
   computeForgeArtifactIntegrity,
@@ -125,29 +124,16 @@ function assertExpectedActivationBinding({
   return target;
 }
 
-function hasIndependentReviewGate(verdict) {
-  return verdict?.aiReview?.approved === true
-    && verdict?.aiReview?.authorExcluded === true
-    && verdict?.aiReview?.quorumMet === true
-    && verdict?.aiReview?.minimumQuorum === FORGE_MIN_INDEPENDENT_REVIEW_QUORUM
-    && Number(verdict?.aiReview?.independentVotes) >= FORGE_MIN_INDEPENDENT_REVIEW_QUORUM;
-}
-
 function hasApprovalGates(verdict, artifactIntegrity) {
   return verdict?.validation?.ok === true
     && verdict?.tests?.ok === true
     && isStrongForgeSandboxAttestation(verdict?.tests?.isolation)
-    && hasIndependentReviewGate(verdict)
     && sameForgeArtifactIntegrity(
       verdict?.validation?.artifactIntegrity,
       artifactIntegrity,
     )
     && sameForgeArtifactIntegrity(
       verdict?.tests?.artifactIntegrity,
-      artifactIntegrity,
-    )
-    && sameForgeArtifactIntegrity(
-      verdict?.aiReview?.artifactIntegrity,
       artifactIntegrity,
     );
 }

@@ -61,7 +61,7 @@ export function inferOwaspTags(f) {
   if (t === 'tls' && tlsWeakRe.test(blob) && !set.has('A02')) add(set, 'A04');
   if (blob.match(/\b(jwt|api[_-]?key|bearer|client_secret|private[_-]?key|BEGIN RSA|BEGIN OPENSSH)\b/)) add(set, 'A04');
 
-  if (t === 'github' || meta.includes('github code search') || meta.includes('shannon') || meta.includes('wpscan')) add(set, 'A03');
+  if (t === 'github' || meta.includes('github code search') || meta.includes('wpscan')) add(set, 'A03');
   if (t === 'intel' && /clone|repository|package\.json|npm|pip|maven|gradle/i.test(blob)) add(set, 'A03');
 
   if (/\/(login|signin|oauth|auth|session|register|reset-password)(\/|$)/i.test(url) || /auth=required|session|cookie|csrf/i.test(blob))

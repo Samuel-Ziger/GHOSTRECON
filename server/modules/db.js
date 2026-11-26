@@ -557,8 +557,8 @@ export async function listBrainCategories() {
   }
 }
 
-export async function createBrainCategory(title) {
-  return sqlite.createBrainCategory(title);
+export async function createBrainCategory(title, description = '') {
+  return sqlite.createBrainCategory(title, description);
 }
 
 export async function updateBrainCategoryDescription(id, description) {

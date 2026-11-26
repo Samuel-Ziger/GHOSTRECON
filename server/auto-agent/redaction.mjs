@@ -1,7 +1,17 @@
 const REDACTED = '[REDACTED]';
 
-// Âncoras ^/$ evitam falsos positivos como sessionTimeoutMs (política de retomada).
-const SENSITIVE_KEY = /^(?:authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|csrf[_-]?token|xsrf[_-]?token|auth[_-]?token|token|secret|password|passwd|passphrase|private[_-]?key|credential|session|sessionid|session[_-]?token|sid)$/i;
+// A comparação canônica cobre JSON, env vars e headers sem depender do estilo
+// (snake_case, kebab-case ou camelCase). Mantemos account IDs, ARNs, regiões e
+// nomes de bucket fora desta lista: são metadados de exposição, não credenciais.
+const SENSITIVE_CANONICAL_KEY = /^(?:authorization|proxyauthorization|cookie|setcookie|apikey|xapikey|accesstoken|refreshtoken|idtoken|csrftoken|xsrftoken|authtoken|token|secret|clientsecret|password|passwd|passphrase|privatekey|credential|session|sessionid|sessiontoken|sid|awsaccesskeyid|awssecretaccesskey|awssessiontoken|awslambdametadatatoken|awsmetadata(?:session)?token|cardnumber|creditcardnumber|paymentcardnumber|pan|cvv|cvc|cardverificationvalue|cardsecuritycode)$/i;
+
+function canonicalSensitiveKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isSensitiveKey(value) {
+  return SENSITIVE_CANONICAL_KEY.test(canonicalSensitiveKey(value));
+}
 
 const SECRET_PATTERNS = Object.freeze([
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
@@ -14,6 +24,9 @@ const SECRET_PATTERNS = Object.freeze([
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g,
 ]);
+
+const PAYMENT_KEY_VALUE_PATTERN = /((?:["']?)(?:card[-_ ]?number|credit[-_ ]?card[-_ ]?number|payment[-_ ]?card[-_ ]?number|pan|cvv|cvc|card[-_ ]?(?:verification[-_ ]?value|security[-_ ]?code))(?:["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&\r\n}]+)/gi;
+const AWS_KEY_VALUE_PATTERN = /((?:["']?)(?:aws[-_ ]?(?:access[-_ ]?key[-_ ]?id|secret[-_ ]?access[-_ ]?key|session[-_ ]?token|lambda[-_ ]?metadata[-_ ]?token|metadata[-_ ]?(?:session[-_ ]?)?token))(?:["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&\r\n}]+)/gi;
 
 const KEY_VALUE_PATTERN = /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|csrf[-_]?token|xsrf[-_]?token|auth[-_]?token|token|secret|client[-_]?secret|password|passwd|passphrase|credential|session(?:id|[-_]?token)?|sid)\b\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&\r\n}]+)/gi;
 const SENSITIVE_HEADER_PATTERN = /(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-csrf-token|x-xsrf-token)\s*:\s*)[^\r\n]*/gi;
@@ -57,6 +70,8 @@ function redactString(value, env = process.env, { cloud = false } = {}) {
   let text = String(value ?? '');
   for (const pattern of SECRET_PATTERNS) text = text.replace(pattern, REDACTED);
   text = text
+    .replace(PAYMENT_KEY_VALUE_PATTERN, `$1${REDACTED}`)
+    .replace(AWS_KEY_VALUE_PATTERN, `$1${REDACTED}`)
     .replace(SENSITIVE_HEADER_PATTERN, `$1${REDACTED}`)
     .replace(QUOTED_KEY_PATTERN, `$1"${REDACTED}"`)
     .replace(KEY_VALUE_PATTERN, `$1${REDACTED}`)
@@ -109,7 +124,7 @@ function redactValue(value, {
     const entries = Object.entries(value).slice(0, maxObjectKeys);
     for (const [key, item] of entries) {
       const safeKey = redactString(key, env, { cloud: false }).slice(0, 300);
-      out[safeKey] = SENSITIVE_KEY.test(key) && !preserveSensitiveKeys.has(key)
+      out[safeKey] = isSensitiveKey(key) && !preserveSensitiveKeys.has(key)
         ? REDACTED
         : redactValue(item, {
             depth: depth + 1,
@@ -141,13 +156,47 @@ export function redactAutoText(value, env = process.env, options = {}) {
   }
 }
 
+/**
+ * Representa um alvo em logs, planos e eventos sem alterar o alvo bruto usado
+ * pelo runtime. URLSearchParams cobre nomes percent-encoded que a regex textual
+ * não enxerga; a redação textual continua cobrindo JWTs e tokens em valores de
+ * parâmetros com nomes não convencionais.
+ */
+export function redactPublicTarget(value, env = process.env) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return redactString(raw, env, { cloud: false });
+    }
+    const entries = [...parsed.searchParams.entries()];
+    parsed.search = '';
+    for (const [key, child] of entries) {
+      const canonical = canonicalSensitiveKey(key);
+      const sensitive = isSensitiveKey(key)
+        || /^(?:sig|signature|xamzsignature|xamzcredential|xamzsecuritytoken)$/.test(canonical);
+      parsed.searchParams.append(
+        key,
+        sensitive ? REDACTED : redactString(child, env, { cloud: false }),
+      );
+    }
+    if (parsed.hash) {
+      parsed.hash = redactString(parsed.hash, env, { cloud: false });
+    }
+    return redactString(parsed.href, env, { cloud: false });
+  } catch {
+    return redactString(raw, env, { cloud: false });
+  }
+}
+
 export function redactAutoValue(value, options = {}) {
   // Persistência estrutural: cloud=false por padrão (preserva SHA-256 de plano/checkpoint).
   return redactValue(value, { cloud: false, ...options });
 }
 
 export function isSensitiveAutoKey(key) {
-  return SENSITIVE_KEY.test(String(key || ''));
+  return isSensitiveKey(key);
 }
 
 export const AUTO_REDACTED_VALUE = REDACTED;

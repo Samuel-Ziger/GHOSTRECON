@@ -19,6 +19,31 @@ PORT="${PORT:-8000}"
 HOST="${HOST:-${GHOST_HOST:-127.0.0.1}}"
 HEX_PORT="${HEXSTRIKE_PORT:-8888}"
 
+ensure_ghost_frontend() {
+  local frontend_dir="$SCRIPT_DIR/frontend"
+  local dist_index="$frontend_dir/dist/index.html"
+  local rebuild=0
+  if [ ! -f "$dist_index" ]; then
+    rebuild=1
+  elif find "$frontend_dir/src" "$frontend_dir/index.html" "$frontend_dir/package.json" \
+      -type f -newer "$dist_index" -print -quit 2>/dev/null | grep -q .; then
+    rebuild=1
+  fi
+  if [ "$rebuild" -eq 0 ]; then
+    return
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "ERRO: npm e necessario para compilar a interface React do GHOST." >&2
+    exit 1
+  fi
+  echo "[GHOST] Compilando interface React local..."
+  (
+    cd "$frontend_dir"
+    if [ ! -d node_modules ]; then npm ci; fi
+    npm run build
+  )
+}
+
 # ── HexStrike (opcional) ─────────────────────────────────────────
 start_hexstrike_background() {
   if [ ! -f "$HEX_DIR/hexstrike_server.py" ]; then
@@ -58,6 +83,7 @@ else
 fi
 
 # ── GHOST backend ───────────────────────────────────────────────
+ensure_ghost_frontend
 cd "$SCRIPT_DIR/backend"
 
 if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":${PORT} "; then

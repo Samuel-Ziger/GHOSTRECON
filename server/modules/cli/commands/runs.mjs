@@ -44,8 +44,11 @@ export async function runsCommand(argv) {
       process.stderr.write(`runs: ${parsedTarget.message || 'target invalido'}\n`);
       return 2;
     }
-    const t = parsedTarget.target.toLowerCase();
-    runs = (runs || []).filter((r) => String(r.target || '').toLowerCase() === t);
+    const accepted = new Set([
+      parsedTarget.target,
+      parsedTarget.targetUrl,
+    ].filter(Boolean).map((value) => String(value).toLowerCase()));
+    runs = (runs || []).filter((r) => accepted.has(String(r.target || '').toLowerCase()));
   }
   if (opts.limit && Array.isArray(runs)) runs = runs.slice(0, opts.limit);
 

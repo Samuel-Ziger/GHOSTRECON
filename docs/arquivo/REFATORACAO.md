@@ -1,5 +1,8 @@
 # Plano de refatoração — GHOSTRECON
 
+> **ARQUIVO HISTÓRICO (2026-11-18):** este blueprint registra uma topologia
+> anterior. Rotas e integrações de IA retiradas não fazem parte do produto atual.
+
 Documento técnico focado em **como reestruturar o código** sem alterar o comportamento operacional. Complementa o [ANALISE-PROJETO.md](./ANALISE-PROJETO.md) (diagnóstico geral) com blueprint executável.
 
 **Gerado em:** 2026-06-17  

@@ -193,6 +193,70 @@ test('catálogo FrameSeven expõe auth somente com ambos os toggles', async (t) 
   assert.notEqual(changed.engines.frameseven.identity.sha256, firstIdentity.sha256);
 });
 
+test('catálogo e plano Auto selam o NeuroSploit como engine intrusiva de primeira classe', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-neurosploit-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const binary = path.join(root, 'engines', 'neurosploit', 'neurosploit-rs', 'target', 'release', 'neurosploit');
+  await fs.mkdir(path.dirname(binary), { recursive: true });
+  await fs.writeFile(binary, 'neurosploit-fixture-v1', { mode: 0o755 });
+
+  const discovered = await buildAutoToolCatalog({
+    ghostRoot: root,
+    includeNeuroSploit: true,
+    includeIntrusive: true,
+  });
+  assert.equal(discovered.engines.neurosploit.available, true);
+  assert.match(discovered.engines.neurosploit.identity.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(discovered.engines.neurosploit.contextContract, 'ghostrecon.neurosploit-auto-context.v1');
+
+  const catalog = catalogOf([{ id: 'subdomains', class: 'passive' }]);
+  catalog.engines.neurosploit = discovered.engines.neurosploit;
+  const input = {
+    plan: { target: 'lab.example.test', action: 'run_modules', modules: ['subdomains'] },
+    catalog,
+    body: {
+      includeNeuroSploit: true,
+      engagementId: 'ENG-LAB',
+      neurosploit: {
+        profileId: 7,
+        environment: 'lab',
+        votes: 3,
+        recon: 1,
+        chainDepth: 2,
+        timeoutMs: 120_000,
+        codexCli: true,
+        mcpServers: ['codex:mind', 'ghostrecon'],
+      },
+    },
+    autonomyLevel: 'authorized',
+  };
+  const effective = buildEffectiveAutoPlan(input);
+  assert.equal(effective.engines.neurosploit.enabled, true);
+  assert.equal(effective.engines.neurosploit.profileId, 7);
+  assert.equal(effective.engines.neurosploit.codexCli, true);
+  assert.deepEqual(effective.engines.neurosploit.mcpServers, ['codex:mind', 'ghostrecon']);
+  assert.ok(effective.expandedModules.includes('neurosploit_auto'));
+  assert.ok(effective.intrusiveModules.includes('neurosploit_auto'));
+  assert.equal(effective.requiresHumanApproval, true);
+  assert.notEqual(effective.hash, buildEffectiveAutoPlan({
+    ...input,
+    body: { ...input.body, neurosploit: { ...input.body.neurosploit, profileId: 8 } },
+  }).hash);
+  assert.notEqual(effective.hash, buildEffectiveAutoPlan({
+    ...input,
+    body: { ...input.body, neurosploit: { ...input.body.neurosploit, mcpServers: ['ghostrecon'] } },
+  }).hash);
+  assert.throws(() => buildEffectiveAutoPlan({ ...input, autonomyLevel: 'observation' }), /autonomia autorizada/);
+
+  await fs.writeFile(binary, 'neurosploit-fixture-v2');
+  const changed = await buildAutoToolCatalog({
+    ghostRoot: root,
+    includeNeuroSploit: true,
+    includeIntrusive: true,
+  });
+  assert.notEqual(changed.engines.neurosploit.identity.sha256, discovered.engines.neurosploit.identity.sha256);
+});
+
 test('catálogo Forge filtra por alvo e expõe identidade selada do runtime', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-auto-forge-catalog-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -248,14 +312,6 @@ test('catálogo Forge filtra por alvo e expõe identidade selada do runtime', as
             challenge: `${forgeId}-challenge`,
             runner: 'test-fixture',
           }),
-        },
-        aiReview: {
-          approved: true,
-          authorExcluded: true,
-          quorumMet: true,
-          minimumQuorum: 2,
-          independentVotes: 2,
-          artifactIntegrity,
         },
         policy: { pipelineEnabled: true },
       })),

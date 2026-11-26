@@ -155,8 +155,6 @@ export function createGhostCommandRunner({ runPipeline, config = ghostCommandCon
         outOfScope: job.outOfScope.join(','),
         projectName: `ghostcommand-${job.target}`,
         autoAiReports: false,
-        shannonPrecheck: false,
-        shannonSkipDepsVerify: true,
         navigatorMode: false,
         navegation: { enabled: false },
         engine: 'both',

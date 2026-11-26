@@ -1870,7 +1870,6 @@
       xss_vibes: ['TA0001'],
       verify: ['TA0001', 'TA0043'],
       webshell_probe: ['TA0001'],
-      pentestgpt: ['TA0001', 'TA0043'],
       assets: ['TA0042', 'TA0043'],
     };
     /** Ordem do pipeline na UI + marcos Kali detalhados (alinhados com NDJSON do servidor). */
@@ -1902,8 +1901,6 @@
       'xss_vibes',
       'assets',
       'score',
-      'shannon',
-      'pentestgpt',
     ];
     function pipeDisplayName(id) {
       const k = String(id || '');
@@ -1935,8 +1932,6 @@
         xss_vibes: 'xss_vibes',
         assets: 'assets',
         score: 'prioritize',
-        shannon: 'Shannon',
-        pentestgpt: 'PentestGPT',
       };
       return map[k] || k.replace(/_/g, ' ');
     }

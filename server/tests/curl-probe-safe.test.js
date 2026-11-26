@@ -125,6 +125,21 @@ test('curl_probe redige valores de query em finding e reprodução', async () =>
   assert.doesNotMatch(JSON.stringify(findings), new RegExp(secret));
 });
 
+test('curl_probe preserva scheme, porta e path do target explícito no runtime', async () => {
+  const calls = [];
+  await runCurlProbeModule({
+    target: 'http://target.test:30472/base/api?view=full',
+    persist: false,
+    urlAllowed: (url) => new URL(url).origin === 'http://target.test:30472',
+    execCurlImpl: async (opts) => {
+      calls.push(opts.url);
+      return response({ method: opts.method, url: opts.url });
+    },
+  });
+  assert.ok(calls.length > 0);
+  assert.ok(calls.every((url) => url === 'http://target.test:30472/base/api?view=full'));
+});
+
 test('curl_probe falha explicitamente quando o executor não produz resposta', async () => {
   await assert.rejects(runCurlProbeModule({
     target: 'target.test',

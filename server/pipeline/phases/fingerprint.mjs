@@ -1,4 +1,5 @@
 import { randomBytes } from 'crypto';
+import { redactPublicTarget } from '../../auto-agent/redaction.mjs';
 import { sevToPrio, sevToScore } from '../../lib/severity.mjs';
 import { fetchCrtShSubdomains } from '../../modules/subdomains.js';
 import { resolves } from '../../modules/dns.js';
@@ -130,7 +131,6 @@ export async function runFingerprintPhase(s) {
     profile,
     outOfScopeClientRaw,
     projectNameRaw,
-    shannonGithubRepos,
     identityCtrl,
     navegation,
     navigatorMode,
@@ -161,8 +161,8 @@ export async function runFingerprintPhase(s) {
     if (!apexHostIsIp && modules.includes('lovable_fingerprint')) {
       pipe('lovable_fingerprint', 'active');
       try {
-        const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
-        log(`Lovable fingerprint: analisando ${targetUrl}`, 'info');
+        const targetUrl = s.targetUrl || `https://${hostLiteralForUrl(domain)}/`;
+        log(`Lovable fingerprint: analisando ${redactPublicTarget(targetUrl)}`, 'info');
         const lov = await fingerprintLovable(targetUrl, {
           fetch: s.fetchImpl,
           pocDir: path.join(ROOT, 'pocs', 'supabase'),
@@ -195,7 +195,7 @@ export async function runFingerprintPhase(s) {
     if (!apexHostIsIp && modules.includes('supabase_audit')) {
       pipe('supabase_audit', 'active');
       try {
-        const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
+        const targetUrl = s.targetUrl || `https://${hostLiteralForUrl(domain)}/`;
 
         // Reutiliza contexto do lovable_fingerprint; senão extrai URL/key/token dos bundles do alvo
         let auditCtx = s.lovableContext;
@@ -259,7 +259,7 @@ export async function runFingerprintPhase(s) {
     if (!apexHostIsIp && modules.includes('firebase_audit')) {
       pipe('firebase_audit', 'active');
       try {
-        const targetUrl = `https://${hostLiteralForUrl(domain)}/`;
+        const targetUrl = s.targetUrl || `https://${hostLiteralForUrl(domain)}/`;
         log('Firebase audit: descobrindo config nos bundles JS', 'info');
         const { config, bundleText } = await discoverFirebaseFromTarget(targetUrl, {
           log,

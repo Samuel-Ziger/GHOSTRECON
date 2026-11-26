@@ -5,17 +5,19 @@
 // -------------------------------
 // HELPERS DE DOM
 // -------------------------------
-const modal      = document.getElementById("modalOverlay");
-const modalIcon  = document.getElementById("modalIcon");
-const modalTitle = document.getElementById("modalTitle");
-const modalText  = document.getElementById("modalText");
-const verifyBtn  = document.getElementById("verifyBtn");
-const linkInput  = document.getElementById("linkInput");
+function legacyUiAdapter() {
+const documentRef = typeof document === "undefined" ? null : document;
+const modal      = documentRef?.getElementById("modalOverlay") || null;
+const modalIcon  = documentRef?.getElementById("modalIcon") || null;
+const modalTitle = documentRef?.getElementById("modalTitle") || null;
+const modalText  = documentRef?.getElementById("modalText") || null;
+const verifyBtn  = documentRef?.getElementById("verifyBtn") || null;
+const linkInput  = documentRef?.getElementById("linkInput") || null;
 
 // -------------------------------
 // URL BAR EDITÁVEL
 // -------------------------------
-const urlTextInput = document.getElementById("urlText");
+const urlTextInput = documentRef?.getElementById("urlText") || null;
 if (urlTextInput) {
   urlTextInput.addEventListener("focus", function () {
     window._tiltPaused = true;
@@ -113,7 +115,8 @@ function fecharModal() {
   isSwiping = false; touchStartY = 0; touchCurrentY = 0;
 }
 
-modal.addEventListener("click", e => { if (e.target === modal) fecharModal(); });
+modal?.addEventListener("click", e => { if (e.target === modal) fecharModal(); });
+}
 
 // ============================================================
 // NOVA FUNÇÃO: VERIFICAÇÃO DE WHITELIST CORRIGIDA
@@ -696,9 +699,89 @@ function calcVeredicto(score) {
   return               { tipo: "danger",     titulo: "✖ Alto Risco de Desinformação",  cor: "#ff3b3b" };
 }
 
+/**
+ * Motor analítico sem dependência da interface. Mantém exatamente a soma e
+ * a suavização de fontes confiáveis usadas pela versão anterior.
+ */
+function analisarConteudo(url, textoExtraido = "", htmlBruto = "") {
+  const domRes = analisarDominio(url);
+  const urlExtra = analisarURLAvancada(url);
+  let scoreTotal = domRes.score + urlExtra.reduce((s, fator) => s + fator.peso, 0);
+  let fatoresCombinados = [...domRes.fatores, ...urlExtra];
+  let totalPalavras = 0;
+  const ehConfiavel = dominioEstaNaWhitelist(url.hostname.toLowerCase());
+
+  if (textoExtraido.length > 150) {
+    const textoRes = analisarTextoCompleto(textoExtraido);
+    const consistRes = verificarConsistenciaInterna(textoExtraido);
+    const estrutHTML = htmlBruto.length > 100 ? analisarEstruturaHTML(htmlBruto) : [];
+    let pesoTexto = textoRes.score;
+    let pesoConsist = consistRes.reduce((s, fator) => s + fator.peso, 0);
+    let pesoEstrut = estrutHTML.reduce((s, fator) => s + fator.peso, 0);
+
+    if (ehConfiavel) {
+      pesoTexto = textoRes.fatores
+        .filter((fator) => fator.peso <= -3)
+        .reduce((s, fator) => s + Math.round(fator.peso * 0.5), 0)
+        + textoRes.fatores.filter((fator) => fator.peso > 0)
+          .reduce((s, fator) => s + fator.peso, 0);
+      pesoConsist = consistRes
+        .filter((fator) => fator.peso <= -3)
+        .reduce((s, fator) => s + Math.round(fator.peso * 0.5), 0)
+        + consistRes.filter((fator) => fator.peso > 0)
+          .reduce((s, fator) => s + fator.peso, 0);
+      pesoEstrut = estrutHTML.filter((fator) => fator.peso > 0)
+        .reduce((s, fator) => s + fator.peso, 0)
+        + estrutHTML.filter((fator) => fator.peso <= -3)
+          .reduce((s, fator) => s + Math.round(fator.peso * 0.5), 0);
+    }
+
+    scoreTotal += pesoTexto + pesoConsist + pesoEstrut;
+    fatoresCombinados = [
+      ...fatoresCombinados,
+      ...textoRes.fatores,
+      ...consistRes,
+      ...estrutHTML,
+    ];
+    totalPalavras = textoRes.totalPalavras;
+  } else {
+    fatoresCombinados.push({
+      peso: 0,
+      texto: "ℹ Conteúdo não extraído — análise baseada no domínio e URL",
+    });
+  }
+
+  const negativos = fatoresCombinados
+    .filter((fator) => fator.peso < 0)
+    .sort((a, b) => a.peso - b.peso)
+    .map((fator) => fator.texto);
+  const positivos = fatoresCombinados
+    .filter((fator) => fator.peso > 0)
+    .map((fator) => fator.texto);
+  const neutros = fatoresCombinados
+    .filter((fator) => fator.peso === 0)
+    .map((fator) => fator.texto);
+  const scoreLabel = scoreTotal >= 0 ? `+${scoreTotal}` : String(scoreTotal);
+
+  return {
+    score: scoreTotal,
+    totalPalavras,
+    veredicto: calcVeredicto(scoreTotal),
+    motivos: [
+      `🔗 Domínio: ${url.hostname}`,
+      totalPalavras ? `📄 Palavras analisadas: ${totalPalavras}` : null,
+      `📊 Pontuação de confiabilidade: ${scoreLabel}`,
+      ...negativos,
+      ...positivos,
+      ...neutros,
+    ].filter(Boolean),
+  };
+}
+
 // ============================================================
 // VERIFICAÇÃO PRINCIPAL (COM PROTEÇÃO CONTRA FALSOS POSITIVOS)
 // ============================================================
+function legacyVerificationAdapter() {
 async function verificarLink() {
   let valor = linkInput.value.trim();
   if (valor === "") {
@@ -819,10 +902,12 @@ async function verificarLink() {
   verifyBtn.textContent = "VERIFICAR";
   abrirModalComDetalhes(veredicto.tipo, veredicto.titulo, motivosArray, veredicto.cor);
 }
+}
 
 // -------------------------------
 // EVENT LISTENERS
 // -------------------------------
+function legacyInteractionAdapter() {
 if (linkInput) linkInput.addEventListener("keypress", e => { if (e.key === "Enter") verificarLink(); });
 if (verifyBtn) verifyBtn.addEventListener("click", verificarLink);
 
@@ -960,3 +1045,16 @@ if (window.innerWidth <= 768) {
     }
   });
 }
+}
+
+export {
+  analisarConteudo,
+  analisarDominio,
+  analisarEstruturaHTML,
+  analisarTextoCompleto,
+  analisarURLAvancada,
+  calcVeredicto,
+  dominioEstaNaWhitelist,
+  extrairTextoHTML,
+  verificarConsistenciaInterna,
+};

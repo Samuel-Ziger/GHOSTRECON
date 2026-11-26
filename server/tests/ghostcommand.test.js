@@ -73,9 +73,16 @@ test('ghostcommand: runner rejects second target while running', async () => {
   release();
 });
 
+test('ghostcommand: VPS policy rejeita módulos removidos explicitamente', () => {
+  assert.throws(
+    () => sanitizeVpsReconModules(['http', 'shannon_whitebox']),
+    (error) => error?.code === 'MODULE_RETIRED',
+  );
+});
+
 test('ghostcommand: VPS policy blocks forbidden modules but allows vigolium_dast', () => {
   assert.deepEqual(
-    sanitizeVpsReconModules(['http', 'tor', 'navegation', 'shannon_whitebox', 'vigolium_audit', 'vigolium_dast']),
+    sanitizeVpsReconModules(['http', 'tor', 'navegation', 'vigolium_audit', 'vigolium_dast']),
     ['http', 'vigolium_dast'],
   );
 });

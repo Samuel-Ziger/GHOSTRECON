@@ -7,6 +7,7 @@ import {
   buildSqlmapArgs,
   buildSqlmapCurlAuthConfig,
   buildSqlmapPreflightCurlArgs,
+  classifySqlmapPreflight,
   createSqlmapAuthTransport,
   formatSqlmapCommandForLog,
   runSqlmapModule,
@@ -100,4 +101,40 @@ test('sqlmap propaga cancelamento sem executar subprocesso ou rede', async () =>
     }),
     /operator_cancelled|cancelado/i,
   );
+});
+
+test('preflight aceita diferencial booleano repetível e remove reflexão do payload', () => {
+  const row = (body, code = 200) => ({ ok: true, body, code });
+  const result = classifySqlmapPreflight({
+    baselineA: row('results for T-Shirt: all products'),
+    baselineB: row('results for T-Shirt: all products'),
+    quote: row('generic page'),
+    booleanTrue: row("results for T-Shirt' AND '1'='1: all products"),
+    booleanFalseA: row("results for T-Shirt' AND '1'='2: empty"),
+    booleanFalseB: row("results for T-Shirt' AND '1'='2: empty"),
+    baseValue: 'T-Shirt',
+    trueValue: "T-Shirt' AND '1'='1",
+    falseValue: "T-Shirt' AND '1'='2",
+  });
+  assert.equal(result.interesting, true);
+  assert.equal(result.kind, 'stable_boolean_differential');
+});
+
+test('preflight recusa 500 genérico, WAF e resposta instável', () => {
+  const row = (body, code = 200) => ({ ok: true, body, code });
+  const generic500 = classifySqlmapPreflight({
+    baselineA: row('normal'), baselineB: row('normal'), quote: row('server error', 500),
+    booleanTrue: row('normal'), booleanFalseA: row('normal'), booleanFalseB: row('normal'),
+  });
+  const waf = classifySqlmapPreflight({
+    baselineA: row('normal'), baselineB: row('normal'), quote: row('blocked', 403),
+    booleanTrue: row('blocked', 403), booleanFalseA: row('blocked', 403), booleanFalseB: row('blocked', 403),
+  });
+  const unstable = classifySqlmapPreflight({
+    baselineA: row('dynamic-a'), baselineB: row('dynamic-b'), quote: row('normal'),
+    booleanTrue: row('dynamic-a'), booleanFalseA: row('empty'), booleanFalseB: row('empty'),
+  });
+  assert.equal(generic500.interesting, false);
+  assert.equal(waf.interesting, false);
+  assert.equal(unstable.interesting, false);
 });

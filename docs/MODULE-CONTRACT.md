@@ -107,9 +107,6 @@ Os IDs públicos dos módulos permanecem estáveis, com estas distinções:
 - InfoHunter: exit code/parse inválido e timeout não viram sucesso; stderr e
   stdout bruto não são publicados como erro. O pipeline de `info_disclosure_errors`
   preserva falha/cancelamento em vez de emitir `done` incondicional.
-- Shannon: relatório IA normalizado como candidato. `cleanup.requested=true`
-  confirma somente aceitação do pedido de cancelamento; sem término observado,
-  `cleanup.confirmed` continua falso.
 - Swarm: indisponível até plano nativo restrito. Autopilot: somente prévia;
   nenhuma saída de exemplo pode ser importada como evidência de scan.
 

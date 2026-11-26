@@ -29,14 +29,33 @@ import {
   buildVigoliumScanArgs,
   runVigoliumScan,
   sanitizeVigoliumHtmlReport,
+  sanitizeVigoliumJsonlArtifact,
 } from '../../bridge/vigolium-runner.mjs';
-import { createVigoliumAuthTransport } from '../../bridge/vigolium-auth-transport.mjs';
+import {
+  createVigoliumAuthTransport,
+  vigoliumArgsForLog,
+} from '../../bridge/vigolium-auth-transport.mjs';
 import { vigoliumRowToFinding, parseVigoliumJsonl } from '../../bridge/findings-normalizer.mjs';
 import { getVigoliumCapabilities } from '../../bridge/vigolium-capabilities.mjs';
 import { logVigoliumFindingsSummary } from '../../bridge/vigolium-log.mjs';
 import { assertVigoliumBinaryIdentity } from '../../bridge/vigolium-binary-integrity.mjs';
 
 describe('vigolium bridge — config', () => {
+  it('mantém target bruto no argv de execução e redige somente sua representação de log', () => {
+    const secret = 'opaque-vigolium-target-token';
+    const rawTarget = `http://127.0.0.1:30472/api?view=full&access_token=${secret}`;
+    const built = buildVigoliumScanArgs({
+      domain: '127.0.0.1',
+      targetUrl: rawTarget,
+      vigoliumVpsProfile: false,
+    });
+    assert.equal(built.args[built.args.indexOf('-t') + 1], rawTarget);
+    const publicArgs = vigoliumArgsForLog(built.args).join(' ');
+    assert.match(publicArgs, /127\.0\.0\.1:30472\/api/);
+    assert.match(publicArgs, /REDACTED/);
+    assert.doesNotMatch(publicArgs, new RegExp(secret));
+  });
+
   it('sanitiza HTML autenticado no mesmo descritor antes de publicar', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-report-redaction-'));
     const reportPath = path.join(tmp, 'report.html');
@@ -59,6 +78,53 @@ describe('vigolium bridge — config', () => {
       assert.doesNotMatch(body, /\/home\/operator\/private-auth\.json/);
       assert.match(body, /\[REDACTED\]|<redacted>/);
       if (process.platform !== 'win32') assert.equal(stat.mode & 0o777, 0o600);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('reescreve JSONL persistente sem HTTP bruto, JWT, PAN, CVV ou AWS', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-jsonl-redaction-'));
+    const reportPath = path.join(tmp, 'findings.jsonl');
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.abcdefghijklmnopqrstuvwxyz123456';
+    const rawHttp = Buffer.from([
+      'POST /pay HTTP/1.1',
+      `Authorization: Bearer ${jwt}`,
+      '',
+      '{"card_number":"4111111111111111","cvv":"123","AWS_SESSION_TOKEN":"fixture-aws-session-token"}',
+    ].join('\r\n')).toString('base64');
+    try {
+      await fs.writeFile(reportPath, `${JSON.stringify({
+        type: 'finding',
+        'template-id': 'fixture',
+        info: { name: 'fixture', severity: 'high' },
+        request: rawHttp,
+        raw_request: rawHttp,
+        authorization: `Bearer ${jwt}`,
+      })}\nmalformed ${jwt}\n`);
+      const result = await sanitizeVigoliumJsonlArtifact(reportPath);
+      const [body, stat] = await Promise.all([fs.readFile(reportPath, 'utf8'), fs.stat(reportPath)]);
+      assert.equal(result.records, 1);
+      assert.doesNotMatch(body, /eyJhbGci|4111111111111111|fixture-aws-session-token|POST \/pay/);
+      assert.doesNotMatch(body, new RegExp(rawHttp));
+      assert.match(body, /REDACTED/);
+      if (process.platform !== 'win32') assert.equal(stat.mode & 0o777, 0o600);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('bloqueia HTML com segredo residual dentro de Base64', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ghostrecon-vig-html-gate-'));
+    const reportPath = path.join(tmp, 'report.html');
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.abcdefghijklmnopqrstuvwxyz123456';
+    const encoded = Buffer.from(`Authorization: Bearer ${jwt}`).toString('base64');
+    try {
+      await fs.writeFile(reportPath, `<html><body>${encoded}</body></html>`);
+      await assert.rejects(
+        sanitizeVigoliumHtmlReport(reportPath),
+        (error) => error?.code === 'VIGOLIUM_ARTIFACT_UNSAFE',
+      );
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
@@ -633,6 +699,7 @@ describe('vigolium PATH mode fake binary', () => {
     const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
     const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
     let calls = 0;
+    let rawLegacyReport = null;
     try {
       await fs.writeFile(binary, 'fixture');
       if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
@@ -646,11 +713,15 @@ describe('vigolium PATH mode fake binary', () => {
           vigoliumHtmlReport: true,
         }, {
           log: () => {},
-          runProcessImpl: async () => {
+          runProcessImpl: async (_file, args) => {
             calls += 1;
             if (calls === 1) {
               return { code: 0, stdout: '', stderr: '', timedOut: false };
             }
+            const outIndex = args.indexOf('-o');
+            rawLegacyReport = outIndex >= 0 ? args[outIndex + 1] : null;
+            assert.ok(rawLegacyReport);
+            await fs.writeFile(rawLegacyReport, 'AWS_SECRET_ACCESS_KEY=synthetic-secret-access-key-1234567890');
             const error = new Error('fixture HTML child did not terminate');
             error.code = 'PROCESS_UNTERMINATED';
             error.unterminated = true;
@@ -664,6 +735,7 @@ describe('vigolium PATH mode fake binary', () => {
         ),
       );
       assert.equal(calls, 2);
+      await assert.rejects(fs.access(rawLegacyReport), { code: 'ENOENT' });
     } finally {
       if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
       else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;
@@ -676,6 +748,7 @@ describe('vigolium PATH mode fake binary', () => {
     const binary = path.join(tmp, process.platform === 'win32' ? 'vigolium.exe' : 'vigolium');
     const oldBin = process.env.GHOSTRECON_VIGOLIUM_BIN;
     let calls = 0;
+    let rawOutputBase = null;
     try {
       await fs.writeFile(binary, 'fixture');
       if (process.platform !== 'win32') await fs.chmod(binary, 0o755);
@@ -696,6 +769,7 @@ describe('vigolium PATH mode fake binary', () => {
               const outputIndex = args.indexOf('-o');
               const outputBase = outputIndex >= 0 ? args[outputIndex + 1] : null;
               assert.ok(outputBase);
+              rawOutputBase = outputBase;
               await fs.writeFile(`${outputBase}.jsonl`, '');
               await fs.writeFile(`${outputBase}.sqlite`, 'sqlite-fixture');
               return { code: 0, stdout: '', stderr: '', timedOut: false };
@@ -709,6 +783,8 @@ describe('vigolium PATH mode fake binary', () => {
         (error) => error?.code === 'PROCESS_ABORTED' && error?.recoverable === false,
       );
       assert.equal(calls, 2);
+      await assert.rejects(fs.access(`${rawOutputBase}.jsonl`), { code: 'ENOENT' });
+      await assert.rejects(fs.access(`${rawOutputBase}.sqlite`), { code: 'ENOENT' });
     } finally {
       if (oldBin == null) delete process.env.GHOSTRECON_VIGOLIUM_BIN;
       else process.env.GHOSTRECON_VIGOLIUM_BIN = oldBin;

@@ -1,5 +1,5 @@
 /**
- * Parse de URLs / `owner/repo` colados na UI (Shannon / bug bounty) para o formato usado em `cloneGithubReposForTarget`.
+ * Parse de URLs / `owner/repo` informados pelo operador para o formato usado em `cloneGithubReposForTarget`.
  */
 
 const MAX_DEFAULT = 10;

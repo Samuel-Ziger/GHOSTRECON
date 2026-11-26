@@ -144,10 +144,61 @@ export function shouldRunWafFingerprint(state) {
     || state?.runtimeProfile?.name !== 'quick';
 }
 
+/** Constrói seeds HTTP sem degradar uma URL explícita para 80/443. */
+export function buildProbeUrls({ domain, hosts = [], targetUrl = null } = {}) {
+  const urls = [];
+  for (const h of hosts) {
+    if (h === domain && targetUrl) {
+      urls.push(String(targetUrl));
+      continue;
+    }
+    const hl = hostLiteralForUrl(h);
+    urls.push(`https://${hl}/`, `http://${hl}/`);
+  }
+  return [...new Set(urls)];
+}
+
+/** Indexa origens vivas por authority, preservando porta e base URL explícitas. */
+export function buildOriginIndex({
+  probeResults = [],
+  hostInScope = () => true,
+  targetUrl = null,
+  targetOrigin = null,
+} = {}) {
+  const origins = new Map();
+  for (const { r } of probeResults) {
+    if (!r?.ok || r.status <= 0 || r.status >= 500) continue;
+    let u;
+    try {
+      u = new URL(r.url);
+    } catch {
+      continue;
+    }
+    if (!hostInScope(u.hostname)) continue;
+    const prefer = u.protocol === 'https:' ? 2 : 1;
+    const authority = u.host.toLowerCase();
+    const current = origins.get(authority);
+    if (current && current.prefer >= prefer) continue;
+    const origin = u.origin;
+    const baseUrl = targetUrl && origin.toLowerCase() === String(targetOrigin || '').toLowerCase()
+      ? targetUrl
+      : `${origin}/`;
+    origins.set(authority, {
+      origin: `${origin}/`,
+      baseUrl,
+      hostname: u.hostname,
+      port: Number(u.port || (u.protocol === 'https:' ? 443 : 80)),
+      authority,
+      prefer,
+    });
+  }
+  return origins;
+}
+
 export async function runProbePhase(s) {
   const {
     domain, exactMatch, modules, emit, kaliMode, auth, profile,
-    outOfScopeClientRaw, projectNameRaw, shannonGithubRepos,
+    outOfScopeClientRaw, projectNameRaw,
     identityCtrl, navegation, navigatorMode,
     apexHostIsIp, bountyCtx, runtimeProfile, domainStr, outOfScopeList,
     findings, stats, addFinding, log, pipe, skipKaliSubPipe, progress,
@@ -164,19 +215,19 @@ export async function runProbePhase(s) {
       domain,
       ...new Set([...subdomainsAlive, ...(modules.includes('subdomains') ? [] : s.vtHostnames)]),
     ].filter((host) => s.hostInScope(host)).slice(0, runtimeProfile.maxHostsToProbe);
-    const urlsToProbe = [];
-    for (const h of hostsToProbe) {
-      const hl = hostLiteralForUrl(h);
-      urlsToProbe.push(`https://${hl}/`, `http://${hl}/`);
-    }
+    const uniqueUrlsToProbe = buildProbeUrls({
+      domain,
+      hosts: hostsToProbe,
+      targetUrl: s.targetUrl,
+    });
     if (runHttpProbe) {
       log(`HTTP probing em ${hostsToProbe.length} hosts (GET, timeout ${limits.probeTimeoutMs}ms)...`, 'info');
       emit({
         type: 'pipe_detail',
         name: 'alive',
         current: 0,
-        total: urlsToProbe.length,
-        label: `${hostsToProbe.length} host(s), ${urlsToProbe.length} URL(s)`,
+        total: uniqueUrlsToProbe.length,
+        label: `${hostsToProbe.length} host(s), ${uniqueUrlsToProbe.length} URL(s)`,
       });
     } else {
       log('HTTP probing omitido no Auto: capacidade http_probe não aprovada.', 'info');
@@ -185,21 +236,21 @@ export async function runProbePhase(s) {
     let completedAliveProbes = 0;
     const emitAliveProgress = (url) => {
       completedAliveProbes += 1;
-      const total = Math.max(1, urlsToProbe.length);
+      const total = Math.max(1, uniqueUrlsToProbe.length);
       const pct = Math.min(39, 28 + Math.floor((completedAliveProbes / total) * 11));
       progress(pct);
       emit({
         type: 'pipe_detail',
         name: 'alive',
         current: completedAliveProbes,
-        total: urlsToProbe.length,
+        total: uniqueUrlsToProbe.length,
         label: url,
         pct,
       });
     };
 
     s.probeResults = runHttpProbe
-      ? await mapPool(urlsToProbe, limits.probeConcurrency, async (u) => {
+      ? await mapPool(uniqueUrlsToProbe, limits.probeConcurrency, async (u) => {
           let r;
           try {
             r = await probeHttp(u, {
@@ -542,29 +593,22 @@ export async function runProbePhase(s) {
     await dispatchRegistryModule(s, 'http3_quic_surface');
     await dispatchRegistryModule(s, 'nginx_http3_cve_2026_42530');
 
-    s.originByHost = new Map();
-    for (const { r } of s.probeResults) {
-      if (!r.ok || r.status <= 0 || r.status >= 500) continue;
-      let u;
-      try {
-        u = new URL(r.url);
-      } catch {
-        continue;
-      }
-      if (!s.hostInScope(u.hostname)) continue;
-      const prefer = u.protocol === 'https:' ? 2 : 1;
-      const cur = s.originByHost.get(u.hostname);
-      if (!cur || prefer > cur.prefer) {
-        const port = u.port ? `:${u.port}` : '';
-        s.originByHost.set(u.hostname, { origin: `${u.protocol}//${u.hostname}${port}/`, prefer });
-      }
-    }
+    // Nome histórico preservado por compatibilidade; a chave agora é authority
+    // (hostname:port), evitando que duas portas do mesmo host se sobrescrevam.
+    s.originByHost = buildOriginIndex({
+      probeResults: s.probeResults,
+      hostInScope: (hostname) => s.hostInScope(hostname),
+      targetUrl: s.targetUrl,
+      targetOrigin: s.targetOrigin,
+    });
 
     const activeOrigins = [...s.originByHost.values()].map((v) => v.origin);
 
     await dispatchRegistryModule(s, 'panel_exposure_audit');
     await dispatchRegistryModule(s, 'jwt_jwks_audit');
     await dispatchRegistryModule(s, 'service_worker_audit');
+    await dispatchRegistryModule(s, 'cloud_debug_env_audit');
+    await dispatchRegistryModule(s, 'runtime_endpoint_pivot');
 
     const runWellKnown = modules.includes('wellknown_security_txt') || modules.includes('wellknown_openid');
     const runSurface =
@@ -573,10 +617,22 @@ export async function runProbePhase(s) {
       pipe('surface', 'active');
       progress(33);
       if (modules.includes('security_headers')) {
-        const hostsTls = [...s.originByHost.entries()].filter(([, v]) => v.prefer === 2).map(([h]) => h);
+        const hostsTls = [...s.originByHost.values()]
+          .filter((v) => v.prefer === 2)
+          .map((v) => ({
+            hostname: v.hostname,
+            port: v.port,
+            authority: v.authority,
+            origin: v.origin,
+          }));
         if (hostsTls.length) log(`Inspeção TLS (${hostsTls.length} host HTTPS)...`, 'info');
-        await mapPool(hostsTls, limits.surfaceConcurrency, async (hostname) => {
-          const cert = await peekTlsCertificate(hostname, 443, limits.tlsProbeTimeoutMs);
+        await mapPool(hostsTls, limits.surfaceConcurrency, async ({
+          hostname,
+          port,
+          authority,
+          origin,
+        }) => {
+          const cert = await peekTlsCertificate(hostname, port, limits.tlsProbeTimeoutMs);
           if (cert.ok) {
             const soon = cert.daysLeft != null && cert.daysLeft < 30;
             addFinding(
@@ -584,9 +640,9 @@ export async function runProbePhase(s) {
                 type: 'tls',
                 prio: soon ? 'med' : 'low',
                 score: soon ? 52 : 28,
-                value: `${hostname} — cert válido até ${cert.validTo || '?'}`,
+                value: `${authority} — cert válido até ${cert.validTo || '?'}`,
                 meta: `Assunto: ${cert.subject || '—'} · Emissor: ${cert.issuer || '—'}${cert.daysLeft != null ? ` · ~${cert.daysLeft}d` : ''}`,
-                url: `https://${hostLiteralForUrl(hostname)}/`,
+                url: origin,
               },
               null,
             );

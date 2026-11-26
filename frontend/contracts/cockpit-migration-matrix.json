@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 1,
+  "route": "cockpit",
+  "status": "hybrid",
+  "isFullyNativeReact": false,
+  "measuredTemplateBaseline": {
+    "namedFunctionDeclarations": 180,
+    "arrowFunctions": 16,
+    "inlineHandlers": 309,
+    "eventListeners": 38,
+    "fetchCalls": 32,
+    "domIds": 225,
+    "moduleValues": 88
+  },
+  "measuredTemplateCurrent": {
+    "namedFunctionDeclarations": 101,
+    "arrowFunctions": 11,
+    "inlineHandlers": 89,
+    "eventListeners": 34,
+    "fetchCalls": 4,
+    "realFetchCalls": 0,
+    "cheatsheetFetchExamples": 4,
+    "domIds": 225,
+    "moduleValues": 88
+  },
+  "migrationDelta": {
+    "namedFunctionDeclarations": -79,
+    "inlineHandlers": -220,
+    "eventListeners": -4,
+    "fetchCalls": -28,
+    "note": "Manual Recon, RUN form/NDJSON dispatch, Auto/Forge and infrastructure/history transport moved out of the compatibility controller into typed services. The four remaining textual fetch occurrences are inert XSS cheatsheet examples; the controller has zero real fetch call sites. Help overlays moved 25 controller functions, 220 inline handlers and the shared Escape listener into declarative React state and events. Vigolium, Pipeline, Findings and Exports/Integrations share typed services/state while preserving compatibility globals, filenames, popup names, storage keys and BroadcastChannel contracts."
+  },
+  "nativeRuntime": {
+    "bodyUsesReactReconciler": true,
+    "cockpitUsesDangerouslySetInnerHTML": false,
+    "typedServiceBridge": "frontend/src/features/cockpit/native-services.ts",
+    "typedExecutionStore": "frontend/src/features/execution/store.tsx",
+    "typedRunFormStore": "frontend/src/features/run-form/store.tsx",
+    "typedRunFormModel": "frontend/src/features/run-form/model.ts",
+    "typedStreamDispatcher": "frontend/src/features/run-form/stream-dispatcher.ts",
+    "controllerCompatibilityScriptStillExecuted": true
+  },
+  "domains": [
+    {
+      "name": "document-layout",
+      "status": "hybrid",
+      "native": [
+        "React reconciles every cockpit body node",
+        "header, workspace and overlay roots are React components",
+        "target, queue, profile and all 88 module checkboxes are controlled React components"
+      ],
+      "legacy": [
+        "HTML is still parsed from frontend/templates/index.html",
+        "most sections are not declarative domain components",
+        "trusted inline handlers use the compatibility renderer"
+      ]
+    },
+    {
+      "name": "api-auth-csrf",
+      "status": "hybrid",
+      "native": [
+        "API base and URL resolution",
+        "optional auth parsing and pipeline projection",
+        "program header parsing",
+        "CSRF token request",
+        "all real cockpit fetch call sites delegate through typed services"
+      ],
+      "legacy": [
+        "form and localStorage writes",
+        "DOM projection and error presentation"
+      ]
+    },
+    {
+      "name": "infrastructure-history",
+      "status": "hybrid",
+      "native": [
+        "loopback auto-auth persistence and protected-runs authentication test",
+        "Auto RAG status, intelligence corpus and LM Studio preflight",
+        "tool PATH refresh and tunnel status/enable/disable with API key, CSRF and AbortSignal",
+        "runs list/detail/download and normalized manual-validation fingerprints",
+        "file:// API-base fallback and structured endpoint/status/code errors"
+      ],
+      "legacy": [
+        "compatibility function names still project results into existing DOM nodes and logs",
+        "the four textual fetch occurrences are documentation-only XSS examples"
+      ]
+    },
+    {
+      "name": "ndjson",
+      "status": "hybrid",
+      "native": [
+        "incremental UTF-8 chunk framing",
+        "incomplete line buffering and invalid frame classification",
+        "abort-aware typed async reader",
+        "single dispatcher projects every frame into ExecutionStore events/logs before compatibility effects",
+        "progress, pipeline, stats, findings, rescore, coverage and done snapshots update typed state",
+        "Auto terminal phases, invalid frames, interruption and cancel-unconfirmed outcomes are normalized",
+        "ghostrecon:ndjson-event keeps external listeners observable"
+      ],
+      "legacy": [
+        "approval prompts remain compatibility effects invoked by the typed dispatcher callback",
+        "log, popup, MITRE and report side effects"
+      ]
+    },
+    {
+      "name": "findings",
+      "status": "hybrid",
+      "native": [
+        "filter and search predicates",
+        "Dork, Vigolium and Subfinder classification",
+        "stable default ordering",
+        "declarative filters, search, chips, cards and OPEN/COPY/FP actions",
+        "score, composite, HPT, Vigolium, manual validation, OWASP, MITRE, risk and provenance projection",
+        "shared execution store receives incremental findings, rescore replacements and fingerprint dismissal"
+      ],
+      "legacy": [
+        "mutable findings mirror remains for stream-side compatibility code",
+        "dismissed-fingerprint localStorage remains a compatibility effect"
+      ]
+    },
+    {
+      "name": "pipeline",
+      "status": "hybrid",
+      "native": [
+        "typed reducer and state snapshot",
+        "node aliases, progress clamping and stats",
+        "elapsed-time formatter",
+        "declarative phase, node, progress, detail and statistic projection",
+        "shared target, queue position, cascade, coverage and last-bundle state"
+      ],
+      "legacy": [
+        "compatibility callbacks still mirror pipeline values for old globals and integrations",
+        "run lifecycle side effects and terminal presentation outside Pipeline remain compatible"
+      ]
+    },
+    {
+      "name": "manual-recon",
+      "status": "hybrid",
+      "native": [
+        "temporary eight-hour engagement creation",
+        "API key and CSRF headers for preflight, approval and stream",
+        "preflight checklist errors and sealed-plan approval",
+        "manual stream POST for primary, queue and cascade targets",
+        "AbortSignal propagation in all native transport requests",
+        "typed target normalization, 25-target queue, deduplication, cascade tree and out-of-scope rules",
+        "single typed projection composes auth, profile, OPSEC, FrameSeven, Vigolium, Navigator, Tor and identity payload fields",
+        "controlled target, batch text/toggle, profile and 88 module values",
+        "ExecutionStore receives NDJSON events, logs and terminal snapshots before presentation effects"
+      ],
+      "legacy": [
+        "RUN button/status/log, approval prompts, popup, MITRE and Reporte presentation effects",
+        "non-module auth and infrastructure inputs remain DOM controls but are read once through the typed projection",
+        "queue/cascade loops remain a thin adapter over typed target/body/stream services"
+      ]
+    },
+    {
+      "name": "auto-forge",
+      "status": "hybrid",
+      "native": [
+        "CSRF/API-key protected Auto stream POST and resume payload",
+        "last-session persistence and resumable snapshot listing",
+        "terminal snapshot polling with fixed deadline and AbortSignal",
+        "operator approval and server-side cancel requests",
+        "typed event summaries for recoverable, partial, timeout and cancelled outcomes",
+        "Forge listing, inspection, lifecycle, canary and verdict transport"
+      ],
+      "legacy": [
+        "Auto form projection and run presentation",
+        "confirmation and justification prompts",
+        "Forge list/detail DOM construction",
+        "NDJSON event-to-DOM side effects"
+      ]
+    },
+    {
+      "name": "modules-vigolium",
+      "status": "hybrid",
+      "native": [
+        "typed profile normalization, localStorage persistence and defaults for source, input, tags, only and report-only options",
+        "Smart Fast and Full selection models preserve all 88 module values",
+        "admin/user auth-compare entries and stable line/CSV deduplication",
+        "agent-mode guardrails for audit, swarm, autopilot, Codex, source and module filters",
+        "authenticated capabilities/health and Vigolium catalog transport with AbortSignal support",
+        "all 88 module checkboxes are React-controlled and synchronized with Smart Fast, Full, anonymous, Navigator and saved Vigolium presets",
+        "the RUN payload consumes the typed module snapshot instead of querying :checked controls"
+      ],
+      "legacy": [
+        "catalog rows, health cards and module detail panel remain compatibility presentation",
+        "non-module Vigolium option fields remain DOM controls projected by the typed form model"
+      ]
+    },
+    {
+      "name": "exports-integrations",
+      "status": "hybrid",
+      "native": [
+        "full, high/critical and manually validated JSON exports from ExecutionStore snapshots",
+        "platform bundle v2 plus technical/bounty Markdown and TXT builders",
+        "Blob downloads and historical-run download compatibility",
+        "Reporte payload session/shared storage and manual-validation refresh",
+        "GhostMap session lifecycle, target/pipeline/report messages and BroadcastChannel throttling",
+        "Cortex, History, guide, Vigolium Workbench, Reporte, GhostMap, GhostDesk, GHOST, Wi-Fi and PostEx popup orchestration",
+        "typed installer exposes the existing global function names before the compatibility controller runs"
+      ],
+      "legacy": [
+        "existing buttons and stream events still call compatibility global names",
+        "Reporte completes the GhostTrace API handoff in its own native React service"
+      ]
+    },
+    {
+      "name": "help-modals-cheatsheets",
+      "status": "hybrid",
+      "native": [
+        "React state controls the report-consent, sidebar, findings, modules, SQLmap, shell, prompt-injection and XSS overlays",
+        "declarative backdrop, close, Escape, copy-feedback, prompt-language and provider-selection interactions",
+        "compatibility globals keep existing cockpit triggers callable while delegating to React",
+        "shell stabilization rows are mounted declaratively from the preserved template content"
+      ],
+      "legacy": [
+        "the long-form help and cheatsheet copy is still authored in frontend/templates/index.html",
+        "open buttons outside the overlay layer still call the compatibility globals"
+      ]
+    },
+    {
+      "name": "auxiliary-public-pages",
+      "status": "native-with-redirect-compatibility",
+      "native": [
+        "Cortex: React/TypeScript state, API, storage, drawer and graph without the legacy controller",
+        "Report: React/TypeScript state, payload/live import, validations, Brain, GhostTrace handoff and exports without the legacy controller",
+        "Vigolium Workbench: React/TypeScript overview, scans, requests, findings, OAST, reports, modules and agent sessions",
+        "Post-Exploitation: React/TypeScript progress, filters, module navigation, clipboard and SearchSploit",
+        "Tor Validator: React/TypeScript direct/Tor/service validation and periodic refresh",
+        "Wi-Fi Pentest: React/TypeScript readiness, authorized stream, abort, logs and findings",
+        "Guide: static content rendered as a React tree without a controller"
+      ],
+      "legacy": [
+        "/mitre-map.html remains a compatibility redirect using the document adapter; the canonical GhostMap MITRE route is native React"
+      ]
+    }
+  ]
+}

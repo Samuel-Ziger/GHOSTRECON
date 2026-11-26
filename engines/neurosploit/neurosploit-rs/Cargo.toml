@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/harness", "app"]
+resolver = "2"
+
+[workspace.package]
+version = "4.4.3"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/JoasASantos/NeuroSploit"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = "1"
+futures = "0.3"
+
+[profile.release]
+opt-level = 2
+lto = "thin"

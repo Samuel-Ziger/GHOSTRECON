@@ -9,10 +9,8 @@ import {
 } from '../auto-agent/decision-contract.mjs';
 import {
   availableCatalogIds,
-  buildAgentPrompt,
-} from '../auto-agent/providers/shared.mjs';
-import { decideWithCodex, execFileClosedStdin } from '../auto-agent/providers/codex.mjs';
-import { runAgentCouncil } from '../auto-agent/council/council-runner.mjs';
+} from '../auto-agent/module-policy.mjs';
+import { execFileClosedStdin } from '../auto-agent/forge/generation-runtime.mjs';
 import { createAutoSession } from '../auto-agent/session-store.mjs';
 
 function decision({
@@ -33,16 +31,6 @@ function decision({
     assumptions: [],
     operatorQuestion,
     forgeRequest,
-  };
-}
-
-function openAiResponse(value) {
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({
-      choices: [{ message: { content: JSON.stringify(value) } }],
-    }),
   };
 }
 
@@ -202,56 +190,6 @@ test('catálogo aplica a matriz de autonomia e nunca libera destructive', () => 
     ['passive', 'deep', 'hexstrike', 'active', 'intrusive', 'manifest_intrusive'],
   );
 });
-
-test('prompt descreve política efetiva e nunca oferece destructive', () => {
-  const prompt = buildAgentPrompt({
-    target: 'example.test',
-    mode: 'deep',
-    autonomyLevel: 'observation',
-    allowIntrusive: true,
-    catalog: {
-      modules: [
-        { id: 'active', class: 'active', available: true },
-        { id: 'destructive', class: 'destructive', available: true },
-      ],
-    },
-  });
-  assert.match(prompt, /NÍVEL DE AUTONOMIA: observation/);
-  assert.match(prompt, /Nunca escolha módulos destrutivos/);
-  assert.match(prompt, /"id":"active","class":"active","available":false/);
-  assert.match(prompt, /"id":"destructive","class":"destructive","available":false/);
-});
-
-test('Codex recebe prompt por stdin, preserva autonomia e não o inclui no argv', async () => {
-  let seenArgs;
-  let seenOptions;
-  const result = await decideWithCodex({
-    target: 'example.test',
-    mode: 'deep',
-    catalog: {
-      modules: [{ id: 'intrusive_module', class: 'intrusive', available: true }],
-    },
-    ragContext: { items: [] },
-    root: process.cwd(),
-    allowIntrusive: true,
-    autonomyLevel: 'authorized',
-    env: { PATH: process.env.PATH },
-    execFileImpl: async (_command, args, options) => {
-      seenArgs = args;
-      seenOptions = options;
-      const outputPath = args[args.indexOf('--output-last-message') + 1];
-      await fs.writeFile(outputPath, JSON.stringify(decision({ modules: ['intrusive_module'] })), 'utf8');
-      return { stdout: '', stderr: '' };
-    },
-  });
-  assert.equal(result.ok, true);
-  assert.equal(seenArgs.at(-1), '-');
-  assert.equal(seenArgs.some((arg) => String(arg).includes('example.test')), false);
-  assert.match(seenOptions.input, /NÍVEL DE AUTONOMIA: authorized/);
-  assert.match(seenOptions.input, /Módulos intrusivos podem ser solicitados/);
-  assert.equal(result.transport.promptTransport, 'stdin');
-});
-
 test('erro de subprocesso Codex não ecoa argumentos sensíveis', async () => {
   await assert.rejects(
     execFileClosedStdin('/bin/sh', ['-c', 'exit 2', 'prompt-sensitive-marker'], { timeout: 2_000 }),
@@ -262,188 +200,4 @@ test('erro de subprocesso Codex não ecoa argumentos sensíveis', async () => {
       return true;
     },
   );
-});
-
-test('conselho converte empate de módulos em ask_operator', async () => {
-  const catalog = {
-    modules: [
-      { id: 'security_headers', class: 'passive', available: true },
-      { id: 'dns_enrichment', class: 'passive', available: true },
-    ],
-  };
-  const codexDecision = decision({ modules: ['security_headers'] });
-  const openRouterDecision = decision({ modules: ['dns_enrichment'] });
-  const result = await runAgentCouncil({
-    providers: [
-      { id: 'codex', selected: true, usable: true },
-      { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
-    ],
-    target: 'example.test',
-    mode: 'deep',
-    catalog,
-    ragContext: { items: [] },
-    root: process.cwd(),
-    env: {
-      OPENROUTER_API_KEY: 'test',
-      GHOSTRECON_CODEX_APP_SERVER: '0',
-      GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
-    },
-    execFileImpl: async (_command, args) => {
-      const outputPath = args[args.indexOf('--output-last-message') + 1];
-      await fs.writeFile(outputPath, JSON.stringify(codexDecision), 'utf8');
-      return { stdout: '', stderr: '' };
-    },
-    fetchImpl: async () => openAiResponse(openRouterDecision),
-  });
-  assert.equal(result.finalDecision.action, 'ask_operator');
-  assert.deepEqual(result.finalDecision.requestedModules, []);
-  assert.deepEqual(
-    [...result.finalDecision.council.conflicts.tiedModules].sort(),
-    ['dns_enrichment', 'security_headers'],
-  );
-  assert.deepEqual(result.finalDecision.council.validationErrors, []);
-});
-
-test('conselho exige operador quando há maioria não unânime para intrusivo', async () => {
-  const intrusiveDecision = decision({ modules: ['intrusive_module'] });
-  const passiveDecision = decision({ action: 'finish', modules: [] });
-  const result = await runAgentCouncil({
-    providers: [
-      { id: 'codex', selected: true, usable: true },
-      { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
-      { id: 'local_model', selected: true, usable: true },
-    ],
-    target: 'example.test',
-    mode: 'deep',
-    catalog: {
-      modules: [{ id: 'intrusive_module', class: 'intrusive', available: true }],
-    },
-    ragContext: { items: [] },
-    root: process.cwd(),
-    allowIntrusive: true,
-    autonomyLevel: 'authorized',
-    env: {
-      OPENROUTER_API_KEY: 'test',
-      GHOSTRECON_CODEX_APP_SERVER: '0',
-      GHOSTRECON_LMSTUDIO_BASE_URL: 'http://local-model.test/v1',
-      GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
-    },
-    execFileImpl: async (_command, args) => {
-      const outputPath = args[args.indexOf('--output-last-message') + 1];
-      await fs.writeFile(outputPath, JSON.stringify(intrusiveDecision), 'utf8');
-      return { stdout: '', stderr: '' };
-    },
-    fetchImpl: async (url) => (
-      String(url).includes('openrouter.ai')
-        ? openAiResponse(intrusiveDecision)
-        : openAiResponse(passiveDecision)
-    ),
-  });
-  assert.equal(result.finalDecision.action, 'ask_operator');
-  assert.deepEqual(result.finalDecision.requestedModules, []);
-  assert.deepEqual(result.finalDecision.council.conflicts.riskDivergence, ['intrusive_module']);
-});
-
-test('conselho repropaga AbortError sem converter em turno ok:false', async () => {
-  const session = createAutoSession({
-    sessionId: 'session-council-abort',
-    requestRunId: 'run-council-abort',
-    target: 'example.test',
-  });
-  const abortError = new Error('cancelled_during_proposal');
-  abortError.name = 'AbortError';
-  let failedTurnEmitted = false;
-  await assert.rejects(
-    runAgentCouncil({
-      providers: [
-        { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
-      ],
-      target: 'example.test',
-      mode: 'balanced',
-      catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
-      ragContext: { items: [] },
-      root: process.cwd(),
-      env: {
-        OPENROUTER_API_KEY: 'test',
-        GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
-      },
-      session,
-      onTurn: (turn) => {
-        if (turn.phase === 'failed') failedTurnEmitted = true;
-      },
-      fetchImpl: async () => {
-        session.abort('cancelled_during_proposal');
-        throw abortError;
-      },
-    }),
-    (error) => {
-      assert.equal(session.signal.aborted, true);
-      assert.equal(error?.name, 'AbortError');
-      assert.match(String(error?.message || ''), /cancelled_during_proposal/i);
-      return true;
-    },
-  );
-  assert.equal(failedTurnEmitted, false);
-  await session.close('cancelled');
-});
-
-test('conselho repropaga AbortError durante review sem fallback', async () => {
-  const session = createAutoSession({
-    sessionId: 'session-council-review-abort',
-    requestRunId: 'run-council-review-abort',
-    target: 'example.test',
-  });
-  const abortError = new Error('cancelled_during_review');
-  abortError.name = 'AbortError';
-  let failedTurnEmitted = false;
-  let openrouterCalls = 0;
-  let reviewStarted = false;
-  await assert.rejects(
-    runAgentCouncil({
-      providers: [
-        { id: 'codex', selected: true, usable: true },
-        { id: 'openrouter', selected: true, usable: true, defaultModel: 'test/model' },
-      ],
-      target: 'example.test',
-      mode: 'balanced',
-      catalog: { modules: [{ id: 'security_headers', class: 'passive', available: true }] },
-      ragContext: { items: [] },
-      root: process.cwd(),
-      env: {
-        OPENROUTER_API_KEY: 'test',
-        GHOSTRECON_CODEX_APP_SERVER: '0',
-        GHOSTRECON_AUTO_CLOUD_EVIDENCE_CONSENT: '1',
-      },
-      session,
-      onTurn: (turn) => {
-        if (turn.phase === 'failed') failedTurnEmitted = true;
-        if (turn.phase === 'started' && turn.role === 'reviewer') reviewStarted = true;
-      },
-      execFileImpl: async (_command, args) => {
-        if (session.signal.aborted) throw abortError;
-        const outputPath = args[args.indexOf('--output-last-message') + 1];
-        await fs.writeFile(outputPath, JSON.stringify(decision({ modules: ['security_headers'] })), 'utf8');
-        return { stdout: '', stderr: '' };
-      },
-      fetchImpl: async () => {
-        openrouterCalls += 1;
-        // 1ª chamada = proposta; 2ª = review cruzada.
-        if (openrouterCalls >= 2) {
-          session.abort('cancelled_during_review');
-          throw abortError;
-        }
-        return openAiResponse(decision({ modules: ['security_headers'] }));
-      },
-    }),
-    (error) => {
-      assert.equal(reviewStarted, true);
-      assert.ok(openrouterCalls >= 2);
-      assert.equal(session.signal.aborted, true);
-      assert.equal(error?.name, 'AbortError');
-      assert.match(String(error?.message || error?.cause?.message || ''), /cancelled_during_review/i);
-      return true;
-    },
-  );
-  assert.equal(failedTurnEmitted, false);
-  await session.close('cancelled');
 });
