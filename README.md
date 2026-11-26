@@ -331,6 +331,16 @@ npm run cli -- export --run 42 --to github --repo org/repo --severity high
 
 A CLI também oferece `projects`, `engagement`, `narrative`, `purple`, `team`, `replay`, `obsidian` e `phish-infra`.
 
+Para criar um engagement formal por um assistente interativo, execute na raiz:
+
+```bash
+./criar-engagement-autorizado.sh
+```
+
+O script coleta escopo, exclusões, janela, ROE e contato de emergência, exige a
+confirmação literal `AUTORIZO`, grava pelo comando nativo `ghostrecon engagement`
+e imprime o ID e o JSON final. Nenhum dado é gravado antes da confirmação.
+
 ## Modo Auto
 
 O Modo Auto é um orquestrador **supervisionado e determinístico**. O operador
