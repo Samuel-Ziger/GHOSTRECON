@@ -1,6 +1,8 @@
 """Regression tests for provider errors exposed by the GHOSTRECON adapter."""
 
-from ghostrecon_api import _provider_failure
+import ghostrecon_api
+
+from ghostrecon_api import _provider_failure, _run_timeout_seconds
 
 
 class ProviderFailure(Exception):
@@ -27,4 +29,18 @@ def test_interrupted_stream_is_reported_as_temporary_unavailability():
 
     assert status == 503
     assert "encerrou o stream" in message
+
+
+def test_run_timeout_defaults_to_thirty_minutes_and_is_bounded(monkeypatch):
+    monkeypatch.delenv("GHOSTRECON_HACKBOT_RUN_TIMEOUT", raising=False)
+    assert _run_timeout_seconds() == 1800
+
+    monkeypatch.setenv("GHOSTRECON_HACKBOT_RUN_TIMEOUT", "7200")
+    assert _run_timeout_seconds() == 7200
+
+    monkeypatch.setenv("GHOSTRECON_HACKBOT_RUN_TIMEOUT", "99999")
+    assert _run_timeout_seconds() == ghostrecon_api.MAX_RUN_TIMEOUT_SECONDS
+
+    monkeypatch.setenv("GHOSTRECON_HACKBOT_RUN_TIMEOUT", "invalido")
+    assert _run_timeout_seconds() == ghostrecon_api.DEFAULT_RUN_TIMEOUT_SECONDS
 

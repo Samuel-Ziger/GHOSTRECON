@@ -42,6 +42,8 @@ app = FastAPI(title="GHOSTRECON HackBot adapter", docs_url=None, redoc_url=None)
 # isolated external MCP transport per run.
 run_slots = asyncio.Semaphore(max(1, min(int(os.getenv("GHOSTRECON_HACKBOT_CONCURRENCY", "1")), 4)))
 session_locks: dict[str, asyncio.Lock] = {}
+DEFAULT_RUN_TIMEOUT_SECONDS = 30 * 60
+MAX_RUN_TIMEOUT_SECONDS = 2 * 60 * 60
 
 
 class RunRequest(BaseModel):
@@ -89,6 +91,15 @@ def _provider_failure(value: object) -> tuple[int, str]:
     if status not in {400, 401, 402, 403, 408, 409, 422, 429, 502, 503, 504}:
         status = 502
     return status, text
+
+
+def _run_timeout_seconds() -> int:
+    raw = os.getenv("GHOSTRECON_HACKBOT_RUN_TIMEOUT", "").strip()
+    try:
+        configured = int(raw) if raw else DEFAULT_RUN_TIMEOUT_SECONDS
+    except ValueError:
+        configured = DEFAULT_RUN_TIMEOUT_SECONDS
+    return max(10, min(configured, MAX_RUN_TIMEOUT_SECONDS))
 
 
 def _dependency_state() -> dict[str, bool]:
@@ -270,7 +281,7 @@ async def run(request: RunRequest) -> dict[str, Any]:
             prompt = request.prompt
             if language:
                 prompt = f"Responda no idioma {language}.\n\nSolicitação do operador:\n{request.prompt}"
-            timeout_seconds = max(10, min(int(os.getenv("GHOSTRECON_HACKBOT_RUN_TIMEOUT", "600")), 900))
+            timeout_seconds = _run_timeout_seconds()
             # AgentSystem owns API-backed specialists and Codex CLI agents. A
             # single path preserves specialist delegation before the central
             # Codex consolidation instead of bypassing the multi-agent team.
@@ -312,9 +323,15 @@ async def run(request: RunRequest) -> dict[str, Any]:
         except HTTPException:
             raise
         except TimeoutError as exc:
-            session.add("error", "HackBot run timed out", agent=request.agent)
+            minutes = max(1, round(timeout_seconds / 60))
+            public = (
+                f"HackBot excedeu o limite de {minutes} min desta execução. "
+                "A conversa foi preservada; aumente GHOSTRECON_HACKBOT_RUN_TIMEOUT "
+                "ou divida a tarefa em etapas menores."
+            )
+            session.add("error", public, agent=request.agent)
             store.save(session)
-            raise HTTPException(status_code=504, detail="HackBot run timed out") from exc
+            raise HTTPException(status_code=504, detail=public) from exc
         except Exception as exc:
             status, public = _provider_failure(exc)
             session.add("error", public, agent=request.agent)

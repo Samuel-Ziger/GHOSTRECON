@@ -9,10 +9,30 @@ import {
   readHackbotBindings,
   writeHackbotBindings,
 } from '../integrations/hackbot/config.mjs';
+import { HackbotClient, resolveHackbotRunTimeoutMs } from '../integrations/hackbot/client.mjs';
 import { registerHackbotRoutes } from '../routes/hackbot.mjs';
 import { listCodexMcpCatalog, validateCodexMcpSelection } from '../integrations/mcp/catalog.mjs';
 
 const AGENTS = ['orchestrator', 'researcher', 'analyst', 'document_analyst', 'tutor'];
+
+test('timeout HackBot acompanha a rodada multiagente sem corte prematuro da API Node', async () => {
+  assert.equal(resolveHackbotRunTimeoutMs({}), 30 * 60_000 + 30_000);
+  assert.equal(resolveHackbotRunTimeoutMs({ GHOSTRECON_HACKBOT_RUN_TIMEOUT: '7200' }), 2 * 60 * 60_000 + 30_000);
+  assert.equal(resolveHackbotRunTimeoutMs({ GHOSTRECON_HACKBOT_RUN_TIMEOUT: '99999' }), 2 * 60 * 60_000 + 30_000);
+  assert.equal(resolveHackbotRunTimeoutMs({ GHOSTRECON_HACKBOT_RUN_TIMEOUT: 'invalido' }), 30 * 60_000 + 30_000);
+
+  let observedSignal = null;
+  const client = new HackbotClient({
+    runTimeoutMs: 42_000,
+    fetchImpl: async (_url, init) => {
+      observedSignal = init.signal;
+      return { ok: true, async json() { return { ok: true }; } };
+    },
+  });
+  await client.run({ prompt: 'fixture' });
+  assert.equal(client.runTimeoutMs, 42_000);
+  assert.ok(observedSignal instanceof AbortSignal);
+});
 
 function fixtureBindings() {
   return Object.fromEntries(AGENTS.map((name) => [name, {

@@ -88,6 +88,12 @@ padrão depois de avaliação com o mesmo conjunto de casos e métricas.
 7. Para análise de arquivo, informe um caminho dentro de `reports/`, `logs/`,
    `.runtime/` ou `IAs/hackbot/samples/` e selecione documento ou SARIF.
 
+Uma rodada multiagente pode envolver pesquisa, especialistas e consolidação. O
+limite total padrão é de 30 minutos. Ajuste
+`GHOSTRECON_HACKBOT_RUN_TIMEOUT` em segundos quando necessário; o adaptador
+aceita de 10 segundos a 2 horas, e a API Node acompanha automaticamente o mesmo
+valor com uma margem curta para transportar a resposta final.
+
 ACP e os MCPs do runtime Pydantic continuam disponíveis pelas variáveis
 originais `HACKBOT_ACP_URL` e `HACKBOT_MCP_CONFIG`. No caminho Codex, a API web
 aceita somente ids descobertos no `CODEX_HOME` ou launchers fixos gerenciados

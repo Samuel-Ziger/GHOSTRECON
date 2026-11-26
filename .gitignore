@@ -54,7 +54,7 @@ data/cve/
 
 # Relatórios IA sem pasta de projeto
 data/ai_reports/
-data/auto-rag/tenants/
+data/auto-rag/
 
 # Relatórios de execução (incluindo HTML integrado do FrameSeven)
 /reports/
